@@ -3,72 +3,102 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    // register the flag so `-Denable-coverage=true` is valid
-    const coverageOpt = b.option(bool, "enable-coverage", "Enable coverage instrumentation");
-    const coverage = coverageOpt orelse false;
-    _ = coverage; // autofix
 
-    const lib = b.addLibrary(.{
-        .name = "template_zig_project",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
+    const zsdl = b.dependency("zsdl", .{});
 
+    // Create the executable
     const exe = b.addExecutable(.{
-        .name = "template-zig-project",
+        .name = "sandopolis",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+            },
         }),
     });
 
+    // Link SDL3
+    if (target.result.os.tag == .linux) {
+        // Use prebuilt SDL3
+        const sdl3_dep = b.dependency("sdl3_linux", .{});
+        exe.addLibraryPath(sdl3_dep.path("lib"));
+        // Install the shared library to the bin directory so it can be found at runtime
+        const install_sdl3 = b.addInstallFile(sdl3_dep.path("lib/libSDL3.so"), "bin/libSDL3.so.0");
+        b.getInstallStep().dependOn(&install_sdl3.step);
+
+        // Also symlink or install simply implies it's there.
+        // We link against it.
+        exe.linkSystemLibrary("SDL3");
+        exe.linkLibC();
+
+        // Add rpath so it finds the lib in the same dir
+        exe.root_module.addRPathSpecial("$ORIGIN");
+    } else {
+        // Fallback for other systems (assuming installed)
+        exe.linkSystemLibrary("SDL3");
+        if (target.result.os.tag == .macos) {
+            // macOS specifics if needed
+        }
+    }
+
     b.installArtifact(exe);
 
-    const run_artifact = b.addRunArtifact(exe);
-    if (b.args) |args| run_artifact.addArgs(args);
-    const run_step = b.step("run", "Run the application");
-    run_step.dependOn(&run_artifact.step);
-
-    const test_step = b.step("test", "Run unit tests");
-
-    {
-        const lib_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/root.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "template_zig_project", .module = lib.root_module }},
-            }),
-        });
-        const lib_run = b.addRunArtifact(lib_tests);
-        test_step.dependOn(&lib_run.step);
-        const lib_install = b.addInstallArtifact(lib_tests, .{ .dest_sub_path = "test-root" });
-        test_step.dependOn(&lib_install.step);
+    // Run step
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
     }
 
-    {
-        const ext_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("tests/main.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "template_zig_project", .module = lib.root_module }},
-            }),
-        });
-        const ext_run = b.addRunArtifact(ext_tests);
-        test_step.dependOn(&ext_run.step);
-        const ext_install = b.addInstallArtifact(ext_tests, .{ .dest_sub_path = "test-ext" });
-        test_step.dependOn(&ext_install.step);
-    }
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
 
-    const doc_step = b.step("doc", "Generate documentation");
-    const doc_cmd = b.addSystemCommand(&[_][]const u8{
-        "zig", "doc", "--output-dir", "doc", "src/root.zig",
+    // Check step
+    const exe_check = b.addExecutable(.{
+        .name = "sandopolis",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+            },
+        }),
     });
-    doc_step.dependOn(&doc_cmd.step);
+
+    if (target.result.os.tag == .linux) {
+        const sdl3_dep = b.dependency("sdl3_linux", .{});
+        exe_check.addLibraryPath(sdl3_dep.path("lib"));
+        exe_check.addIncludePath(sdl3_dep.path("include"));
+        exe_check.linkSystemLibrary("SDL3");
+        exe_check.linkLibC();
+    } else {
+        exe_check.linkSystemLibrary("SDL3");
+    }
+
+    const check = b.step("check", "Check if sandopolis compiles");
+    check.dependOn(&exe_check.step);
+
+    // Test executable (no SDL dependency)
+    const test_exe = b.addExecutable(.{
+        .name = "test_emu",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_emu.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    b.installArtifact(test_exe);
+
+    const test_run_cmd = b.addRunArtifact(test_exe);
+    test_run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        test_run_cmd.addArgs(args);
+    }
+
+    const test_step = b.step("test-emu", "Run the emulator test");
+    test_step.dependOn(&test_run_cmd.step);
 }

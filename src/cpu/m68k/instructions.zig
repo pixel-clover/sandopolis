@@ -1,0 +1,16 @@
+pub const execBit0 = @import("instructions/bit0.zig").execBit0;
+pub const execBit1 = @import("instructions/bit1.zig").execBit1;
+pub const execBit2 = @import("instructions/bit2.zig").execBit2;
+pub const execBit3 = @import("instructions/bit3.zig").execBit3;
+pub const execBit4 = @import("instructions/bit4.zig").execBit4;
+pub const execBit5 = @import("instructions/bit5.zig").execBit5;
+pub const execBit6 = @import("instructions/bit6.zig").execBit6;
+pub const execBit7 = @import("instructions/bit7.zig").execBit7;
+pub const execBit8 = @import("instructions/bit8.zig").execBit8;
+pub const execBit9 = @import("instructions/bit9.zig").execBit9;
+pub const execBitA = @import("instructions/bitA.zig").execBitA;
+pub const execBitB = @import("instructions/bitB.zig").execBitB;
+pub const execBitC = @import("instructions/bitC.zig").execBitC;
+pub const execBitD = @import("instructions/bitD.zig").execBitD;
+pub const execBitE = @import("instructions/bitE.zig").execBitE;
+pub const execBitF = @import("instructions/bitF.zig").execBitF;

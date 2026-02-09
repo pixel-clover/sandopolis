@@ -1,6 +1,6 @@
 <div align="center">
   <picture>
-    <img alt="Sandopolis Logo" src="logo.svg" height="15%" width="15%">
+    <img alt="Sandopolis Logo" src="logo.svg" height="25%" width="25%">
   </picture>
 <br>
 
@@ -8,7 +8,6 @@
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/pixel-clover/sandopolis/tests.yml?label=tests&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-007ec6?label=license&style=flat&labelColor=282c34&logo=open-source-initiative)](https://github.com/pixel-clover/sandopolis/blob/main/LICENSE)
-[![Examples](https://img.shields.io/badge/examples-view-green?style=flat&labelColor=282c34&logo=zig)](https://github.com/pixel-clover/sandopolis/tree/main/examples)
 [![Docs](https://img.shields.io/badge/docs-read-blue?style=flat&labelColor=282c34&logo=read-the-docs)](https://pixel-clover.github.io/sandopolis/)
 [![Zig Version](https://img.shields.io/badge/Zig-0.15.2-orange?logo=zig&labelColor=282c34)](https://ziglang.org/download/)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
@@ -19,28 +18,98 @@ A Sega Genesis/Mega Drive emulator written in Zig
 
 ---
 
-This is a template for Zig projects.
-It provides a minimalistic project structure with pre-configured GitHub Actions, Makefile, and a few useful
-configuration files.
-I share it here in case it might be useful to others.
+## Overview
 
-### Features
+Sandopolis is a Sega Genesis/Mega Drive emulator built from the ground up in Zig. The emulator implements the complete Genesis hardware stack, including the Motorola 68000 CPU, VDP (Video Display Processor), Z80 sound processor, and I/O controller support.
 
-- Minimalistic project structure
-- Pre-configured GitHub Actions for linting and testing
-- Makefile for managing the development workflow and tasks like code formatting, testing, linting, etc.
-- GitHub badges for tests, code quality and coverage, documentation, etc.
-- [Code of Conduct](CODE_OF_CONDUCT.md) and [Contributing Guidelines](CONTRIBUTING.md)
+## Features
 
----
+- Complete Motorola 68000 CPU emulation with full instruction set
+- VDP implementation with support for:
+  - Tile rendering (Plane A, Plane B, Sprites)
+  - VRAM, CRAM, and VSRAM access
+  - Hardware scrolling
+  - DMA transfers
+- Z80 sound processor (stub implementation)
+- Controller input support (keyboard and gamepad)
+- SMD ROM format deinterleaving
+- Real-time rendering with SDL3
 
-### Quickstart
+## Quick Start
 
-To be added.
+### Building
 
-### Documentation
+```bash
+make build
+```
 
-To be added.
+### Running
+
+```bash
+# Run with a ROM file
+./zig-out/bin/sandopolis path/to/rom.bin
+
+# Run test emulator (no GUI)
+./zig-out/bin/test_emu path/to/rom.bin
+
+# Example with Sonic & Knuckles
+./zig-out/bin/sandopolis roms/sn.smd
+```
+
+### Controls
+
+#### Keyboard
+- Arrow Keys: D-Pad
+- A/S/D: Buttons A/B/C
+- Enter: Start
+- Space: Single step (debug mode)
+- Escape: Exit
+
+#### Gamepad
+- D-Pad: D-Pad
+- South (A): Button A
+- East (B): Button B
+- Right Shoulder: Button C
+- Start: Start
+
+## Project Structure
+
+```
+sandopolis/
+├── src/
+│   ├── main.zig           # Main emulator loop and SDL integration
+│   ├── memory.zig         # Memory bus and address decoding
+│   ├── vdp.zig            # Video Display Processor
+│   ├── io.zig             # Input/Output controller
+│   ├── z80.zig            # Z80 sound processor
+│   └── cpu/
+│       ├── cpu.zig        # CPU dispatch and lifecycle
+│       └── m68k/
+│           ├── cpu.zig    # M68K core implementation
+│           ├── instructions.zig
+│           └── instructions/  # Instruction handlers (bit0-bitF)
+├── roms/                  # Place your Genesis ROMs here
+├── test_emu.zig          # Standalone test runner
+└── build.zig             # Build configuration
+```
+
+## Building
+
+### Prerequisites
+
+- Zig 0.15.2 or later
+- SDL3 (bundled for Linux in dependencies)
+- Make (optional, for convenience commands)
+
+### Build Commands
+
+```bash
+# Build the project
+make build
+
+# Build and run with a ROM
+make run -- roms/your-game.smd
+```
 
 ---
 

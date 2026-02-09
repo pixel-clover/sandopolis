@@ -4,13 +4,13 @@
     .fingerprint = 0x50bf614ce7c127dd, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
-        .minish = .{
-            .url = "https://github.com/CogitatorTech/minish/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "minish-0.1.0-SQtSTWHkAQACfz3xGuWHU8zbx320vK_47r2yto3Pq0Rf",
+        .zsdl = .{
+            .url = "https://github.com/zig-gamedev/zsdl/archive/refs/heads/main.tar.gz",
+            .hash = "zsdl-0.4.0-dev-rFpjEzgIXwBdDmlda0YnQPRVApMc1YEgbyzLWuT9GupM",
         },
-        .ordered = .{
-            .url = "https://github.com/CogitatorTech/ordered/archive/v0.1.0.tar.gz",
-            .hash = "ordered-0.1.0-Gy41sFoCAgDHx9wCElUaCuHvNP7idFfa375M2-UHXMPf",
+        .sdl3_linux = .{
+            .url = "https://github.com/zig-gamedev/sdl3-prebuilt-x86_64-linux-gnu/archive/b19959ed3aa87d8393640d7ba3aec142ae85487b.tar.gz",
+            .hash = "sdl3_prebuilt_x86_64_linux_gnu-0.2.0-dev-qpwWsmyVNwBHzXjgC9Z-U02SXoUVMMxvCnI7XKocDcDn",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md" },

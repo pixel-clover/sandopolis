@@ -96,3 +96,5 @@ poetry.lock
 docs/api/
 *_output.txt
 site/
+roms/
+core.*
