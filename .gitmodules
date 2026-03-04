@@ -1,0 +1,9 @@
+[submodule "external/rocket68"]
+	path = external/rocket68
+	url = https://github.com/habedi/rocket68
+	branch = main
+
+[submodule "external/jgz80"]
+	path = external/jgz80
+	url = https://github.com/carmiker/jgz80
+	branch = master
