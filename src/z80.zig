@@ -5,6 +5,9 @@ const c = @cImport({
 pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
 
+    pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
+    pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
+
     pub fn init() Z80 {
         return .{ .handle = c.jgz80_create() };
     }
@@ -31,6 +34,45 @@ pub const Z80 = struct {
 
     pub fn writeByte(self: *Z80, addr: u16, val: u8) void {
         if (self.handle) |h| c.jgz80_write_byte(h, addr, val);
+    }
+
+    pub fn setHostCallbacks(self: *Z80, userdata: ?*anyopaque, host_read: HostReadFn, host_write: HostWriteFn) void {
+        if (self.handle) |h| c.jgz80_set_host_callbacks(h, host_read, host_write, userdata);
+    }
+
+    pub fn getBank(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_get_bank(h);
+        return 0;
+    }
+
+    pub fn getYmRegister(self: *const Z80, port: u1, reg: u8) u8 {
+        if (self.handle) |h| return c.jgz80_get_ym_register(h, port, reg);
+        return 0;
+    }
+
+    pub fn getYmKeyMask(self: *const Z80) u8 {
+        if (self.handle) |h| return c.jgz80_get_ym_key_mask(h);
+        return 0;
+    }
+
+    pub fn getPsgLast(self: *const Z80) u8 {
+        if (self.handle) |h| return c.jgz80_get_psg_last(h);
+        return 0;
+    }
+
+    pub fn getPsgTone(self: *const Z80, channel: u2) u16 {
+        if (self.handle) |h| return c.jgz80_get_psg_tone(h, channel);
+        return 0;
+    }
+
+    pub fn getPsgVolume(self: *const Z80, channel: u2) u8 {
+        if (self.handle) |h| return c.jgz80_get_psg_volume(h, channel);
+        return 0x0F;
+    }
+
+    pub fn getPsgNoise(self: *const Z80) u8 {
+        if (self.handle) |h| return c.jgz80_get_psg_noise(h);
+        return 0;
     }
 
     // Bus Request (0xA11100)

@@ -1,6 +1,52 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
+const AudioOutput = @import("audio_output.zig").AudioOutput;
+
+const AudioInit = struct {
+    stream: *zsdl3.AudioStream,
+    output: AudioOutput,
+};
+
+fn formatName(format: zsdl3.AudioFormat) []const u8 {
+    return switch (format) {
+        .S16LE => "S16LE",
+        .S16BE => "S16BE",
+        .F32LE => "F32LE",
+        .F32BE => "F32BE",
+        else => "unknown",
+    };
+}
+
+fn tryInitAudio(userdata: *u8) ?AudioInit {
+    const playback_device: zsdl3.AudioDeviceId = @enumFromInt(zsdl3.AUDIO_DEVICE_DEFAULT_PLAYBACK);
+    const candidate_formats = [_]zsdl3.AudioFormat{
+        zsdl3.AudioFormat.S16LE,
+        zsdl3.AudioFormat.F32LE,
+    };
+    const candidate_rates = [_]c_int{AudioOutput.output_rate};
+
+    for (candidate_formats) |format| {
+        for (candidate_rates) |freq| {
+            const spec = zsdl3.AudioSpec{
+                .channels = 2,
+                .format = format,
+                .freq = freq,
+            };
+            if (zsdl3.openAudioDeviceStream(playback_device, &spec, null, userdata)) |stream| {
+                const audio_device = zsdl3.getAudioStreamDevice(stream);
+                _ = zsdl3.resumeAudioDevice(audio_device);
+                std.debug.print("Audio enabled: {s} {d}Hz\n", .{ formatName(format), freq });
+                return .{
+                    .stream = stream,
+                    .output = AudioOutput{ .stream = stream },
+                };
+            } else |_| {}
+        }
+    }
+
+    return null;
+}
 
 pub fn main() !void {
     // -- Emulator Initialization --
@@ -19,7 +65,7 @@ pub fn main() !void {
 
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
 
-    try zsdl3.init(.{ .video = true, .gamepad = true });
+    try zsdl3.init(.{ .audio = true, .video = true, .gamepad = true });
     defer zsdl3.quit();
 
     const window = try zsdl3.Window.create(
@@ -32,6 +78,13 @@ pub fn main() !void {
 
     const renderer = try zsdl3.Renderer.create(window, null);
     defer renderer.destroy();
+
+    var audio_userdata: u8 = 0;
+    var audio: ?AudioInit = tryInitAudio(&audio_userdata);
+    if (audio == null) {
+        std.debug.print("Audio disabled: no compatible stream format\n", .{});
+    }
+    defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
     // Open first available gamepad
     var gamepad: ?*zsdl3.Gamepad = null;
@@ -464,6 +517,10 @@ pub fn main() !void {
             }
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
+        const audio_frames = bus.audio_timing.takePending();
+        if (audio) |*a| {
+            try a.output.pushPending(audio_frames, &bus.z80);
+        }
 
         // Update Texture via Lock/Unlock (UpdateTexture missing in binding)
         if (vdp_texture.lock(null)) |locked| {
@@ -489,3 +546,4 @@ pub fn main() !void {
 }
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
+extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;

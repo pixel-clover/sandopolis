@@ -1,5 +1,6 @@
 const std = @import("std");
 const clock = @import("clock.zig");
+const AudioTiming = @import("audio_timing.zig").AudioTiming;
 const Vdp = @import("vdp.zig").Vdp;
 const Io = @import("io.zig").Io;
 const Z80 = @import("z80.zig").Z80;
@@ -33,7 +34,38 @@ pub const Bus = struct {
     vdp: Vdp,
     io: Io,
     z80: Z80,
+    audio_timing: AudioTiming,
     z80_master_remainder: u8,
+
+    fn hasZ80BusFor68k(self: *Bus) bool {
+        return self.z80.readBusReq() == 0x0000;
+    }
+
+    fn readHostByteForZ80(self: *Bus, address: u32) u8 {
+        const addr = address & 0xFFFFFF;
+        if (addr >= 0xA00000 and addr < 0xA10000) return 0xFF;
+        return self.read8(addr);
+    }
+
+    fn writeHostByteForZ80(self: *Bus, address: u32, value: u8) void {
+        const addr = address & 0xFFFFFF;
+        if (addr >= 0xA00000 and addr < 0xA10000) return;
+        self.write8(addr, value);
+    }
+
+    fn z80HostReadCallback(userdata: ?*anyopaque, address: u32) callconv(.c) u8 {
+        const self: *Bus = @ptrCast(@alignCast(userdata orelse return 0xFF));
+        return self.readHostByteForZ80(address);
+    }
+
+    fn z80HostWriteCallback(userdata: ?*anyopaque, address: u32, value: u8) callconv(.c) void {
+        const self: *Bus = @ptrCast(@alignCast(userdata orelse return));
+        self.writeHostByteForZ80(address, value);
+    }
+
+    fn ensureZ80HostWindow(self: *Bus) void {
+        self.z80.setHostCallbacks(self, z80HostReadCallback, z80HostWriteCallback);
+    }
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
         var rom_data: []u8 = undefined;
@@ -82,6 +114,7 @@ pub const Bus = struct {
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),
+            .audio_timing = .{},
             .z80_master_remainder = 0,
         };
     }
@@ -107,8 +140,11 @@ pub const Bus = struct {
             // Mask to 64KB (0xFFFF)
             return self.ram[addr & 0xFFFF];
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            // Z80 RAM
-            return self.z80.readByte(@intCast(addr & 0x1FFF));
+            // Z80 address-space window.
+            if (!self.hasZ80BusFor68k()) return 0xFF;
+            self.ensureZ80HostWindow();
+            const zaddr: u16 = @truncate(addr & 0xFFFF);
+            return self.z80.readByte(zaddr);
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
             return self.io.read(addr);
@@ -161,8 +197,12 @@ pub const Bus = struct {
             // RAM
             self.ram[addr & 0xFFFF] = value;
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            // Z80 RAM
-            self.z80.writeByte(@intCast(addr & 0x1FFF), value);
+            // Z80 address-space window.
+            if (!self.hasZ80BusFor68k()) return;
+            self.ensureZ80HostWindow();
+            const zaddr: u16 = @truncate(addr & 0xFFFF);
+            self.z80.writeByte(zaddr, value);
+            return;
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
             self.io.write(addr, value);
@@ -212,7 +252,9 @@ pub const Bus = struct {
     }
     pub fn stepMaster(self: *Bus, master_cycles: u32) void {
         self.vdp.step(master_cycles);
+        self.audio_timing.consumeMaster(master_cycles);
 
+        self.ensureZ80HostWindow();
         const total = @as(u32, self.z80_master_remainder) + master_cycles;
         const z80_cycles = total / clock.z80_divider;
         self.z80_master_remainder = @intCast(total % clock.z80_divider);
