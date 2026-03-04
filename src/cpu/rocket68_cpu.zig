@@ -96,6 +96,17 @@ pub const Cpu = struct {
         self.halted = self.core.stopped;
     }
 
+    pub fn runCycles(self: *Cpu, bus: *Bus, budget: u32) u32 {
+        if (self.halted or budget == 0) return 0;
+
+        active_bus = bus;
+        const ran = c.m68k_execute(&self.core, @intCast(budget));
+        const consumed: u32 = if (ran > 0) @intCast(ran) else 0;
+        self.cycles += consumed;
+        self.halted = self.core.stopped;
+        return consumed;
+    }
+
     pub fn requestInterrupt(self: *Cpu, level: u3) void {
         c.m68k_set_irq(&self.core, @intCast(level));
     }

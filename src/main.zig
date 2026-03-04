@@ -1,5 +1,6 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
+const clock = @import("clock.zig");
 
 pub fn main() !void {
     // -- Emulator Initialization --
@@ -359,6 +360,12 @@ pub fn main() !void {
     std.debug.print("CPU Reset complete.\n", .{});
     cpu.debugDump();
 
+    const visible_lines = clock.ntsc_visible_lines;
+    const total_lines = clock.ntsc_lines_per_frame;
+    const active_display_master_cycles = clock.ntsc_active_master_cycles;
+    const hblank_master_cycles = clock.ntsc_hblank_master_cycles;
+    var m68k_sync = clock.M68kSync{};
+
     mainLoop: while (true) {
         var event: zsdl3.Event = undefined;
         while (zsdl3.pollEvent(&event)) {
@@ -408,7 +415,8 @@ pub fn main() !void {
                         if (scancode == zsdl3.Scancode.space) {
                             // Single Step
                             cpu.step(&bus);
-                            bus.step(@intCast(cpu.cycles)); // Keep System in sync
+                            const master_elapsed = m68k_sync.commitM68kCycles(1);
+                            bus.stepMaster(master_elapsed);
                             cpu.debugDump();
                         }
                         if (scancode == zsdl3.Scancode.escape) break :mainLoop;
@@ -418,24 +426,44 @@ pub fn main() !void {
             }
         }
 
-        // Emulation Run
-        for (0..2000) |_| {
-            cpu.step(&bus);
+        // Frame scheduler (NTSC-like): active display + HBlank per line, then VBlank lines.
+        var hint_counter: i32 = @intCast(bus.vdp.regs[10]);
+        for (0..total_lines) |line_idx| {
+            const line: u16 = @intCast(line_idx);
+            const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
+            bus.vdp.setHBlank(false);
+
+            const active_budget = m68k_sync.budgetFromMaster(active_display_master_cycles);
+            const active_ran = cpu.runCycles(&bus, active_budget);
+            bus.stepMaster(m68k_sync.commitM68kCycles(active_ran));
             if (cpu.halted) break :mainLoop;
 
-            // Update System (VDP, Z80, DMA)
-            bus.step(@intCast(cpu.cycles));
+            if (line < visible_lines) {
+                hint_counter -= 1;
+                if (hint_counter < 0) {
+                    hint_counter = @intCast(bus.vdp.regs[10]);
+                    if ((bus.vdp.regs[0] & 0x10) != 0) {
+                        cpu.requestInterrupt(4); // H-BLANK interrupt
+                    }
+                }
+            }
 
-            // Check for V-BLANK interrupt
-            if (bus.vdp.shouldFireVBlankInterrupt()) {
-                cpu.requestInterrupt(6); // Level 6 = V-BLANK interrupt
+            bus.vdp.setHBlank(true);
+            const hblank_budget = m68k_sync.budgetFromMaster(hblank_master_cycles);
+            const hblank_ran = cpu.runCycles(&bus, hblank_budget);
+            bus.stepMaster(m68k_sync.commitM68kCycles(hblank_ran));
+            if (cpu.halted) break :mainLoop;
+            bus.vdp.setHBlank(false);
+
+            if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
+                cpu.requestInterrupt(6); // V-BLANK interrupt
+            }
+
+            if (line < visible_lines) {
+                bus.vdp.renderScanline(line);
             }
         }
-
-        // Render VDP Scanlines
-        for (0..224) |line| {
-            bus.vdp.renderScanline(@intCast(line));
-        }
+        bus.vdp.odd_frame = !bus.vdp.odd_frame;
 
         // Update Texture via Lock/Unlock (UpdateTexture missing in binding)
         if (vdp_texture.lock(null)) |locked| {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock.zig");
 const Vdp = @import("vdp.zig").Vdp;
 const Io = @import("io.zig").Io;
 const Z80 = @import("z80.zig").Z80;
@@ -32,6 +33,7 @@ pub const Bus = struct {
     vdp: Vdp,
     io: Io,
     z80: Z80,
+    z80_master_remainder: u8,
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
         var rom_data: []u8 = undefined;
@@ -80,6 +82,7 @@ pub const Bus = struct {
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),
+            .z80_master_remainder = 0,
         };
     }
 
@@ -128,6 +131,7 @@ pub const Bus = struct {
             // VDP Ports
             if (addr == 0xC00000) return self.vdp.readData();
             if (addr == 0xC00004) return self.vdp.readControl();
+            if (addr >= 0xC00008 and addr < 0xC00010) return self.vdp.readHVCounter();
         }
 
         // M68k accesses are generally word-aligned, but we'll support unaligned for safety
@@ -206,9 +210,13 @@ pub const Bus = struct {
         self.write16(address, @intCast((value >> 16) & 0xFFFF));
         self.write16(address + 2, @intCast(value & 0xFFFF));
     }
-    pub fn step(self: *Bus, cycles: u32) void {
-        self.vdp.step(cycles);
-        self.z80.step(cycles);
+    pub fn stepMaster(self: *Bus, master_cycles: u32) void {
+        self.vdp.step(master_cycles);
+
+        const total = @as(u32, self.z80_master_remainder) + master_cycles;
+        const z80_cycles = total / clock.z80_divider;
+        self.z80_master_remainder = @intCast(total % clock.z80_divider);
+        self.z80.step(z80_cycles);
 
         if (self.vdp.dma_active) {
             // Perform DMA
@@ -250,5 +258,9 @@ pub const Bus = struct {
                 self.vdp.dma_active = false;
             }
         }
+    }
+
+    pub fn step(self: *Bus, m68k_cycles: u32) void {
+        self.stepMaster(clock.m68kCyclesToMaster(m68k_cycles));
     }
 };

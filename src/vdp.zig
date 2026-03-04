@@ -255,38 +255,33 @@ pub const Vdp = struct {
         return status;
     }
 
-    /// Update VDP timing (call this every scanline or frame)
-    pub fn step(self: *Vdp, cycles: u32) void {
-        _ = cycles;
-
-        // Simple scanline counter (NTSC: 262 lines, PAL: 312 lines)
-        const max_scanlines: u16 = if (self.pal_mode) 312 else 262;
-
-        self.scanline += 1;
-        if (self.scanline >= max_scanlines) {
-            self.scanline = 0;
-            self.odd_frame = !self.odd_frame;
-        }
-
-        // V-BLANK occurs at scanline 224-261 (NTSC)
-        if (self.scanline >= 224 and self.scanline < 261) {
-            if (!self.vblank) {
-                self.vblank = true;
-                // V-BLANK interrupt should be requested here
-            }
-        } else {
-            self.vblank = false;
-        }
-
-        // H-BLANK occurs during horizontal retrace (not implemented precisely)
-        self.hblank = false; // Simplified
+    pub fn readHVCounter(self: *const Vdp) u16 {
+        const v_counter: u8 = @truncate(self.scanline);
+        const h_counter: u8 = if (self.hblank) 0xE0 else 0x20;
+        return (@as(u16, v_counter) << 8) | h_counter;
     }
 
-    /// Check if V-BLANK interrupt should fire
-    pub fn shouldFireVBlankInterrupt(self: *const Vdp) bool {
-        // Check if interrupts are enabled in register 1, bit 5
-        const int_enabled = (self.regs[1] & 0x20) != 0;
-        return self.vblank and int_enabled;
+    /// Update VDP internals for elapsed CPU cycles.
+    /// Scanline/vblank state is driven externally by the frame scheduler.
+    pub fn step(self: *Vdp, cycles: u32) void {
+        _ = self;
+        _ = cycles;
+    }
+
+    pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: u16) bool {
+        self.scanline = line;
+        const in_vblank = line >= visible_lines and line < total_lines;
+        const entering_vblank = !self.vblank and in_vblank;
+        self.vblank = in_vblank;
+        return entering_vblank;
+    }
+
+    pub fn setHBlank(self: *Vdp, active: bool) void {
+        self.hblank = active;
+    }
+
+    pub fn isVBlankInterruptEnabled(self: *const Vdp) bool {
+        return (self.regs[1] & 0x20) != 0;
     }
 
     pub fn writeControl(self: *Vdp, value: u16) void {
