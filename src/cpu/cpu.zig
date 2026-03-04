@@ -1,1 +1,1 @@
-pub const Cpu = @import("m68k/cpu.zig").Cpu;
+pub const Cpu = @import("rocket68_cpu.zig").Cpu;

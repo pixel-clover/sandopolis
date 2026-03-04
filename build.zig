@@ -1,5 +1,27 @@
 const std = @import("std");
 
+fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build) void {
+    step.addIncludePath(b.path("external/rocket68/include"));
+    step.addIncludePath(b.path("external/rocket68/src/m68k"));
+    step.addIncludePath(b.path("external/jgz80"));
+    step.addIncludePath(b.path("src/c"));
+
+    step.addCSourceFiles(.{
+        .files = &.{
+            "external/rocket68/src/m68k/m68k.c",
+            "external/rocket68/src/m68k/ops_arith.c",
+            "external/rocket68/src/m68k/ops_bit.c",
+            "external/rocket68/src/m68k/ops_control.c",
+            "external/rocket68/src/m68k/ops_logic.c",
+            "external/rocket68/src/m68k/ops_move.c",
+            "external/jgz80/z80.c",
+            "src/c/jgz80_bridge.c",
+        },
+        .flags = &.{ "-std=c11" },
+    });
+    step.linkLibC();
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -18,6 +40,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    addExternalCpuCores(exe, b);
 
     // Link SDL3
     if (target.result.os.tag == .linux) {
@@ -67,6 +90,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    addExternalCpuCores(exe_check, b);
 
     if (target.result.os.tag == .linux) {
         const sdl3_dep = b.dependency("sdl3_linux", .{});
@@ -90,6 +114,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    addExternalCpuCores(test_exe, b);
 
     b.installArtifact(test_exe);
 

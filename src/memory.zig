@@ -86,6 +86,7 @@ pub const Bus = struct {
     }
 
     pub fn deinit(self: *Bus, allocator: std.mem.Allocator) void {
+        self.z80.deinit();
         allocator.free(self.rom);
     }
 
@@ -106,7 +107,7 @@ pub const Bus = struct {
             return self.ram[addr & 0xFFFF];
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
             // Z80 RAM
-            return self.z80_ram[addr & 0x1FFF];
+            return self.z80.readByte(@intCast(addr & 0x1FFF));
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
             return self.io.read(addr);
@@ -159,7 +160,7 @@ pub const Bus = struct {
             self.ram[addr & 0xFFFF] = value;
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
             // Z80 RAM
-            self.z80_ram[addr & 0x1FFF] = value;
+            self.z80.writeByte(@intCast(addr & 0x1FFF), value);
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
             self.io.write(addr, value);
