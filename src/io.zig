@@ -28,13 +28,12 @@ pub const Io = struct {
     }
 
     pub fn read(self: *Io, address: u32) u8 {
-        // ... (Keep existing switch dispatch)
         switch (address & 0xFF) {
-            0x01 => return 0xA0, // Version: Export NTSC (Bit 7=1, Bit 6=0)
-            0x03 => return self.readData(0), // Port A
-            0x05 => return self.readData(1), // Port B
-            0x09 => return self.ctrl[0],
-            0x0B => return self.ctrl[1],
+            0x01 => return 0x80, // Version register (Overseas NTSC, no Mega-CD), low byte
+            0x03 => return self.readData(0), // Port A data, low byte
+            0x05 => return self.readData(1), // Port B data, low byte
+            0x09 => return self.ctrl[0], // Port A control, low byte
+            0x0B => return self.ctrl[1], // Port B control, low byte
             else => return 0,
         }
     }

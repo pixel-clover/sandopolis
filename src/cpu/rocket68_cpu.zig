@@ -38,6 +38,12 @@ fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
     bus.write32(address, value);
 }
 
+fn cpuIntAck(core: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
+    const cpu = core orelse return -1;
+    cpu.irq_level = 0;
+    return -1;
+}
+
 pub const Cpu = struct {
     const default_stack_pointer: u32 = 0x00FF_FE00;
     const default_program_counter: u32 = 0x0000_0200;
@@ -62,6 +68,7 @@ pub const Cpu = struct {
         c.m68k_set_write8_callback(&self.core, cpuWrite8);
         c.m68k_set_write16_callback(&self.core, cpuWrite16);
         c.m68k_set_write32_callback(&self.core, cpuWrite32);
+        c.m68k_set_int_ack_callback(&self.core, cpuIntAck);
 
         return self;
     }
@@ -97,7 +104,7 @@ pub const Cpu = struct {
     }
 
     pub fn runCycles(self: *Cpu, bus: *Bus, budget: u32) u32 {
-        if (self.halted or budget == 0) return 0;
+        if (budget == 0) return 0;
 
         active_bus = bus;
         const ran = c.m68k_execute(&self.core, @intCast(budget));
@@ -108,7 +115,11 @@ pub const Cpu = struct {
     }
 
     pub fn requestInterrupt(self: *Cpu, level: u3) void {
-        c.m68k_set_irq(&self.core, @intCast(level));
+        const current: c_int = @intCast(self.core.irq_level);
+        const new_level: c_int = @intCast(level);
+        if (new_level > current) {
+            c.m68k_set_irq(&self.core, new_level);
+        }
     }
 
     pub fn debugDump(self: *const Cpu) void {

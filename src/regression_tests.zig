@@ -3,6 +3,7 @@ const testing = std.testing;
 const clock = @import("clock.zig");
 const Bus = @import("memory.zig").Bus;
 const Cpu = @import("cpu/cpu.zig").Cpu;
+const Vdp = @import("vdp.zig").Vdp;
 
 test "cpu reset applies fallback vectors when ROM vectors are invalid" {
     var bus = try Bus.init(testing.allocator, null);
@@ -142,4 +143,278 @@ test "z80 bank register selects 68k ROM window" {
 
     try testing.expectEqual(@as(u16, 1), bus.z80.getBank());
     try testing.expectEqual(@as(u8, 0x34), bus.read8(0x00A0_8000));
+}
+
+test "vdp hv counter advances with line master cycles" {
+    var vdp = Vdp.init();
+    _ = vdp.setScanlineState(10, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+
+    const hv0 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 10), @as(u8, @truncate(hv0 >> 8)));
+    try testing.expectEqual(@as(u8, 0x85), @as(u8, @truncate(hv0)));
+
+    vdp.step(100);
+    const hv1 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0x8A), @as(u8, @truncate(hv1)));
+
+    vdp.step(clock.ntsc_active_master_cycles - 100);
+    try testing.expect(vdp.hblank);
+
+    _ = vdp.setScanlineState(11, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    const hv2 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 11), @as(u8, @truncate(hv2 >> 8)));
+    try testing.expect(@as(u8, @truncate(hv2)) < @as(u8, @truncate(hv1)));
+}
+
+test "vdp reports vblank entry edge once" {
+    var vdp = Vdp.init();
+
+    try testing.expect(!vdp.setScanlineState(clock.ntsc_visible_lines - 1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame));
+    try testing.expect(vdp.setScanlineState(clock.ntsc_visible_lines, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame));
+    try testing.expect(!vdp.setScanlineState(clock.ntsc_visible_lines + 1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame));
+}
+
+test "vdp hint counter triggers every reg10+1 visible lines" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x10; // HINT enable
+    vdp.regs[10] = 2; // trigger cadence: 3 lines
+    vdp.beginFrame();
+
+    var triggered_lines = [_]u16{ 0, 0 };
+    var trigger_count: usize = 0;
+
+    for (0..8) |i| {
+        const line: u16 = @intCast(i);
+        if (vdp.consumeHintForLine(line, clock.ntsc_visible_lines)) {
+            if (trigger_count < triggered_lines.len) {
+                triggered_lines[trigger_count] = line;
+            }
+            trigger_count += 1;
+        }
+    }
+
+    try testing.expectEqual(@as(usize, 2), trigger_count);
+    try testing.expectEqual(@as(u16, 2), triggered_lines[0]);
+    try testing.expectEqual(@as(u16, 5), triggered_lines[1]);
+}
+
+test "vdp pal timing enters vblank at pal visible line count" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+
+    try testing.expect(!vdp.setScanlineState(clock.pal_visible_lines - 1, clock.pal_visible_lines, clock.pal_lines_per_frame));
+    try testing.expect(vdp.setScanlineState(clock.pal_visible_lines, clock.pal_visible_lines, clock.pal_lines_per_frame));
+}
+
+test "vdp interlace odd frame shifts h counter by one" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x06; // Interlace mode 2
+    _ = vdp.setScanlineState(0, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+
+    vdp.odd_frame = false;
+    const hv_even = vdp.readHVCounter();
+    vdp.odd_frame = true;
+    const hv_odd = vdp.readHVCounter();
+
+    try testing.expectEqual(@as(u8, @truncate(hv_even)) +% 1, @as(u8, @truncate(hv_odd)));
+}
+
+test "vdp ntsc 224-line v counter aliases after line 234" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = false;
+    vdp.regs[1] &= ~@as(u8, 0x08); // 224-line mode threshold
+
+    _ = vdp.setScanlineState(234, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    const hv_234 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0xEA), @as(u8, @truncate(hv_234 >> 8)));
+
+    _ = vdp.setScanlineState(235, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    const hv_235 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0xE5), @as(u8, @truncate(hv_235 >> 8)));
+}
+
+test "vdp pal 240-line v counter aliases after line 262" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+    vdp.regs[1] |= 0x08; // 240-line mode threshold
+
+    _ = vdp.setScanlineState(262, clock.pal_visible_lines, clock.pal_lines_per_frame);
+    const hv_262 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0x06), @as(u8, @truncate(hv_262 >> 8)));
+
+    _ = vdp.setScanlineState(263, clock.pal_visible_lines, clock.pal_lines_per_frame);
+    const hv_263 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0xCE), @as(u8, @truncate(hv_263 >> 8)));
+}
+
+test "vdp hv latch holds value while latch bit is enabled" {
+    var vdp = Vdp.init();
+    vdp.regs[0] |= 0x02; // Enable H/V latch
+
+    _ = vdp.setScanlineState(32, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    vdp.step(400);
+    const before_latch = vdp.readHVCounter();
+
+    vdp.setHBlank(true); // Capture live counter on HBlank edge.
+    const latched = vdp.readHVCounter();
+    try testing.expectEqual(latched, vdp.readHVCounter());
+
+    _ = vdp.setScanlineState(33, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    vdp.step(800);
+    try testing.expectEqual(latched, vdp.readHVCounter());
+
+    // Disable latch and verify live counter becomes visible again.
+    vdp.writeControl(0x8000); // Reg0 = 0, clears latch mode
+    const live_after_disable = vdp.readHVCounter();
+    try testing.expect(live_after_disable != latched);
+    try testing.expect(before_latch != 0 or latched != 0);
+}
+
+test "vdp control decode does not treat 0xA*** command word as register write" {
+    var vdp = Vdp.init();
+
+    // 0xA000 has top bits 101 and is part of address/code command space.
+    vdp.writeControl(0xA000);
+    try testing.expect(vdp.pending_command);
+}
+
+test "sonic rom advances startup state across frames" {
+    var bus = try Bus.init(testing.allocator, "roms/sn.smd");
+    defer bus.deinit(testing.allocator);
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    var m68k_sync = clock.M68kSync{};
+    const visible_lines = clock.ntsc_visible_lines;
+    const total_lines = clock.ntsc_lines_per_frame;
+
+    for (0..12) |_| {
+        bus.vdp.beginFrame();
+        for (0..total_lines) |line_idx| {
+            const line: u16 = @intCast(line_idx);
+            const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
+            if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
+                cpu.requestInterrupt(6);
+            }
+            bus.vdp.setHBlank(false);
+
+            const active_budget = m68k_sync.budgetFromMaster(clock.ntsc_active_master_cycles);
+            const active_ran = cpu.runCycles(&bus, active_budget);
+            bus.stepMaster(m68k_sync.commitM68kCycles(active_ran));
+
+            if (bus.vdp.consumeHintForLine(line, visible_lines)) {
+                cpu.requestInterrupt(4);
+            }
+
+            bus.vdp.setHBlank(true);
+            const hblank_budget = m68k_sync.budgetFromMaster(clock.ntsc_hblank_master_cycles);
+            const hblank_ran = cpu.runCycles(&bus, hblank_budget);
+            bus.stepMaster(m68k_sync.commitM68kCycles(hblank_ran));
+            bus.vdp.setHBlank(false);
+
+            if (line < visible_lines) {
+                bus.vdp.renderScanline(line);
+            }
+        }
+        bus.vdp.odd_frame = !bus.vdp.odd_frame;
+    }
+
+    try testing.expect(@as(u32, cpu.core.pc) != 0x0000_0200);
+    try testing.expect(bus.vdp.regs[1] != 0 or bus.vdp.regs[2] != 0 or bus.vdp.regs[4] != 0);
+}
+
+test "vdp renders plane B when plane A is transparent" {
+    var vdp = Vdp.init();
+    vdp.regs[2] = 0x00; // Plane A base 0x0000
+    vdp.regs[4] = 0x01; // Plane B base 0x2000
+    vdp.regs[16] = 0x01; // 64-cell width
+
+    // Backdrop color left as black. Put visible blue-ish color at palette 0 color 1.
+    vdp.cram[2] = 0x02; // hi
+    vdp.cram[3] = 0x00; // lo
+
+    // Plane A tile entry at (0,0): tile 0 (all-zero -> transparent)
+    vdp.vram[0x0000] = 0x00;
+    vdp.vram[0x0001] = 0x00;
+
+    // Plane B tile entry at (0,0): tile 1, palette 0
+    vdp.vram[0x2000] = 0x00;
+    vdp.vram[0x2001] = 0x01;
+
+    // Tile 1 first row: all pixels index 1
+    const tile1_base: usize = 32;
+    vdp.vram[tile1_base + 0] = 0x11;
+    vdp.vram[tile1_base + 1] = 0x11;
+    vdp.vram[tile1_base + 2] = 0x11;
+    vdp.vram[tile1_base + 3] = 0x11;
+
+    vdp.renderScanline(0);
+    const pixel = vdp.framebuffer[0];
+    try testing.expect(pixel != 0xFF000000);
+}
+
+test "debug sonic long-run state snapshots" {
+    var bus = try Bus.init(testing.allocator, "roms/sn.smd");
+    defer bus.deinit(testing.allocator);
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    var m68k_sync = clock.M68kSync{};
+    const visible_lines = clock.ntsc_visible_lines;
+    const total_lines = clock.ntsc_lines_per_frame;
+
+    for (0..720) |frame_idx| {
+        bus.vdp.beginFrame();
+        for (0..total_lines) |line_idx| {
+            const line: u16 = @intCast(line_idx);
+            const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
+            if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
+                cpu.requestInterrupt(6);
+            }
+            bus.vdp.setHBlank(false);
+
+            const active_budget = m68k_sync.budgetFromMaster(clock.ntsc_active_master_cycles);
+            const active_ran = cpu.runCycles(&bus, active_budget);
+            bus.stepMaster(m68k_sync.commitM68kCycles(active_ran));
+
+            if (bus.vdp.consumeHintForLine(line, visible_lines)) {
+                cpu.requestInterrupt(4);
+            }
+
+            bus.vdp.setHBlank(true);
+            const hblank_budget = m68k_sync.budgetFromMaster(clock.ntsc_hblank_master_cycles);
+            const hblank_ran = cpu.runCycles(&bus, hblank_budget);
+            bus.stepMaster(m68k_sync.commitM68kCycles(hblank_ran));
+            bus.vdp.setHBlank(false);
+
+            if (line < visible_lines) {
+                bus.vdp.renderScanline(line);
+            }
+        }
+        bus.vdp.odd_frame = !bus.vdp.odd_frame;
+
+        if ((frame_idx % 120) == 0) {
+            var cram_nz: usize = 0;
+            for (bus.vdp.cram) |b| {
+                if (b != 0) cram_nz += 1;
+            }
+            std.debug.print(
+                "DBG frame={d} pc={X:0>8} sr={X:0>4} reg1={X:0>2} reg15={X:0>2} cram_nz={d} wr(v/c/vs/u)={d}/{d}/{d}/{d} d6={X:0>8} a6={X:0>8}\n",
+                .{
+                    frame_idx,
+                    cpu.core.pc,
+                    cpu.core.sr,
+                    bus.vdp.regs[1],
+                    bus.vdp.regs[15],
+                    cram_nz,
+                    bus.vdp.dbg_vram_writes,
+                    bus.vdp.dbg_cram_writes,
+                    bus.vdp.dbg_vsram_writes,
+                    bus.vdp.dbg_unknown_writes,
+                    cpu.core.d_regs[6].l,
+                    cpu.core.a_regs[6].l,
+                },
+            );
+        }
+    }
 }

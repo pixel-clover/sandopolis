@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock.zig");
 
 pub const Vdp = struct {
     vram: [64 * 1024]u8,
@@ -27,9 +28,18 @@ pub const Vdp = struct {
     dma_fill: bool,
     dma_source_addr: u32,
     dma_length: u16,
+    dma_remaining: u32,
 
     // Timing for V-BLANK
     scanline: u16, // Current scanline (0-261 for NTSC)
+    line_master_cycle: u16, // 0..(cycles_per_line-1)
+    hint_counter: i16,
+    hv_latched: u16,
+    hv_latched_valid: bool,
+    dbg_vram_writes: u64,
+    dbg_cram_writes: u64,
+    dbg_vsram_writes: u64,
+    dbg_unknown_writes: u64,
 
     pub fn init() Vdp {
         return Vdp{
@@ -50,8 +60,25 @@ pub const Vdp = struct {
             .dma_fill = false,
             .dma_source_addr = 0,
             .dma_length = 0,
+            .dma_remaining = 0,
             .scanline = 0,
+            .line_master_cycle = 0,
+            .hint_counter = 0,
+            .hv_latched = 0,
+            .hv_latched_valid = false,
+            .dbg_vram_writes = 0,
+            .dbg_cram_writes = 0,
+            .dbg_vsram_writes = 0,
+            .dbg_unknown_writes = 0,
         };
+    }
+
+    fn vramReadByte(self: *const Vdp, address: u16) u8 {
+        return self.vram[address & 0xFFFF];
+    }
+
+    fn vramWriteByte(self: *Vdp, address: u16, value: u8) void {
+        self.vram[address & 0xFFFF] = value;
     }
 
     fn getPaletteColor(self: *const Vdp, index: u8) u32 {
@@ -81,82 +108,203 @@ pub const Vdp = struct {
         const g8: u32 = @intCast(g3 * 36);
         const b8: u32 = @intCast(b3 * 36);
 
-        // ABGR or ARGB? SDL uses Packed U32.
-        // If texture format is RGBA8888 ?
-        // Let's assume ABGR for Little Endian (R G B A) -> 0xAABBGGRR
-        return (0xFF000000) | (b8 << 16) | (g8 << 8) | r8;
+        // Texture is created as ARGB8888, so keep framebuffer in 0xAARRGGBB.
+        return (0xFF000000) | (r8 << 16) | (g8 << 8) | b8;
     }
 
     pub fn renderScanline(self: *Vdp, line: u16) void {
         if (line >= 224) return;
 
-        // Plane A Table Address
-        // Defined by Reg[2] (bits 3-5 -> shifted left 10? + bits 13-15?)
-        // Standard: (Reg[2] & 0x38) << 10.  Ex: 0x38 -> 0xE000??
-        // Wait, Reg 2 value * 0x400.
+        // Plane table addresses.
         const plane_a_base = @as(u32, self.regs[2] & 0x38) << 10;
+        const plane_b_base = @as(u32, self.regs[4] & 0x07) << 13;
 
-        // For line 'line', which row of tiles is it?
-        const tile_row = line / 8;
-        const fine_y = line % 8;
+        const plane_width_tiles: u16 = switch (self.regs[16] & 0x3) {
+            0 => 32,
+            1 => 64,
+            3 => 128,
+            else => 32,
+        };
+        const plane_height_tiles: u16 = switch ((self.regs[16] >> 4) & 0x3) {
+            0 => 32,
+            1 => 64,
+            3 => 128,
+            else => 32,
+        };
+        const plane_width_px: i32 = @as(i32, plane_width_tiles) * 8;
+        const plane_height_px: i32 = @as(i32, plane_height_tiles) * 8;
 
-        // Plane width (assume 64 tiles for now, Reg 16 determines it)
-        const plane_width_tiles = 64;
+        // Fill scanline with backdrop color.
+        const backdrop_idx = self.regs[7] & 0x3F;
+        const backdrop_color = self.getPaletteColor(backdrop_idx);
+        const hscroll_base = (@as(u16, self.regs[13]) & 0x3F) << 10;
+        const hscroll_a = self.readHScroll(hscroll_base, line, true);
+        const hscroll_b = self.readHScroll(hscroll_base, line, false);
+        const vscroll_a = self.readVScroll(true);
+        const vscroll_b = self.readVScroll(false);
+        const line_start = @as(usize, line) * 320;
 
-        // Screen width 320 -> 40 tiles.
-        for (0..40) |col| {
-            // Fetch Name Table Entry
-            // 2 bytes per entry
-            // Pattern Index (11 bits), Palette (2 bits), Priority (1), FlipXY (2)
-            const row_offset = (tile_row * plane_width_tiles * 2);
-            const col_offset = (col * 2);
-            const addr = (plane_a_base + row_offset + col_offset) & 0xFFFF;
+        for (0..320) |x| {
+            self.framebuffer[line_start + x] = backdrop_color;
+        }
 
-            const entry_hi = self.vram[addr];
-            const entry_lo = self.vram[addr + 1];
-            const entry = (@as(u16, entry_hi) << 8) | entry_lo;
+        self.renderPlanePass(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_b, vscroll_b, false);
+        self.renderPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_a, vscroll_a, false);
+        self.renderSpritesForLine(line, false);
+        self.renderPlanePass(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_b, vscroll_b, true);
+        self.renderPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_a, vscroll_a, true);
+        self.renderSpritesForLine(line, true);
+    }
 
-            const pattern_idx = entry & 0x07FF;
-            const palette_idx = (entry >> 13) & 0x3;
-            const vflip = (entry & 0x1000) != 0;
-            const hflip = (entry & 0x0800) != 0;
-
-            // Fetch Pattern Data
-            // Each tile is 32 bytes (4 bytes per line x 8 lines)
-            const pattern_addr = (@as(u32, pattern_idx) * 32);
-
-            // Effective line depending on vflip
-            const eff_y = if (vflip) (7 - fine_y) else fine_y;
-            const line_offset = pattern_addr + (@as(u32, eff_y) * 4); // 4 bytes per row (8 pixels, 4 bits each -> 32 bits = 4 bytes)
-
-            // Read 8 pixels (4 bytes)
-            const p0 = self.vram[(line_offset + 0) & 0xFFFF];
-            const p1 = self.vram[(line_offset + 1) & 0xFFFF];
-            const p2 = self.vram[(line_offset + 2) & 0xFFFF];
-            const p3 = self.vram[(line_offset + 3) & 0xFFFF];
-
-            // Decode 8 pixels
-            // Byte 0: [P0 P1]
-            const pixels = [_]u8{
-                (p0 >> 4) & 0xF, p0 & 0xF,
-                (p1 >> 4) & 0xF, p1 & 0xF,
-                (p2 >> 4) & 0xF, p2 & 0xF,
-                (p3 >> 4) & 0xF, p3 & 0xF,
-            };
-
-            for (0..8) |px| {
-                const x_in_tile = if (hflip) (7 - px) else px;
-                const color_idx = pixels[x_in_tile];
-
-                // Palette Offset: CRAM + (PaletteIdx * 32) + (ColorIdx * 2)
-                // Total 64 colors. 4 Palettes of 16 colors.
-                // Index into getPaletteColor (0-63)
-                const final_idx = (@as(u8, @intCast(palette_idx)) * 16) + color_idx;
-
-                const offset_x = (col * 8) + px;
-                self.framebuffer[@as(usize, line) * 320 + offset_x] = self.getPaletteColor(final_idx);
+    fn renderPlanePass(
+        self: *Vdp,
+        line: u16,
+        plane_base: u32,
+        plane_width_tiles: u16,
+        plane_height_tiles: u16,
+        plane_width_px: i32,
+        plane_height_px: i32,
+        hscroll: i32,
+        vscroll: i32,
+        high_priority: bool,
+    ) void {
+        const line_start = @as(usize, line) * 320;
+        for (0..320) |x| {
+            if (self.samplePlanePixel(
+                plane_base,
+                plane_width_tiles,
+                plane_height_tiles,
+                plane_width_px,
+                plane_height_px,
+                @as(i32, @intCast(x)) - hscroll,
+                @as(i32, line) + vscroll,
+                high_priority,
+            )) |idx| {
+                self.framebuffer[line_start + x] = self.getPaletteColor(idx);
             }
         }
+    }
+
+    fn samplePlanePixel(
+        self: *const Vdp,
+        plane_base: u32,
+        plane_width_tiles: u16,
+        plane_height_tiles: u16,
+        plane_width_px: i32,
+        plane_height_px: i32,
+        x_scrolled: i32,
+        y_scrolled: i32,
+        high_priority: bool,
+    ) ?u8 {
+        const x_wrapped = @mod(x_scrolled, plane_width_px);
+        const y_wrapped = @mod(y_scrolled, plane_height_px);
+        const tile_col: u16 = @intCast(@divFloor(x_wrapped, 8));
+        const tile_row: u16 = @intCast(@divFloor(y_wrapped, 8));
+
+        const table_index = (@as(u32, tile_row % plane_height_tiles) * @as(u32, plane_width_tiles)) + @as(u32, tile_col % plane_width_tiles);
+        const entry_addr: u16 = @intCast((plane_base + (table_index * 2)) & 0xFFFF);
+        const entry_hi = self.vramReadByte(entry_addr);
+        const entry_lo = self.vramReadByte(entry_addr + 1);
+        const entry = (@as(u16, entry_hi) << 8) | entry_lo;
+        if (((entry & 0x8000) != 0) != high_priority) return null;
+
+        const pattern_idx = entry & 0x07FF;
+        const palette_idx = (entry >> 13) & 0x3;
+        const vflip = (entry & 0x1000) != 0;
+        const hflip = (entry & 0x0800) != 0;
+
+        const fine_x: u8 = @intCast(@mod(x_wrapped, 8));
+        const fine_y: u8 = @intCast(@mod(y_wrapped, 8));
+        const px = if (hflip) @as(u8, 7 - fine_x) else fine_x;
+        const py = if (vflip) @as(u8, 7 - fine_y) else fine_y;
+
+        const pattern_addr = (@as(u32, pattern_idx) * 32) + (@as(u32, py) * 4) + @as(u32, px / 2);
+        const pattern_byte = self.vramReadByte(@intCast(pattern_addr & 0xFFFF));
+        const color_idx: u8 = if ((px & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
+        if (color_idx == 0) return null;
+        return (@as(u8, @intCast(palette_idx)) * 16) + color_idx;
+    }
+
+    fn renderSpritesForLine(self: *Vdp, line: u16, high_priority: bool) void {
+        const sprite_base = (@as(u32, self.regs[5] & 0x7F) << 9) & 0xFFFF;
+        const line_start = @as(usize, line) * 320;
+        const y_line: i32 = @intCast(line);
+
+        var sprite_index: u8 = 0;
+        var count: u8 = 0;
+        while (count < 80) : (count += 1) {
+            const entry_addr: u16 = @intCast((sprite_base + (@as(u32, sprite_index) * 8)) & 0xFFFF);
+            const y_word = (@as(u16, self.vramReadByte(entry_addr)) << 8) | self.vramReadByte(entry_addr + 1);
+            const size = self.vramReadByte(entry_addr + 2);
+            const link = self.vramReadByte(entry_addr + 3) & 0x7F;
+            const attr = (@as(u16, self.vramReadByte(entry_addr + 4)) << 8) | self.vramReadByte(entry_addr + 5);
+            const x_word = (@as(u16, self.vramReadByte(entry_addr + 6)) << 8) | self.vramReadByte(entry_addr + 7);
+
+            const is_high = (attr & 0x8000) != 0;
+            if (is_high == high_priority) {
+                const h_size: i32 = @as(i32, ((size >> 2) & 0x3)) + 1;
+                const v_size: i32 = @as(i32, (size & 0x3)) + 1;
+                const sprite_h_px = h_size * 8;
+                const sprite_v_px = v_size * 8;
+                const y_pos = @as(i32, @intCast(y_word & 0x03FF)) - 128;
+                const x_pos = @as(i32, @intCast(x_word & 0x01FF)) - 128;
+                const y_in_non_flipped = y_line - y_pos;
+
+                if (y_in_non_flipped >= 0 and y_in_non_flipped < sprite_v_px) {
+                    const y_flip = (attr & 0x1000) != 0;
+                    const x_flip = (attr & 0x0800) != 0;
+                    const palette: u8 = @intCast((attr >> 13) & 0x3);
+                    const tile_base: u16 = attr & 0x07FF;
+                    const y_in_sprite = if (y_flip) (sprite_v_px - 1 - y_in_non_flipped) else y_in_non_flipped;
+                    const tile_y: u16 = @intCast(@divFloor(y_in_sprite, 8));
+                    const fine_y: u8 = @intCast(@mod(y_in_sprite, 8));
+                    const v_size_u16: u16 = @intCast(v_size);
+
+                    var x_pix: i32 = 0;
+                    while (x_pix < sprite_h_px) : (x_pix += 1) {
+                        const screen_x = x_pos + x_pix;
+                        if (screen_x < 0 or screen_x >= 320) continue;
+
+                        const x_in_sprite = if (x_flip) (sprite_h_px - 1 - x_pix) else x_pix;
+                        const tile_x: u16 = @intCast(@divFloor(x_in_sprite, 8));
+                        const fine_x: u8 = @intCast(@mod(x_in_sprite, 8));
+                        const tile_index: u16 = tile_base + (tile_x * v_size_u16) + tile_y;
+                        const pattern_addr = (@as(u32, tile_index) * 32) + (@as(u32, fine_y) * 4) + @as(u32, fine_x / 2);
+                        const pattern_byte = self.vramReadByte(@intCast(pattern_addr & 0xFFFF));
+                        const color_idx: u8 = if ((fine_x & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
+                        if (color_idx == 0) continue;
+
+                        const palette_index = (palette * 16) + color_idx;
+                        self.framebuffer[line_start + @as(usize, @intCast(screen_x))] = self.getPaletteColor(palette_index);
+                    }
+                }
+            }
+
+            if (link == 0) break;
+            sprite_index = link;
+        }
+    }
+
+    fn readHScroll(self: *const Vdp, table_base: u16, line: u16, plane_a: bool) i32 {
+        const hmode = self.regs[11] & 0x3;
+        var offset: u16 = if (plane_a) @as(u16, 0) else @as(u16, 2);
+        if (hmode == 3) {
+            const line_index = (line & 0xFF) * 4;
+            offset = line_index + (if (plane_a) @as(u16, 0) else @as(u16, 2));
+        }
+        const word = (@as(u16, self.vramReadByte(table_base + offset)) << 8) | self.vramReadByte(table_base + offset + 1);
+        return @as(i16, @bitCast(word));
+    }
+
+    fn readVScroll(self: *const Vdp, plane_a: bool) i32 {
+        if (((self.regs[11] >> 2) & 1) != 0) {
+            // Per-2-cell mode not implemented yet; use first entry as fallback.
+        }
+        const offset: u16 = if (plane_a) 0 else 2;
+        const hi = self.vsram[offset & 0x4F];
+        const lo = self.vsram[(offset + 1) & 0x4F];
+        const raw = (@as(u16, hi) << 8) | lo;
+        return @as(i16, @bitCast(raw & 0x07FF));
     }
 
     // 0xC00000 - Data Port
@@ -166,8 +314,8 @@ pub const Vdp = struct {
 
         switch (self.code & 0xF) { // Mask to relevant bits
             0x0 => { // VRAM Read
-                const val_hi = self.vram[self.addr & 0xFFFF];
-                const val_lo = self.vram[(self.addr + 1) & 0xFFFF];
+                const val_hi = self.vramReadByte(self.addr);
+                const val_lo = self.vramReadByte(self.addr + 1);
                 return (@as(u16, val_hi) << 8) | val_lo;
             },
             0x8 => { // CRAM Read
@@ -187,6 +335,21 @@ pub const Vdp = struct {
     }
 
     pub fn writeData(self: *Vdp, value: u16) void {
+        if (self.dma_active and self.dma_fill and (self.code & 0xF) == 0x1) {
+            var len: u32 = self.dma_length;
+            if (len == 0) len = 0x10000;
+            const fill_byte: u8 = @intCast((value >> 8) & 0xFF);
+            while (len > 0) : (len -= 1) {
+                self.vramWriteByte(self.addr, fill_byte);
+                self.advanceAddr();
+            }
+            self.dma_length = 0;
+            self.dma_remaining = 0;
+            self.dma_fill = false;
+            self.dma_active = false;
+            return;
+        }
+
         defer self.advanceAddr();
 
         // Code determines target:
@@ -196,23 +359,24 @@ pub const Vdp = struct {
 
         switch (self.code & 0xF) {
             0x1 => { // VRAM Write
-                // M68k writes byte-swapped? No, VRAM is byte-array.
-                // Address is byte address.
-                self.vram[self.addr & 0xFFFF] = @intCast((value >> 8) & 0xFF);
-                self.vram[(self.addr + 1) & 0xFFFF] = @intCast(value & 0xFF);
+                self.dbg_vram_writes += 1;
+                self.vramWriteByte(self.addr, @intCast((value >> 8) & 0xFF));
+                self.vramWriteByte(self.addr + 1, @intCast(value & 0xFF));
             },
             0x3 => { // CRAM Write
+                self.dbg_cram_writes += 1;
                 const idx = self.addr & 0x7F;
                 self.cram[idx] = @intCast((value >> 8) & 0xFF);
                 self.cram[idx + 1] = @intCast(value & 0xFF);
             },
             0x5 => { // VSRAM Write
+                self.dbg_vsram_writes += 1;
                 const idx = self.addr & 0x4F;
                 self.vsram[idx] = @intCast((value >> 8) & 0xFF);
                 self.vsram[idx + 1] = @intCast(value & 0xFF);
             },
             else => {
-                // Ignore or handle DMA?
+                self.dbg_unknown_writes += 1;
             },
         }
     }
@@ -255,20 +419,48 @@ pub const Vdp = struct {
         return status;
     }
 
-    pub fn readHVCounter(self: *const Vdp) u16 {
-        const v_counter: u8 = @truncate(self.scanline);
-        const h_counter: u8 = if (self.hblank) 0xE0 else 0x20;
+    fn computeLiveHVCounter(self: *const Vdp) u16 {
+        const threshold: i32 = if ((self.regs[1] & 0x08) != 0) 262 else 234;
+        const frame_lines: i32 = if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+        var v_raw: i32 = self.scanline;
+        if (v_raw > threshold) {
+            v_raw -= frame_lines;
+        }
+        const v_counter: u8 = @intCast(@mod(v_raw, 256));
+        var h_counter = self.computeHCounterShaped();
+        if (self.isInterlaceMode2() and self.odd_frame) {
+            h_counter +%= 1;
+        }
         return (@as(u16, v_counter) << 8) | h_counter;
+    }
+
+    fn computeHCounterShaped(self: *const Vdp) u8 {
+        const raw: u16 = @intCast((@as(u32, self.line_master_cycle) + 10) / 20);
+        var h: u16 = raw;
+        if (h >= 12) h += 0x56;
+        h += 0x85;
+        return @truncate(h);
+    }
+
+    pub fn readHVCounter(self: *const Vdp) u16 {
+        if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
+            return self.hv_latched;
+        }
+        return self.computeLiveHVCounter();
     }
 
     /// Update VDP internals for elapsed CPU cycles.
     /// Scanline/vblank state is driven externally by the frame scheduler.
     pub fn step(self: *Vdp, cycles: u32) void {
-        _ = self;
-        _ = cycles;
+        const total = @as(u32, self.line_master_cycle) + cycles;
+        self.line_master_cycle = @intCast(total % clock.ntsc_master_cycles_per_line);
+        self.hblank = self.line_master_cycle >= clock.ntsc_active_master_cycles;
     }
 
     pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: u16) bool {
+        if (line != self.scanline) {
+            self.line_master_cycle = 0;
+        }
         self.scanline = line;
         const in_vblank = line >= visible_lines and line < total_lines;
         const entering_vblank = !self.vblank and in_vblank;
@@ -277,6 +469,10 @@ pub const Vdp = struct {
     }
 
     pub fn setHBlank(self: *Vdp, active: bool) void {
+        if (!self.hblank and active and self.isHVCounterLatchEnabled()) {
+            self.hv_latched = self.computeLiveHVCounter();
+            self.hv_latched_valid = true;
+        }
         self.hblank = active;
     }
 
@@ -284,17 +480,42 @@ pub const Vdp = struct {
         return (self.regs[1] & 0x20) != 0;
     }
 
+    pub fn isInterlaceMode2(self: *const Vdp) bool {
+        return (self.regs[12] & 0x06) == 0x06;
+    }
+
+    pub fn isHVCounterLatchEnabled(self: *const Vdp) bool {
+        return (self.regs[0] & 0x02) != 0;
+    }
+
+    pub fn beginFrame(self: *Vdp) void {
+        self.hint_counter = @intCast(self.regs[10]);
+    }
+
+    pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
+        if (line >= visible_lines) return false;
+        self.hint_counter -= 1;
+        if (self.hint_counter < 0) {
+            self.hint_counter = @intCast(self.regs[10]);
+            return (self.regs[0] & 0x10) != 0;
+        }
+        return false;
+    }
+
     pub fn writeControl(self: *Vdp, value: u16) void {
-        // Check for Register Write: 10xx xxxx xxxx xxxx
-        if ((value & 0xC000) == 0x8000) {
+        // Check for Register Write: 100r rrrr dddd dddd
+        // (top 3 bits must be 100; 0xA000/0xB000 are command words, not register writes)
+        if ((value & 0xE000) == 0x8000) {
             // Register Write (Mode Set)
             const reg = (value >> 8) & 0x1F;
             const data = value & 0xFF;
             if (reg < self.regs.len) {
+                if (reg == 0 and ((self.regs[0] & 0x02) != 0) and ((data & 0x02) == 0)) {
+                    self.hv_latched_valid = false;
+                }
                 self.regs[reg] = @intCast(data);
             }
-            // Code & Address are NOT changed by Register writes!
-            self.code = 0; // Or reset? Docs say "Code is not affected"?
+            // Code & address are not changed by register writes.
             self.pending_command = false; // Reset pending state
             return;
         }
@@ -380,6 +601,7 @@ pub const Vdp = struct {
 
                 // DMA Length (Regs 19, 20)
                 self.dma_length = (@as(u16, self.regs[19]) << 8) | self.regs[20];
+                self.dma_remaining = if (self.dma_length == 0) 0x10000 else self.dma_length;
 
                 if (dma_mode <= 1) {
                     // Memory to VRAM Transfer

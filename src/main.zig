@@ -48,6 +48,21 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
     return null;
 }
 
+fn findDefaultRomPath(allocator: std.mem.Allocator) !?[]u8 {
+    var dir = std.fs.cwd().openDir("roms", .{ .iterate = true }) catch return null;
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file) continue;
+        const name = entry.name;
+        if (std.mem.endsWith(u8, name, ".smd") or std.mem.endsWith(u8, name, ".bin") or std.mem.endsWith(u8, name, ".md")) {
+            return try std.fmt.allocPrint(allocator, "roms/{s}", .{name});
+        }
+    }
+    return null;
+}
+
 pub fn main() !void {
     // -- Emulator Initialization --
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
@@ -108,12 +123,20 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     var rom_path: ?[]const u8 = null;
+    var owned_rom_path: ?[]u8 = null;
+    defer if (owned_rom_path) |p| allocator.free(p);
     if (args.len > 1) {
         rom_path = args[1];
         std.debug.print("Loading ROM: {s}\n", .{rom_path.?});
     } else {
-        std.debug.print("No ROM file specified. Usage: sandopolis <rom_file>\n", .{});
-        std.debug.print("Loading dummy test ROM...\n", .{});
+        owned_rom_path = try findDefaultRomPath(allocator);
+        if (owned_rom_path) |path| {
+            rom_path = path;
+            std.debug.print("No ROM argument provided. Auto-loading: {s}\n", .{path});
+        } else {
+            std.debug.print("No ROM file specified. Usage: sandopolis <rom_file>\n", .{});
+            std.debug.print("Loading dummy test ROM...\n", .{});
+        }
     }
 
     var bus = try @import("memory.zig").Bus.init(allocator, rom_path);
@@ -413,13 +436,15 @@ pub fn main() !void {
     std.debug.print("CPU Reset complete.\n", .{});
     cpu.debugDump();
 
-    const visible_lines = clock.ntsc_visible_lines;
-    const total_lines = clock.ntsc_lines_per_frame;
     const active_display_master_cycles = clock.ntsc_active_master_cycles;
     const hblank_master_cycles = clock.ntsc_hblank_master_cycles;
     var m68k_sync = clock.M68kSync{};
+    const target_frame_ns: u64 = 1_000_000_000 / 60;
+    var frame_counter: u32 = 0;
+    const uncapped_boot_frames: u32 = 240;
 
     mainLoop: while (true) {
+        const frame_start = std.time.nanoTimestamp();
         var event: zsdl3.Event = undefined;
         while (zsdl3.pollEvent(&event)) {
             switch (event.type) {
@@ -480,43 +505,62 @@ pub fn main() !void {
         }
 
         // Frame scheduler (NTSC-like): active display + HBlank per line, then VBlank lines.
-        var hint_counter: i32 = @intCast(bus.vdp.regs[10]);
+        const visible_lines: u16 = if (bus.vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
+        const total_lines: u16 = if (bus.vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+        bus.vdp.beginFrame();
         for (0..total_lines) |line_idx| {
             const line: u16 = @intCast(line_idx);
             const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
+            if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
+                cpu.requestInterrupt(6); // V-BLANK interrupt at vblank entry
+            }
             bus.vdp.setHBlank(false);
 
             const active_budget = m68k_sync.budgetFromMaster(active_display_master_cycles);
             const active_ran = cpu.runCycles(&bus, active_budget);
             bus.stepMaster(m68k_sync.commitM68kCycles(active_ran));
-            if (cpu.halted) break :mainLoop;
 
-            if (line < visible_lines) {
-                hint_counter -= 1;
-                if (hint_counter < 0) {
-                    hint_counter = @intCast(bus.vdp.regs[10]);
-                    if ((bus.vdp.regs[0] & 0x10) != 0) {
-                        cpu.requestInterrupt(4); // H-BLANK interrupt
-                    }
-                }
+            if (bus.vdp.consumeHintForLine(line, visible_lines)) {
+                cpu.requestInterrupt(4);
             }
 
             bus.vdp.setHBlank(true);
             const hblank_budget = m68k_sync.budgetFromMaster(hblank_master_cycles);
             const hblank_ran = cpu.runCycles(&bus, hblank_budget);
             bus.stepMaster(m68k_sync.commitM68kCycles(hblank_ran));
-            if (cpu.halted) break :mainLoop;
             bus.vdp.setHBlank(false);
-
-            if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
-                cpu.requestInterrupt(6); // V-BLANK interrupt
-            }
 
             if (line < visible_lines) {
                 bus.vdp.renderScanline(line);
             }
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
+        if ((frame_counter % 60) == 0) {
+            var cram_nz: usize = 0;
+            for (bus.vdp.cram) |b| {
+                if (b != 0) cram_nz += 1;
+            }
+            std.debug.print(
+                "f={d} pc={X:0>8} f600={X:0>2} cram_nz={d} reg1={X:0>2} reg15={X:0>2} vdp_code={X:0>2} io_ver={X:0>2} dma={any}/{any} wr(v/c/vs/u)={d}/{d}/{d}/{d} d6={X:0>8} a6={X:0>8}\n",
+                .{
+                frame_counter,
+                cpu.core.pc,
+                bus.ram[0xF600],
+                cram_nz,
+                bus.vdp.regs[1],
+                bus.vdp.regs[15],
+                bus.vdp.code,
+                bus.read8(0xA10001),
+                bus.vdp.dma_active,
+                bus.vdp.dma_fill,
+                bus.vdp.dbg_vram_writes,
+                bus.vdp.dbg_cram_writes,
+                bus.vdp.dbg_vsram_writes,
+                bus.vdp.dbg_unknown_writes,
+                cpu.core.d_regs[6].l,
+                cpu.core.a_regs[6].l,
+            });
+        }
         const audio_frames = bus.audio_timing.takePending();
         if (audio) |*a| {
             try a.output.pushPending(audio_frames, &bus.z80);
@@ -542,6 +586,14 @@ pub fn main() !void {
         try zsdl3.renderClear(renderer);
         try zsdl3.renderTexture(renderer, vdp_texture, null, null);
         zsdl3.renderPresent(renderer);
+
+        frame_counter += 1;
+        if (frame_counter > uncapped_boot_frames) {
+            const frame_elapsed: u64 = @intCast(std.time.nanoTimestamp() - frame_start);
+            if (frame_elapsed < target_frame_ns) {
+                std.Thread.sleep(target_frame_ns - frame_elapsed);
+            }
+        }
     }
 }
 

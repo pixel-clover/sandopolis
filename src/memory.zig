@@ -37,6 +37,13 @@ pub const Bus = struct {
     audio_timing: AudioTiming,
     z80_master_remainder: u8,
 
+    fn readRomByte(self: *const Bus, address: u32) u8 {
+        if (self.rom.len == 0) return 0;
+        const rom_len_u32: u32 = @intCast(self.rom.len);
+        const mirrored_addr: u32 = if (address < rom_len_u32) address else address % rom_len_u32;
+        return self.rom[@intCast(mirrored_addr)];
+    }
+
     fn hasZ80BusFor68k(self: *Bus) bool {
         return self.z80.readBusReq() == 0x0000;
     }
@@ -132,9 +139,8 @@ pub const Bus = struct {
         const addr = address & 0xFFFFFF; // 24-bit address bus
 
         if (addr < 0x400000) {
-            // ROM
-            if (addr < self.rom.len) return self.rom[addr];
-            return 0;
+            // ROM (mirrored into the 4MB cartridge window for smaller images).
+            return self.readRomByte(addr);
         } else if (addr >= 0xE00000 and addr < 0x1000000) {
             // RAM (Mirrored at 0xE00000 - 0xFFFFFF)
             // Mask to 64KB (0xFFFF)
@@ -145,6 +151,20 @@ pub const Bus = struct {
             self.ensureZ80HostWindow();
             const zaddr: u16 = @truncate(addr & 0xFFFF);
             return self.z80.readByte(zaddr);
+        } else if (addr >= 0xC00000 and addr < 0xC00020) {
+            if (addr < 0xC00004) {
+                const word = self.vdp.readData();
+                return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
+            }
+            if (addr < 0xC00008) {
+                const word = self.vdp.readControl();
+                return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
+            }
+            if (addr < 0xC00010) {
+                const word = self.vdp.readHVCounter();
+                return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
+            }
+            return 0;
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
             return self.io.read(addr);
@@ -156,10 +176,7 @@ pub const Bus = struct {
 
     pub fn read16(self: *Bus, address: u32) u16 {
         const addr = address & 0xFFFFFF;
-        if (addr >= 0xA10000 and addr < 0xA10100) {
-            const val = self.io.read(addr);
-            return @as(u16, val) << 8;
-        } else if (addr == 0xA11100) { // Z80 Bus Request
+        if (addr == 0xA11100) { // Z80 Bus Request
             return self.z80.readBusReq();
         } else if (addr == 0xA11200) { // Z80 Reset
             return 0; // Write only?
@@ -207,9 +224,13 @@ pub const Bus = struct {
             // IO
             self.io.write(addr, value);
         } else if (addr >= 0xC00000 and addr < 0xC00020) {
-            // VDP (Byte writes to VDP are complex, usually MSB/LSB duplicated or ignored depending on port)
-            // For now, ignore or implement as needed.
-            // VDP Data port byte writes are valid?
+            const word: u16 = if ((addr & 1) == 0) (@as(u16, value) << 8) else @as(u16, value);
+            if (addr < 0xC00004) {
+                self.vdp.writeData(word);
+            } else if (addr < 0xC00008) {
+                self.vdp.writeControl(word);
+            }
+            return;
         }
     }
 
@@ -263,41 +284,36 @@ pub const Bus = struct {
         if (self.vdp.dma_active) {
             // Perform DMA
             if (self.vdp.dma_fill) {
-                // DMA Fill (VRAM Fill)
-                // Triggered by writing to the VDP data port, but the length/destination are set up here.
-                // In a real VDP, the fill happens as the CPU writes to the data port?
-                // Checks regs[23] bit 7 (DMA Type 1 = Fill).
-                // But here we just want to ensure we don't crash or hang.
-                // For now, let's acknowledge it and clear the active flag so we don't loop forever.
-                self.vdp.dma_active = false;
+                // DMA fill completes on the next VDP data port write.
+                // Keep the DMA state armed until VDP.writeData consumes it.
             } else {
                 // 68k -> VRAM Copy (DMA Mode 0 or 1)
-                var len = @as(u32, self.vdp.dma_length);
-                if (len == 0) len = 0xFFFF; // Usually 0 in reg means 64k word transfer (128kB)?
-                // Docs say: Register value 0 = 0? Or 64k?
-                // Reg 19/20 are 8-bit. reg19<<8 | reg20.
-                // Usually 0 means 0x10000 words.
+                var remaining = self.vdp.dma_remaining;
+                if (remaining == 0) {
+                    self.vdp.dma_active = false;
+                    return;
+                }
+                // Incremental DMA: avoid stalling an entire frame on large transfers.
+                // This keeps emulation responsive until cycle-accurate DMA timing is added.
+                var budget_words = @as(u32, master_cycles / 8);
+                if (budget_words == 0) budget_words = 1;
+                if (budget_words > remaining) budget_words = remaining;
 
                 var src_addr = self.vdp.dma_source_addr;
-
-                // Transfer loop (16-bit words)
-                // Note: Generic DMA is from 68k Bus to VDP Data Port.
-                // It auto-increments VDP address.
-                while (len > 0) {
+                var words_done: u32 = 0;
+                while (words_done < budget_words) : (words_done += 1) {
                     const word = self.read16(src_addr);
                     self.vdp.writeData(word);
                     src_addr += 2; // Source address increments
-                    // Note: If Source is ROM/RAM, it increments.
-                    // If Source is fixed (not supported by standard DMA copy?), it wouldn't.
-                    // Standard 68k->VDP DMA increments source.
-
-                    if (len == 0) break; // Overflow protection
-                    len -= 1;
                 }
 
                 self.vdp.dma_source_addr = src_addr;
-                self.vdp.dma_length = 0;
-                self.vdp.dma_active = false;
+                remaining -= words_done;
+                self.vdp.dma_remaining = remaining;
+                if (remaining == 0) {
+                    self.vdp.dma_length = 0;
+                    self.vdp.dma_active = false;
+                }
             }
         }
     }

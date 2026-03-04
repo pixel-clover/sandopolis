@@ -8,6 +8,10 @@ pub const ntsc_lines_per_frame: u16 = 262;
 pub const ntsc_visible_lines: u16 = 224;
 pub const ntsc_master_cycles_per_line: u16 = 3420;
 pub const ntsc_master_cycles_per_frame: u32 = @as(u32, ntsc_lines_per_frame) * @as(u32, ntsc_master_cycles_per_line);
+pub const pal_lines_per_frame: u16 = 313;
+pub const pal_visible_lines: u16 = 240;
+pub const pal_master_cycles_per_line: u16 = 3420;
+pub const pal_master_cycles_per_frame: u32 = @as(u32, pal_lines_per_frame) * @as(u32, pal_master_cycles_per_line);
 
 // Coarse phase split used by current scheduler.
 // 2590 + 830 = 3420 master cycles per line.
