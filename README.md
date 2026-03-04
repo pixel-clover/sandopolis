@@ -24,13 +24,13 @@ Sandopolis is a Sega Genesis/Mega Drive emulator built from the ground up in Zig
 
 ## Features
 
-- Complete Motorola 68000 CPU emulation with full instruction set
+- Motorola 68000 CPU emulation via [rocket68](https://github.com/habedi/rocket68)
 - VDP implementation with support for:
   - Tile rendering (Plane A, Plane B, Sprites)
   - VRAM, CRAM, and VSRAM access
   - Hardware scrolling
   - DMA transfers
-- Z80 sound processor (stub implementation)
+- Z80 core integration via [jgz80](https://github.com/carmiker/jgz80)
 - Controller input support (keyboard and gamepad)
 - SMD ROM format deinterleaving
 - Real-time rendering with SDL3
@@ -81,13 +81,12 @@ sandopolis/
 │   ├── memory.zig         # Memory bus and address decoding
 │   ├── vdp.zig            # Video Display Processor
 │   ├── io.zig             # Input/Output controller
-│   ├── z80.zig            # Z80 sound processor
+│   ├── z80.zig            # Z80 wrapper (jgz80 bridge)
 │   └── cpu/
-│       ├── cpu.zig        # CPU dispatch and lifecycle
-│       └── m68k/
-│           ├── cpu.zig    # M68K core implementation
-│           ├── instructions.zig
-│           └── instructions/  # Instruction handlers (bit0-bitF)
+│       ├── cpu.zig            # CPU entrypoint
+│       └── rocket68_cpu.zig   # Rocket68-backed M68K wrapper
+├── src/c/                 # C bridges (jgz80)
+├── external/              # Git submodules (rocket68, jgz80)
 ├── roms/                  # Place your Genesis ROMs here
 ├── test_emu.zig          # Standalone test runner
 └── build.zig             # Build configuration

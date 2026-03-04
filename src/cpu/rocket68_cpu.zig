@@ -39,6 +39,9 @@ fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
 }
 
 pub const Cpu = struct {
+    const default_stack_pointer: u32 = 0x00FF_FE00;
+    const default_program_counter: u32 = 0x0000_0200;
+
     core: c.M68kCpu,
     cycles: u64,
     halted: bool,
@@ -66,6 +69,17 @@ pub const Cpu = struct {
     pub fn reset(self: *Cpu, bus: *Bus) void {
         active_bus = bus;
         c.m68k_reset(&self.core);
+
+        // Some ROMs/test payloads leave vectors unset. Keep behavior deterministic by
+        // applying sane boot defaults that point into 68k-visible memory.
+        if (self.core.a_regs[7].l == 0 or self.core.a_regs[7].l > 0x0100_0000) {
+            c.m68k_set_ar(&self.core, 7, default_stack_pointer);
+            self.core.ssp = default_stack_pointer;
+        }
+        if (self.core.pc == 0 or self.core.pc > 0x0040_0000) {
+            c.m68k_set_pc(&self.core, default_program_counter);
+        }
+
         self.cycles = 0;
         self.halted = self.core.stopped;
     }

@@ -9,6 +9,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 - [x] Project Scaffolding: Build system, SDL3 integration, memory bus structure.
 - [x] ROM Loading: Basic loader for .bin / .md files.
+- [x] M68000 CPU Integration: Rocket68 C core wired through Sandopolis bus callbacks.
 - [x] M68000 CPU - Basic:
     - [x] Instruction dispatcher (hierarchical switch).
     - [x] Basic opcodes (MOVE, DI, NOP, BRA).
@@ -33,7 +34,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 ### Audio Subsystem
 
-- [ ] Z80 CPU: 8-bit generic CPU core (or bridge to an existing library).
+- [x] Z80 CPU Core: jgz80 integrated via C bridge.
 - [ ] SN76489 (PSG): Square wave and noise generation.
 - [ ] YM2612 (FM): Frequency Modulation synthesis (6 channels).
 - [ ] Mixer: Audio output integration via SDL3.

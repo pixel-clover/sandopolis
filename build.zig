@@ -17,7 +17,7 @@ fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build) void {
             "external/jgz80/z80.c",
             "src/c/jgz80_bridge.c",
         },
-        .flags = &.{ "-std=c11" },
+        .flags = &.{"-std=c11"},
     });
     step.linkLibC();
 }
@@ -126,4 +126,17 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test-emu", "Run the emulator test");
     test_step.dependOn(&test_run_cmd.step);
+
+    const regression_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/regression_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    addExternalCpuCores(regression_tests, b);
+
+    const regression_run = b.addRunArtifact(regression_tests);
+    const regression_step = b.step("test-regression", "Run regression tests");
+    regression_step.dependOn(&regression_run.step);
 }

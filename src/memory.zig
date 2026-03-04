@@ -29,7 +29,6 @@ fn deinterleaveSmdPayload(allocator: std.mem.Allocator, payload: []const u8) ![]
 pub const Bus = struct {
     rom: []u8,
     ram: [64 * 1024]u8, // 64KB Work RAM
-    z80_ram: [8 * 1024]u8, // 8KB Z80 RAM
     vdp: Vdp,
     io: Io,
     z80: Z80,
@@ -78,7 +77,6 @@ pub const Bus = struct {
         return Bus{
             .rom = rom_data,
             .ram = [_]u8{0} ** (64 * 1024),
-            .z80_ram = [_]u8{0} ** (8 * 1024),
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),
