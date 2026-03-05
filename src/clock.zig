@@ -44,4 +44,24 @@ pub const M68kSync = struct {
         self.master_cycles += master;
         return master;
     }
+
+    pub fn commitMasterCycles(self: *M68kSync, master_cycles: u32) u32 {
+        self.master_cycles += master_cycles;
+        self.remainder = 0;
+        return master_cycles;
+    }
+
+    pub fn flushStalledMaster(self: *M68kSync, master_cycles: u32) u32 {
+        const total = @as(u32, self.remainder) + master_cycles;
+        self.master_cycles += total;
+        self.remainder = 0;
+        return total;
+    }
+
+    pub fn flushUnusedBudget(self: *M68kSync, unused_m68k_cycles: u32) u32 {
+        const total = m68kCyclesToMaster(unused_m68k_cycles) + @as(u32, self.remainder);
+        self.master_cycles += total;
+        self.remainder = 0;
+        return total;
+    }
 };

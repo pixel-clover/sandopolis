@@ -98,3 +98,5 @@ docs/api/
 site/
 roms/
 core.*
+.claude
+NOTES.md

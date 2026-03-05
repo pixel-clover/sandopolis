@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("../clock.zig");
 const Bus = @import("../memory.zig").Bus;
 
 const c = @cImport({
@@ -6,7 +7,20 @@ const c = @cImport({
 });
 
 var active_bus: ?*Bus = null;
+var active_cpu: ?*Cpu = null;
 var fallback_memory = [_]u8{0} ** 8;
+
+fn isVdpDataPortWriteAddress(address: u32) bool {
+    const addr = address & 0xFFFFFF;
+    return addr >= 0xC00000 and addr <= 0xDFFFFF and (addr & 0x1F) < 0x04;
+}
+
+fn noteVdpDataPortWriteWait(bus: *Bus, address: u32) void {
+    if (!isVdpDataPortWriteAddress(address)) return;
+
+    const cpu = active_cpu orelse return;
+    cpu.addBusWaitMaster(bus.vdp.dataPortWriteWaitMasterCycles());
+}
 
 fn cpuRead8(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
     const bus = active_bus orelse return 0;
@@ -25,32 +39,55 @@ fn cpuRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
 
 fn cpuWrite8(_: ?*c.M68kCpu, address: c.u32, value: c.u8) callconv(.c) void {
     const bus = active_bus orelse return;
+    noteVdpDataPortWriteWait(bus, address);
     bus.write8(address, value);
 }
 
 fn cpuWrite16(_: ?*c.M68kCpu, address: c.u32, value: c.u16) callconv(.c) void {
     const bus = active_bus orelse return;
+    noteVdpDataPortWriteWait(bus, address);
     bus.write16(address, value);
 }
 
 fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
     const bus = active_bus orelse return;
+    if (isVdpDataPortWriteAddress(address)) {
+        noteVdpDataPortWriteWait(bus, address);
+        bus.write16(address, @intCast((value >> 16) & 0xFFFF));
+        noteVdpDataPortWriteWait(bus, address + 2);
+        bus.write16(address + 2, @intCast(value & 0xFFFF));
+        return;
+    }
+
     bus.write32(address, value);
 }
 
-fn cpuIntAck(core: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
-    const cpu = core orelse return -1;
-    cpu.irq_level = 0;
+fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
+    // Do NOT clear irq_level here — rocket68 reads it after this callback
+    // to compute the autovector (24 + irq_level). Clearing it would make
+    // every interrupt use vector 24 (spurious) instead of the correct one.
+    // The level is cleared when the VDP status register is read.
     return -1;
+}
+
+pub fn getActiveCpu() ?*Cpu {
+    return active_cpu;
 }
 
 pub const Cpu = struct {
     const default_stack_pointer: u32 = 0x00FF_FE00;
     const default_program_counter: u32 = 0x0000_0200;
 
+    pub const WaitAccounting = struct {
+        m68k_cycles: u32 = 0,
+        master_cycles: u32 = 0,
+    };
+
     core: c.M68kCpu,
     cycles: u64,
     halted: bool,
+    pending_wait_cycles: u32,
+    pending_wait_master_cycles: u32,
 
     pub var trace_enabled: bool = false;
 
@@ -59,6 +96,8 @@ pub const Cpu = struct {
             .core = std.mem.zeroes(c.M68kCpu),
             .cycles = 0,
             .halted = false,
+            .pending_wait_cycles = 0,
+            .pending_wait_master_cycles = 0,
         };
 
         c.m68k_init(&self.core, &fallback_memory[0], fallback_memory.len);
@@ -89,6 +128,17 @@ pub const Cpu = struct {
 
         self.cycles = 0;
         self.halted = self.core.stopped;
+        self.pending_wait_cycles = 0;
+        self.pending_wait_master_cycles = 0;
+    }
+
+    fn addBusWaitMaster(self: *Cpu, master_cycles: u32) void {
+        if (master_cycles == 0) return;
+
+        const extra_cycles = std.math.divCeil(u32, master_cycles, clock.m68k_divider) catch unreachable;
+        c.m68k_modify_timeslice(&self.core, @intCast(extra_cycles));
+        self.pending_wait_cycles += extra_cycles;
+        self.pending_wait_master_cycles += master_cycles;
     }
 
     pub fn step(self: *Cpu, bus: *Bus) void {
@@ -96,6 +146,7 @@ pub const Cpu = struct {
         if (self.halted) return;
 
         active_bus = bus;
+        active_cpu = self;
         c.m68k_step(&self.core);
 
         // Keep the existing external contract where this advances once per step.
@@ -107,11 +158,26 @@ pub const Cpu = struct {
         if (budget == 0) return 0;
 
         active_bus = bus;
+        active_cpu = self;
         const ran = c.m68k_execute(&self.core, @intCast(budget));
         const consumed: u32 = if (ran > 0) @intCast(ran) else 0;
         self.cycles += consumed;
         self.halted = self.core.stopped;
         return consumed;
+    }
+
+    pub fn takeWaitAccounting(self: *Cpu) WaitAccounting {
+        const accounting = WaitAccounting{
+            .m68k_cycles = self.pending_wait_cycles,
+            .master_cycles = self.pending_wait_master_cycles,
+        };
+        self.pending_wait_cycles = 0;
+        self.pending_wait_master_cycles = 0;
+        return accounting;
+    }
+
+    pub fn clearInterrupt(self: *Cpu) void {
+        self.core.irq_level = 0;
     }
 
     pub fn requestInterrupt(self: *Cpu, level: u3) void {

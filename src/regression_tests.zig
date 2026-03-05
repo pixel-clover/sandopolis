@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const clock = @import("clock.zig");
+const frame_scheduler = @import("frame_scheduler.zig");
 const Bus = @import("memory.zig").Bus;
 const Cpu = @import("cpu/cpu.zig").Cpu;
 const Vdp = @import("vdp.zig").Vdp;
@@ -143,6 +144,201 @@ test "z80 bank register selects 68k ROM window" {
 
     try testing.expectEqual(@as(u16, 1), bus.z80.getBank());
     try testing.expectEqual(@as(u8, 0x34), bus.read8(0x00A0_8000));
+}
+
+test "vdp memory-to-vram dma is progressed by vdp with fifo latency" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00E0_0000, 0xABCD);
+
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.dma_active = true;
+    bus.vdp.dma_fill = false;
+    bus.vdp.dma_copy = false;
+    bus.vdp.dma_source_addr = 0x00E0_0000;
+    bus.vdp.dma_length = 1;
+    bus.vdp.dma_remaining = 1;
+
+    try testing.expect(bus.vdp.shouldHaltCpu());
+
+    bus.stepMaster(8);
+    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[1]);
+    try testing.expect(bus.vdp.dma_active);
+
+    bus.stepMaster(8);
+    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[0]);
+    try testing.expect(bus.vdp.dma_active);
+
+    bus.stepMaster(8);
+    try testing.expectEqual(@as(u8, 0xAB), bus.vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0xCD), bus.vdp.vram[1]);
+    try testing.expect(!bus.vdp.dma_active);
+    try testing.expect(!bus.vdp.shouldHaltCpu());
+}
+
+test "vdp copy dma progresses internally" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 1;
+    vdp.code = 0x1;
+    vdp.addr = 0x0020;
+    vdp.vram[0x0010] = 0x12;
+    vdp.vram[0x0011] = 0x34;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = true;
+    vdp.dma_source_addr = 0x0010;
+    vdp.dma_length = 2;
+    vdp.dma_remaining = 2;
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u8, 0x12), vdp.vram[0x0020]);
+    try testing.expect(vdp.dma_active);
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u8, 0x34), vdp.vram[0x0021]);
+    try testing.expect(!vdp.dma_active);
+    try testing.expect(!vdp.dma_copy);
+}
+
+test "vdp queued writes accumulate sub-slot master cycles" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+
+    vdp.writeData(0xABCD);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
+
+    inline for (0..3) |_| {
+        vdp.progressTransfers(clock.m68k_divider, null, null);
+        try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
+        try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
+    }
+
+    vdp.progressTransfers(clock.m68k_divider, null, null);
+    try testing.expectEqual(@as(u8, 0xAB), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0xCD), vdp.vram[1]);
+}
+
+test "cpu data-port writes accrue vdp fifo wait accounting" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    std.mem.writeInt(u32, bus.rom[0..4], 0x00FF_FE00, .big);
+    std.mem.writeInt(u32, bus.rom[4..8], 0x0000_0200, .big);
+
+    var pc: u32 = 0x0200;
+    bus.rom[pc] = 0x33;
+    bus.rom[pc + 1] = 0xFC;
+    pc += 2;
+    bus.rom[pc] = 0xAB;
+    bus.rom[pc + 1] = 0xCD;
+    pc += 2;
+    bus.rom[pc] = 0x00;
+    bus.rom[pc + 1] = 0xC0;
+    pc += 2;
+    bus.rom[pc] = 0x00;
+    bus.rom[pc + 1] = 0x00;
+    pc += 2;
+    bus.rom[pc] = 0x4E;
+    bus.rom[pc + 1] = 0x71;
+
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.writeData(0x0102);
+    bus.vdp.writeData(0x0304);
+    bus.vdp.writeData(0x0506);
+    bus.vdp.writeData(0x0708);
+
+    try testing.expectEqual(@as(u32, 24), bus.vdp.dataPortWriteWaitMasterCycles());
+
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    const ran = cpu.runCycles(&bus, 64);
+    try testing.expect(ran != 0);
+
+    const wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 4), wait.m68k_cycles);
+    try testing.expectEqual(@as(u32, 24), wait.master_cycles);
+    try testing.expect(bus.vdp.shouldHaltCpu());
+    try testing.expectEqual(@as(u16, 0x000A), bus.vdp.addr);
+}
+
+test "vdp status reports fifo empty and full bits" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+
+    const fifo_status_mask: u16 = 0x0300;
+
+    try testing.expectEqual(@as(u16, 0x0200), vdp.readControl() & fifo_status_mask);
+
+    vdp.writeData(0x0102);
+    try testing.expectEqual(@as(u16, 0x0000), vdp.readControl() & fifo_status_mask);
+
+    vdp.writeData(0x0304);
+    vdp.writeData(0x0506);
+    vdp.writeData(0x0708);
+    try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & fifo_status_mask);
+
+    vdp.progressTransfers(24, null, null);
+    try testing.expectEqual(@as(u16, 0x0000), vdp.readControl() & fifo_status_mask);
+
+    vdp.progressTransfers(24, null, null);
+    try testing.expectEqual(@as(u16, 0x0200), vdp.readControl() & fifo_status_mask);
+}
+
+test "vdp status high bits come from bus open bus" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00E0_0000, 0xA5A5);
+
+    const status = bus.read16(0x00C0_0004);
+    try testing.expectEqual(@as(u16, 0xA400), status & 0xFC00);
+    try testing.expectEqual(@as(u16, 0x0200), status & 0x0300);
+}
+
+test "frame scheduler stalls cpu while vdp dma owns the bus" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    std.mem.writeInt(u32, bus.rom[0..4], 0x00FF_FE00, .big);
+    std.mem.writeInt(u32, bus.rom[4..8], 0x0000_0200, .big);
+    bus.rom[0x0200] = 0x4E; // NOP
+    bus.rom[0x0201] = 0x71;
+    bus.write16(0x00E0_0000, 0xABCD);
+
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+    var m68k_sync = clock.M68kSync{};
+
+    const pc_before = @as(u32, cpu.core.pc);
+
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.dma_active = true;
+    bus.vdp.dma_fill = false;
+    bus.vdp.dma_copy = false;
+    bus.vdp.dma_source_addr = 0x00E0_0000;
+    bus.vdp.dma_length = 1;
+    bus.vdp.dma_remaining = 1;
+
+    frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, 8);
+
+    try testing.expectEqual(pc_before, @as(u32, cpu.core.pc));
+    try testing.expect(bus.vdp.dma_active);
+    try testing.expect(bus.vdp.shouldHaltCpu());
 }
 
 test "vdp hv counter advances with line master cycles" {
@@ -298,18 +494,14 @@ test "sonic rom advances startup state across frames" {
             }
             bus.vdp.setHBlank(false);
 
-            const active_budget = m68k_sync.budgetFromMaster(clock.ntsc_active_master_cycles);
-            const active_ran = cpu.runCycles(&bus, active_budget);
-            bus.stepMaster(m68k_sync.commitM68kCycles(active_ran));
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.ntsc_active_master_cycles);
 
             if (bus.vdp.consumeHintForLine(line, visible_lines)) {
                 cpu.requestInterrupt(4);
             }
 
             bus.vdp.setHBlank(true);
-            const hblank_budget = m68k_sync.budgetFromMaster(clock.ntsc_hblank_master_cycles);
-            const hblank_ran = cpu.runCycles(&bus, hblank_budget);
-            bus.stepMaster(m68k_sync.commitM68kCycles(hblank_ran));
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.ntsc_hblank_master_cycles);
             bus.vdp.setHBlank(false);
 
             if (line < visible_lines) {
@@ -325,6 +517,7 @@ test "sonic rom advances startup state across frames" {
 
 test "vdp renders plane B when plane A is transparent" {
     var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // Display enable + mode 5
     vdp.regs[2] = 0x00; // Plane A base 0x0000
     vdp.regs[4] = 0x01; // Plane B base 0x2000
     vdp.regs[16] = 0x01; // 64-cell width
@@ -363,7 +556,19 @@ test "debug sonic long-run state snapshots" {
     const visible_lines = clock.ntsc_visible_lines;
     const total_lines = clock.ntsc_lines_per_frame;
 
-    for (0..720) |frame_idx| {
+    // Dump deinterleaved ROM vectors and code
+    std.debug.print("ROM SSP: {X:0>8}\n", .{bus.read32(0x000000)});
+    std.debug.print("ROM PC:  {X:0>8}\n", .{bus.read32(0x000004)});
+    std.debug.print("VB vec:  {X:0>8}\n", .{bus.read32(0x000078)});
+    std.debug.print("Code at 0x330:\n", .{});
+    {
+        var ci: u32 = 0x330;
+        while (ci < 0x360) : (ci += 2) {
+            std.debug.print("  {X:0>6}: {X:0>4}\n", .{ ci, bus.read16(ci) });
+        }
+    }
+
+    for (0..2000) |frame_idx| {
         bus.vdp.beginFrame();
         for (0..total_lines) |line_idx| {
             const line: u16 = @intCast(line_idx);
@@ -373,18 +578,14 @@ test "debug sonic long-run state snapshots" {
             }
             bus.vdp.setHBlank(false);
 
-            const active_budget = m68k_sync.budgetFromMaster(clock.ntsc_active_master_cycles);
-            const active_ran = cpu.runCycles(&bus, active_budget);
-            bus.stepMaster(m68k_sync.commitM68kCycles(active_ran));
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.ntsc_active_master_cycles);
 
             if (bus.vdp.consumeHintForLine(line, visible_lines)) {
                 cpu.requestInterrupt(4);
             }
 
             bus.vdp.setHBlank(true);
-            const hblank_budget = m68k_sync.budgetFromMaster(clock.ntsc_hblank_master_cycles);
-            const hblank_ran = cpu.runCycles(&bus, hblank_budget);
-            bus.stepMaster(m68k_sync.commitM68kCycles(hblank_ran));
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.ntsc_hblank_master_cycles);
             bus.vdp.setHBlank(false);
 
             if (line < visible_lines) {
@@ -393,17 +594,24 @@ test "debug sonic long-run state snapshots" {
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
 
-        if ((frame_idx % 120) == 0) {
+        if ((frame_idx % 60) == 0) {
             var cram_nz: usize = 0;
             for (bus.vdp.cram) |b| {
                 if (b != 0) cram_nz += 1;
             }
+            // Read VBlank vector (level 6 auto-vector at $78)
+            const vb_vector = bus.read32(0x78);
+            // Read RAM at $F600 (Sonic uses this for game state)
+            const ram_f600: u8 = bus.ram[0xF600];
+            // SR interrupt mask level
+            const sr_ipl = (cpu.core.sr >> 8) & 0x7;
             std.debug.print(
-                "DBG frame={d} pc={X:0>8} sr={X:0>4} reg1={X:0>2} reg15={X:0>2} cram_nz={d} wr(v/c/vs/u)={d}/{d}/{d}/{d} d6={X:0>8} a6={X:0>8}\n",
+                "DBG frame={d} pc={X:0>8} sr={X:0>4} ipl={d} reg1={X:0>2} reg15={X:0>2} cram_nz={d} wr(v/c/vs/u)={d}/{d}/{d}/{d} d6={X:0>8} a6={X:0>8} vb_vec={X:0>8} f600={X:0>2}\n",
                 .{
                     frame_idx,
                     cpu.core.pc,
                     cpu.core.sr,
+                    sr_ipl,
                     bus.vdp.regs[1],
                     bus.vdp.regs[15],
                     cram_nz,
@@ -413,6 +621,8 @@ test "debug sonic long-run state snapshots" {
                     bus.vdp.dbg_unknown_writes,
                     cpu.core.d_regs[6].l,
                     cpu.core.a_regs[6].l,
+                    vb_vector,
+                    ram_f600,
                 },
             );
         }

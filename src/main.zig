@@ -1,6 +1,7 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
+const frame_scheduler = @import("frame_scheduler.zig");
 const AudioOutput = @import("audio_output.zig").AudioOutput;
 
 const AudioInit = struct {
@@ -69,15 +70,6 @@ pub fn main() !void {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    // Redirect stdout/stderr to file before SDL captures them
-    // const log_file = try std.fs.cwd().createFile("/tmp/sandopolis_debug.log", .{});
-    // defer log_file.close();
-
-    // Duplicate stderr to log file
-    // const stderr_handle = std.io.getStdErr().handle;
-    // const log_fd = log_file.handle;
-    // _ = std.os.linux.dup2(log_fd, stderr_handle) catch {};
-
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
 
     try zsdl3.init(.{ .audio = true, .video = true, .gamepad = true });
@@ -141,25 +133,6 @@ pub fn main() !void {
 
     var bus = try @import("memory.zig").Bus.init(allocator, rom_path);
     defer bus.deinit(allocator);
-
-    // Validate ROM vectors
-    if (rom_path) |_| {
-        const ssp = bus.read32(0x000000);
-        const initial_pc = bus.read32(0x000004);
-        const vector_28 = bus.read32(0x000070); // Level 1 interrupt
-
-        std.debug.print("ROM Vectors:\n", .{});
-        std.debug.print("  Initial SSP: {X:0>8}\n", .{ssp});
-        std.debug.print("  Initial PC:  {X:0>8}\n", .{initial_pc});
-        std.debug.print("  Vector $70:  {X:0>8} (Level 1 Int)\n", .{vector_28});
-
-        if (ssp == 0 or ssp > 0x01000000) {
-            std.debug.print("WARNING: SSP looks invalid!\n", .{});
-        }
-        if (initial_pc == 0 or initial_pc > 0x00400000) {
-            std.debug.print("WARNING: Initial PC looks invalid!\n", .{});
-        }
-    }
 
     var cpu = @import("cpu/cpu.zig").Cpu.init();
 
@@ -492,9 +465,7 @@ pub fn main() !void {
                     if (pressed) {
                         if (scancode == zsdl3.Scancode.space) {
                             // Single Step
-                            cpu.step(&bus);
-                            const master_elapsed = m68k_sync.commitM68kCycles(1);
-                            bus.stepMaster(master_elapsed);
+                            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.m68k_divider);
                             cpu.debugDump();
                         }
                         if (scancode == zsdl3.Scancode.escape) break :mainLoop;
@@ -516,18 +487,14 @@ pub fn main() !void {
             }
             bus.vdp.setHBlank(false);
 
-            const active_budget = m68k_sync.budgetFromMaster(active_display_master_cycles);
-            const active_ran = cpu.runCycles(&bus, active_budget);
-            bus.stepMaster(m68k_sync.commitM68kCycles(active_ran));
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, active_display_master_cycles);
 
             if (bus.vdp.consumeHintForLine(line, visible_lines)) {
                 cpu.requestInterrupt(4);
             }
 
             bus.vdp.setHBlank(true);
-            const hblank_budget = m68k_sync.budgetFromMaster(hblank_master_cycles);
-            const hblank_ran = cpu.runCycles(&bus, hblank_budget);
-            bus.stepMaster(m68k_sync.commitM68kCycles(hblank_ran));
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, hblank_master_cycles);
             bus.vdp.setHBlank(false);
 
             if (line < visible_lines) {
@@ -535,51 +502,16 @@ pub fn main() !void {
             }
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
-        if ((frame_counter % 60) == 0) {
-            var cram_nz: usize = 0;
-            for (bus.vdp.cram) |b| {
-                if (b != 0) cram_nz += 1;
-            }
-            std.debug.print(
-                "f={d} pc={X:0>8} f600={X:0>2} cram_nz={d} reg1={X:0>2} reg15={X:0>2} vdp_code={X:0>2} io_ver={X:0>2} dma={any}/{any} wr(v/c/vs/u)={d}/{d}/{d}/{d} d6={X:0>8} a6={X:0>8}\n",
-                .{
-                frame_counter,
-                cpu.core.pc,
-                bus.ram[0xF600],
-                cram_nz,
-                bus.vdp.regs[1],
-                bus.vdp.regs[15],
-                bus.vdp.code,
-                bus.read8(0xA10001),
-                bus.vdp.dma_active,
-                bus.vdp.dma_fill,
-                bus.vdp.dbg_vram_writes,
-                bus.vdp.dbg_cram_writes,
-                bus.vdp.dbg_vsram_writes,
-                bus.vdp.dbg_unknown_writes,
-                cpu.core.d_regs[6].l,
-                cpu.core.a_regs[6].l,
-            });
+        if ((frame_counter % 300) == 0) {
+            std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, cpu.core.pc });
         }
         const audio_frames = bus.audio_timing.takePending();
         if (audio) |*a| {
             try a.output.pushPending(audio_frames, &bus.z80);
         }
 
-        // Update Texture via Lock/Unlock (UpdateTexture missing in binding)
-        if (vdp_texture.lock(null)) |locked| {
-            const src_ptr = std.mem.sliceAsBytes(&bus.vdp.framebuffer);
-            const dst_ptr = locked.pixels;
-            const src_pitch: usize = 320 * 4;
-            const dst_pitch = @as(usize, @intCast(locked.pitch));
-
-            for (0..224) |row| {
-                const src_row = src_ptr[row * src_pitch .. (row + 1) * src_pitch];
-                const dst_row = dst_ptr[row * dst_pitch .. row * dst_pitch + src_pitch];
-                @memcpy(dst_row, src_row);
-            }
-            vdp_texture.unlock();
-        } else |_| {}
+        // Update texture from framebuffer
+        _ = SDL_UpdateTexture(vdp_texture, null, @ptrCast(&bus.vdp.framebuffer), 320 * 4);
 
         // Render
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
@@ -599,3 +531,4 @@ pub fn main() !void {
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
+extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;

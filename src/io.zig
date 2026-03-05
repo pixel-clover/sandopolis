@@ -29,7 +29,7 @@ pub const Io = struct {
 
     pub fn read(self: *Io, address: u32) u8 {
         switch (address & 0xFF) {
-            0x01 => return 0x80, // Version register (Overseas NTSC, no Mega-CD), low byte
+            0x01 => return 0xA0, // Version: bit7=Overseas, bit5=No Mega-CD, bit6=0(NTSC)
             0x03 => return self.readData(0), // Port A data, low byte
             0x05 => return self.readData(1), // Port B data, low byte
             0x09 => return self.ctrl[0], // Port A control, low byte
@@ -49,7 +49,7 @@ pub const Io = struct {
     }
 
     fn readData(self: *const Io, port: usize) u8 {
-        var value: u8 = self.data[port] & 0x80; // Keep TH bit
+        var value: u8 = self.data[port] & 0x40; // Keep TH output bit (bit 6)
         const pad = self.pad[port];
         const cycle = self.cycle[port];
 
@@ -69,13 +69,7 @@ pub const Io = struct {
 
             // Cycle 3 means we have seen High->Low 3 times.
             if (cycle == 3) {
-                // Return Extra Buttons
-                // D3: Mode, D2: X, D1: Y, D0: Z
-                value |= (@as(u8, @truncate(pad)) & 0x0C); // Bits 2,3 from pad are Left/Right? No.
-                // Wait, if pad is: 0:Up, 1:Down, 2:Left, 3:Right.
-                // We want bits 0-3 of value to be Z, Y, X, Mode.
-
-                // Logic:
+                // Return Extra Buttons: D3=Mode, D2=X, D1=Y, D0=Z, D4=A, D5=Start
                 // Z (Bit 10) -> D0
                 if ((pad & 0x0400) != 0) value |= 0x01;
                 // Y (Bit 9) -> D1

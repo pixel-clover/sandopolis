@@ -26,9 +26,17 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Pattern/Tile Rendering: Decoding 4bpp tiles.
 - [x] Plane A / Plane B: Background layer rendering with scrolling and priority passes.
 - [x] Sprites: SAT parsing and line rendering with priority pass.
-- [x] DMA (Basic): 68k->VDP transfer path and fill-trigger handling.
-- [ ] DMA (Complete): VRAM copy mode and timing-accurate transfer/stall behavior.
-- [ ] VDP Accuracy: Hardware-accurate limits/quirks/conflict behavior.
+- [x] DMA (Basic): 68k->VDP transfer path, fill-trigger, and VRAM copy mode.
+- [x] Shadow/Highlight Mode: Full S/H rendering with special sprite palette handling.
+- [x] Sprite Limits: Per-line count/dot-overflow limits with x=0 masking.
+- [x] H32/H40 Mode: Support for both 256px and 320px display widths.
+- [x] Status Register: VInt pending, sprite overflow, and sprite collision flags.
+- [x] Interlace Mode 2: Double-resolution tile height support.
+- [x] Display Enable: Proper blanking when display bit is cleared.
+- [x] VRAM Read Buffer: Prefetch buffer for correct VRAM read behavior.
+- [ ] DMA Timing: Cycle-accurate transfer/stall behavior.
+- [ ] FIFO Emulation: Write queue with proper timing.
+- [ ] VDP Accuracy: Remaining hardware-accurate quirks/conflict behavior.
 
 ### Audio Subsystem
 

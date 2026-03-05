@@ -4,6 +4,7 @@ const AudioTiming = @import("audio_timing.zig").AudioTiming;
 const Vdp = @import("vdp.zig").Vdp;
 const Io = @import("io.zig").Io;
 const Z80 = @import("z80.zig").Z80;
+const rocket68 = @import("cpu/rocket68_cpu.zig");
 
 fn looksLikeGenesis(rom: []const u8) bool {
     if (rom.len < 0x104) return false;
@@ -36,12 +37,13 @@ pub const Bus = struct {
     z80: Z80,
     audio_timing: AudioTiming,
     z80_master_remainder: u8,
+    open_bus: u16,
 
     fn readRomByte(self: *const Bus, address: u32) u8 {
         if (self.rom.len == 0) return 0;
         const rom_len_u32: u32 = @intCast(self.rom.len);
-        const mirrored_addr: u32 = if (address < rom_len_u32) address else address % rom_len_u32;
-        return self.rom[@intCast(mirrored_addr)];
+        if (address >= rom_len_u32) return 0; // open bus — prevents lock-on misdetection
+        return self.rom[@intCast(address)];
     }
 
     fn hasZ80BusFor68k(self: *Bus) bool {
@@ -70,8 +72,24 @@ pub const Bus = struct {
         self.writeHostByteForZ80(address, value);
     }
 
+    fn vdpDmaReadWordCallback(userdata: ?*anyopaque, address: u32) u16 {
+        const self: *Bus = @ptrCast(@alignCast(userdata orelse return 0));
+        return self.read16(address);
+    }
+
     fn ensureZ80HostWindow(self: *Bus) void {
         self.z80.setHostCallbacks(self, z80HostReadCallback, z80HostWriteCallback);
+    }
+
+    fn latchOpenBus(self: *Bus, value: u16) u16 {
+        self.open_bus = value;
+        return value;
+    }
+
+    fn readVdpStatus(self: *Bus) u16 {
+        const status = self.vdp.readControl() | (self.open_bus & 0xFC00);
+        self.open_bus = status;
+        return status;
     }
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
@@ -123,6 +141,7 @@ pub const Bus = struct {
             .z80 = Z80.init(),
             .audio_timing = .{},
             .z80_master_remainder = 0,
+            .open_bus = 0,
         };
     }
 
@@ -151,17 +170,21 @@ pub const Bus = struct {
             self.ensureZ80HostWindow();
             const zaddr: u16 = @truncate(addr & 0xFFFF);
             return self.z80.readByte(zaddr);
-        } else if (addr >= 0xC00000 and addr < 0xC00020) {
-            if (addr < 0xC00004) {
+        } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            const port = addr & 0x1F;
+            if (port < 0x04) {
                 const word = self.vdp.readData();
+                self.open_bus = word;
                 return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
             }
-            if (addr < 0xC00008) {
-                const word = self.vdp.readControl();
+            if (port < 0x08) {
+                const word = self.readVdpStatus();
+                if (rocket68.getActiveCpu()) |cpu| cpu.clearInterrupt();
                 return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
             }
-            if (addr < 0xC00010) {
+            if (port < 0x10) {
                 const word = self.vdp.readHVCounter();
+                self.open_bus = word;
                 return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
             }
             return 0;
@@ -177,21 +200,25 @@ pub const Bus = struct {
     pub fn read16(self: *Bus, address: u32) u16 {
         const addr = address & 0xFFFFFF;
         if (addr == 0xA11100) { // Z80 Bus Request
-            return self.z80.readBusReq();
+            return self.latchOpenBus(self.z80.readBusReq());
         } else if (addr == 0xA11200) { // Z80 Reset
-            return 0; // Write only?
-        } else if (addr >= 0xC00000 and addr < 0xC00020) {
-            // VDP Ports
-            if (addr == 0xC00000) return self.vdp.readData();
-            if (addr == 0xC00004) return self.vdp.readControl();
-            if (addr >= 0xC00008 and addr < 0xC00010) return self.vdp.readHVCounter();
+            return self.latchOpenBus(0); // Write only?
+        } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            const port = addr & 0x1F;
+            if (port < 0x04) return self.latchOpenBus(self.vdp.readData());
+            if (port < 0x08) {
+                const status = self.readVdpStatus();
+                if (rocket68.getActiveCpu()) |cpu| cpu.clearInterrupt();
+                return status;
+            }
+            if (port < 0x10) return self.latchOpenBus(self.vdp.readHVCounter());
         }
 
         // M68k accesses are generally word-aligned, but we'll support unaligned for safety
         // Real hardware might throw address error on unaligned word access
         const high = self.read8(address);
         const low = self.read8(address + 1);
-        return (@as(u16, high) << 8) | low;
+        return self.latchOpenBus((@as(u16, high) << 8) | low);
     }
 
     pub fn read32(self: *Bus, address: u32) u32 {
@@ -206,6 +233,7 @@ pub const Bus = struct {
 
     pub fn write8(self: *Bus, address: u32, value: u8) void {
         const addr = address & 0xFFFFFF;
+        self.open_bus = (@as(u16, value) << 8) | value;
 
         if (addr < 0x400000) {
             // ROM is read-only
@@ -223,11 +251,12 @@ pub const Bus = struct {
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
             self.io.write(addr, value);
-        } else if (addr >= 0xC00000 and addr < 0xC00020) {
+        } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            const port = addr & 0x1F;
             const word: u16 = if ((addr & 1) == 0) (@as(u16, value) << 8) else @as(u16, value);
-            if (addr < 0xC00004) {
+            if (port < 0x04) {
                 self.vdp.writeData(word);
-            } else if (addr < 0xC00008) {
+            } else if (port < 0x08) {
                 self.vdp.writeControl(word);
             }
             return;
@@ -236,12 +265,13 @@ pub const Bus = struct {
 
     pub fn write16(self: *Bus, address: u32, value: u16) void {
         const addr = address & 0xFFFFFF;
+        self.open_bus = value;
 
-        if (addr >= 0xC00000 and addr < 0xC00020) {
-            // VDP Ports
-            if (addr == 0xC00000) {
+        if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            const port = addr & 0x1F;
+            if (port < 0x04) {
                 self.vdp.writeData(value);
-            } else if (addr == 0xC00004) {
+            } else if (port < 0x08) {
                 self.vdp.writeControl(value);
             }
             return;
@@ -261,7 +291,7 @@ pub const Bus = struct {
 
     pub fn write32(self: *Bus, address: u32, value: u32) void {
         const addr = address & 0xFFFFFF;
-        if (addr >= 0xC00000 and addr < 0xC00020) {
+        if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             // VDP 32-bit writes are treated as two 16-bit writes
             self.write16(address, @intCast((value >> 16) & 0xFFFF));
             self.write16(address + 2, @intCast(value & 0xFFFF));
@@ -280,72 +310,7 @@ pub const Bus = struct {
         const z80_cycles = total / clock.z80_divider;
         self.z80_master_remainder = @intCast(total % clock.z80_divider);
         self.z80.step(z80_cycles);
-
-        if (self.vdp.dma_active) {
-            // Perform DMA
-            if (self.vdp.dma_fill) {
-                // DMA fill completes on the next VDP data port write.
-                // Keep the DMA state armed until VDP.writeData consumes it.
-            } else if (self.vdp.dma_copy) {
-                // VRAM-to-VRAM Copy (DMA Mode 3).
-                // Source and dest are both VRAM-internal; no bus access needed.
-                var remaining = self.vdp.dma_remaining;
-                if (remaining == 0) {
-                    self.vdp.dma_active = false;
-                    self.vdp.dma_copy = false;
-                    return;
-                }
-                var budget_words = @as(u32, master_cycles / 8);
-                if (budget_words == 0) budget_words = 1;
-                if (budget_words > remaining) budget_words = remaining;
-
-                var src_addr = self.vdp.dma_source_addr;
-                var words_done: u32 = 0;
-                while (words_done < budget_words) : (words_done += 1) {
-                    // VRAM copy reads a byte at source and writes to dest.
-                    const byte = self.vdp.vram[@as(u16, @truncate(src_addr)) & 0xFFFF];
-                    self.vdp.vram[self.vdp.addr & 0xFFFF] = byte;
-                    src_addr += 1;
-                    self.vdp.advanceAddr();
-                }
-
-                self.vdp.dma_source_addr = src_addr;
-                remaining -= words_done;
-                self.vdp.dma_remaining = remaining;
-                if (remaining == 0) {
-                    self.vdp.dma_length = 0;
-                    self.vdp.dma_active = false;
-                    self.vdp.dma_copy = false;
-                }
-            } else {
-                // 68k -> VDP Transfer (DMA Mode 0 or 1)
-                var remaining = self.vdp.dma_remaining;
-                if (remaining == 0) {
-                    self.vdp.dma_active = false;
-                    return;
-                }
-                // Incremental DMA: avoid stalling an entire frame on large transfers.
-                var budget_words = @as(u32, master_cycles / 8);
-                if (budget_words == 0) budget_words = 1;
-                if (budget_words > remaining) budget_words = remaining;
-
-                var src_addr = self.vdp.dma_source_addr;
-                var words_done: u32 = 0;
-                while (words_done < budget_words) : (words_done += 1) {
-                    const word = self.read16(src_addr);
-                    self.vdp.writeData(word);
-                    src_addr += 2; // Source address increments
-                }
-
-                self.vdp.dma_source_addr = src_addr;
-                remaining -= words_done;
-                self.vdp.dma_remaining = remaining;
-                if (remaining == 0) {
-                    self.vdp.dma_length = 0;
-                    self.vdp.dma_active = false;
-                }
-            }
-        }
+        self.vdp.progressTransfers(master_cycles, self, vdpDmaReadWordCallback);
     }
 
     pub fn step(self: *Bus, m68k_cycles: u32) void {
