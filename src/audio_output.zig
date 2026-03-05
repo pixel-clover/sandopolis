@@ -3,6 +3,7 @@ const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
 const PendingAudioFrames = @import("audio_timing.zig").PendingAudioFrames;
 const Z80 = @import("z80.zig").Z80;
+const Psg = @import("psg.zig").Psg;
 
 const StereoPan = struct {
     left: f32,
@@ -39,11 +40,9 @@ pub const AudioOutput = struct {
         .in_rate_den = clock.psg_master_cycles_per_sample,
     },
     sample_chunk: [4096]i16 = [_]i16{0} ** 4096,
+    psg_sample_buf: [2048]i16 = [_]i16{0} ** 2048,
     ym_phase: [6]f32 = [_]f32{0.0} ** 6,
-    psg_phase: [3]f32 = [_]f32{0.0} ** 3,
-    psg_noise_phase: f32 = 0.0,
-    psg_noise_lfsr: u16 = 0x8000,
-    psg_noise_out: f32 = 1.0,
+    psg: Psg = Psg{},
 
     fn fmFrequencyFromChannel(z80: *const Z80, channel: u3) f32 {
         const is_high_bank = channel >= 3;
@@ -77,23 +76,20 @@ pub const AudioOutput = struct {
         };
     }
 
-    fn psgToneFrequency(period: u16) f32 {
-        const psg_clock = @as(f32, @floatFromInt(clock.master_clock_ntsc)) / @as(f32, @floatFromInt(clock.z80_divider));
-        const n: u16 = if (period == 0) 1 else period;
-        return psg_clock / (32.0 * @as(f32, @floatFromInt(n)));
-    }
-
-    fn attenuationToGain(att: u8) f32 {
-        const a: f32 = @floatFromInt(att & 0x0F);
-        return std.math.pow(f32, 0.794_328_2, a);
-    }
-
-    fn clockNoiseLfsr(self: *AudioOutput, noise_ctrl: u8) void {
-        const white = (noise_ctrl & 0x04) != 0;
-        const bit0 = self.psg_noise_lfsr & 1;
-        const feedback_bit: u16 = if (white) ((self.psg_noise_lfsr ^ (self.psg_noise_lfsr >> 3)) & 1) else bit0;
-        self.psg_noise_lfsr = (self.psg_noise_lfsr >> 1) | (feedback_bit << 15);
-        self.psg_noise_out = if ((self.psg_noise_lfsr & 1) != 0) 1.0 else -1.0;
+    /// Sync PSG state from the Z80 bridge's decoded registers.
+    /// Called each frame before rendering audio.
+    fn syncPsgFromBridge(self: *AudioOutput, z80: *const Z80) void {
+        // Sync tone channel frequencies and volumes.
+        for (0..3) |ch| {
+            const tone = z80.getPsgTone(@intCast(ch));
+            self.psg.tones[ch].countdown_master = tone;
+            self.psg.tones[ch].attenuation = @intCast(z80.getPsgVolume(@intCast(ch)) & 0xF);
+        }
+        // Sync noise channel.
+        self.psg.noise.attenuation = @intCast(z80.getPsgVolume(3) & 0xF);
+        const noise_reg = z80.getPsgNoise();
+        self.psg.noise.noise_type = if ((noise_reg & 4) != 0) .white else .periodic;
+        self.psg.noise.frequency_mode = @intCast(noise_reg & 3);
     }
 
     fn renderChunk(
@@ -104,17 +100,21 @@ pub const AudioOutput = struct {
         fm_pan: [6]StereoPan,
         ym_dac_gain: f32,
         ym_dac_sample: f32,
-        psg_hz: [3]f32,
-        psg_gain: [4]f32,
-        psg_noise_hz: f32,
-        noise_ctrl: u8,
     ) []const i16 {
+        // --- PSG: generate chip-accurate mono samples ---
+        const psg_frames = @min(frames, self.psg_sample_buf.len);
+        @memset(self.psg_sample_buf[0..psg_frames], 0);
+        self.psg.update(self.psg_sample_buf[0..psg_frames], psg_frames);
+
+        // --- Mix FM (still float-based) + PSG (integer) into stereo output ---
         const sample_rate: f32 = @floatFromInt(output_rate);
         const two_pi = std.math.tau;
         var i: usize = 0;
         while (i < frames) : (i += 1) {
             var l: f32 = 0.0;
             var r: f32 = 0.0;
+
+            // FM channels (placeholder sine synthesis until FM operators are ported).
             for (0..6) |ch| {
                 if (fm_gain[ch] <= 0.0001 or fm_hz[ch] <= 0.0) continue;
                 self.ym_phase[ch] += fm_hz[ch] / sample_rate;
@@ -129,28 +129,13 @@ pub const AudioOutput = struct {
                 r += voice;
             }
 
-            for (0..3) |ch| {
-                if (psg_gain[ch] <= 0.0001 or psg_hz[ch] <= 0.0) continue;
-                self.psg_phase[ch] += psg_hz[ch] / sample_rate;
-                if (self.psg_phase[ch] >= 1.0) self.psg_phase[ch] -= 1.0;
-                const square: f32 = if (self.psg_phase[ch] < 0.5) 1.0 else -1.0;
-                const voice = square * psg_gain[ch] * 0.08;
-                l += voice;
-                r += voice;
-            }
+            // Mix PSG (mono → both channels). Scale i16 down to -0.5..0.5 range.
+            const psg_sample: f32 = if (i < psg_frames) @as(f32, @floatFromInt(self.psg_sample_buf[i])) / 32768.0 else 0.0;
+            l += psg_sample * 0.5;
+            r += psg_sample * 0.5;
 
-            if (psg_gain[3] > 0.0001 and psg_noise_hz > 0.0) {
-                self.psg_noise_phase += psg_noise_hz / sample_rate;
-                if (self.psg_noise_phase >= 1.0) {
-                    self.psg_noise_phase -= 1.0;
-                    self.clockNoiseLfsr(noise_ctrl);
-                }
-                const voice = self.psg_noise_out * psg_gain[3] * 0.06;
-                l += voice;
-                r += voice;
-            }
-            l = @max(-0.8, @min(0.8, l));
-            r = @max(-0.8, @min(0.8, r));
+            l = @max(-0.95, @min(0.95, l));
+            r = @max(-0.95, @min(0.95, r));
             self.sample_chunk[i * channels] = @as(i16, @intFromFloat(l * 32767.0));
             self.sample_chunk[i * channels + 1] = @as(i16, @intFromFloat(r * 32767.0));
         }
@@ -165,6 +150,9 @@ pub const AudioOutput = struct {
         const psg_frames = self.psg_converter.toOutputFrames(pending.psg_frames, output_rate);
         var out_frames: u32 = @max(fm_frames, psg_frames);
         if (out_frames == 0) return;
+
+        // Sync PSG state from Z80 bridge.
+        self.syncPsgFromBridge(z80);
 
         const dac_enable = (z80.getYmRegister(1, 0x2B) & 0x80) != 0;
         const ym_dac_gain: f32 = if (dac_enable) 0.16 else 0.0;
@@ -182,28 +170,10 @@ pub const AudioOutput = struct {
             }
         }
 
-        var psg_hz = [_]f32{0.0} ** 3;
-        var psg_gain = [_]f32{0.0} ** 4;
-        for (0..3) |ch| {
-            const tone = z80.getPsgTone(@intCast(ch));
-            psg_hz[ch] = psgToneFrequency(tone);
-            psg_gain[ch] = attenuationToGain(z80.getPsgVolume(@intCast(ch)));
-        }
-        psg_gain[3] = attenuationToGain(z80.getPsgVolume(3));
-        const noise_ctrl = z80.getPsgNoise();
-        const noise_rate_sel = noise_ctrl & 0x03;
-        const psg_clock = @as(f32, @floatFromInt(clock.master_clock_ntsc)) / @as(f32, @floatFromInt(clock.z80_divider));
-        const psg_noise_hz = switch (noise_rate_sel) {
-            0 => psg_clock / 512.0,
-            1 => psg_clock / 1024.0,
-            2 => psg_clock / 2048.0,
-            else => psg_hz[2],
-        };
-
         const max_frames_per_push = self.sample_chunk.len / channels;
         while (out_frames > 0) {
             const chunk_frames: usize = @min(out_frames, max_frames_per_push);
-            const samples = self.renderChunk(chunk_frames, fm_hz, fm_gain, fm_pan, ym_dac_gain, ym_dac_sample, psg_hz, psg_gain, psg_noise_hz, noise_ctrl);
+            const samples = self.renderChunk(chunk_frames, fm_hz, fm_gain, fm_pan, ym_dac_gain, ym_dac_sample);
             try zsdl3.putAudioStreamData(i16, self.stream, samples);
             out_frames -= @intCast(chunk_frames);
         }

@@ -286,15 +286,45 @@ pub const Bus = struct {
             if (self.vdp.dma_fill) {
                 // DMA fill completes on the next VDP data port write.
                 // Keep the DMA state armed until VDP.writeData consumes it.
+            } else if (self.vdp.dma_copy) {
+                // VRAM-to-VRAM Copy (DMA Mode 3).
+                // Source and dest are both VRAM-internal; no bus access needed.
+                var remaining = self.vdp.dma_remaining;
+                if (remaining == 0) {
+                    self.vdp.dma_active = false;
+                    self.vdp.dma_copy = false;
+                    return;
+                }
+                var budget_words = @as(u32, master_cycles / 8);
+                if (budget_words == 0) budget_words = 1;
+                if (budget_words > remaining) budget_words = remaining;
+
+                var src_addr = self.vdp.dma_source_addr;
+                var words_done: u32 = 0;
+                while (words_done < budget_words) : (words_done += 1) {
+                    // VRAM copy reads a byte at source and writes to dest.
+                    const byte = self.vdp.vram[@as(u16, @truncate(src_addr)) & 0xFFFF];
+                    self.vdp.vram[self.vdp.addr & 0xFFFF] = byte;
+                    src_addr += 1;
+                    self.vdp.advanceAddr();
+                }
+
+                self.vdp.dma_source_addr = src_addr;
+                remaining -= words_done;
+                self.vdp.dma_remaining = remaining;
+                if (remaining == 0) {
+                    self.vdp.dma_length = 0;
+                    self.vdp.dma_active = false;
+                    self.vdp.dma_copy = false;
+                }
             } else {
-                // 68k -> VRAM Copy (DMA Mode 0 or 1)
+                // 68k -> VDP Transfer (DMA Mode 0 or 1)
                 var remaining = self.vdp.dma_remaining;
                 if (remaining == 0) {
                     self.vdp.dma_active = false;
                     return;
                 }
                 // Incremental DMA: avoid stalling an entire frame on large transfers.
-                // This keeps emulation responsive until cycle-accurate DMA timing is added.
                 var budget_words = @as(u32, master_cycles / 8);
                 if (budget_words == 0) budget_words = 1;
                 if (budget_words > remaining) budget_words = remaining;

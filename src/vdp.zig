@@ -26,6 +26,7 @@ pub const Vdp = struct {
 
     // DMA State
     dma_fill: bool,
+    dma_copy: bool,
     dma_source_addr: u32,
     dma_length: u16,
     dma_remaining: u32,
@@ -58,6 +59,7 @@ pub const Vdp = struct {
             .odd_frame = false,
             .pal_mode = false,
             .dma_fill = false,
+            .dma_copy = false,
             .dma_source_addr = 0,
             .dma_length = 0,
             .dma_remaining = 0,
@@ -138,25 +140,67 @@ pub const Vdp = struct {
         const backdrop_idx = self.regs[7] & 0x3F;
         const backdrop_color = self.getPaletteColor(backdrop_idx);
         const hscroll_base = (@as(u16, self.regs[13]) & 0x3F) << 10;
-        const hscroll_a = self.readHScroll(hscroll_base, line, true);
-        const hscroll_b = self.readHScroll(hscroll_base, line, false);
-        const vscroll_a = self.readVScroll(true);
-        const vscroll_b = self.readVScroll(false);
         const line_start = @as(usize, line) * 320;
 
         for (0..320) |x| {
             self.framebuffer[line_start + x] = backdrop_color;
         }
 
-        self.renderPlanePass(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_b, vscroll_b, false);
-        self.renderPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_a, vscroll_a, false);
+        // Window plane determination.
+        const win_h_pos = self.regs[17];
+        const win_v_pos = self.regs[18];
+        const win_right = (win_h_pos & 0x80) != 0;
+        const win_h_cell = @as(u16, win_h_pos & 0x1F) * 2; // in cells (multiply by 2 for 16-pixel units)
+        const win_down = (win_v_pos & 0x80) != 0;
+        const win_v_cell = @as(u16, win_v_pos & 0x1F) * 8; // in pixels
+
+        // Determine if this line is in the window's vertical range.
+        const line_in_win_v: bool = if (win_down) (line >= win_v_cell) else (line < win_v_cell);
+
+        // Compute window horizontal boundaries (in pixels).
+        const win_left_px: u16 = if (win_right) win_h_cell * 8 else 0;
+        const win_right_px: u16 = if (win_right) 320 else win_h_cell * 8;
+
+        // Render Plane B (always scrolling, full width, low priority pass).
+        self.renderScrollPlanePass(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, false, 0, 320);
+
+        // Render Plane A / Window (low priority pass).
+        if (line_in_win_v and win_left_px < win_right_px) {
+            // Scrolling Plane A in non-window region.
+            if (win_left_px > 0) {
+                self.renderScrollPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, false, 0, win_left_px);
+            }
+            if (win_right_px < 320) {
+                self.renderScrollPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, false, win_right_px, 320);
+            }
+            // Window plane in window region.
+            self.renderWindowPass(line, false, win_left_px, win_right_px);
+        } else {
+            // No window on this line — full Plane A.
+            self.renderScrollPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, false, 0, 320);
+        }
+
         self.renderSpritesForLine(line, false);
-        self.renderPlanePass(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_b, vscroll_b, true);
-        self.renderPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_a, vscroll_a, true);
+
+        // High priority passes.
+        self.renderScrollPlanePass(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, true, 0, 320);
+
+        if (line_in_win_v and win_left_px < win_right_px) {
+            if (win_left_px > 0) {
+                self.renderScrollPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, true, 0, win_left_px);
+            }
+            if (win_right_px < 320) {
+                self.renderScrollPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, true, win_right_px, 320);
+            }
+            self.renderWindowPass(line, true, win_left_px, win_right_px);
+        } else {
+            self.renderScrollPlanePass(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, true, 0, 320);
+        }
+
         self.renderSpritesForLine(line, true);
     }
 
-    fn renderPlanePass(
+    fn renderScrollPlanePass(
         self: *Vdp,
         line: u16,
         plane_base: u32,
@@ -164,12 +208,32 @@ pub const Vdp = struct {
         plane_height_tiles: u16,
         plane_width_px: i32,
         plane_height_px: i32,
-        hscroll: i32,
-        vscroll: i32,
+        hscroll_base: u16,
+        is_plane_a: bool,
         high_priority: bool,
+        start_x: u16,
+        end_x: u16,
     ) void {
         const line_start = @as(usize, line) * 320;
-        for (0..320) |x| {
+        const hscroll = self.readHScroll(hscroll_base, line, is_plane_a);
+        const vscroll_mode = (self.regs[11] >> 2) & 1;
+
+        var x: u16 = start_x;
+        while (x < end_x) : (x += 1) {
+            // Per-2-cell VScroll: each 16-pixel column gets its own value.
+            const vscroll_val: i32 = if (vscroll_mode != 0) blk: {
+                const col_pair = x / 16; // 2-cell column index
+                const vs_offset: u16 = if (is_plane_a) col_pair * 4 else col_pair * 4 + 2;
+                if (vs_offset + 1 < 80) {
+                    const hi = self.vsram[vs_offset & 0x4F];
+                    const lo = self.vsram[(vs_offset + 1) & 0x4F];
+                    const raw = (@as(u16, hi) << 8) | lo;
+                    break :blk @as(i16, @bitCast(raw & 0x07FF));
+                } else {
+                    break :blk self.readVScroll(is_plane_a);
+                }
+            } else self.readVScroll(is_plane_a);
+
             if (self.samplePlanePixel(
                 plane_base,
                 plane_width_tiles,
@@ -177,11 +241,56 @@ pub const Vdp = struct {
                 plane_width_px,
                 plane_height_px,
                 @as(i32, @intCast(x)) - hscroll,
-                @as(i32, line) + vscroll,
+                @as(i32, line) + vscroll_val,
                 high_priority,
             )) |idx| {
                 self.framebuffer[line_start + x] = self.getPaletteColor(idx);
             }
+        }
+    }
+
+    fn renderWindowPass(
+        self: *Vdp,
+        line: u16,
+        high_priority: bool,
+        start_x: u16,
+        end_x: u16,
+    ) void {
+        // Window nametable base from register 3.
+        // In H40 mode (320px), bit 0 is ignored, so mask with 0x3E.
+        const win_base = @as(u32, self.regs[3] & 0x3E) << 10;
+        // Window plane is always 64 cells wide (even in H32 mode).
+        const win_width: u32 = 64;
+        const line_start = @as(usize, line) * 320;
+        const tile_row: u32 = @as(u32, line) / 8;
+        const fine_y: u8 = @intCast(@as(u32, line) % 8);
+
+        var x: u16 = start_x;
+        while (x < end_x) : (x += 1) {
+            const tile_col: u32 = @as(u32, x) / 8;
+            const fine_x: u8 = @intCast(@as(u32, x) % 8);
+
+            const table_index = tile_row * win_width + tile_col;
+            const entry_addr: u16 = @intCast((win_base + table_index * 2) & 0xFFFF);
+            const entry_hi = self.vramReadByte(entry_addr);
+            const entry_lo = self.vramReadByte(entry_addr + 1);
+            const entry = (@as(u16, entry_hi) << 8) | entry_lo;
+            if (((entry & 0x8000) != 0) != high_priority) continue;
+
+            const pattern_idx = entry & 0x07FF;
+            const palette_idx: u8 = @intCast((entry >> 13) & 0x3);
+            const vflip = (entry & 0x1000) != 0;
+            const hflip = (entry & 0x0800) != 0;
+
+            const px = if (hflip) @as(u8, 7 - fine_x) else fine_x;
+            const py = if (vflip) @as(u8, 7 - fine_y) else fine_y;
+
+            const pattern_addr = (@as(u32, pattern_idx) * 32) + (@as(u32, py) * 4) + @as(u32, px / 2);
+            const pattern_byte = self.vramReadByte(@intCast(pattern_addr & 0xFFFF));
+            const color_idx: u8 = if ((px & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
+            if (color_idx == 0) continue;
+
+            self.framebuffer[line_start + x] = self.getPaletteColor(palette_idx * 16 + color_idx);
         }
     }
 
@@ -288,9 +397,18 @@ pub const Vdp = struct {
     fn readHScroll(self: *const Vdp, table_base: u16, line: u16, plane_a: bool) i32 {
         const hmode = self.regs[11] & 0x3;
         var offset: u16 = if (plane_a) @as(u16, 0) else @as(u16, 2);
-        if (hmode == 3) {
-            const line_index = (line & 0xFF) * 4;
-            offset = line_index + (if (plane_a) @as(u16, 0) else @as(u16, 2));
+        switch (hmode) {
+            2 => {
+                // Per-cell (8-pixel row) scroll: use row / 8 * 4.
+                const cell_row = (line / 8) * 4;
+                offset = cell_row + (if (plane_a) @as(u16, 0) else @as(u16, 2));
+            },
+            3 => {
+                // Per-line scroll.
+                const line_index = (line & 0xFF) * 4;
+                offset = line_index + (if (plane_a) @as(u16, 0) else @as(u16, 2));
+            },
+            else => {},
         }
         const word = (@as(u16, self.vramReadByte(table_base + offset)) << 8) | self.vramReadByte(table_base + offset + 1);
         return @as(i16, @bitCast(word));
@@ -335,13 +453,33 @@ pub const Vdp = struct {
     }
 
     pub fn writeData(self: *Vdp, value: u16) void {
-        if (self.dma_active and self.dma_fill and (self.code & 0xF) == 0x1) {
+        if (self.dma_active and self.dma_fill) {
             var len: u32 = self.dma_length;
             if (len == 0) len = 0x10000;
-            const fill_byte: u8 = @intCast((value >> 8) & 0xFF);
-            while (len > 0) : (len -= 1) {
-                self.vramWriteByte(self.addr, fill_byte);
-                self.advanceAddr();
+            const target = self.code & 0xF;
+            if (target == 0x1) {
+                // VRAM fill — fills with high byte.
+                const fill_byte: u8 = @intCast((value >> 8) & 0xFF);
+                while (len > 0) : (len -= 1) {
+                    self.vramWriteByte(self.addr, fill_byte);
+                    self.advanceAddr();
+                }
+            } else if (target == 0x3) {
+                // CRAM fill — fills with full word.
+                while (len > 0) : (len -= 1) {
+                    const idx = self.addr & 0x7F;
+                    self.cram[idx] = @intCast((value >> 8) & 0xFF);
+                    if (idx + 1 < 128) self.cram[idx + 1] = @intCast(value & 0xFF);
+                    self.advanceAddr();
+                }
+            } else if (target == 0x5) {
+                // VSRAM fill — fills with full word.
+                while (len > 0) : (len -= 1) {
+                    const idx = self.addr & 0x4F;
+                    self.vsram[idx] = @intCast((value >> 8) & 0xFF);
+                    if (idx + 1 < 80) self.vsram[idx + 1] = @intCast(value & 0xFF);
+                    self.advanceAddr();
+                }
             }
             self.dma_length = 0;
             self.dma_remaining = 0;
@@ -381,7 +519,7 @@ pub const Vdp = struct {
         }
     }
 
-    fn advanceAddr(self: *Vdp) void {
+    pub fn advanceAddr(self: *Vdp) void {
         const auto_inc = self.regs[15];
         self.addr = self.addr +% auto_inc;
     }
@@ -599,8 +737,8 @@ pub const Vdp = struct {
                 const dma_src_hi = self.regs[23] & 0x7F;
                 self.dma_source_addr = (@as(u32, dma_src_hi) << 17) | (@as(u32, dma_src_mid) << 9) | (@as(u32, dma_src_lo) << 1);
 
-                // DMA Length (Regs 19, 20)
-                self.dma_length = (@as(u16, self.regs[19]) << 8) | self.regs[20];
+                // DMA Length (Reg 20 = high byte, Reg 19 = low byte)
+                self.dma_length = (@as(u16, self.regs[20]) << 8) | self.regs[19];
                 self.dma_remaining = if (self.dma_length == 0) 0x10000 else self.dma_length;
 
                 if (dma_mode <= 1) {
@@ -615,11 +753,15 @@ pub const Vdp = struct {
                 } else if (dma_mode == 2) {
                     // Fill
                     self.dma_fill = true;
+                    self.dma_copy = false;
                     self.dma_active = true;
                     // Fill uses the data port write to trigger.
                 } else {
-                    // Copy
-                    self.dma_active = true; // Todo
+                    // VRAM Copy — source is 16-bit (not shifted).
+                    self.dma_source_addr = (@as(u32, self.regs[22]) << 8) | @as(u32, self.regs[21]);
+                    self.dma_copy = true;
+                    self.dma_fill = false;
+                    self.dma_active = true;
                 }
             }
         }
