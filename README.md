@@ -20,7 +20,7 @@ A Sega Genesis/Mega Drive emulator written in Zig
 
 ## Overview
 
-Sandopolis is a Sega Genesis/Mega Drive emulator built from the ground up in Zig. The emulator implements the complete Genesis hardware stack, including the Motorola 68000 CPU, VDP (Video Display Processor), Z80 sound processor, and I/O controller support.
+Sandopolis is a Sega Genesis/Mega Drive emulator built from the ground up in Zig. It implements the main Genesis subsystems, including the Motorola 68000 CPU, VDP (Video Display Processor), Z80 sound processor, and controller/I/O path. Core video, DMA, audio, and input flows are running today, while cycle-accurate timing, hardware edge cases, and chip-accurate audio are still in progress.
 
 ## Features
 
@@ -29,7 +29,7 @@ Sandopolis is a Sega Genesis/Mega Drive emulator built from the ground up in Zig
   - Tile rendering (Plane A, Plane B, Sprites)
   - VRAM, CRAM, and VSRAM access
   - Hardware scrolling
-  - DMA transfers
+  - DMA transfer modes and VDP-managed transfer progression
 - Z80 core integration via [jgz80](https://github.com/carmiker/jgz80)
 - Controller input support (keyboard and gamepad)
 - SMD ROM format deinterleaving

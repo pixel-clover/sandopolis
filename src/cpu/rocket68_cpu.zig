@@ -10,51 +10,58 @@ var active_bus: ?*Bus = null;
 var active_cpu: ?*Cpu = null;
 var fallback_memory = [_]u8{0} ** 8;
 
-fn isVdpDataPortWriteAddress(address: u32) bool {
+fn isVdpDataPortAddress(address: u32) bool {
     const addr = address & 0xFFFFFF;
     return addr >= 0xC00000 and addr <= 0xDFFFFF and (addr & 0x1F) < 0x04;
 }
 
-fn noteVdpDataPortWriteWait(bus: *Bus, address: u32) void {
-    if (!isVdpDataPortWriteAddress(address)) return;
-
-    const cpu = active_cpu orelse return;
-    cpu.addBusWaitMaster(bus.vdp.dataPortWriteWaitMasterCycles());
+fn isVdpControlPortAddress(address: u32) bool {
+    const addr = address & 0xFFFFFF;
+    const port = addr & 0x1F;
+    return addr >= 0xC00000 and addr <= 0xDFFFFF and port >= 0x04 and port < 0x08;
 }
 
 fn cpuRead8(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
     const bus = active_bus orelse return 0;
+    const cpu = active_cpu orelse return 0;
+    cpu.noteBusAccessWait(bus, address, 1, false);
     return @intCast(bus.read8(address));
 }
 
 fn cpuRead16(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u16 {
     const bus = active_bus orelse return 0;
+    const cpu = active_cpu orelse return 0;
+    cpu.noteBusAccessWait(bus, address, 2, false);
     return @intCast(bus.read16(address));
 }
 
 fn cpuRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
     const bus = active_bus orelse return 0;
+    const cpu = active_cpu orelse return 0;
+    cpu.noteBusAccessWait(bus, address, 4, false);
     return @intCast(bus.read32(address));
 }
 
 fn cpuWrite8(_: ?*c.M68kCpu, address: c.u32, value: c.u8) callconv(.c) void {
     const bus = active_bus orelse return;
-    noteVdpDataPortWriteWait(bus, address);
+    const cpu = active_cpu orelse return;
+    cpu.noteBusAccessWait(bus, address, 1, true);
     bus.write8(address, value);
 }
 
 fn cpuWrite16(_: ?*c.M68kCpu, address: c.u32, value: c.u16) callconv(.c) void {
     const bus = active_bus orelse return;
-    noteVdpDataPortWriteWait(bus, address);
+    const cpu = active_cpu orelse return;
+    cpu.noteBusAccessWait(bus, address, 2, true);
     bus.write16(address, value);
 }
 
 fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
     const bus = active_bus orelse return;
-    if (isVdpDataPortWriteAddress(address)) {
-        noteVdpDataPortWriteWait(bus, address);
+    const cpu = active_cpu orelse return;
+    cpu.noteBusAccessWait(bus, address, 4, true);
+    if (isVdpDataPortAddress(address)) {
         bus.write16(address, @intCast((value >> 16) & 0xFFFF));
-        noteVdpDataPortWriteWait(bus, address + 2);
         bus.write16(address + 2, @intCast(value & 0xFFFF));
         return;
     }
@@ -81,6 +88,11 @@ pub const Cpu = struct {
     pub const WaitAccounting = struct {
         m68k_cycles: u32 = 0,
         master_cycles: u32 = 0,
+    };
+
+    pub const InstructionStep = struct {
+        m68k_cycles: u32,
+        wait: WaitAccounting,
     };
 
     core: c.M68kCpu,
@@ -141,17 +153,63 @@ pub const Cpu = struct {
         self.pending_wait_master_cycles += master_cycles;
     }
 
+    pub fn noteBusAccessWait(self: *Cpu, bus: *Bus, address: u32, size_bytes: u8, is_write: bool) void {
+        self.addBusWaitMaster(bus.m68kAccessWaitMasterCycles(address, size_bytes));
+
+        if (!isVdpDataPortAddress(address)) {
+            if (is_write and isVdpControlPortAddress(address)) {
+                self.addBusWaitMaster(bus.vdp.controlPortWriteWaitMasterCycles());
+            }
+            return;
+        }
+
+        if (!is_write) {
+            if (size_bytes >= 4) {
+                self.addBusWaitMaster(bus.vdp.dataPortReadWaitMasterCycles());
+                self.addBusWaitMaster(bus.vdp.dataPortReadWaitMasterCycles());
+                return;
+            }
+
+            self.addBusWaitMaster(bus.vdp.dataPortReadWaitMasterCycles());
+            return;
+        }
+
+        if (size_bytes >= 4) {
+            self.addBusWaitMaster(bus.vdp.reserveDataPortWriteWaitMasterCycles());
+            self.addBusWaitMaster(bus.vdp.reserveDataPortWriteWaitMasterCycles());
+            return;
+        }
+
+        self.addBusWaitMaster(bus.vdp.reserveDataPortWriteWaitMasterCycles());
+    }
+
     pub fn step(self: *Cpu, bus: *Bus) void {
+        _ = self.stepInstruction(bus);
+    }
+
+    pub fn stepInstruction(self: *Cpu, bus: *Bus) InstructionStep {
         _ = trace_enabled;
-        if (self.halted) return;
 
         active_bus = bus;
         active_cpu = self;
+        self.pending_wait_cycles = 0;
+        self.pending_wait_master_cycles = 0;
+        self.core.target_cycles = 0;
+        self.core.cycles_remaining = 0;
+
         c.m68k_step(&self.core);
 
-        // Keep the existing external contract where this advances once per step.
-        self.cycles += 1;
+        const ran_cycles_raw = c.m68k_cycles_run(&self.core);
+        const ran_cycles: u32 = if (ran_cycles_raw > 0) @intCast(ran_cycles_raw) else 0;
+        self.core.target_cycles = 0;
+        self.core.cycles_remaining = 0;
+        self.cycles += ran_cycles;
         self.halted = self.core.stopped;
+
+        return .{
+            .m68k_cycles = ran_cycles,
+            .wait = self.takeWaitAccounting(),
+        };
     }
 
     pub fn runCycles(self: *Cpu, bus: *Bus, budget: u32) u32 {

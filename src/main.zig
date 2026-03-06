@@ -3,10 +3,16 @@ const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
 const frame_scheduler = @import("frame_scheduler.zig");
 const AudioOutput = @import("audio_output.zig").AudioOutput;
+const InputBindings = @import("input_mapping.zig");
 
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
     output: AudioOutput,
+};
+
+const GamepadSlot = struct {
+    id: zsdl3.Joystick.Id,
+    handle: *zsdl3.Gamepad,
 };
 
 fn formatName(format: zsdl3.AudioFormat) []const u8 {
@@ -17,6 +23,101 @@ fn formatName(format: zsdl3.AudioFormat) []const u8 {
         .F32BE => "F32BE",
         else => "unknown",
     };
+}
+
+fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardInput {
+    return switch (scancode) {
+        .up => .up,
+        .down => .down,
+        .left => .left,
+        .right => .right,
+        .a => .a,
+        .s => .s,
+        .d => .d,
+        .q => .q,
+        .w => .w,
+        .e => .e,
+        .r => .r,
+        .f => .f,
+        .h => .h,
+        .i => .i,
+        .j => .j,
+        .k => .k,
+        .l => .l,
+        .m => .m,
+        .n => .n,
+        .o => .o,
+        .p => .p,
+        .u => .u,
+        .z => .z,
+        .x => .x,
+        .c => .c,
+        .v => .v,
+        .@"return" => .@"return",
+        .tab => .tab,
+        .backspace => .backspace,
+        .space => .space,
+        .escape => .escape,
+        .lshift => .lshift,
+        .rshift => .rshift,
+        .semicolon => .semicolon,
+        .apostrophe => .apostrophe,
+        .comma => .comma,
+        .period => .period,
+        .slash => .slash,
+        else => null,
+    };
+}
+
+fn gamepadInputFromButton(button: u8) ?InputBindings.GamepadInput {
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_up)) return .dpad_up;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_down)) return .dpad_down;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_left)) return .dpad_left;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_right)) return .dpad_right;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.south)) return .south;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.east)) return .east;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.west)) return .west;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.north)) return .north;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.left_shoulder)) return .left_shoulder;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.right_shoulder)) return .right_shoulder;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.back)) return .back;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.start)) return .start;
+    return null;
+}
+
+fn findGamepadPort(gamepads: *const [InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) ?usize {
+    for (gamepads, 0..) |slot, port| {
+        if (slot) |assigned| {
+            if (assigned.id == id) return port;
+        }
+    }
+    return null;
+}
+
+fn assignGamepadSlot(gamepads: *[InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) void {
+    if (findGamepadPort(gamepads, id) != null) return;
+    for (gamepads, 0..) |slot, port| {
+        if (slot == null) {
+            if (zsdl3.openGamepad(id)) |handle| {
+                gamepads[port] = .{ .id = id, .handle = handle };
+                std.debug.print("Opened Gamepad ID: {d} for player {d}\n", .{ @intFromEnum(id), port + 1 });
+            }
+            return;
+        }
+    }
+}
+
+fn removeGamepadSlot(gamepads: *[InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) void {
+    for (gamepads, 0..) |slot, port| {
+        if (slot) |assigned| {
+            if (assigned.id == id) {
+                assigned.handle.close();
+                gamepads[port] = null;
+                std.debug.print("Closed Gamepad ID: {d} from player {d}\n", .{ @intFromEnum(id), port + 1 });
+                return;
+            }
+        }
+    }
 }
 
 fn tryInitAudio(userdata: *u8) ?AudioInit {
@@ -93,17 +194,19 @@ pub fn main() !void {
     }
     defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
-    // Open first available gamepad
-    var gamepad: ?*zsdl3.Gamepad = null;
+    // Open up to two gamepads and assign them to players by SDL device ID.
+    var gamepads = [_]?GamepadSlot{null} ** InputBindings.player_count;
+    defer {
+        for (gamepads) |slot| {
+            if (slot) |assigned| assigned.handle.close();
+        }
+    }
     var count: c_int = 0;
     if (SDL_GetGamepads(&count)) |gamepads_ptr| {
         defer zsdl3.free(gamepads_ptr);
-        if (count > 0) {
-            gamepad = zsdl3.openGamepad(gamepads_ptr[0]);
-            if (gamepad) |gp| {
-                std.debug.print("Opened Gamepad ID: {d}\n", .{@intFromEnum(gamepads_ptr[0])});
-                _ = gp;
-            }
+        const gamepad_count: usize = @intCast(@max(count, 0));
+        for (0..@min(gamepad_count, InputBindings.player_count)) |i| {
+            assignGamepadSlot(&gamepads, gamepads_ptr[i]);
         }
     }
 
@@ -131,8 +234,22 @@ pub fn main() !void {
         }
     }
 
+    const input_config_path = try InputBindings.defaultConfigPath(allocator);
+    defer if (input_config_path) |path| allocator.free(path);
+
+    var input_bindings = InputBindings.Bindings.defaults();
+    if (input_config_path) |path| {
+        input_bindings = try InputBindings.Bindings.loadFromFile(allocator, path);
+        std.debug.print("Loaded input config: {s}\n", .{path});
+    }
+
     var bus = try @import("memory.zig").Bus.init(allocator, rom_path);
-    defer bus.deinit(allocator);
+    defer {
+        bus.flushPersistentStorage() catch |err| {
+            std.debug.print("Failed to flush persistent SRAM: {s}\n", .{@errorName(err)});
+        };
+        bus.deinit(allocator);
+    }
 
     var cpu = @import("cpu/cpu.zig").Cpu.init();
 
@@ -409,8 +526,6 @@ pub fn main() !void {
     std.debug.print("CPU Reset complete.\n", .{});
     cpu.debugDump();
 
-    const active_display_master_cycles = clock.ntsc_active_master_cycles;
-    const hblank_master_cycles = clock.ntsc_hblank_master_cycles;
     var m68k_sync = clock.M68kSync{};
     const target_frame_ns: u64 = 1_000_000_000 / 60;
     var frame_counter: u32 = 0;
@@ -422,53 +537,31 @@ pub fn main() !void {
         while (zsdl3.pollEvent(&event)) {
             switch (event.type) {
                 zsdl3.EventType.quit => break :mainLoop,
+                zsdl3.EventType.gamepad_added => assignGamepadSlot(&gamepads, event.gdevice.which),
+                zsdl3.EventType.gamepad_removed => removeGamepadSlot(&gamepads, event.gdevice.which),
                 zsdl3.EventType.gamepad_button_down, zsdl3.EventType.gamepad_button_up => {
                     const pressed = (event.type == zsdl3.EventType.gamepad_button_down);
                     const button = event.gbutton.button;
-                    const IoButton = @import("io.zig").Io.Button;
-
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_up)) bus.io.setButton(0, IoButton.Up, pressed);
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_down)) bus.io.setButton(0, IoButton.Down, pressed);
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_left)) bus.io.setButton(0, IoButton.Left, pressed);
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_right)) bus.io.setButton(0, IoButton.Right, pressed);
-
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.south)) bus.io.setButton(0, IoButton.A, pressed); // A
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.east)) bus.io.setButton(0, IoButton.B, pressed); // B
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.right_shoulder)) bus.io.setButton(0, IoButton.C, pressed); // C
-
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.west)) bus.io.setButton(0, IoButton.X, pressed); // X
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.north)) bus.io.setButton(0, IoButton.Y, pressed); // Y
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.left_shoulder)) bus.io.setButton(0, IoButton.Z, pressed); // Z
-
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.back)) bus.io.setButton(0, IoButton.Mode, pressed); // Mode
-                    if (button == @intFromEnum(zsdl3.Gamepad.Button.start)) bus.io.setButton(0, IoButton.Start, pressed);
+                    const port = findGamepadPort(&gamepads, event.gbutton.which) orelse continue;
+                    if (gamepadInputFromButton(button)) |mapped_button| {
+                        _ = input_bindings.applyGamepad(&bus.io, port, mapped_button, pressed);
+                    }
                 },
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
-                    // ... Input handling ...
                     const pressed = (event.type == zsdl3.EventType.key_down);
                     const scancode = event.key.scancode;
-                    const IoButton = @import("io.zig").Io.Button;
+                    if (keyboardInputFromScancode(scancode)) |mapped_key| {
+                        _ = input_bindings.applyKeyboard(&bus.io, mapped_key, pressed);
 
-                    // Player 1 Input Mapping
-                    if (scancode == zsdl3.Scancode.up) bus.io.setButton(0, IoButton.Up, pressed);
-                    if (scancode == zsdl3.Scancode.down) bus.io.setButton(0, IoButton.Down, pressed);
-                    if (scancode == zsdl3.Scancode.left) bus.io.setButton(0, IoButton.Left, pressed);
-                    if (scancode == zsdl3.Scancode.right) bus.io.setButton(0, IoButton.Right, pressed);
-                    if (scancode == zsdl3.Scancode.a) bus.io.setButton(0, IoButton.A, pressed);
-                    if (scancode == zsdl3.Scancode.s) bus.io.setButton(0, IoButton.B, pressed);
-                    if (scancode == zsdl3.Scancode.d) bus.io.setButton(0, IoButton.C, pressed);
-                    if (scancode == zsdl3.Scancode.@"return") {
-                        bus.io.setButton(0, IoButton.Start, pressed);
-                    }
-
-                    // System Keys
-                    if (pressed) {
-                        if (scancode == zsdl3.Scancode.space) {
-                            // Single Step
-                            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.m68k_divider);
-                            cpu.debugDump();
+                        if (pressed) {
+                            switch (input_bindings.hotkeyForKeyboard(mapped_key) orelse continue) {
+                                .step => {
+                                    frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.m68k_divider);
+                                    cpu.debugDump();
+                                },
+                                .quit => break :mainLoop,
+                            }
                         }
-                        if (scancode == zsdl3.Scancode.escape) break :mainLoop;
                     }
                 },
                 else => {},
@@ -487,14 +580,30 @@ pub fn main() !void {
             }
             bus.vdp.setHBlank(false);
 
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, active_display_master_cycles);
+            const hint_master_cycles = bus.vdp.hInterruptMasterCycles();
+            const hblank_start_master_cycles = bus.vdp.hblankStartMasterCycles();
+            const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
+            const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
 
-            if (bus.vdp.consumeHintForLine(line, visible_lines)) {
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, first_event_master_cycles);
+
+            if (hblank_start_master_cycles == first_event_master_cycles) {
+                bus.vdp.setHBlank(true);
+            }
+            if (hint_master_cycles == first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
                 cpu.requestInterrupt(4);
             }
 
-            bus.vdp.setHBlank(true);
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, hblank_master_cycles);
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, second_event_master_cycles - first_event_master_cycles);
+
+            if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) {
+                bus.vdp.setHBlank(true);
+            }
+            if (hint_master_cycles == second_event_master_cycles and hint_master_cycles != first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
+                cpu.requestInterrupt(4);
+            }
+
+            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
 
             if (line < visible_lines) {
@@ -507,7 +616,7 @@ pub fn main() !void {
         }
         const audio_frames = bus.audio_timing.takePending();
         if (audio) |*a| {
-            try a.output.pushPending(audio_frames, &bus.z80);
+            try a.output.pushPending(audio_frames, &bus.z80, bus.vdp.pal_mode);
         }
 
         // Update texture from framebuffer

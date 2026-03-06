@@ -27,6 +27,11 @@ pub const Z80 = struct {
         if (self.handle) |h| c.jgz80_step(h, cycles);
     }
 
+    pub fn stepInstruction(self: *Z80) u32 {
+        if (self.handle) |h| return c.jgz80_step_one(h);
+        return 0;
+    }
+
     pub fn readByte(self: *Z80, addr: u16) u8 {
         if (self.handle) |h| return c.jgz80_read_byte(h, addr);
         return 0;
@@ -42,6 +47,16 @@ pub const Z80 = struct {
 
     pub fn getBank(self: *const Z80) u16 {
         if (self.handle) |h| return c.jgz80_get_bank(h);
+        return 0;
+    }
+
+    pub fn getPc(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_get_pc(h);
+        return 0;
+    }
+
+    pub fn take68kBusAccessCount(self: *Z80) u32 {
+        if (self.handle) |h| return c.jgz80_take_68k_bus_access_count(h);
         return 0;
     }
 
@@ -80,13 +95,23 @@ pub const Z80 = struct {
         if (self.handle) |h| c.jgz80_write_bus_req(h, val);
     }
 
-    pub fn readBusReq(self: *Z80) u16 {
-        if (self.handle) |h| return c.jgz80_read_bus_req(h);
+    // Reads the 68k-visible BUSACK register state at $A11100.
+    pub fn readBusReq(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_read_bus_req(@constCast(h));
         return 0x0100;
+    }
+
+    pub fn canRun(self: *const Z80) bool {
+        return self.readBusReq() != 0x0000 and self.readReset() != 0x0000;
     }
 
     // Bus Reset (0xA11200)
     pub fn writeReset(self: *Z80, val: u16) void {
         if (self.handle) |h| c.jgz80_write_reset(h, val);
+    }
+
+    pub fn readReset(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_read_reset(@constCast(h));
+        return 0x0100;
     }
 };

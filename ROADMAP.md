@@ -13,7 +13,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Project Scaffolding: Build system, SDL3 integration, memory bus structure.
 - [x] ROM Loading: `.bin` / `.md` loading and `.smd` deinterleave support.
 - [x] M68000 CPU Integration: Rocket68 C core wired through Sandopolis bus callbacks.
-- [x] Frame Scheduler: Per-line active/HBlank stepping and VBlank interrupt path.
+- [x] Frame Scheduler: Chunked master-clock stepping with per-line mode-aware HINT/HBlank events and VBlank interrupt path.
 - [x] Z80 Core Integration: jgz80 bridge with host callbacks.
 - [x] Z80 Bus Control (Basic): BUSREQ/RESET registers and 68k window gating.
 - [ ] Memory Mapping (Complete): Remaining mirror/open-bus/edge behavior.
@@ -26,17 +26,17 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Pattern/Tile Rendering: Decoding 4bpp tiles.
 - [x] Plane A / Plane B: Background layer rendering with scrolling and priority passes.
 - [x] Sprites: SAT parsing and line rendering with priority pass.
-- [x] DMA (Basic): 68k->VDP transfer path, fill-trigger, and VRAM copy mode.
+- [x] DMA (Basic): 68k->VDP transfer path, fill-trigger, VRAM copy mode, and VDP-owned transfer progression.
 - [x] Shadow/Highlight Mode: Full S/H rendering with special sprite palette handling.
 - [x] Sprite Limits: Per-line count/dot-overflow limits with x=0 masking.
 - [x] H32/H40 Mode: Support for both 256px and 320px display widths.
-- [x] Status Register: VInt pending, sprite overflow, and sprite collision flags.
+- [x] Status Register: VInt pending, sprite overflow, sprite collision, and FIFO empty/full flags.
 - [x] Interlace Mode 2: Double-resolution tile height support.
 - [x] Display Enable: Proper blanking when display bit is cleared.
 - [x] VRAM Read Buffer: Prefetch buffer for correct VRAM read behavior.
-- [ ] DMA Timing: Cycle-accurate transfer/stall behavior.
-- [ ] FIFO Emulation: Write queue with proper timing.
-- [ ] VDP Accuracy: Remaining hardware-accurate quirks/conflict behavior.
+- [ ] DMA Timing: Memory-to-VRAM startup delay, non-fill DMA CPU halting, and post-DMA replay delay are modeled; cycle-accurate transfer/stall behavior remains incomplete.
+- [ ] FIFO Emulation: FIFO queueing, status bits, write-side wait accounting, read-side drain waits, and queued-read prefetch behavior are implemented; remaining per-access timing/control-port behavior is incomplete.
+- [ ] VDP Accuracy: Mode-aware HV/status timing has improved; remaining hardware-accurate quirks, conflict behavior, exact port timing, and broader open-bus behavior are still incomplete.
 
 ### Audio Subsystem
 
@@ -51,16 +51,16 @@ This document outlines the features implemented in Sandopolis emulator and the f
 ### Input and Interaction
 
 - [x] Input Mapping (Basic): Keyboard and gamepad mapped to player 1 controls.
-- [x] Controller I/O (Basic): TH cycling and 3/6-button protocol path implemented.
+- [x] Controller I/O (Basic): Timed TH behavior and 3/6-button protocol path implemented.
 - [ ] Controller I/O (Complete): Full edge-case behavior and broader device coverage.
-- [ ] Input Mapping: Configurable keyboard/gamepad binding.
-- [ ] SRAM Support: Save game functionality for RPGs.
+- [ ] Input Mapping: Player 1/player 2 keyboard/gamepad bindings and keyboard hotkeys are configurable via `sandopolis_input.cfg` or `SANDOPOLIS_INPUT_CONFIG`; UI/profile/device-management polish is still incomplete.
+- [x] SRAM Support: Header-driven cartridge SRAM with persistent `.sav` load/store.
 
 ### Compatibility and Tooling
 
-- [x] Regression Coverage: CPU reset, bus behavior, VDP timing slices, and audio register paths.
+- [x] Regression Coverage: CPU reset, bus behavior, VDP timing slices, DMA/FIFO/control-port timing checks, SRAM persistence, and audio register paths.
 - [x] Boot Smoke Test: ROM startup progression check (Sonic test).
-- [ ] Timing Accuracy: Cycle-accurate bus timing.
+- [ ] Timing Accuracy: Slice-based scheduling still needs cycle-interleaved bus timing despite mode-aware per-line event points.
 - [ ] Debugger:
     - [ ] Register views.
     - [ ] Disassembler.

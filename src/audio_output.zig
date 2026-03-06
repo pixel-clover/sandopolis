@@ -39,6 +39,7 @@ pub const AudioOutput = struct {
         .in_rate_num = clock.master_clock_ntsc,
         .in_rate_den = clock.psg_master_cycles_per_sample,
     },
+    timing_is_pal: bool = false,
     sample_chunk: [4096]i16 = [_]i16{0} ** 4096,
     psg_sample_buf: [2048]i16 = [_]i16{0} ** 2048,
     ym_phase: [6]f32 = [_]f32{0.0} ** 6,
@@ -142,7 +143,24 @@ pub const AudioOutput = struct {
         return self.sample_chunk[0 .. frames * channels];
     }
 
-    pub fn pushPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *const Z80) !void {
+    fn setConverterRate(converter: *RateConverter, in_rate_num: u32) void {
+        if (converter.in_rate_num == in_rate_num) return;
+        converter.in_rate_num = in_rate_num;
+        converter.remainder = 0;
+    }
+
+    pub fn setTimingMode(self: *AudioOutput, is_pal: bool) void {
+        if (self.timing_is_pal == is_pal) return;
+
+        self.timing_is_pal = is_pal;
+        const master_clock = if (is_pal) clock.master_clock_pal else clock.master_clock_ntsc;
+        setConverterRate(&self.fm_converter, master_clock);
+        setConverterRate(&self.psg_converter, master_clock);
+    }
+
+    pub fn pushPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *const Z80, is_pal: bool) !void {
+        self.setTimingMode(is_pal);
+
         const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return;
         if (queued_bytes >= max_queued_bytes) return;
 
@@ -194,4 +212,22 @@ test "rate converter keeps FM/PSG aligned over one NTSC frame" {
 
     try std.testing.expectEqual(@as(u32, 799), fm_out);
     try std.testing.expectEqual(@as(u32, 800), psg_out);
+}
+
+test "rate converter keeps FM/PSG aligned over one PAL frame" {
+    var output = AudioOutput{
+        .stream = @ptrFromInt(1),
+    };
+    output.setTimingMode(true);
+
+    const pending = PendingAudioFrames{
+        .fm_frames = 1061,
+        .psg_frames = 4460,
+    };
+
+    const fm_out = output.fm_converter.toOutputFrames(pending.fm_frames, AudioOutput.output_rate);
+    const psg_out = output.psg_converter.toOutputFrames(pending.psg_frames, AudioOutput.output_rate);
+
+    try std.testing.expectEqual(@as(u32, 964), fm_out);
+    try std.testing.expectEqual(@as(u32, 965), psg_out);
 }

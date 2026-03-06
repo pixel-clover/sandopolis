@@ -1,29 +1,26 @@
-const std = @import("std");
-
 pub const Io = struct {
+    const th_bit: u8 = 6;
+    const th_high_delay_m68k_cycles: u32 = 30;
+    const six_button_timeout_m68k_cycles: u32 = 12_150;
+
     data: [3]u8, // 0=A, 1=B, 2=C
     ctrl: [3]u8, // 0=A, 1=B, 2=C
 
-    // Internal Controller State (Active Low: 0=Pressed, 1=Released)
-    // Bit 0: Up
-    // Bit 1: Down
-    // Bit 2: Left
-    // Bit 3: Right
-    // Bit 4: B
-    // Bit 5: C
-    // Bit 6: A
-    // Bit 7: Start
-    // 0:Up, 1:Down, 2:Left, 3:Right, 4:B, 5:C, 6:A, 7:Start
-    // 8:X, 9:Y, 10:Z, 11:Mode
     pad: [2]u16,
-    cycle: [2]u4,
+    th_flip_count: [2]u2,
+    flip_reset_counter: [2]u32,
+    cycles_until_th_high: [2]u32,
+    controller_th: [2]bool,
 
     pub fn init() Io {
         return Io{
             .data = [_]u8{0} ** 3,
             .ctrl = [_]u8{0} ** 3,
-            .pad = [_]u16{0xFFFF} ** 2, // All released (Active Low)
-            .cycle = [_]u4{0} ** 2,
+            .pad = [_]u16{0xFFFF} ** 2,
+            .th_flip_count = [_]u2{0} ** 2,
+            .flip_reset_counter = [_]u32{0} ** 2,
+            .cycles_until_th_high = [_]u32{0} ** 2,
+            .controller_th = [_]bool{true} ** 2,
         };
     }
 
@@ -32,8 +29,8 @@ pub const Io = struct {
             0x01 => return 0xA0, // Version: bit7=Overseas, bit5=No Mega-CD, bit6=0(NTSC)
             0x03 => return self.readData(0), // Port A data, low byte
             0x05 => return self.readData(1), // Port B data, low byte
-            0x09 => return self.ctrl[0], // Port A control, low byte
-            0x0B => return self.ctrl[1], // Port B control, low byte
+            0x09 => return self.ctrl[0],
+            0x0B => return self.ctrl[1],
             else => return 0,
         }
     }
@@ -42,83 +39,92 @@ pub const Io = struct {
         switch (address & 0xFF) {
             0x03 => self.writeData(0, value),
             0x05 => self.writeData(1, value),
-            0x09 => self.ctrl[0] = value,
-            0x0B => self.ctrl[1] = value,
+            0x09 => self.writeCtrl(0, value),
+            0x0B => self.writeCtrl(1, value),
             else => {},
         }
     }
 
     fn readData(self: *const Io, port: usize) u8 {
-        var value: u8 = self.data[port] & 0x40; // Keep TH output bit (bit 6)
-        const pad = self.pad[port];
-        const cycle = self.cycle[port];
+        var controller_byte: u8 = switch (self.controllerState(port)) {
+            .th_high => @as(u8, @truncate(self.pad[port] & 0x3F)),
+            .th_low_standard => @as(u8, @truncate(self.pad[port] & 0x03)) | buttonBit(self.pad[port], Button.A, 4) | buttonBit(self.pad[port], Button.Start, 5),
+            .th_high_six_button => buttonBit(self.pad[port], Button.Z, 0) |
+                buttonBit(self.pad[port], Button.Y, 1) |
+                buttonBit(self.pad[port], Button.X, 2) |
+                buttonBit(self.pad[port], Button.Mode, 3) |
+                buttonBit(self.pad[port], Button.B, 4) |
+                buttonBit(self.pad[port], Button.C, 5),
+            .th_low_id_low => buttonBit(self.pad[port], Button.A, 4) | buttonBit(self.pad[port], Button.Start, 5),
+            .th_low_id_high => buttonBit(self.pad[port], Button.A, 4) | buttonBit(self.pad[port], Button.Start, 5) | 0x0F,
+        };
+        controller_byte |= @as(u8, @intFromBool(self.controller_th[port])) << th_bit;
+        controller_byte &= ~self.ctrl[port];
 
-        const th = (value & 0x40) != 0;
+        const outputs_byte = self.data[port] & (self.ctrl[port] | 0x80);
+        return controller_byte | outputs_byte;
+    }
 
-        if (th) {
-            // TH = 1: CB, RB, LB, U, D, L, R
-            // Bits: 5=C, 4=B, 3=R, 2=L, 1=D, 0=U
-            value |= (@as(u8, @truncate(pad)) & 0x3F);
-        } else {
-            // TH = 0
-            // Standard: ? S A 0 0 D U
-            // Cycle 3 (6-button): ? S A M X Y Z
+    fn buttonBit(pad: u16, button: u16, output_bit: u3) u8 {
+        return @as(u8, @intFromBool((pad & button) != 0)) << output_bit;
+    }
 
-            // Note: My cycle logic increments on writes (High->Low).
-            // So when we are here (TH=0), we are IN a cycle state.
+    const ControllerState = enum {
+        th_high,
+        th_low_standard,
+        th_high_six_button,
+        th_low_id_low,
+        th_low_id_high,
+    };
 
-            // Cycle 3 means we have seen High->Low 3 times.
-            if (cycle == 3) {
-                // Return Extra Buttons: D3=Mode, D2=X, D1=Y, D0=Z, D4=A, D5=Start
-                // Z (Bit 10) -> D0
-                if ((pad & 0x0400) != 0) value |= 0x01;
-                // Y (Bit 9) -> D1
-                if ((pad & 0x0200) != 0) value |= 0x02;
-                // X (Bit 8) -> D2
-                if ((pad & 0x0100) != 0) value |= 0x04;
-                // Mode (Bit 11) -> D3
-                if ((pad & 0x0800) != 0) value |= 0x08;
-
-                // Start (Bit 5? 7?) -> D5 ? No, TH=0 means D5 is Start?
-                // Standard TH=0: ? S A 0 0 D U
-                // Cycle 3: ? S A M X Y Z
-                // So S (Start) is on D5, A is on D4.
-
-                // A (Bit 6) -> D4 (0x10)
-                if ((pad & 0x0040) != 0) value |= 0x10;
-                // Start (Bit 7) -> D5 (0x20)
-                if ((pad & 0x0080) != 0) value |= 0x20;
-            } else {
-                // Standard TH=0
-                // ? S A 0 0 D U (Bits 0-1 are U, D)
-                value |= (@as(u8, @truncate(pad)) & 0x03); // U, D
-
-                // Bit 2,3 forced to 0 (Left, Right are low in TH=0 standard mapping, meaning pressed? No meaning 0 logic level).
-                // Actually standard says 0. So leaving them 0 is correct.
-
-                if ((pad & 0x0040) != 0) value |= 0x10; // A
-                if ((pad & 0x0080) != 0) value |= 0x20; // Start
-            }
+    fn controllerState(self: *const Io, port: usize) ControllerState {
+        if (self.controller_th[port]) {
+            return if (self.th_flip_count[port] == 3) .th_high_six_button else .th_high;
         }
-        return value;
+
+        return switch (self.th_flip_count[port]) {
+            0, 1 => .th_low_standard,
+            2 => .th_low_id_low,
+            3 => .th_low_id_high,
+        };
+    }
+
+    fn writeCtrl(self: *Io, port: usize, value: u8) void {
+        self.ctrl[port] = value;
+        self.maybeSetTh(port);
+        self.cycles_until_th_high[port] = if ((value & (1 << th_bit)) == 0) th_high_delay_m68k_cycles else 0;
     }
 
     fn writeData(self: *Io, port: usize, value: u8) void {
-        const old_val = self.data[port];
         self.data[port] = value;
+        self.maybeSetTh(port);
+    }
 
-        // Check TH transition (Bit 6)
-        // High (1) -> Low (0)
-        if ((old_val & 0x40) != 0 and (value & 0x40) == 0) {
-            self.cycle[port] += 1;
-        } else if ((value & 0x40) != 0) {
-            // TH goes High.
-            // If checking specifically for 6-button reset?
-            // Usually if not reading appropriately, it resets?
-            // Simple logic:
-            if (self.cycle[port] == 3) {
-                // After reading 6-buttons, next High resets.
-                self.cycle[port] = 0;
+    fn maybeSetTh(self: *Io, port: usize) void {
+        if ((self.ctrl[port] & (1 << th_bit)) == 0) {
+            return;
+        } else {
+            const th = (self.data[port] & (1 << th_bit)) != 0;
+            if (!self.controller_th[port] and th) {
+                self.th_flip_count[port] +%= 1;
+                self.flip_reset_counter[port] = six_button_timeout_m68k_cycles;
+            }
+            self.controller_th[port] = th;
+        }
+    }
+
+    pub fn tick(self: *Io, m68k_cycles: u32) void {
+        for (0..self.pad.len) |port| {
+            self.flip_reset_counter[port] = self.flip_reset_counter[port] -| m68k_cycles;
+            if (self.flip_reset_counter[port] == 0) {
+                self.th_flip_count[port] = 0;
+            }
+
+            if (self.cycles_until_th_high[port] != 0) {
+                self.cycles_until_th_high[port] = self.cycles_until_th_high[port] -| m68k_cycles;
+                if (self.cycles_until_th_high[port] == 0) {
+                    self.controller_th[port] = true;
+                }
             }
         }
     }

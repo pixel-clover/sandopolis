@@ -34,16 +34,19 @@ pub const Vdp = struct {
     dma_source_addr: u32,
     dma_length: u16,
     dma_remaining: u32,
+    dma_start_delay_slots: u8,
     fifo: [4]VdpWriteFifoEntry,
     fifo_head: u8,
     fifo_len: u8,
-    pending_fifo: [4]VdpWriteFifoEntry,
+    pending_fifo: [16]VdpWriteFifoEntry,
     pending_fifo_head: u8,
     pending_fifo_len: u8,
     pending_port_writes: [8]PendingPortWrite,
     pending_port_write_head: u8,
     pending_port_write_len: u8,
+    pending_port_write_delay_master_cycles: u16,
     transfer_master_remainder: u8,
+    projected_data_port_write_wait: ProjectedDataPortWriteWait,
 
     // Timing for V-BLANK
     scanline: u16, // Current scanline (0-261 for NTSC)
@@ -63,6 +66,7 @@ pub const Vdp = struct {
     const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
     const dma_access_slot_cycles: u32 = 8;
     const dma_fifo_latency_slots: u8 = 3;
+    const pending_port_write_replay_delay_pixels: u16 = 5;
 
     const VdpWriteFifoEntry = struct {
         code: u8 = 0,
@@ -74,6 +78,27 @@ pub const Vdp = struct {
     const PendingPortWrite = union(enum) {
         data: u16,
         control: u16,
+    };
+
+    const DataPortReadStorage = enum {
+        vram,
+        cram,
+        vsram,
+    };
+
+    const DataPortReadTarget = struct {
+        storage: DataPortReadStorage,
+        high_index: u16,
+        low_index: u16,
+    };
+
+    const ProjectedDataPortWriteWait = struct {
+        valid: bool = false,
+        fifo_latencies: [4]u8 = [_]u8{0} ** 4,
+        fifo_len: u8 = 0,
+        pending_fifo_len: u8 = 0,
+        transfer_remainder: u8 = 0,
+        pending_port_write_delay_master_cycles: u16 = 0,
     };
 
     // 3-bit Genesis color to 8-bit lookup: 0->0, 1->36, 2->73, 3->109, 4->146, 5->182, 6->219, 7->255
@@ -104,16 +129,19 @@ pub const Vdp = struct {
             .dma_source_addr = 0,
             .dma_length = 0,
             .dma_remaining = 0,
+            .dma_start_delay_slots = 0,
             .fifo = [_]VdpWriteFifoEntry{.{}} ** 4,
             .fifo_head = 0,
             .fifo_len = 0,
-            .pending_fifo = [_]VdpWriteFifoEntry{.{}} ** 4,
+            .pending_fifo = [_]VdpWriteFifoEntry{.{}} ** 16,
             .pending_fifo_head = 0,
             .pending_fifo_len = 0,
             .pending_port_writes = [_]PendingPortWrite{.{ .data = 0 }} ** 8,
             .pending_port_write_head = 0,
             .pending_port_write_len = 0,
+            .pending_port_write_delay_master_cycles = 0,
             .transfer_master_remainder = 0,
+            .projected_data_port_write_wait = .{},
             .scanline = 0,
             .line_master_cycle = 0,
             .hint_counter = 0,
@@ -198,6 +226,11 @@ pub const Vdp = struct {
         return @as(usize, self.pending_port_write_len) >= self.pending_port_writes.len;
     }
 
+    fn shouldBufferPortWrite(self: *const Vdp) bool {
+        return (self.dma_active and !self.dma_fill and !self.dma_copy) or
+            self.pending_port_write_delay_master_cycles != 0;
+    }
+
     fn pushPendingPortWrite(self: *Vdp, write: PendingPortWrite) void {
         if (self.pendingPortWritesIsFull()) return;
 
@@ -213,6 +246,104 @@ pub const Vdp = struct {
         self.pending_port_write_head = @intCast((@as(usize, self.pending_port_write_head) + 1) % self.pending_port_writes.len);
         self.pending_port_write_len -= 1;
         return write;
+    }
+
+    fn advanceTransferPhase(self: *Vdp, master_cycles: u32) void {
+        const total_cycles = @as(u32, self.transfer_master_remainder) + master_cycles;
+        self.transfer_master_remainder = @intCast(total_cycles % dma_access_slot_cycles);
+    }
+
+    fn pendingPortWriteReplayDelayMasterCycles(self: *const Vdp) u16 {
+        const master_cycles_per_pixel: u16 = if (self.isH40()) 8 else 10;
+        return pending_port_write_replay_delay_pixels * master_cycles_per_pixel;
+    }
+
+    fn memoryToVramDmaStartDelaySlots(self: *const Vdp) u8 {
+        return if ((self.code & 0xF) == 0x5) 5 else 8;
+    }
+
+    fn invalidateProjectedDataPortWriteWait(self: *Vdp) void {
+        self.projected_data_port_write_wait.valid = false;
+    }
+
+    fn syncProjectedDataPortWriteWait(self: *Vdp) void {
+        if (self.projected_data_port_write_wait.valid) return;
+
+        self.projected_data_port_write_wait = .{
+            .valid = true,
+            .fifo_len = self.fifo_len,
+            .pending_fifo_len = self.pending_fifo_len,
+            .transfer_remainder = self.transfer_master_remainder,
+            .pending_port_write_delay_master_cycles = self.pending_port_write_delay_master_cycles,
+        };
+
+        var i: usize = 0;
+        while (i < @as(usize, self.fifo_len)) : (i += 1) {
+            const idx = (@as(usize, self.fifo_head) + i) % self.fifo.len;
+            self.projected_data_port_write_wait.fifo_latencies[i] = self.fifo[idx].latency;
+        }
+    }
+
+    fn projectedDataPortWriteHasRoom(self: *const Vdp) bool {
+        const projected = &self.projected_data_port_write_wait;
+        return projected.pending_fifo_len == 0 and @as(usize, projected.fifo_len) < self.fifo.len;
+    }
+
+    fn projectedAdvanceTransferPhase(self: *Vdp, master_cycles: u32) void {
+        const projected = &self.projected_data_port_write_wait;
+        const total_cycles = @as(u32, projected.transfer_remainder) + master_cycles;
+        projected.transfer_remainder = @intCast(total_cycles % dma_access_slot_cycles);
+    }
+
+    fn projectedProcessAccessSlot(self: *Vdp) void {
+        const projected = &self.projected_data_port_write_wait;
+
+        var i: usize = 0;
+        while (i < @as(usize, projected.fifo_len)) : (i += 1) {
+            if (projected.fifo_latencies[i] > 0) {
+                projected.fifo_latencies[i] -= 1;
+            }
+        }
+
+        if (projected.fifo_len > 0 and projected.fifo_latencies[0] == 0) {
+            i = 1;
+            while (i < @as(usize, projected.fifo_len)) : (i += 1) {
+                projected.fifo_latencies[i - 1] = projected.fifo_latencies[i];
+            }
+            projected.fifo_len -= 1;
+        }
+
+        if (projected.pending_fifo_len != 0 and @as(usize, projected.fifo_len) < self.fifo.len) {
+            projected.fifo_latencies[projected.fifo_len] = dma_fifo_latency_slots;
+            projected.fifo_len += 1;
+            projected.pending_fifo_len -= 1;
+        }
+    }
+
+    fn reserveProjectedDataPortWriteWait(self: *Vdp) u32 {
+        self.syncProjectedDataPortWriteWait();
+
+        var wait_master_cycles: u32 = 0;
+        while (!self.projectedDataPortWriteHasRoom()) {
+            const projected = &self.projected_data_port_write_wait;
+
+            if (projected.pending_port_write_delay_master_cycles != 0) {
+                wait_master_cycles += projected.pending_port_write_delay_master_cycles;
+                self.projectedAdvanceTransferPhase(projected.pending_port_write_delay_master_cycles);
+                projected.pending_port_write_delay_master_cycles = 0;
+                continue;
+            }
+
+            const slot_wait = dma_access_slot_cycles - @as(u32, projected.transfer_remainder);
+            wait_master_cycles += slot_wait;
+            projected.transfer_remainder = 0;
+            self.projectedProcessAccessSlot();
+        }
+
+        const projected = &self.projected_data_port_write_wait;
+        projected.fifo_latencies[projected.fifo_len] = dma_fifo_latency_slots;
+        projected.fifo_len += 1;
+        return wait_master_cycles;
     }
 
     fn fifoTickLatency(self: *Vdp) void {
@@ -275,6 +406,145 @@ pub const Vdp = struct {
                 return slots;
             }
         }
+    }
+
+    fn fifoSlotsUntilDrained(self: *const Vdp, pending_ahead: u8) u32 {
+        var fifo_latencies = [_]u8{0} ** 4;
+        var fifo_len: u8 = 0;
+
+        var i: usize = 0;
+        while (i < @as(usize, self.fifo_len)) : (i += 1) {
+            const idx = (@as(usize, self.fifo_head) + i) % self.fifo.len;
+            fifo_latencies[i] = self.fifo[idx].latency;
+            fifo_len += 1;
+        }
+
+        var queued_ahead = pending_ahead;
+        var slots: u32 = 0;
+        while (fifo_len != 0 or queued_ahead != 0) {
+            slots += 1;
+
+            i = 0;
+            while (i < fifo_len) : (i += 1) {
+                if (fifo_latencies[i] > 0) {
+                    fifo_latencies[i] -= 1;
+                }
+            }
+
+            if (fifo_len > 0 and fifo_latencies[0] == 0) {
+                i = 1;
+                while (i < fifo_len) : (i += 1) {
+                    fifo_latencies[i - 1] = fifo_latencies[i];
+                }
+                fifo_len -= 1;
+            }
+
+            if (queued_ahead != 0 and fifo_len < fifo_latencies.len) {
+                fifo_latencies[fifo_len] = dma_fifo_latency_slots;
+                fifo_len += 1;
+                queued_ahead -= 1;
+            }
+        }
+
+        return slots;
+    }
+
+    fn dataPortReadTargetFor(code: u8, addr: u16) ?DataPortReadTarget {
+        switch (code & 0xF) {
+            0x0 => {
+                const high_index = addr ^ 1;
+                return .{
+                    .storage = .vram,
+                    .high_index = high_index,
+                    .low_index = high_index ^ 1,
+                };
+            },
+            0x8 => {
+                const idx = addr & 0x7E;
+                return .{
+                    .storage = .cram,
+                    .high_index = idx,
+                    .low_index = idx + 1,
+                };
+            },
+            0x4 => {
+                const idx: u16 = (addr >> 1) % 40 * 2;
+                return .{
+                    .storage = .vsram,
+                    .high_index = idx,
+                    .low_index = idx + 1,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    fn currentDataPortReadWord(self: *const Vdp, code: u8, addr: u16) ?u16 {
+        const target = dataPortReadTargetFor(code, addr) orelse return null;
+        const high: u8 = switch (target.storage) {
+            .vram => self.vramReadByte(target.high_index),
+            .cram => self.cram[target.high_index],
+            .vsram => self.vsram[target.high_index],
+        };
+        const low: u8 = switch (target.storage) {
+            .vram => self.vramReadByte(target.low_index),
+            .cram => self.cram[target.low_index],
+            .vsram => self.vsram[target.low_index],
+        };
+        return (@as(u16, high) << 8) | low;
+    }
+
+    fn applyQueuedWriteToDataPortReadTarget(target: DataPortReadTarget, high: *u8, low: *u8, write_storage: DataPortReadStorage, write_base: u16, value: u16) void {
+        if (target.storage != write_storage) return;
+
+        const write_high: u8 = @intCast((value >> 8) & 0xFF);
+        const write_low: u8 = @intCast(value & 0xFF);
+        const write_next = write_base +% 1;
+
+        if (target.high_index == write_base) {
+            high.* = write_high;
+        } else if (target.high_index == write_next) {
+            high.* = write_low;
+        }
+
+        if (target.low_index == write_base) {
+            low.* = write_high;
+        } else if (target.low_index == write_next) {
+            low.* = write_low;
+        }
+    }
+
+    fn applyQueuedEntryToDataPortReadTarget(target: DataPortReadTarget, high: *u8, low: *u8, entry: VdpWriteFifoEntry) void {
+        switch (entry.code & 0xF) {
+            0x1 => applyQueuedWriteToDataPortReadTarget(target, high, low, .vram, entry.addr, entry.word),
+            0x3 => applyQueuedWriteToDataPortReadTarget(target, high, low, .cram, entry.addr & 0x7E, entry.word),
+            0x5 => applyQueuedWriteToDataPortReadTarget(target, high, low, .vsram, (entry.addr >> 1) % 40 * 2, entry.word),
+            else => {},
+        }
+    }
+
+    fn currentDataPortReadWordWithQueuedWrites(self: *const Vdp, code: u8, addr: u16) ?u16 {
+        const target = dataPortReadTargetFor(code, addr) orelse return null;
+        var high: u8 = undefined;
+        var low: u8 = undefined;
+
+        const base = self.currentDataPortReadWord(code, addr) orelse return null;
+        high = @intCast((base >> 8) & 0xFF);
+        low = @intCast(base & 0xFF);
+
+        var i: usize = 0;
+        while (i < @as(usize, self.fifo_len)) : (i += 1) {
+            const idx = (@as(usize, self.fifo_head) + i) % self.fifo.len;
+            applyQueuedEntryToDataPortReadTarget(target, &high, &low, self.fifo[idx]);
+        }
+
+        i = 0;
+        while (i < @as(usize, self.pending_fifo_len)) : (i += 1) {
+            const idx = (@as(usize, self.pending_fifo_head) + i) % self.pending_fifo.len;
+            applyQueuedEntryToDataPortReadTarget(target, &high, &low, self.pending_fifo[idx]);
+        }
+
+        return (@as(u16, high) << 8) | low;
     }
 
     // -- Mode queries --
@@ -831,22 +1101,8 @@ pub const Vdp = struct {
         const result = self.read_buffer;
 
         // Prefetch next value into buffer.
-        switch (self.code & 0xF) {
-            0x0 => { // VRAM Read
-                // VRAM reads have byte-swap: address bit 0 swaps bytes.
-                const a = self.addr;
-                const swapped = a ^ 1;
-                self.read_buffer = (@as(u16, self.vramReadByte(swapped)) << 8) | self.vramReadByte(swapped ^ 1);
-            },
-            0x8 => { // CRAM Read
-                const idx = self.addr & 0x7E; // Word-aligned, 64 entries
-                self.read_buffer = (@as(u16, self.cram[idx]) << 8) | self.cram[idx + 1];
-            },
-            0x4 => { // VSRAM Read
-                const idx: u16 = (self.addr >> 1) % 40 * 2;
-                self.read_buffer = (@as(u16, self.vsram[idx]) << 8) | self.vsram[idx + 1];
-            },
-            else => {},
+        if (self.currentDataPortReadWordWithQueuedWrites(self.code, self.addr)) |word| {
+            self.read_buffer = word;
         }
 
         self.advanceAddr();
@@ -880,7 +1136,7 @@ pub const Vdp = struct {
     }
 
     pub fn writeData(self: *Vdp, value: u16) void {
-        if (self.dma_active and !self.dma_fill and !self.dma_copy) {
+        if (self.shouldBufferPortWrite()) {
             self.pushPendingPortWrite(.{ .data = value });
             return;
         }
@@ -918,6 +1174,7 @@ pub const Vdp = struct {
             self.dma_remaining = 0;
             self.dma_fill = false;
             self.dma_active = false;
+            self.dma_start_delay_slots = 0;
             self.fifo_head = 0;
             self.fifo_len = 0;
             self.pending_fifo_head = 0;
@@ -946,13 +1203,22 @@ pub const Vdp = struct {
         self.dma_active = false;
         self.dma_fill = false;
         self.dma_copy = false;
-        self.applyBufferedPortWrites();
+        self.dma_start_delay_slots = 0;
+        if (!self.pendingPortWritesIsEmpty()) {
+            self.pending_port_write_delay_master_cycles = self.pendingPortWriteReplayDelayMasterCycles();
+        }
     }
 
     fn progressMemoryToVramDma(self: *Vdp, access_slots: u32, read_ctx: ?*anyopaque, read_word: DmaReadFn) void {
         var slots_left = access_slots;
         while (slots_left > 0) : (slots_left -= 1) {
-            if (!self.fifoIsFull() and self.dma_remaining > 0) {
+            var can_transfer = true;
+            if (self.dma_start_delay_slots != 0) {
+                self.dma_start_delay_slots -= 1;
+                can_transfer = self.dma_start_delay_slots == 0;
+            }
+
+            if (can_transfer and !self.fifoIsFull() and self.dma_remaining > 0) {
                 const word = read_word(read_ctx, self.dma_source_addr);
                 const entry = self.makeWriteFifoEntry(word, dma_fifo_latency_slots);
                 self.dma_source_addr +%= 2;
@@ -1020,7 +1286,21 @@ pub const Vdp = struct {
     }
 
     pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, read_word: ?DmaReadFn) void {
-        const total_cycles = @as(u32, self.transfer_master_remainder) + master_cycles;
+        defer self.invalidateProjectedDataPortWriteWait();
+
+        var available_master_cycles = master_cycles;
+        if (self.pending_port_write_delay_master_cycles != 0) {
+            const delay_step = @min(available_master_cycles, self.pending_port_write_delay_master_cycles);
+            self.advanceTransferPhase(delay_step);
+            self.pending_port_write_delay_master_cycles -= @intCast(delay_step);
+            available_master_cycles -= delay_step;
+
+            if (self.pending_port_write_delay_master_cycles == 0) {
+                self.applyBufferedPortWrites();
+            }
+        }
+
+        const total_cycles = @as(u32, self.transfer_master_remainder) + available_master_cycles;
         const access_slots = total_cycles / dma_access_slot_cycles;
         self.transfer_master_remainder = @intCast(total_cycles % dma_access_slot_cycles);
         if (access_slots == 0) return;
@@ -1059,26 +1339,274 @@ pub const Vdp = struct {
         return self.fifoSlotsUntilNextOpen(pending_ahead) * dma_access_slot_cycles;
     }
 
+    pub fn reserveDataPortWriteWaitMasterCycles(self: *Vdp) u32 {
+        if (self.dma_active and self.dma_fill) return 0;
+        return self.reserveProjectedDataPortWriteWait();
+    }
+
+    pub fn dataPortReadWaitMasterCycles(self: *const Vdp) u32 {
+        if (self.dma_active and self.dma_fill) return 0;
+        if (self.fifoIsEmpty() and self.pendingFifoIsEmpty()) return 0;
+
+        return self.fifoSlotsUntilDrained(self.pending_fifo_len) * dma_access_slot_cycles;
+    }
+
     pub fn shouldHaltCpu(self: *const Vdp) bool {
-        return (self.dma_active and !self.dma_fill) or !self.pendingFifoIsEmpty();
+        return self.dma_active and !self.dma_fill;
+    }
+
+    pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
+        if (self.dma_active and !self.dma_fill and !self.dma_copy) return 0;
+        return self.pending_port_write_delay_master_cycles;
     }
 
     // -- Control Port --
 
     pub fn readControl(self: *Vdp) u16 {
+        const current = self.adjustedLineState(0);
+        const status = self.statusWordForAdjustedState(current);
+
+        // Reading status clears pending command, vint pending, and sprite flags.
+        self.pending_command = false;
+        self.vint_pending = false;
+        self.sprite_overflow = false;
+        self.sprite_collision = false;
+
+        return status;
+    }
+
+    fn statusReadAdjustmentMasterCycles(opcode: u16) u32 {
+        // Approximate the local jgenesis timing hack: MOVE/CMP reads tend to resolve near the
+        // current point, CMPI/immediate BTST reads resolve a little later, and other instructions
+        // use a conservative future sample.
+        if ((opcode & 0xC000) == 0 and ((opcode >> 12) & 0x3) != 0) {
+            return 0;
+        }
+
+        if ((opcode & 0xFF00) == 0x0C00) {
+            return clock.m68kCyclesToMaster(4);
+        }
+
+        if ((opcode & 0xFF00) == 0x0800 and ((opcode >> 6) & 0x3) == 0) {
+            return clock.m68kCyclesToMaster(4);
+        }
+
+        if ((opcode & 0xF000) == 0xB000) {
+            return 0;
+        }
+
+        if ((opcode & 0x0100) != 0 and ((opcode >> 6) & 0x3) == 0) {
+            return clock.m68kCyclesToMaster(2);
+        }
+
+        return clock.m68kCyclesToMaster(8);
+    }
+
+    const AdjustedLineState = struct {
+        scanline: u16,
+        line_master_cycle: u16,
+        hblank: bool,
+        vblank: bool,
+    };
+
+    const VCounterState = struct {
+        counter: u8,
+        vblank: bool,
+    };
+
+    fn activeVisibleLines(self: *const Vdp) u16 {
+        if (!self.pal_mode) return clock.ntsc_visible_lines;
+        return if ((self.regs[1] & 0x08) != 0) clock.pal_visible_lines else clock.ntsc_visible_lines;
+    }
+
+    fn totalLinesForCurrentFrame(self: *const Vdp) u16 {
+        if (!self.isInterlaceMode2()) {
+            return if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+        }
+
+        if (self.pal_mode) {
+            return if (self.odd_frame) clock.pal_lines_per_frame else clock.pal_lines_per_frame - 1;
+        }
+
+        return if (self.odd_frame) clock.ntsc_lines_per_frame + 1 else clock.ntsc_lines_per_frame;
+    }
+
+    pub fn hInterruptMasterCycles(self: *const Vdp) u16 {
+        return if (self.isH40()) 0x014A * 8 else 0x010A * 10;
+    }
+
+    pub fn hblankStartMasterCycles(self: *const Vdp) u16 {
+        return if (self.isH40()) 0x015A * 8 else 0x0108 * 10;
+    }
+
+    fn effectiveScanlineForVCounter(self: *const Vdp, scanline: u16, line_master_cycle: u16) u16 {
+        if (line_master_cycle < self.hInterruptMasterCycles()) return scanline;
+
+        const total_lines = self.totalLinesForCurrentFrame();
+        if (scanline + 1 >= total_lines) return 0;
+        return scanline + 1;
+    }
+
+    fn vCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) VCounterState {
+        const effective_scanline = self.effectiveScanlineForVCounter(scanline, line_master_cycle);
+        const active_scanlines = self.activeVisibleLines();
+
+        if (!self.isInterlaceMode2()) {
+            const threshold: u16 = if (!self.pal_mode)
+                0x00EA
+            else if ((self.regs[1] & 0x08) != 0)
+                0x010A
+            else
+                0x0102;
+            const scanlines_per_frame: u16 = if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+            const counter_u16: u16 = if (effective_scanline <= threshold)
+                effective_scanline
+            else
+                (effective_scanline -% scanlines_per_frame) & 0x01FF;
+
+            return .{
+                .counter = @truncate(counter_u16),
+                .vblank = counter_u16 >= active_scanlines and counter_u16 != 0x01FF,
+            };
+        }
+
+        const threshold: u16 = if (!self.pal_mode)
+            0x00EA
+        else if ((self.regs[1] & 0x08) != 0)
+            0x0109
+        else
+            0x0101;
+        const scanlines_per_frame = self.totalLinesForCurrentFrame();
+        const internal_counter: u16 = if (effective_scanline <= threshold)
+            effective_scanline
+        else
+            (effective_scanline -% scanlines_per_frame) & 0x01FF;
+        const external_counter: u16 = ((internal_counter << 1) & 0x00FE) | ((internal_counter >> 7) & 0x0001);
+
+        return .{
+            .counter = @truncate(external_counter),
+            .vblank = internal_counter >= active_scanlines and internal_counter != 0x01FF,
+        };
+    }
+
+    fn internalHFor(self: *const Vdp, line_master_cycle: u16) u16 {
+        const pixel = if (self.isH40())
+            scanlineMasterCyclesToPixelH40(line_master_cycle)
+        else
+            scanlineMasterCyclesToPixelH32(line_master_cycle);
+        return if (self.isH40())
+            pixelToInternalHH40(pixel)
+        else
+            pixelToInternalHH32(pixel);
+    }
+
+    fn statusHBlankFlagAt(self: *const Vdp, line_master_cycle: u16) bool {
+        const internal_h = self.internalHFor(line_master_cycle);
+        if (self.isH40()) {
+            return !(internal_h >= 0x000B and internal_h < 0x0166);
+        }
+
+        return !(internal_h >= 0x000A and internal_h < 0x0126);
+    }
+
+    fn adjustedLineState(self: *const Vdp, adjustment_master_cycles: u32) AdjustedLineState {
+        const total_master = @as(u32, self.line_master_cycle) + adjustment_master_cycles;
+        const line_advance = total_master / clock.ntsc_master_cycles_per_line;
+        const total_lines = self.totalLinesForCurrentFrame();
+        const line_master_cycle: u16 = @intCast(total_master % clock.ntsc_master_cycles_per_line);
+        const scanline: u16 = @intCast((@as(u32, self.scanline) + line_advance) % total_lines);
+        const v_counter = self.vCounterAt(scanline, line_master_cycle);
+        return .{
+            .scanline = scanline,
+            .line_master_cycle = line_master_cycle,
+            .hblank = self.statusHBlankFlagAt(line_master_cycle),
+            .vblank = v_counter.vblank,
+        };
+    }
+
+    fn computeLiveHVCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) u16 {
+        const v_counter = self.vCounterAt(scanline, line_master_cycle).counter;
+        const h_counter = self.computeHCounterFor(line_master_cycle);
+        return (@as(u16, v_counter) << 8) | h_counter;
+    }
+
+    fn scanlineMasterCyclesToPixelH32(line_master_cycle: u16) u16 {
+        return line_master_cycle / 10;
+    }
+
+    fn pixelToInternalHH32(pixel: u16) u16 {
+        return if (pixel <= 0x0127) pixel else pixel + (0x01D2 - 0x0128);
+    }
+
+    fn scanlineMasterCyclesToPixelH40(line_master_cycle: u16) u16 {
+        const jump_diff: u32 = 0x01C9 - 0x016D;
+        const line_master_u32: u32 = line_master_cycle;
+
+        if (line_master_u32 < (0x01CC - jump_diff) * 8) {
+            return @intCast(line_master_u32 / 8);
+        }
+
+        const hsync_start_master = (0x01CC - jump_diff) * 8;
+        const hsync_pattern_master = 8 + 7 * 10 + 2 * 9 + 7 * 10;
+        const hsync_end_master = hsync_start_master + 2 * hsync_pattern_master;
+        if (line_master_u32 < hsync_end_master) {
+            const hsync_master = line_master_u32 - hsync_start_master;
+            const pattern_master = hsync_master % hsync_pattern_master;
+            const pattern_pixel: u32 = switch (pattern_master) {
+                0...7 => 0,
+                8...77 => 1 + (pattern_master - 8) / 10,
+                78...95 => 8 + (pattern_master - 78) / 9,
+                96...165 => 10 + (pattern_master - 96) / 10,
+                else => unreachable,
+            };
+
+            return @intCast(if (hsync_master < hsync_pattern_master)
+                0x01CC - jump_diff + pattern_pixel
+            else
+                0x01CC - jump_diff + 17 + pattern_pixel);
+        }
+
+        const post_hsync_master = line_master_u32 - hsync_end_master;
+        return @intCast(0x01CC - jump_diff + 34 + post_hsync_master / 8);
+    }
+
+    fn pixelToInternalHH40(pixel: u16) u16 {
+        return if (pixel <= 0x016C) pixel else pixel + (0x01C9 - 0x016D);
+    }
+
+    fn computeHCounterFor(self: *const Vdp, line_master_cycle: u16) u8 {
+        const internal_h = self.internalHFor(line_master_cycle);
+        return @truncate(internal_h >> 1);
+    }
+
+    fn vintFlagForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) bool {
+        if (self.vint_pending) return true;
+
+        const current = self.adjustedLineState(0);
+        return !current.vblank and adjusted.vblank;
+    }
+
+    fn statusWordForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) u16 {
         var status: u16 = 0;
 
         if (self.fifoIsEmpty()) status |= 0x0200;
         if (self.fifoIsFull()) status |= 0x0100;
 
-        if (self.vblank or !self.isDisplayEnabled()) status |= 0x0008;
-        if (self.hblank) status |= 0x0004;
+        if (adjusted.vblank or !self.isDisplayEnabled()) status |= 0x0008;
+        if (adjusted.hblank) status |= 0x0004;
         if (self.dma_active) status |= 0x0002;
         if (self.pal_mode) status |= 0x0001;
         if (self.odd_frame) status |= 0x0010;
         if (self.sprite_collision) status |= 0x0020;
         if (self.sprite_overflow) status |= 0x0040;
-        if (self.vint_pending) status |= 0x0080;
+        if (self.vintFlagForAdjustedState(adjusted)) status |= 0x0080;
+
+        return status;
+    }
+
+    pub fn readControlAdjusted(self: *Vdp, opcode: u16) u16 {
+        const adjusted = self.adjustedLineState(statusReadAdjustmentMasterCycles(opcode));
+        const status = self.statusWordForAdjustedState(adjusted);
 
         // Reading status clears pending command, vint pending, and sprite flags.
         self.pending_command = false;
@@ -1092,33 +1620,29 @@ pub const Vdp = struct {
     // -- HV Counter --
 
     fn computeLiveHVCounter(self: *const Vdp) u16 {
-        const threshold: i32 = if ((self.regs[1] & 0x08) != 0) 262 else 234;
-        const frame_lines: i32 = if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
-        var v_raw: i32 = self.scanline;
-        if (v_raw > threshold) {
-            v_raw -= frame_lines;
-        }
-        const v_counter: u8 = @intCast(@mod(v_raw, 256));
-        var h_counter = self.computeHCounterShaped();
-        if (self.isInterlaceMode2() and self.odd_frame) {
-            h_counter +%= 1;
-        }
-        return (@as(u16, v_counter) << 8) | h_counter;
+        return self.computeLiveHVCounterAt(self.scanline, self.line_master_cycle);
     }
 
     fn computeHCounterShaped(self: *const Vdp) u8 {
-        const raw: u16 = @intCast((@as(u32, self.line_master_cycle) + 10) / 20);
-        var h: u16 = raw;
-        if (h >= 12) h += 0x56;
-        h += 0x85;
-        return @truncate(h);
+        return self.computeHCounterFor(self.line_master_cycle);
     }
 
     pub fn readHVCounter(self: *const Vdp) u16 {
+        const mutable_self: *Vdp = @constCast(self);
+        mutable_self.pending_command = false;
         if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
             return self.hv_latched;
         }
         return self.computeLiveHVCounter();
+    }
+
+    pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
+        self.pending_command = false;
+        if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
+            return self.hv_latched;
+        }
+        const adjusted = self.adjustedLineState(statusReadAdjustmentMasterCycles(opcode));
+        return self.computeLiveHVCounterAt(adjusted.scanline, adjusted.line_master_cycle);
     }
 
     // -- Timing --
@@ -1126,7 +1650,7 @@ pub const Vdp = struct {
     pub fn step(self: *Vdp, cycles: u32) void {
         const total = @as(u32, self.line_master_cycle) + cycles;
         self.line_master_cycle = @intCast(total % clock.ntsc_master_cycles_per_line);
-        self.hblank = self.line_master_cycle >= clock.ntsc_active_master_cycles;
+        self.hblank = self.line_master_cycle >= self.hblankStartMasterCycles();
     }
 
     pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: u16) bool {
@@ -1172,6 +1696,11 @@ pub const Vdp = struct {
     // -- Control Port Write --
 
     pub fn writeControl(self: *Vdp, value: u16) void {
+        if (self.shouldBufferPortWrite()) {
+            self.pushPendingPortWrite(.{ .control = value });
+            return;
+        }
+
         // Register write: top 3 bits = 100
         if ((value & 0xE000) == 0x8000) {
             const reg = (value >> 8) & 0x1F;
@@ -1223,15 +1752,18 @@ pub const Vdp = struct {
                     self.dma_fill = false;
                     self.dma_copy = false;
                     self.dma_active = true;
+                    self.dma_start_delay_slots = self.memoryToVramDmaStartDelaySlots();
                 } else if (dma_mode == 2) {
                     self.dma_fill = true;
                     self.dma_copy = false;
                     self.dma_active = true;
+                    self.dma_start_delay_slots = 0;
                 } else {
                     self.dma_source_addr = (@as(u32, self.regs[22]) << 8) | @as(u32, self.regs[21]);
                     self.dma_copy = true;
                     self.dma_fill = false;
                     self.dma_active = true;
+                    self.dma_start_delay_slots = 0;
                 }
                 self.fifo_head = 0;
                 self.fifo_len = 0;

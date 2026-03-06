@@ -32,6 +32,17 @@ pub inline fn m68kCyclesToMaster(cycles: u32) u32 {
 pub const M68kSync = struct {
     master_cycles: u64 = 0,
     remainder: u8 = 0,
+    debt_master_cycles: u32 = 0,
+
+    pub fn consumeDebt(self: *M68kSync, requested_master_cycles: u32) u32 {
+        const consumed = @min(requested_master_cycles, self.debt_master_cycles);
+        self.debt_master_cycles -= consumed;
+        return consumed;
+    }
+
+    pub fn addDebt(self: *M68kSync, master_cycles: u32) void {
+        self.debt_master_cycles += master_cycles;
+    }
 
     pub fn budgetFromMaster(self: *M68kSync, master_cycles: u32) u32 {
         const total = @as(u32, self.remainder) + master_cycles;

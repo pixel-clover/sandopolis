@@ -25,6 +25,7 @@ struct Jgz80Handle {
     bool bus_req;
     bool bus_ack;
     bool reset_line;
+    uint32_t m68k_bus_access_count;
 };
 
 static uint8_t mapped_read_byte(Jgz80Handle* h, uint16_t addr) {
@@ -51,6 +52,7 @@ static uint8_t mapped_read_byte(Jgz80Handle* h, uint16_t addr) {
     if (zaddr >= 0x8000u) {
         if (h->host_read != NULL) {
             const uint32_t m68k_addr = ((uint32_t)h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
+            ++h->m68k_bus_access_count;
             return h->host_read(h->host_userdata, m68k_addr);
         }
         return 0xFFu;
@@ -137,6 +139,7 @@ static void mapped_write_byte(Jgz80Handle* h, uint16_t addr, uint8_t val) {
     if (zaddr >= 0x8000u) {
         if (h->host_write != NULL) {
             const uint32_t m68k_addr = ((uint32_t)h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
+            ++h->m68k_bus_access_count;
             h->host_write(h->host_userdata, m68k_addr, val);
         }
         return;
@@ -190,6 +193,7 @@ Jgz80Handle* jgz80_create(void) {
     h->psg_noise = 0;
     h->psg_latched_channel = 0;
     h->psg_latched_is_volume = false;
+    h->m68k_bus_access_count = 0;
     return h;
 }
 
@@ -214,6 +218,7 @@ void jgz80_reset(Jgz80Handle* handle) {
     handle->psg_noise = 0;
     handle->psg_latched_channel = 0;
     handle->psg_latched_is_volume = false;
+    handle->m68k_bus_access_count = 0;
     z80_reset(&handle->core);
 }
 
@@ -222,6 +227,13 @@ void jgz80_step(Jgz80Handle* handle, uint32_t cycles) {
     bind_callbacks(handle);
     if (handle->bus_req || handle->reset_line) return;
     (void)z80_step_n(&handle->core, cycles);
+}
+
+uint32_t jgz80_step_one(Jgz80Handle* handle) {
+    if (!handle) return 0;
+    bind_callbacks(handle);
+    if (handle->bus_req || handle->reset_line) return 0;
+    return z80_step(&handle->core);
 }
 
 uint8_t jgz80_read_byte(Jgz80Handle* handle, uint16_t addr) {
@@ -244,6 +256,11 @@ void jgz80_set_host_callbacks(Jgz80Handle* handle, Jgz80HostReadFunc host_read, 
 uint16_t jgz80_get_bank(Jgz80Handle* handle) {
     if (!handle) return 0u;
     return handle->bank;
+}
+
+uint16_t jgz80_get_pc(Jgz80Handle* handle) {
+    if (!handle) return 0u;
+    return handle->core.pc;
 }
 
 uint8_t jgz80_get_ym_register(Jgz80Handle* handle, uint8_t port, uint8_t reg) {
@@ -276,20 +293,27 @@ uint8_t jgz80_get_psg_noise(Jgz80Handle* handle) {
     return handle->psg_noise & 0x07u;
 }
 
+uint32_t jgz80_take_68k_bus_access_count(Jgz80Handle* handle) {
+    if (!handle) return 0u;
+    const uint32_t count = handle->m68k_bus_access_count;
+    handle->m68k_bus_access_count = 0;
+    return count;
+}
+
 void jgz80_write_bus_req(Jgz80Handle* handle, uint16_t val) {
     if (!handle) return;
-    if ((val & 0x100u) != 0u) {
-        handle->bus_req = false;
-        handle->bus_ack = false;
-    } else {
-        handle->bus_req = true;
-        handle->bus_ack = true;
-    }
+    handle->bus_req = (val & 0x100u) == 0u;
+    handle->bus_ack = handle->bus_req && !handle->reset_line;
 }
 
 uint16_t jgz80_read_bus_req(Jgz80Handle* handle) {
     if (!handle) return 0x0100u;
-    return handle->bus_req ? 0x0000u : 0x0100u;
+    return handle->bus_ack ? 0x0000u : 0x0100u;
+}
+
+uint16_t jgz80_read_reset(Jgz80Handle* handle) {
+    if (!handle) return 0x0100u;
+    return handle->reset_line ? 0x0000u : 0x0100u;
 }
 
 void jgz80_write_reset(Jgz80Handle* handle, uint16_t val) {
@@ -297,9 +321,11 @@ void jgz80_write_reset(Jgz80Handle* handle, uint16_t val) {
     bind_callbacks(handle);
     if (val == 0u) {
         handle->reset_line = true;
+        handle->bus_ack = false;
         z80_reset(&handle->core);
         memset(handle->ram, 0, sizeof(handle->ram));
     } else {
         handle->reset_line = false;
+        handle->bus_ack = handle->bus_req;
     }
 }
