@@ -6,14 +6,7 @@ const CpuDeps = struct {
 };
 
 fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
-    step.addIncludePath(deps.rocket68.path("include"));
-    step.addIncludePath(deps.rocket68.path("src/m68k"));
-    step.addIncludePath(deps.jgz80.path("."));
-    step.addIncludePath(b.path("src/c"));
-    step.root_module.addIncludePath(deps.rocket68.path("include"));
-    step.root_module.addIncludePath(deps.rocket68.path("src/m68k"));
-    step.root_module.addIncludePath(deps.jgz80.path("."));
-    step.root_module.addIncludePath(b.path("src/c"));
+    addCpuIncludePaths(step, b, deps);
 
     step.addCSourceFiles(.{
         .root = deps.rocket68.path("."),
@@ -39,6 +32,17 @@ fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDe
         .flags = &.{"-std=c11"},
     });
     step.linkLibC();
+}
+
+fn addCpuIncludePaths(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
+    step.addIncludePath(deps.rocket68.path("include"));
+    step.addIncludePath(deps.rocket68.path("src/m68k"));
+    step.addIncludePath(deps.jgz80.path("."));
+    step.addIncludePath(b.path("src/c"));
+    step.root_module.addIncludePath(deps.rocket68.path("include"));
+    step.root_module.addIncludePath(deps.rocket68.path("src/m68k"));
+    step.root_module.addIncludePath(deps.jgz80.path("."));
+    step.root_module.addIncludePath(b.path("src/c"));
 }
 
 pub fn build(b: *std.Build) void {
@@ -195,6 +199,24 @@ pub fn build(b: *std.Build) void {
     const property_run = b.addRunArtifact(property_tests);
     const property_step = b.step("test-property", "Run property-based tests");
     property_step.dependOn(&property_run.step);
+
+    const docs_module = b.createModule(.{
+        .root_source_file = b.path("src/api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const docs_obj = b.addObject(.{
+        .name = "sandopolis_docs",
+        .root_module = docs_module,
+    });
+    addCpuIncludePaths(docs_obj, b, cpu_deps);
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = docs_obj.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs/api",
+    });
+    const docs_step = b.step("docs", "Generate API documentation");
+    docs_step.dependOn(&install_docs.step);
 
     const test_step_all = b.step("test", "Run unit, integration, regression, and property tests");
     test_step_all.dependOn(&unit_run.step);

@@ -10,14 +10,12 @@ SRC_DIR       := src
 TEST_DIR      := tests
 BUILD_DIR     := zig-out
 CACHE_DIR     := .zig-cache
-DOC_SRC       := src/root.zig
 DOC_OUT       := docs/api/
-COVERAGE_DIR  := coverage
 BINARY_NAME   := sandopolis
 BINARY_PATH   := $(BUILD_DIR)/bin/$(BINARY_NAME)
-TEST_EXECUTABLE := $(BUILD_DIR)/bin/test
 PREFIX        ?= /usr/local
 RELEASE_MODE := ReleaseSmall
+ARGS          ?=
 
 SHELL         := /usr/bin/env bash
 .SHELLFLAGS   := -eu -o pipefail -c
@@ -26,7 +24,7 @@ SHELL         := /usr/bin/env bash
 # Targets
 ################################################################################
 
-.PHONY: all build rebuild run test cov lint format docs clean install-deps release help coverage setup-hooks test-hooks
+.PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs clean install-deps release help setup-hooks test-hooks
 .DEFAULT_GOAL := help
 
 help: ## Show the help messages for all targets
@@ -42,55 +40,49 @@ rebuild: clean build  ## clean and build
 
 run: build  ## Run the main application
 	@echo "Running $(BINARY_NAME)..."
-	$(ZIG) build run $(BUILD_OPTS) --
+	$(ZIG) build run $(BUILD_OPTS) -- $(ARGS)
 
 test: ## Run all test suites
 	@echo "Running all test suites..."
 	$(ZIG) build test $(BUILD_OPTS) -j$(JOBS)
+
+test-unit: ## Run unit tests
+	$(ZIG) build test-unit $(BUILD_OPTS) -j$(JOBS)
+
+test-integration: ## Run integration tests
+	$(ZIG) build test-integration $(BUILD_OPTS) -j$(JOBS)
+
+test-regression: ## Run regression tests
+	$(ZIG) build test-regression $(BUILD_OPTS) -j$(JOBS)
+
+test-property: ## Run property-based tests
+	$(ZIG) build test-property $(BUILD_OPTS) -j$(JOBS)
 
 release: ## Build in Release mode
 	@echo "Building the project in Release mode..."
 	@$(MAKE) BUILD_TYPE=$(RELEASE_MODE) build
 
 clean: ## Remove docs, build artifacts, and cache directories
-	@echo "Removing build artifacts, cache, generated docs, and coverage files..."
-	rm -rf $(BUILD_DIR) $(CACHE_DIR) $(DOC_OUT) *.profraw $(COVERAGE_DIR)
+	@echo "Removing build artifacts, cache, and generated docs..."
+	rm -rf $(BUILD_DIR) $(CACHE_DIR) $(DOC_OUT)
 
 lint: ## Check code style and formatting of Zig files
 	@echo "Running code style checks..."
-	$(ZIG) fmt --check $(SRC_DIR) $(TEST_DIR)
+	$(ZIG) fmt --check .
 
 format: ## Format Zig files
 	@echo "Formatting Zig files..."
 	$(ZIG) fmt .
 
 docs: ## Generate API documentation
-	@echo "Generating documentation from $(DOC_SRC) to $(DOC_OUT)..."
-	mkdir -p $(DOC_OUT)
-	@if $(ZIG) doc --help > /dev/null 2>&1; then \
-	  $(ZIG) doc $(DOC_SRC) --output-dir $(DOC_OUT); \
-	else \
-	  $(ZIG) test -femit-docs $(DOC_SRC); \
-	  for f in docs/*; do \
-		base=$$(basename "$$f"); \
-		if [ "$$base" = "assets" ] || [ "$$base" = "api" ]; then \
-		  continue; \
-		fi; \
-		mv "$$f" $(DOC_OUT)/; \
-	  done; \
-	fi
+	@echo "Generating API documentation into $(DOC_OUT)..."
+	$(ZIG) build docs $(BUILD_OPTS) --prefix . -j$(JOBS)
 
 install-deps: ## Install system dependencies (for Debian-based systems)
 	@echo "Installing system dependencies..."
 	sudo apt-get update
 	sudo apt-get install -y make llvm snapd
 	sudo snap install zig  --beta --classic # Use `--edge --classic` to install the latest version
-
-coverage: ## Generate code coverage report
-	@echo "Building tests with coverage instrumentation..."
-	@zig build test -Denable-coverage=true
-	@echo "Generating coverage report..."
-	@kcov --include-pattern=src --verify coverage-out zig-out/bin/test-root
 
 setup-hooks: ## Install Git hooks (pre-commit and pre-push)
 	@echo "Installing Git hooks..."

@@ -103,7 +103,7 @@ sandopolis/
 make build
 
 # Build and run with a ROM
-make run -- roms/your-game.smd
+make run ARGS="roms/your-game.smd"
 ```
 
 ---
