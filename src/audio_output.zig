@@ -41,7 +41,6 @@ pub const AudioOutput = struct {
     },
     timing_is_pal: bool = false,
     sample_chunk: [4096]i16 = [_]i16{0} ** 4096,
-    psg_sample_buf: [2048]i16 = [_]i16{0} ** 2048,
     ym_phase: [6]f32 = [_]f32{0.0} ** 6,
     psg: Psg = Psg{},
 
@@ -96,20 +95,18 @@ pub const AudioOutput = struct {
     fn renderChunk(
         self: *AudioOutput,
         frames: usize,
+        psg_native_frames: u32,
         fm_hz: [6]f32,
         fm_gain: [6]f32,
         fm_pan: [6]StereoPan,
         ym_dac_gain: f32,
         ym_dac_sample: f32,
     ) []const i16 {
-        // --- PSG: generate chip-accurate mono samples ---
-        const psg_frames = @min(frames, self.psg_sample_buf.len);
-        @memset(self.psg_sample_buf[0..psg_frames], 0);
-        self.psg.update(self.psg_sample_buf[0..psg_frames], psg_frames);
-
-        // --- Mix FM (still float-based) + PSG (integer) into stereo output ---
+        // Mix FM placeholder + resampled PSG into stereo output.
         const sample_rate: f32 = @floatFromInt(output_rate);
         const two_pi = std.math.tau;
+        var psg_native_cursor: u32 = 0;
+        var last_psg_sample: i16 = 0;
         var i: usize = 0;
         while (i < frames) : (i += 1) {
             var l: f32 = 0.0;
@@ -130,8 +127,22 @@ pub const AudioOutput = struct {
                 r += voice;
             }
 
-            // Mix PSG (mono → both channels). Scale i16 down to -0.5..0.5 range.
-            const psg_sample: f32 = if (i < psg_frames) @as(f32, @floatFromInt(self.psg_sample_buf[i])) / 32768.0 else 0.0;
+            // Resample PSG from native chip ticks to output-rate stereo.
+            const target_native = @as(u32, @intCast((@as(u64, i + 1) * psg_native_frames) / frames));
+            const samples_to_generate = target_native - psg_native_cursor;
+            var psg_sample: f32 = 0.0;
+            if (samples_to_generate != 0) {
+                var sum: i32 = 0;
+                var generated = samples_to_generate;
+                while (generated != 0) : (generated -= 1) {
+                    last_psg_sample = self.psg.nextSample();
+                    sum += last_psg_sample;
+                    psg_native_cursor += 1;
+                }
+                psg_sample = @as(f32, @floatFromInt(@divTrunc(sum, @as(i32, @intCast(samples_to_generate))))) / 32768.0;
+            } else {
+                psg_sample = @as(f32, @floatFromInt(last_psg_sample)) / 32768.0;
+            }
             l += psg_sample * 0.5;
             r += psg_sample * 0.5;
 
@@ -189,10 +200,18 @@ pub const AudioOutput = struct {
         }
 
         const max_frames_per_push = self.sample_chunk.len / channels;
+        var remaining_psg_native = pending.psg_frames;
+        var remaining_out_frames = out_frames;
         while (out_frames > 0) {
             const chunk_frames: usize = @min(out_frames, max_frames_per_push);
-            const samples = self.renderChunk(chunk_frames, fm_hz, fm_gain, fm_pan, ym_dac_gain, ym_dac_sample);
+            const chunk_psg_native: u32 = if (remaining_out_frames == chunk_frames)
+                remaining_psg_native
+            else
+                @intCast((@as(u64, remaining_psg_native) * chunk_frames) / remaining_out_frames);
+            const samples = self.renderChunk(chunk_frames, chunk_psg_native, fm_hz, fm_gain, fm_pan, ym_dac_gain, ym_dac_sample);
             try zsdl3.putAudioStreamData(i16, self.stream, samples);
+            remaining_psg_native -= chunk_psg_native;
+            remaining_out_frames -= @intCast(chunk_frames);
             out_frames -= @intCast(chunk_frames);
         }
     }
@@ -230,4 +249,23 @@ test "rate converter keeps FM/PSG aligned over one PAL frame" {
 
     try std.testing.expectEqual(@as(u32, 964), fm_out);
     try std.testing.expectEqual(@as(u32, 965), psg_out);
+}
+
+test "psg native-rate rendering stays audible after downsampling" {
+    var output = AudioOutput{
+        .stream = @ptrFromInt(1),
+    };
+    output.psg.doCommand(0x90); // ch0 volume = 0
+    output.psg.doCommand(0x85); // ch0 tone low = 5
+    output.psg.doCommand(0x00); // ch0 tone high = 0
+
+    const silent_fm = [_]f32{0.0} ** 6;
+    const silent_pan = [_]StereoPan{.{ .left = 0.0, .right = 0.0 }} ** 6;
+    const samples = output.renderChunk(64, 256, silent_fm, silent_fm, silent_pan, 0.0, 0.0);
+
+    var nonzero: usize = 0;
+    for (samples) |sample| {
+        if (sample != 0) nonzero += 1;
+    }
+    try std.testing.expect(nonzero > 0);
 }

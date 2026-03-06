@@ -10,6 +10,12 @@ const AudioInit = struct {
     output: AudioOutput,
 };
 
+const SdlAudioSpecRaw = extern struct {
+    format: zsdl3.AudioFormat,
+    channels: c_int,
+    freq: c_int,
+};
+
 const GamepadSlot = struct {
     id: zsdl3.Joystick.Id,
     handle: *zsdl3.Gamepad,
@@ -123,19 +129,18 @@ fn removeGamepadSlot(gamepads: *[InputBindings.player_count]?GamepadSlot, id: zs
 fn tryInitAudio(userdata: *u8) ?AudioInit {
     const playback_device: zsdl3.AudioDeviceId = @enumFromInt(zsdl3.AUDIO_DEVICE_DEFAULT_PLAYBACK);
     const candidate_formats = [_]zsdl3.AudioFormat{
-        zsdl3.AudioFormat.S16LE,
-        zsdl3.AudioFormat.F32LE,
+        zsdl3.AudioFormat.S16,
     };
     const candidate_rates = [_]c_int{AudioOutput.output_rate};
 
     for (candidate_formats) |format| {
         for (candidate_rates) |freq| {
-            const spec = zsdl3.AudioSpec{
-                .channels = 2,
+            const spec = SdlAudioSpecRaw{
                 .format = format,
+                .channels = 2,
                 .freq = freq,
             };
-            if (zsdl3.openAudioDeviceStream(playback_device, &spec, null, userdata)) |stream| {
+            if (SDL_OpenAudioDeviceStream(playback_device, &spec, null, userdata)) |stream| {
                 const audio_device = zsdl3.getAudioStreamDevice(stream);
                 _ = zsdl3.resumeAudioDevice(audio_device);
                 std.debug.print("Audio enabled: {s} {d}Hz\n", .{ formatName(format), freq });
@@ -143,7 +148,7 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
                     .stream = stream,
                     .output = AudioOutput{ .stream = stream },
                 };
-            } else |_| {}
+            }
         }
     }
 
@@ -639,5 +644,11 @@ pub fn main() !void {
 }
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
+extern fn SDL_OpenAudioDeviceStream(
+    device: zsdl3.AudioDeviceId,
+    spec: *const SdlAudioSpecRaw,
+    callback: ?zsdl3.AudioStreamCallback,
+    userdata: *anyopaque,
+) ?*zsdl3.AudioStream;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
 extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;

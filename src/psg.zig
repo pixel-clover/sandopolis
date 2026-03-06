@@ -52,6 +52,48 @@ pub const Psg = struct {
     noise: NoiseState = NoiseState{},
     latched: LatchedCommand = LatchedCommand{},
 
+    fn nextToneSample(tone: *ToneState) i16 {
+        if (tone.countdown != 0) tone.countdown -= 1;
+
+        // Phase never changes if period is 0 (exploit for PCM playback).
+        if (tone.countdown_master != 0 and tone.countdown == 0) {
+            tone.countdown = tone.countdown_master;
+            tone.output_bit = ~tone.output_bit;
+        }
+
+        return psg_volumes[tone.attenuation][tone.output_bit];
+    }
+
+    fn nextNoiseSample(noise: *NoiseState, tone2_period: u16) i16 {
+        if (noise.countdown != 0) noise.countdown -= 1;
+
+        if (noise.countdown == 0) {
+            // Reset countdown.
+            if (noise.frequency_mode == 3) {
+                // Use last tone channel's frequency.
+                noise.countdown = tone2_period;
+            } else {
+                noise.countdown = @as(u16, 0x10) << noise.frequency_mode;
+            }
+
+            noise.fake_output_bit = ~noise.fake_output_bit;
+
+            if (noise.fake_output_bit == 1) {
+                // Rotate shift register and produce output bit.
+                noise.real_output_bit = @intCast((noise.shift_register & 0x8000) >> 15);
+
+                noise.shift_register <<= 1;
+                noise.shift_register |= noise.real_output_bit;
+
+                if (noise.noise_type == .white) {
+                    noise.shift_register ^= (noise.shift_register & 0x2000) >> 13;
+                }
+            }
+        }
+
+        return psg_volumes[noise.attenuation][noise.real_output_bit];
+    }
+
     pub fn doCommand(self: *Psg, command: u8) void {
         const is_latch = (command & 0x80) != 0;
 
@@ -89,55 +131,22 @@ pub const Psg = struct {
         }
     }
 
+    pub fn nextSample(self: *Psg) i16 {
+        var sample: i16 = 0;
+
+        for (&self.tones) |*tone| {
+            sample +|= nextToneSample(tone);
+        }
+
+        sample +|= nextNoiseSample(&self.noise, self.tones[2].countdown_master);
+        return sample;
+    }
+
     /// Generate `total_frames` mono samples into `sample_buffer`.
     /// Samples are additive (mixed into the buffer).
     pub fn update(self: *Psg, sample_buffer: []i16, total_frames: usize) void {
-        // Tone channels.
-        for (0..3) |i| {
-            var tone = &self.tones[i];
-
-            for (0..total_frames) |j| {
-                if (tone.countdown != 0) tone.countdown -= 1;
-
-                // Phase never changes if period is 0 (exploit for PCM playback).
-                if (tone.countdown_master != 0 and tone.countdown == 0) {
-                    tone.countdown = tone.countdown_master;
-                    tone.output_bit = ~tone.output_bit;
-                }
-
-                sample_buffer[j] +|= psg_volumes[tone.attenuation][tone.output_bit];
-            }
-        }
-
-        // Noise channel.
         for (0..total_frames) |j| {
-            if (self.noise.countdown != 0) self.noise.countdown -= 1;
-
-            if (self.noise.countdown == 0) {
-                // Reset countdown.
-                if (self.noise.frequency_mode == 3) {
-                    // Use last tone channel's frequency.
-                    self.noise.countdown = self.tones[2].countdown_master;
-                } else {
-                    self.noise.countdown = @as(u16, 0x10) << self.noise.frequency_mode;
-                }
-
-                self.noise.fake_output_bit = ~self.noise.fake_output_bit;
-
-                if (self.noise.fake_output_bit == 1) {
-                    // Rotate shift register and produce output bit.
-                    self.noise.real_output_bit = @intCast((self.noise.shift_register & 0x8000) >> 15);
-
-                    self.noise.shift_register <<= 1;
-                    self.noise.shift_register |= self.noise.real_output_bit;
-
-                    if (self.noise.noise_type == .white) {
-                        self.noise.shift_register ^= (self.noise.shift_register & 0x2000) >> 13;
-                    }
-                }
-            }
-
-            sample_buffer[j] +|= psg_volumes[self.noise.attenuation][self.noise.real_output_bit];
+            sample_buffer[j] +|= self.nextSample();
         }
     }
 };
