@@ -32,7 +32,7 @@ help: ## Show the help messages for all targets
 
 all: build test lint docs  ## build, test, lint, and doc
 
-build: ## Build project (Mode=$(BUILD_TYPE))
+build: ## Build project (Mode=$(BUILD_TYPE) like `Debug` or `ReleaseFast`)
 	@echo "Building project in $(BUILD_TYPE) mode with $(JOBS) concurrent jobs..."
 	$(ZIG) build $(BUILD_OPTS) -j$(JOBS)
 

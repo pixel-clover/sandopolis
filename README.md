@@ -20,13 +20,15 @@ A Sega Genesis/Mega Drive emulator written in Zig
 
 ## Overview
 
-Sandopolis is a Sega Genesis/Mega Drive emulator built from the ground up in Zig. It implements the main Genesis subsystems, including the Motorola 68000 CPU, VDP (Video Display Processor), Z80 sound processor, and controller/I/O path. Core video, DMA, audio, and input flows are running today, while cycle-accurate timing, hardware edge cases, and chip-accurate audio are still in progress.
+Sandopolis is a Sega Genesis/Mega Drive emulator writen in Zig (and C).
+It includes the main Genesis subsystems, including the Motorola 68000 CPU, VDP (Video Display Processor), Z80 sound processor,
+and controller/I/O path.
 
 ## Features
 
 - Motorola 68000 CPU emulation via [rocket68](https://github.com/habedi/rocket68)
 - VDP implementation with support for:
-  - Tile rendering (Plane A, Plane B, Sprites)
+  - Tile rendering (Plane A, Plane B, and Sprites)
   - VRAM, CRAM, and VSRAM access
   - Hardware scrolling
   - DMA transfer modes and VDP-managed transfer progression
@@ -35,12 +37,20 @@ Sandopolis is a Sega Genesis/Mega Drive emulator built from the ground up in Zig
 - SMD ROM format deinterleaving
 - Real-time rendering with SDL3
 
-## Quick Start
+See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
+
+> [!IMPORTANT]
+> This project is still in early development, so bugs and breaking changes are expected.
+> Please use the [issues page](https://github.com/pixel-clover/sandopolis/issues) to report bugs or request features.
+
+---
+
+## Quickstart
 
 ### Building
 
 ```bash
-make build
+BUILD_TYPE=ReleaseFast make build
 ```
 
 ### Running
@@ -51,14 +61,31 @@ make build
 
 # Example with Sonic & Knuckles
 ./zig-out/bin/sandopolis roms/sn.smd
+
+# Or use the convenience target
+BUILD_TYPE=ReleaseFast make run ARGS="roms/sn.smd"
 ```
 
 ### Controls
 
-#### Keyboard
+Controls are configurable via `sandopolis_input.cfg` or `SANDOPOLIS_INPUT_CONFIG`.
+The bindings below are the defaults.
+
+#### Keyboard (Player 1)
 - Arrow Keys: D-Pad
 - A/S/D: Buttons A/B/C
+- Q/W/E: Buttons X/Y/Z
+- Tab: Mode
 - Enter: Start
+
+#### Keyboard (Player 2)
+- I/J/K/L: D-Pad
+- U/O/P: Buttons A/B/C
+- Semicolon/Apostrophe/Slash: Buttons X/Y/Z
+- .: Mode
+- Right Shift: Start
+
+#### Keyboard Hotkeys
 - Space: Single step (debug mode)
 - Escape: Exit
 
@@ -66,45 +93,14 @@ make build
 - D-Pad: D-Pad
 - South (A): Button A
 - East (B): Button B
+- West (X): Button X
+- North (Y): Button Y
 - Right Shoulder: Button C
+- Left Shoulder: Button Z
+- Back: Mode
 - Start: Start
 
-## Project Structure
-
-```
-sandopolis/
-├── src/
-│   ├── main.zig           # Main emulator loop and SDL integration
-│   ├── memory.zig         # Memory bus and address decoding
-│   ├── vdp.zig            # Video Display Processor
-│   ├── io.zig             # Input/Output controller
-│   ├── z80.zig            # Z80 wrapper (jgz80 bridge)
-│   └── cpu/
-│       ├── cpu.zig            # CPU entrypoint
-│       └── rocket68_cpu.zig   # Rocket68-backed M68K wrapper
-├── src/c/                 # C bridges (jgz80)
-├── build.zig.zon          # Zig package dependencies (rocket68, jgz80, SDL bindings)
-├── roms/                  # Place your Genesis ROMs here
-└── build.zig             # Build configuration
-```
-
-## Building
-
-### Prerequisites
-
-- Zig 0.15.2 or later
-- SDL3 (bundled for Linux in dependencies)
-- Make (optional, for convenience commands)
-
-### Build Commands
-
-```bash
-# Build the project
-make build
-
-# Build and run with a ROM
-make run ARGS="roms/your-game.smd"
-```
+The first two SDL gamepads are assigned to player 1 and player 2.
 
 ---
 

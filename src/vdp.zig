@@ -669,6 +669,23 @@ pub const Vdp = struct {
     const SH_SHADOW: u8 = 1;
     const SH_HIGHLIGHT: u8 = 2;
 
+    const LAYER_BACKDROP: u8 = 0;
+    const LAYER_PLANE_B_LOW: u8 = 1;
+    const LAYER_PLANE_A_LOW: u8 = 2;
+    const LAYER_SPRITE_LOW: u8 = 3;
+    const LAYER_PLANE_B_HIGH: u8 = 4;
+    const LAYER_PLANE_A_HIGH: u8 = 5;
+    const LAYER_SPRITE_HIGH: u8 = 6;
+
+    fn layerOrder(source_id: u8, high_pri: bool) u8 {
+        return switch (source_id) {
+            1 => if (high_pri) LAYER_PLANE_B_HIGH else LAYER_PLANE_B_LOW,
+            2 => if (high_pri) LAYER_PLANE_A_HIGH else LAYER_PLANE_A_LOW,
+            3 => if (high_pri) LAYER_SPRITE_HIGH else LAYER_SPRITE_LOW,
+            else => LAYER_BACKDROP,
+        };
+    }
+
     pub fn renderScanline(self: *Vdp, line: u16) void {
         const screen_w = self.screenWidth();
         if (line >= 224) return;
@@ -713,9 +730,11 @@ pub const Vdp = struct {
 
         // Per-pixel line buffers for compositing.
         // pixel_buf stores palette index (0 = transparent/backdrop).
-        // priority_buf stores: bit 0 = high priority, bits [2:1] = source (0=bg, 1=planeB, 2=planeA/win, 3=sprite)
+        // layer_buf stores the resolved Genesis layer order for each pixel.
+        // source_buf tracks which producer last won the pixel so sprite collision can be detected.
         var pixel_buf: [320]u8 = [_]u8{0} ** 320;
-        var priority_buf: [320]u8 = [_]u8{0} ** 320;
+        var layer_buf: [320]u8 = [_]u8{LAYER_BACKDROP} ** 320;
+        var source_buf: [320]u8 = [_]u8{0} ** 320;
         var sh_buf: [320]u8 = undefined;
         if (sh_mode) {
             // In S/H mode, all pixels start as shadow unless overwritten.
@@ -736,23 +755,23 @@ pub const Vdp = struct {
         const win_right_px: u16 = if (win_right) screen_w else @min(win_h_cell * 8, screen_w);
 
         // Render Plane B.
-        self.renderPlaneToBuffer(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &priority_buf, 1, 0, screen_w);
+        self.renderPlaneToBuffer(line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 1, 0, screen_w);
 
         // Render Plane A / Window.
         if (line_in_win_v and win_left_px < win_right_px) {
             if (win_left_px > 0) {
-                self.renderPlaneToBuffer(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &priority_buf, 2, 0, win_left_px);
+                self.renderPlaneToBuffer(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, 0, win_left_px);
             }
             if (win_right_px < screen_w) {
-                self.renderPlaneToBuffer(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &priority_buf, 2, win_right_px, screen_w);
+                self.renderPlaneToBuffer(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, win_right_px, screen_w);
             }
-            self.renderWindowToBuffer(line, tile_h_mask, tile_sz, &pixel_buf, &priority_buf, win_left_px, win_right_px);
+            self.renderWindowToBuffer(line, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, win_left_px, win_right_px);
         } else {
-            self.renderPlaneToBuffer(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &priority_buf, 2, 0, screen_w);
+            self.renderPlaneToBuffer(line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, 0, screen_w);
         }
 
         // Render sprites.
-        self.renderSpritesToBuffer(line, tile_h, tile_h_mask, tile_sz, &pixel_buf, &priority_buf, &sh_buf, sh_mode);
+        self.renderSpritesToBuffer(line, tile_h, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode);
 
         // Final compositing to framebuffer.
         for (0..@as(usize, screen_w)) |x| {
@@ -799,7 +818,8 @@ pub const Vdp = struct {
         tile_h_mask: u8,
         tile_sz: u32,
         pixel_buf: *[320]u8,
-        priority_buf: *[320]u8,
+        layer_buf: *[320]u8,
+        source_buf: *[320]u8,
         source_id: u8,
         start_x: u16,
         end_x: u16,
@@ -853,13 +873,13 @@ pub const Vdp = struct {
             if (color_idx == 0) continue;
 
             const full_idx = palette_idx * 16 + color_idx;
-            const new_pri: u8 = (source_id << 1) | @as(u8, if (high_pri) 1 else 0);
-            const cur_pri = priority_buf[x];
+            const new_layer = layerOrder(source_id, high_pri);
+            const cur_layer = layer_buf[x];
 
-            // Higher source or higher priority wins.
-            if (new_pri >= cur_pri) {
+            if (new_layer >= cur_layer) {
                 pixel_buf[x] = full_idx;
-                priority_buf[x] = new_pri;
+                layer_buf[x] = new_layer;
+                source_buf[x] = source_id;
             }
         }
     }
@@ -870,7 +890,8 @@ pub const Vdp = struct {
         tile_h_mask: u8,
         tile_sz: u32,
         pixel_buf: *[320]u8,
-        priority_buf: *[320]u8,
+        layer_buf: *[320]u8,
+        source_buf: *[320]u8,
         start_x: u16,
         end_x: u16,
     ) void {
@@ -909,12 +930,13 @@ pub const Vdp = struct {
             if (color_idx == 0) continue;
 
             const full_idx = palette_idx * 16 + color_idx;
-            const new_pri: u8 = (2 << 1) | @as(u8, if (high_pri) 1 else 0); // source_id=2 (plane A/window)
-            const cur_pri = priority_buf[x];
+            const new_layer = layerOrder(2, high_pri);
+            const cur_layer = layer_buf[x];
 
-            if (new_pri >= cur_pri) {
+            if (new_layer >= cur_layer) {
                 pixel_buf[x] = full_idx;
-                priority_buf[x] = new_pri;
+                layer_buf[x] = new_layer;
+                source_buf[x] = 2;
             }
         }
     }
@@ -926,7 +948,8 @@ pub const Vdp = struct {
         tile_h_mask: u8,
         tile_sz: u32,
         pixel_buf: *[320]u8,
-        priority_buf: *[320]u8,
+        layer_buf: *[320]u8,
+        source_buf: *[320]u8,
         sh_buf: *[320]u8,
         sh_mode: bool,
     ) void {
@@ -1021,7 +1044,7 @@ pub const Vdp = struct {
                         const palette_index = (palette * 16) + color_idx;
 
                         // Sprite collision: non-transparent sprite pixel on already-drawn sprite pixel
-                        if ((priority_buf[sx] >> 1) == 3) {
+                        if (source_buf[sx] == 3) {
                             self.sprite_collision = true;
                         }
 
@@ -1041,13 +1064,14 @@ pub const Vdp = struct {
                             continue;
                         }
 
-                        const new_pri: u8 = (3 << 1) | @as(u8, if (is_high) 1 else 0); // source_id=3 (sprite)
-                        const cur_pri = priority_buf[sx];
+                        const new_layer = layerOrder(3, is_high);
+                        const cur_layer = layer_buf[sx];
 
-                        // Sprites: higher priority overwrites, same-priority first sprite wins (no overwrite).
-                        if (new_pri > cur_pri) {
+                        // Sprites: higher layer wins; same-layer earlier sprite keeps the pixel.
+                        if (new_layer > cur_layer) {
                             pixel_buf[sx] = palette_index;
-                            priority_buf[sx] = new_pri;
+                            layer_buf[sx] = new_layer;
+                            source_buf[sx] = 3;
                             if (sh_mode) {
                                 if (is_high) {
                                     sh_buf[sx] = SH_NORMAL;
@@ -1702,8 +1726,9 @@ pub const Vdp = struct {
             return;
         }
 
-        // Register write: top 3 bits = 100
-        if ((value & 0xE000) == 0x8000) {
+        // Register writes are single-word control writes. If a command word is already pending,
+        // a 0x8*** value is the second half of that command, not a register write.
+        if (!self.pending_command and (value & 0xE000) == 0x8000) {
             const reg = (value >> 8) & 0x1F;
             const data: u8 = @intCast(value & 0xFF);
             if (reg < self.regs.len) {
@@ -2428,6 +2453,20 @@ test "vdp control decode does not treat 0xA*** command word as register write" {
     try testing.expect(vdp.pending_command);
 }
 
+test "vdp pending second control word with 0x8*** is not decoded as register write" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x55;
+
+    vdp.writeControl(0x4000);
+    try testing.expect(vdp.pending_command);
+
+    vdp.writeControl(0x8100);
+    try testing.expect(!vdp.pending_command);
+    try testing.expectEqual(@as(u8, 0x55), vdp.regs[1]);
+    try testing.expectEqual(@as(u8, 0x1), vdp.code);
+    try testing.expectEqual(@as(u16, 0), vdp.addr);
+}
+
 test "vdp hv counter reads clear pending command latch" {
     var vdp = Vdp.init();
 
@@ -2471,4 +2510,80 @@ test "vdp renders plane B when plane A is transparent" {
     vdp.renderScanline(0);
     const pixel = vdp.framebuffer[0];
     try testing.expect(pixel != 0xFF000000);
+}
+
+test "vdp low priority sprite renders above low priority plane A" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // Display enable + mode 5
+    vdp.regs[2] = 0x30; // Plane A base 0xC000
+    vdp.regs[5] = 0x7C; // Sprite table base 0xF800 in H40
+    vdp.regs[12] = 0x81; // H40
+    vdp.regs[16] = 0x01; // 64x32 scroll plane
+
+    vdp.cram[2] = 0x02; // palette 0 color 1 -> blue-ish
+    vdp.cram[3] = 0x00;
+    vdp.cram[4] = 0x00; // palette 0 color 2 -> red-ish
+    vdp.cram[5] = 0x0E;
+
+    // Plane A tile 1 at the top-left, low priority.
+    vdp.vram[0xC000] = 0x00;
+    vdp.vram[0xC001] = 0x01;
+
+    // Tile 1 row 0 = color 1 for all pixels.
+    const plane_tile_base: usize = 32;
+    for (0..4) |i| vdp.vram[plane_tile_base + i] = 0x11;
+
+    // Sprite tile 2, low priority, covering the same pixels.
+    const sprite_tile_base: usize = 64;
+    for (0..4) |i| vdp.vram[sprite_tile_base + i] = 0x22;
+
+    const sat_base: usize = 0xF800;
+    vdp.vram[sat_base + 0] = 0x00;
+    vdp.vram[sat_base + 1] = 0x80; // y = 0
+    vdp.vram[sat_base + 2] = 0x00; // 1x1 sprite
+    vdp.vram[sat_base + 3] = 0x00; // end of list
+    vdp.vram[sat_base + 4] = 0x00;
+    vdp.vram[sat_base + 5] = 0x02; // tile 2, low priority
+    vdp.vram[sat_base + 6] = 0x00;
+    vdp.vram[sat_base + 7] = 0x80; // x = 0
+
+    vdp.renderScanline(0);
+    try testing.expectEqual(vdp.getPaletteColor(2), vdp.framebuffer[0]);
+}
+
+test "vdp high priority plane A hides low priority sprite" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // Display enable + mode 5
+    vdp.regs[2] = 0x30; // Plane A base 0xC000
+    vdp.regs[5] = 0x7C; // Sprite table base 0xF800 in H40
+    vdp.regs[12] = 0x81; // H40
+    vdp.regs[16] = 0x01; // 64x32 scroll plane
+
+    vdp.cram[2] = 0x02; // palette 0 color 1 -> blue-ish
+    vdp.cram[3] = 0x00;
+    vdp.cram[4] = 0x00; // palette 0 color 2 -> red-ish
+    vdp.cram[5] = 0x0E;
+
+    // Plane A tile 1 at the top-left, high priority.
+    vdp.vram[0xC000] = 0x80;
+    vdp.vram[0xC001] = 0x01;
+
+    const plane_tile_base: usize = 32;
+    for (0..4) |i| vdp.vram[plane_tile_base + i] = 0x11;
+
+    const sprite_tile_base: usize = 64;
+    for (0..4) |i| vdp.vram[sprite_tile_base + i] = 0x22;
+
+    const sat_base: usize = 0xF800;
+    vdp.vram[sat_base + 0] = 0x00;
+    vdp.vram[sat_base + 1] = 0x80; // y = 0
+    vdp.vram[sat_base + 2] = 0x00; // 1x1 sprite
+    vdp.vram[sat_base + 3] = 0x00; // end of list
+    vdp.vram[sat_base + 4] = 0x00;
+    vdp.vram[sat_base + 5] = 0x02; // tile 2, low priority
+    vdp.vram[sat_base + 6] = 0x00;
+    vdp.vram[sat_base + 7] = 0x80; // x = 0
+
+    vdp.renderScanline(0);
+    try testing.expectEqual(vdp.getPaletteColor(1), vdp.framebuffer[0]);
 }

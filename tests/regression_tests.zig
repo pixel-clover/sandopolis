@@ -18,6 +18,9 @@ fn runEmulatedFrames(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, frames: u
             if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
                 cpu.requestInterrupt(6);
             }
+            if (entering_vblank) {
+                bus.z80.assertIrq(0xFF);
+            }
             bus.vdp.setHBlank(false);
 
             const hint_master_cycles = bus.vdp.hInterruptMasterCycles();
@@ -45,6 +48,9 @@ fn runEmulatedFrames(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, frames: u
 
             frame_scheduler.runMasterSlice(bus, cpu, m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
+            if (entering_vblank) {
+                bus.z80.clearIrq();
+            }
 
             if (line < visible_lines) {
                 bus.vdp.renderScanline(line);
@@ -114,4 +120,34 @@ test "sonic rom reaches non-uniform visible output" {
     try testing.expect(non_black_pixels > 0);
     try testing.expect(differing_pixels > 0);
     try testing.expect(countUniqueFramebufferColors(bus.vdp.framebuffer[0..], 8) > 1);
+}
+
+test "sonic rom initializes audio shadow state" {
+    var bus = try Bus.init(testing.allocator, "roms/sn.smd");
+    defer bus.deinit(testing.allocator);
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    var m68k_sync = clock.M68kSync{};
+    runEmulatedFrames(&bus, &cpu, &m68k_sync, 180);
+
+    const psg_active = bus.z80.getPsgLast() != 0 or
+        bus.z80.getPsgTone(0) != 0 or
+        bus.z80.getPsgTone(1) != 0 or
+        bus.z80.getPsgTone(2) != 0 or
+        bus.z80.getPsgVolume(0) != 0x0F or
+        bus.z80.getPsgVolume(1) != 0x0F or
+        bus.z80.getPsgVolume(2) != 0x0F or
+        bus.z80.getPsgVolume(3) != 0x0F or
+        bus.z80.getPsgNoise() != 0;
+    const ym_active = bus.z80.getYmKeyMask() != 0 or
+        bus.z80.getYmRegister(0, 0x28) != 0 or
+        bus.z80.getYmRegister(0, 0x2B) != 0 or
+        bus.z80.getYmRegister(0, 0x2A) != 0 or
+        bus.z80.getYmRegister(0, 0xA0) != 0 or
+        bus.z80.getYmRegister(0, 0xA4) != 0 or
+        bus.z80.getYmRegister(1, 0xA0) != 0 or
+        bus.z80.getYmRegister(1, 0xA4) != 0;
+
+    try testing.expect(psg_active or ym_active);
 }

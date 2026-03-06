@@ -342,7 +342,7 @@ test "cpu z80-window accesses accrue wait accounting only when bus is granted" {
     try testing.expectEqual(@as(u32, 0), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 0), wait.master_cycles);
 
-    bus.write16(0x00A1_1100, 0x0000); // Request/grant Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request/grant Z80 bus
 
     cpu.noteBusAccessWait(&bus, 0x00A0_4000, 1, false);
     wait = cpu.takeWaitAccounting();

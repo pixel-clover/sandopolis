@@ -5,6 +5,8 @@ const c = @cImport({
 pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
 
+    pub const YmWriteEvent = c.Jgz80YmWriteEvent;
+
     pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
 
@@ -60,6 +62,14 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn assertIrq(self: *Z80, data: u8) void {
+        if (self.handle) |h| c.jgz80_assert_irq(h, data);
+    }
+
+    pub fn clearIrq(self: *Z80) void {
+        if (self.handle) |h| c.jgz80_clear_irq(h);
+    }
+
     pub fn getYmRegister(self: *const Z80, port: u1, reg: u8) u8 {
         if (self.handle) |h| return c.jgz80_get_ym_register(h, port, reg);
         return 0;
@@ -67,6 +77,24 @@ pub const Z80 = struct {
 
     pub fn getYmKeyMask(self: *const Z80) u8 {
         if (self.handle) |h| return c.jgz80_get_ym_key_mask(h);
+        return 0;
+    }
+
+    pub fn takeYmWrites(self: *Z80, dest: []YmWriteEvent) usize {
+        if (dest.len == 0) return 0;
+        if (self.handle) |h| return c.jgz80_take_ym_writes(h, dest.ptr, @intCast(dest.len));
+        return 0;
+    }
+
+    pub fn takeYmDacSamples(self: *Z80, dest: []u8) usize {
+        if (dest.len == 0) return 0;
+        if (self.handle) |h| return c.jgz80_take_ym_dac_samples(h, dest.ptr, @intCast(dest.len));
+        return 0;
+    }
+
+    pub fn takePsgCommands(self: *Z80, dest: []u8) usize {
+        if (dest.len == 0) return 0;
+        if (self.handle) |h| return c.jgz80_take_psg_commands(h, dest.ptr, @intCast(dest.len));
         return 0;
     }
 

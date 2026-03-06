@@ -539,6 +539,11 @@ pub const Bus = struct {
             return value;
         }
 
+        if (addr == 0xA11100) return @truncate((self.readZ80BusAckRegister() >> 8) & 0xFF);
+        if (addr == 0xA11101) return @truncate(self.readZ80BusAckRegister() & 0xFF);
+        if (addr == 0xA11200) return @truncate((self.readZ80ResetRegister() >> 8) & 0xFF);
+        if (addr == 0xA11201) return @truncate(self.readZ80ResetRegister() & 0xFF);
+
         if (addr < 0xA00000) {
             // ROM (mirrored into the 4MB cartridge window for smaller images).
             return self.readRomByte(addr);
@@ -550,7 +555,7 @@ pub const Bus = struct {
             // Z80 address-space window.
             if (!self.hasZ80BusFor68k()) return @truncate((self.open_bus >> 8) & 0xFF);
             self.ensureZ80HostWindow();
-            const zaddr: u16 = @truncate(addr & 0xFFFF);
+            const zaddr: u16 = @truncate(addr & 0x7FFF);
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             const port = addr & 0x1F;
@@ -626,6 +631,18 @@ pub const Bus = struct {
         if (self.writeCartridgeRegisterByte(addr, value)) return;
         if (self.cartridge_ram.writeByte(addr, value)) return;
 
+        if (addr == 0xA11100) {
+            self.z80.writeBusReq(@as(u16, value) << 8);
+            return;
+        } else if (addr == 0xA11101) {
+            return;
+        } else if (addr == 0xA11200) {
+            self.z80.writeReset(@as(u16, value) << 8);
+            return;
+        } else if (addr == 0xA11201) {
+            return;
+        }
+
         if (addr < 0xA00000) {
             // ROM is read-only
             return;
@@ -636,7 +653,7 @@ pub const Bus = struct {
             // Z80 address-space window.
             if (!self.hasZ80BusFor68k()) return;
             self.ensureZ80HostWindow();
-            const zaddr: u16 = @truncate(addr & 0xFFFF);
+            const zaddr: u16 = @truncate(addr & 0x7FFF);
             self.z80.writeByte(zaddr, value);
             return;
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
@@ -985,13 +1002,13 @@ test "z80 bus mapped memory and busreq registers behave as expected" {
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
     try testing.expectEqual(@as(u16, 0x5A00), bus.read16(0x00A0_0010));
 
-    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
     try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1100));
 
     bus.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
 
-    bus.write16(0x00A1_1100, 0x0100); // Release Z80 bus
+    bus.write16(0x00A1_1100, 0x0000); // Release Z80 bus
     try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
 
     // Once released, 68k window should be blocked again.
@@ -1005,7 +1022,7 @@ test "z80 bus request does not grant bus while reset is held" {
     defer bus.deinit(testing.allocator);
 
     bus.write16(0x00A1_1200, 0x0000); // Assert reset
-    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
 
     try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
     bus.write8(0x00A0_0010, 0x5A);
@@ -1026,7 +1043,7 @@ test "z80 busack and reset reads preserve open-bus bits" {
     bus.open_bus = 0xA400;
     try testing.expectEqual(@as(u16, 0xA500), bus.read16(0x00A1_1100));
 
-    bus.write16(0x00A1_1100, 0x0000); // Request/grant Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request/grant Z80 bus
     bus.open_bus = 0xA400;
     try testing.expectEqual(@as(u16, 0xA400), bus.read16(0x00A1_1100));
 
@@ -1037,6 +1054,37 @@ test "z80 busack and reset reads preserve open-bus bits" {
     bus.write16(0x00A1_1200, 0x0100); // Release reset
     bus.open_bus = 0xB600;
     try testing.expectEqual(@as(u16, 0xB700), bus.read16(0x00A1_1200));
+}
+
+test "z80 control registers support byte reads and writes on even address" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1100));
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1101));
+    try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1200));
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1201));
+
+    bus.write8(0x00A1_1100, 0x01); // Request Z80 bus via high byte
+    try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1100));
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1100));
+
+    bus.write8(0x00A1_1101, 0x01); // Low byte should not change BUSREQ
+    try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1100));
+
+    bus.write8(0x00A1_1200, 0x00); // Assert reset via high byte
+    try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1200));
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1200));
+
+    bus.write8(0x00A1_1201, 0x01); // Low byte should not release reset
+    try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1200));
+
+    bus.write8(0x00A1_1200, 0x01); // Release reset
+    bus.write8(0x00A1_1100, 0x00); // Release bus
+    try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1200));
+    try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
+    try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1200));
+    try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1100));
 }
 
 test "unused vdp port reads return ff" {
@@ -1130,7 +1178,7 @@ test "z80 audio window latches YM2612 and PSG writes" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
 
     // YM2612 port 0: addr then data
     bus.write8(0x00A0_4000, 0x22);
@@ -1151,7 +1199,7 @@ test "psg latch/data writes decode tone and volume registers" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
 
     // Tone channel 0: latch low nibble, then data high bits.
     bus.write8(0x00A0_7F11, 0x80 | 0x0A); // ch0 tone low=0xA
@@ -1171,7 +1219,7 @@ test "ym key-on register updates channel key mask" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
 
     // Key on channel 0 (operators set in upper nibble).
     bus.write8(0x00A0_4000, 0x28);
@@ -1189,11 +1237,28 @@ test "ym key-on register updates channel key mask" {
     try testing.expectEqual(@as(u8, 0x10), bus.z80.getYmKeyMask());
 }
 
+test "ym dac writes are queued for audio output" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+
+    bus.write8(0x00A0_4000, 0x2A);
+    bus.write8(0x00A0_4001, 0x12);
+    bus.write8(0x00A0_4001, 0x34);
+
+    var samples: [4]u8 = undefined;
+    const count = bus.z80.takeYmDacSamples(samples[0..]);
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(u8, 0x12), samples[0]);
+    try testing.expectEqual(@as(u8, 0x34), samples[1]);
+}
+
 test "z80 reset clears ym2612 register shadow state" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
 
     bus.write8(0x00A0_4000, 0x22);
     bus.write8(0x00A0_4001, 0x0F);
@@ -1210,6 +1275,24 @@ test "z80 reset clears ym2612 register shadow state" {
     try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmKeyMask());
 }
 
+test "z80 reset preserves uploaded z80 ram" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1200, 0x0100); // Keep reset released while uploading
+
+    bus.write8(0x00A0_0000, 0xAF);
+    bus.write8(0x00A0_0001, 0x01);
+    bus.write8(0x00A0_0002, 0xD9);
+
+    bus.write16(0x00A1_1200, 0x0000); // Pulse reset before starting the uploaded program
+
+    try testing.expectEqual(@as(u8, 0xAF), bus.z80.readByte(0x0000));
+    try testing.expectEqual(@as(u8, 0x01), bus.z80.readByte(0x0001));
+    try testing.expectEqual(@as(u8, 0xD9), bus.z80.readByte(0x0002));
+}
+
 test "z80 bank register selects 68k ROM window" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
@@ -1218,10 +1301,11 @@ test "z80 bank register selects 68k ROM window" {
     bus.rom[0x0000] = 0x12;
     bus.rom[0x8000] = 0x34;
 
-    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.stepMaster(0); // Ensure Z80 host callbacks are installed
 
     // Default bank is 0, so Z80 0x8000 maps to 68k 0x000000.
-    try testing.expectEqual(@as(u8, 0x12), bus.read8(0x00A0_8000));
+    try testing.expectEqual(@as(u8, 0x12), bus.z80.readByte(0x8000));
 
     // Bank register is 9-bit serial, shifted by writes to 0x6000..0x60FF.
     // Program bank=1 by writing bit0=1 followed by zeros for remaining bits.
@@ -1231,7 +1315,7 @@ test "z80 bank register selects 68k ROM window" {
     }
 
     try testing.expectEqual(@as(u16, 1), bus.z80.getBank());
-    try testing.expectEqual(@as(u8, 0x34), bus.read8(0x00A0_8000));
+    try testing.expectEqual(@as(u8, 0x34), bus.z80.readByte(0x8000));
 }
 
 test "z80 68k-bus stall is applied before the next instruction" {

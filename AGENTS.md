@@ -16,8 +16,8 @@ Priorities, in order:
 
 - Use English for code, comments, docs, and tests.
 - Prefer small, focused changes over broad rewrites.
-- Ensure the project is modular and componets are decoupled with clean APIs and interfaces.
-- Keep emulator state instance-bound inside the existing structs (`Bus`, `Vdp`, `Io`, `Z80`, `Cpu`, `AudioOutput`).
+- Ensure the project is modular and components are decoupled with clean APIs and interfaces.
+- Keep emulator state instance-bound inside the existing structs (`Bus`, `Vdp`, `Io`, `Z80`, `Cpu`, and `AudioOutput`).
 - Avoid introducing a new global mutable state.
 - Keep SDL/frontend logic in `src/main.zig`; keep core emulation logic in `src/`.
 - Add comments only when they clarify non-obvious hardware behavior or timing.
