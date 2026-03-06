@@ -8,6 +8,10 @@
             .url = "https://github.com/CogitatorTech/minish/archive/refs/tags/v0.1.0.tar.gz",
             .hash = "minish-0.1.0-SQtSTWHkAQACfz3xGuWHU8zbx320vK_47r2yto3Pq0Rf",
         },
+        .chilli = .{
+            .url = "https://github.com/CogitatorTech/chilli/archive/refs/tags/v0.2.2.tar.gz",
+            .hash = "chilli-0.2.2-c19PrvIyAQAgsL0VkYCKq0DuxU7rZUpRuH991zsyOkYQ",
+        },
         .zsdl = .{
             .url = "https://github.com/zig-gamedev/zsdl/archive/refs/heads/main.tar.gz",
             .hash = "zsdl-0.4.0-dev-rFpjEzgIXwBdDmlda0YnQPRVApMc1YEgbyzLWuT9GupM",
