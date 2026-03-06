@@ -86,7 +86,7 @@ sandopolis/
 │       ├── cpu.zig            # CPU entrypoint
 │       └── rocket68_cpu.zig   # Rocket68-backed M68K wrapper
 ├── src/c/                 # C bridges (jgz80)
-├── external/              # Git submodules (rocket68, jgz80)
+├── build.zig.zon          # Zig package dependencies (rocket68, jgz80, SDL bindings)
 ├── roms/                  # Place your Genesis ROMs here
 ├── test_emu.zig          # Standalone test runner
 └── build.zig             # Build configuration

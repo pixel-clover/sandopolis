@@ -1,22 +1,37 @@
 const std = @import("std");
 
-fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build) void {
-    step.addIncludePath(b.path("external/rocket68/include"));
-    step.addIncludePath(b.path("external/rocket68/src/m68k"));
-    step.addIncludePath(b.path("external/jgz80"));
+const CpuDeps = struct {
+    rocket68: *std.Build.Dependency,
+    jgz80: *std.Build.Dependency,
+};
+
+fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
+    step.addIncludePath(deps.rocket68.path("include"));
+    step.addIncludePath(deps.rocket68.path("src/m68k"));
+    step.addIncludePath(deps.jgz80.path("."));
     step.addIncludePath(b.path("src/c"));
 
     step.addCSourceFiles(.{
+        .root = deps.rocket68.path("."),
         .files = &.{
-            "external/rocket68/src/m68k/m68k.c",
-            "external/rocket68/src/m68k/ops_arith.c",
-            "external/rocket68/src/m68k/ops_bit.c",
-            "external/rocket68/src/m68k/ops_control.c",
-            "external/rocket68/src/m68k/ops_logic.c",
-            "external/rocket68/src/m68k/ops_move.c",
-            "external/jgz80/z80.c",
-            "src/c/jgz80_bridge.c",
+            "src/m68k/m68k.c",
+            "src/m68k/ops_arith.c",
+            "src/m68k/ops_bit.c",
+            "src/m68k/ops_control.c",
+            "src/m68k/ops_logic.c",
+            "src/m68k/ops_move.c",
         },
+        .flags = &.{"-std=c11"},
+    });
+    step.addCSourceFiles(.{
+        .root = deps.jgz80.path("."),
+        .files = &.{
+            "z80.c",
+        },
+        .flags = &.{"-std=c11"},
+    });
+    step.addCSourceFiles(.{
+        .files = &.{"src/c/jgz80_bridge.c"},
         .flags = &.{"-std=c11"},
     });
     step.linkLibC();
@@ -27,6 +42,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const zsdl = b.dependency("zsdl", .{});
+    const cpu_deps: CpuDeps = .{
+        .rocket68 = b.dependency("rocket68", .{}),
+        .jgz80 = b.dependency("jgz80", .{}),
+    };
 
     // Create the executable
     const exe = b.addExecutable(.{
@@ -40,7 +59,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    addExternalCpuCores(exe, b);
+    addExternalCpuCores(exe, b, cpu_deps);
 
     // Link SDL3
     if (target.result.os.tag == .linux) {
@@ -90,7 +109,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    addExternalCpuCores(exe_check, b);
+    addExternalCpuCores(exe_check, b, cpu_deps);
 
     if (target.result.os.tag == .linux) {
         const sdl3_dep = b.dependency("sdl3_linux", .{});
@@ -114,7 +133,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    addExternalCpuCores(test_exe, b);
+    addExternalCpuCores(test_exe, b, cpu_deps);
 
     b.installArtifact(test_exe);
 
@@ -134,7 +153,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    addExternalCpuCores(regression_tests, b);
+    addExternalCpuCores(regression_tests, b, cpu_deps);
 
     const regression_run = b.addRunArtifact(regression_tests);
     const regression_step = b.step("test-regression", "Run regression tests");
