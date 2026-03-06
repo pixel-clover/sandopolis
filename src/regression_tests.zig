@@ -105,6 +105,17 @@ fn makeRomWithSramHeader(
     return rom;
 }
 
+fn makeBasicGenesisRom(allocator: std.mem.Allocator, rom_len: usize) ![]u8 {
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    return rom;
+}
+
+fn writeSerial(rom: []u8, base: usize, serial: []const u8) void {
+    @memcpy(rom[base + 0x180 .. base + 0x180 + serial.len], serial);
+}
+
 test "cpu reset applies fallback vectors when ROM vectors are invalid" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
@@ -134,6 +145,71 @@ test "cartridge odd-byte sram past end of rom is auto-mapped" {
     bus.write8(0x0020_0001, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x0020_0001));
     try testing.expectEqual(@as(u16, 0x5A5A), bus.read16(0x0020_0000));
+}
+
+test "forced 8kb sram checksum maps odd-byte persistent ram without header" {
+    const rom = try makeBasicGenesisRom(testing.allocator, 0x100000);
+    defer testing.allocator.free(rom);
+
+    var bus = try Bus.initFromRomBytesWithChecksum(testing.allocator, rom, 0x8135702C);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(bus.isCartridgeRamMapped());
+    try testing.expect(bus.isCartridgeRamPersistent());
+
+    bus.write8(0x0020_0001, 0xA5);
+    bus.write8(0x0020_3FFF, 0x5A);
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x0020_0001));
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x0020_3FFF));
+    try testing.expectEqual(@as(u16, 0xA5A5), bus.read16(0x0020_0000));
+}
+
+test "forced 32kb sram checksum maps full odd-byte 20ffff range without header" {
+    const rom = try makeBasicGenesisRom(testing.allocator, 0x100000);
+    defer testing.allocator.free(rom);
+
+    var bus = try Bus.initFromRomBytesWithChecksum(testing.allocator, rom, 0xA4F2F011);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(bus.isCartridgeRamMapped());
+    try testing.expect(bus.isCartridgeRamPersistent());
+
+    bus.write8(0x0020_0001, 0x12);
+    bus.write8(0x0020_FFFF, 0x34);
+    try testing.expectEqual(@as(u8, 0x12), bus.read8(0x0020_0001));
+    try testing.expectEqual(@as(u8, 0x34), bus.read8(0x0020_FFFF));
+    try testing.expectEqual(@as(u16, 0x3434), bus.read16(0x0020_FFFE));
+}
+
+test "sonic and knuckles lock-on cartridge header enables locked-on sram" {
+    var rom = try testing.allocator.alloc(u8, 0x400000);
+    defer testing.allocator.free(rom);
+    @memset(rom, 0);
+
+    @memcpy(rom[0x100..0x104], "SEGA");
+    writeSerial(rom, 0, "GM MK-1563 ");
+
+    @memcpy(rom[0x200000 + 0x100 .. 0x200000 + 0x104], "SEGA");
+    writeSerial(rom, 0x200000, "GM MK-1079 ");
+    rom[0x200000 + 0x1B0] = 'R';
+    rom[0x200000 + 0x1B1] = 'A';
+    rom[0x200000 + 0x1B2] = 0xF8;
+    rom[0x200000 + 0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x200000 + 0x1B4 .. 0x200000 + 0x1B8], 0x200001, .big);
+    std.mem.writeInt(u32, rom[0x200000 + 0x1B8 .. 0x200000 + 0x1BC], 0x203FFF, .big);
+
+    var bus = try Bus.initFromRomBytes(testing.allocator, rom);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(!bus.isCartridgeRamMapped());
+
+    bus.write16(0x00A1_30F0, 0x0001);
+    try testing.expect(bus.isCartridgeRamMapped());
+    bus.write8(0x0020_0001, 0xA5);
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x0020_0001));
 }
 
 test "cartridge sram map register toggles rom fallback" {
@@ -288,6 +364,70 @@ test "unused vdp port reads return ff" {
 
     try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00C0_0011));
     try testing.expectEqual(@as(u16, 0xFFFF), bus.read16(0x00C0_0010));
+}
+
+test "io version register reflects pal bit and word reads use byte value" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u8, 0xA0), bus.read8(0x00A1_0000));
+    try testing.expectEqual(@as(u8, 0xA0), bus.read8(0x00A1_0001));
+    try testing.expectEqual(@as(u16, 0x00A0), bus.read16(0x00A1_0000));
+
+    bus.vdp.pal_mode = true;
+    try testing.expectEqual(@as(u8, 0xE0), bus.read8(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0x00E0), bus.read16(0x00A1_0000));
+}
+
+test "io register pairs mirror byte registers and tx data defaults high" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u8, 0x7F), bus.read8(0x00A1_0002));
+    try testing.expectEqual(@as(u8, 0x7F), bus.read8(0x00A1_0003));
+    try testing.expectEqual(@as(u16, 0x007F), bus.read16(0x00A1_0002));
+
+    bus.io.write(0x09, 0x40);
+    try testing.expectEqual(@as(u8, 0x40), bus.read8(0x00A1_0008));
+    try testing.expectEqual(@as(u8, 0x40), bus.read8(0x00A1_0009));
+    try testing.expectEqual(@as(u16, 0x0040), bus.read16(0x00A1_0008));
+
+    try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00A1_000E));
+    try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00A1_000F));
+    try testing.expectEqual(@as(u16, 0x00FF), bus.read16(0x00A1_000E));
+}
+
+test "io port c data and control registers are exposed" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.io.write(0x07, 0x5A);
+    bus.io.write(0x0D, 0xA5);
+
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A1_0006));
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A1_0007));
+    try testing.expectEqual(@as(u16, 0x005A), bus.read16(0x00A1_0006));
+
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A1_000C));
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A1_000D));
+    try testing.expectEqual(@as(u16, 0x00A5), bus.read16(0x00A1_000C));
+}
+
+test "io register writes mirror even and odd addresses" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write8(0x00A1_0002, 0x40);
+    try testing.expectEqual(@as(u8, 0x40), bus.io.data[0]);
+
+    bus.write8(0x00A1_0008, 0x55);
+    try testing.expectEqual(@as(u8, 0x55), bus.io.read(0x09));
+
+    bus.write8(0x00A1_0006, 0xAA);
+    try testing.expectEqual(@as(u8, 0xAA), bus.io.read(0x07));
+
+    bus.write8(0x00A1_000C, 0x11);
+    try testing.expectEqual(@as(u8, 0x11), bus.io.read(0x0D));
 }
 
 test "input bindings parse overrides and unbinds" {

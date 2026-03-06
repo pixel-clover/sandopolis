@@ -36,6 +36,18 @@ const CartridgeRamType = enum {
     eight_bit_odd,
 };
 
+const sonic_and_knuckles_serial = "GM MK-1563 ";
+const force_8kb_sram_checksums = [_]u32{
+    0x8135702C, // NHL 96 (USA, Europe)
+    0xF509145F, // Might and Magic: Gates to Another World (USA, Europe)
+    0x6EF7104A, // Might and Magic III: Isles of Terra (USA) (Proto)
+    0x2491DF2F, // NBA Action '94 (USA) (Beta) (1994-01-04)
+};
+const force_32kb_sram_checksums = [_]u32{
+    0xA4F2F011, // Al Michaels Announces HardBall III (USA, Europe)
+};
+const forced_sram_start_address: u32 = 0x200001;
+
 const CartridgeRam = struct {
     data: ?[]u8,
     ram_type: CartridgeRamType,
@@ -57,10 +69,44 @@ const CartridgeRam = struct {
         };
     }
 
-    fn initFromRomHeader(allocator: std.mem.Allocator, rom: []const u8) !CartridgeRam {
-        if (rom.len < 0x1BC) return initEmpty();
+    fn initForced(allocator: std.mem.Allocator, rom_len: usize, ram_len: usize) !CartridgeRam {
+        const data = try allocator.alloc(u8, ram_len);
+        @memset(data, 0);
 
-        const header = rom[0x1B0..0x1BC];
+        return .{
+            .data = data,
+            .ram_type = .eight_bit_odd,
+            .persistent = true,
+            .dirty = false,
+            .mapped = forced_sram_start_address >= rom_len,
+            .start_address = forced_sram_start_address,
+            .end_address = forced_sram_start_address + @as(u32, @intCast((ram_len - 1) * 2)),
+        };
+    }
+
+    fn initFromRomHeader(allocator: std.mem.Allocator, rom: []const u8, checksum: u32) !CartridgeRam {
+        if (std.mem.indexOfScalar(u32, &force_8kb_sram_checksums, checksum) != null) {
+            return initForced(allocator, rom.len, 8 * 1024);
+        }
+
+        if (std.mem.indexOfScalar(u32, &force_32kb_sram_checksums, checksum) != null) {
+            return initForced(allocator, rom.len, 32 * 1024);
+        }
+
+        var header_rom = rom;
+        if (rom.len > 2 * 1024 * 1024 and
+            rom.len >= 0x18B and
+            std.mem.eql(u8, rom[0x180..0x18B], sonic_and_knuckles_serial))
+        {
+            const lock_on_rom = rom[2 * 1024 * 1024 ..];
+            if (lock_on_rom.len >= 0x1BC) {
+                header_rom = lock_on_rom;
+            }
+        }
+
+        if (header_rom.len < 0x1BC) return initEmpty();
+
+        const header = header_rom[0x1B0..0x1BC];
         if (!(header[0] == 'R' and header[1] == 'A' and header[3] == 0x20)) {
             return initEmpty();
         }
@@ -196,10 +242,16 @@ pub const Bus = struct {
         return self.rom[@intCast(address)];
     }
 
-    fn initWithRomData(allocator: std.mem.Allocator, rom_data: []u8, rom_path: ?[]const u8) !Bus {
+    fn initWithRomData(
+        allocator: std.mem.Allocator,
+        rom_data: []u8,
+        rom_path: ?[]const u8,
+        checksum_override: ?u32,
+    ) !Bus {
+        const checksum = checksum_override orelse std.hash.Crc32.hash(rom_data);
         var bus = Bus{
             .rom = rom_data,
-            .cartridge_ram = try CartridgeRam.initFromRomHeader(allocator, rom_data),
+            .cartridge_ram = try CartridgeRam.initFromRomHeader(allocator, rom_data, checksum),
             .save_path = null,
             .ram = [_]u8{0} ** (64 * 1024),
             .vdp = Vdp.init(),
@@ -380,6 +432,38 @@ pub const Bus = struct {
         return word;
     }
 
+    fn readVersionRegister(self: *const Bus) u8 {
+        var value: u8 = 0x20 | 0x80; // No Mega-CD, overseas region
+        if (self.vdp.pal_mode) value |= 0x40;
+        return value;
+    }
+
+    fn readIoRegisterByte(self: *Bus, address: u32) u8 {
+        return switch (address & 0x1F) {
+            0x00, 0x01 => self.readVersionRegister(),
+            0x02, 0x03 => self.io.read(0x03),
+            0x04, 0x05 => self.io.read(0x05),
+            0x06, 0x07 => self.io.read(0x07),
+            0x08, 0x09 => self.io.read(0x09),
+            0x0A, 0x0B => self.io.read(0x0B),
+            0x0C, 0x0D => self.io.read(0x0D),
+            0x0E, 0x0F, 0x14, 0x15, 0x1A, 0x1B => 0xFF,
+            else => 0x00,
+        };
+    }
+
+    fn writeIoRegisterByte(self: *Bus, address: u32, value: u8) void {
+        switch (address & 0x1F) {
+            0x02, 0x03 => self.io.write(0x03, value),
+            0x04, 0x05 => self.io.write(0x05, value),
+            0x06, 0x07 => self.io.write(0x07, value),
+            0x08, 0x09 => self.io.write(0x09, value),
+            0x0A, 0x0B => self.io.write(0x0B, value),
+            0x0C, 0x0D => self.io.write(0x0D, value),
+            else => {},
+        }
+    }
+
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
         var rom_data: []u8 = undefined;
 
@@ -421,13 +505,19 @@ pub const Bus = struct {
             @memset(rom_data, 0);
         }
 
-        return initWithRomData(allocator, rom_data, rom_path);
+        return initWithRomData(allocator, rom_data, rom_path, null);
     }
 
     pub fn initFromRomBytes(allocator: std.mem.Allocator, rom_bytes: []const u8) !Bus {
         const rom_data = try allocator.alloc(u8, rom_bytes.len);
         std.mem.copyForwards(u8, rom_data, rom_bytes);
-        return initWithRomData(allocator, rom_data, null);
+        return initWithRomData(allocator, rom_data, null, null);
+    }
+
+    pub fn initFromRomBytesWithChecksum(allocator: std.mem.Allocator, rom_bytes: []const u8, checksum: u32) !Bus {
+        const rom_data = try allocator.alloc(u8, rom_bytes.len);
+        std.mem.copyForwards(u8, rom_data, rom_bytes);
+        return initWithRomData(allocator, rom_data, null, checksum);
     }
 
     pub fn deinit(self: *Bus, allocator: std.mem.Allocator) void {
@@ -480,7 +570,7 @@ pub const Bus = struct {
             return 0xFF;
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
-            return self.io.read(addr);
+            return self.readIoRegisterByte(addr);
         }
 
         // Unmapped / IO Stub
@@ -498,6 +588,8 @@ pub const Bus = struct {
             return self.readZ80ResetRegister();
         } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
             return self.latchOpenBus(self.open_bus & 0xFF00);
+        } else if (addr >= 0xA10000 and addr < 0xA10020) {
+            return self.latchOpenBus(self.readIoRegisterByte(addr));
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             const port = addr & 0x1F;
             if (port < 0x04) return self.latchOpenBus(self.vdp.readData());
@@ -548,7 +640,7 @@ pub const Bus = struct {
             return;
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
-            self.io.write(addr, value);
+            self.writeIoRegisterByte(addr, value);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             const port = addr & 0x1F;
             const word: u16 = if ((addr & 1) == 0) (@as(u16, value) << 8) else @as(u16, value);

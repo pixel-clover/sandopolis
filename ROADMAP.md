@@ -54,7 +54,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Controller I/O (Basic): Timed TH behavior and 3/6-button protocol path implemented.
 - [ ] Controller I/O (Complete): Full edge-case behavior and broader device coverage.
 - [ ] Input Mapping: Player 1/player 2 keyboard/gamepad bindings and keyboard hotkeys are configurable via `sandopolis_input.cfg` or `SANDOPOLIS_INPUT_CONFIG`; UI/profile/device-management polish is still incomplete.
-- [x] SRAM Support: Header-driven cartridge SRAM with persistent `.sav` load/store.
+- [x] SRAM Support: Header-driven and checksum-forced cartridge SRAM with persistent `.sav` load/store.
 
 ### Compatibility and Tooling
 

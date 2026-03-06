@@ -12,6 +12,14 @@
             .url = "https://github.com/zig-gamedev/sdl3-prebuilt-x86_64-linux-gnu/archive/b19959ed3aa87d8393640d7ba3aec142ae85487b.tar.gz",
             .hash = "sdl3_prebuilt_x86_64_linux_gnu-0.2.0-dev-qpwWsmyVNwBHzXjgC9Z-U02SXoUVMMxvCnI7XKocDcDn",
         },
+        .jgz80 = .{
+            .url = "https://github.com/habedi/jgz80-fork/archive/refs/heads/master.tar.gz",
+            .hash = "N-V-__8AAOj4AgCPCxSePjb6U-Kb3CMWSn14SVV5AOOWXXCt",
+        },
+        .rocket68 = .{
+            .url = "https://github.com/habedi/rocket68/archive/refs/heads/main.tar.gz",
+            .hash = "rocket68-0.1.0-alpha.5-Jd6gXB6fAgDPOK3HLuFVkwAu6e_IEg4q-oaKxujrCp3s",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md" },
 }

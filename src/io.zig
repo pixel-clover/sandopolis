@@ -29,8 +29,10 @@ pub const Io = struct {
             0x01 => return 0xA0, // Version: bit7=Overseas, bit5=No Mega-CD, bit6=0(NTSC)
             0x03 => return self.readData(0), // Port A data, low byte
             0x05 => return self.readData(1), // Port B data, low byte
+            0x07 => return self.data[2], // Port C data, raw
             0x09 => return self.ctrl[0],
             0x0B => return self.ctrl[1],
+            0x0D => return self.ctrl[2],
             else => return 0,
         }
     }
@@ -39,8 +41,10 @@ pub const Io = struct {
         switch (address & 0xFF) {
             0x03 => self.writeData(0, value),
             0x05 => self.writeData(1, value),
+            0x07 => self.data[2] = value,
             0x09 => self.writeCtrl(0, value),
             0x0B => self.writeCtrl(1, value),
+            0x0D => self.ctrl[2] = value,
             else => {},
         }
     }
