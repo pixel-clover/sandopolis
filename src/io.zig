@@ -1,3 +1,6 @@
+const std = @import("std");
+const testing = std.testing;
+
 pub const Io = struct {
     const th_bit: u8 = 6;
     const th_high_delay_m68k_cycles: u32 = 30;
@@ -157,3 +160,42 @@ pub const Io = struct {
         pub const Mode: u16 = 1 << 11;
     };
 };
+
+test "controller TH input is pulled high after delay" {
+    var io = Io.init();
+
+    io.write(0x03, 0x00);
+    io.write(0x09, 0x40);
+    try testing.expectEqual(@as(u8, 0x03), io.read(0x03) & 0x43);
+
+    io.write(0x09, 0x00);
+    try testing.expectEqual(@as(u8, 0x03), io.read(0x03) & 0x43);
+
+    io.tick(29);
+    try testing.expectEqual(@as(u8, 0x03), io.read(0x03) & 0x43);
+
+    io.tick(1);
+    try testing.expectEqual(@as(u8, 0x43), io.read(0x03) & 0x43);
+}
+
+test "controller six-button state resets after timeout" {
+    var io = Io.init();
+
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.Z, true);
+
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    try testing.expectEqual(@as(u8, 0x7E), io.read(0x03));
+
+    io.tick(12_149);
+    try testing.expectEqual(@as(u8, 0x7E), io.read(0x03));
+
+    io.tick(1);
+    try testing.expectEqual(@as(u8, 0x7F), io.read(0x03));
+}

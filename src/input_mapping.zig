@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const Io = @import("io.zig").Io;
 
 pub const default_config_name = "sandopolis_input.cfg";
@@ -363,4 +364,41 @@ fn parseGamepadInput(name: []const u8) ?GamepadInput {
         }
     }
     return null;
+}
+
+test "input bindings parse overrides and unbinds" {
+    const bindings = try Bindings.parseContents(
+        \\# Player 1 remap
+        \\keyboard.a = q
+        \\keyboard.b = none
+        \\keyboard.p2.start = rshift
+        \\gamepad.p2.start = back
+        \\hotkey.quit = backspace
+    );
+
+    try testing.expect(bindings.keyboard[0][@intFromEnum(Action.a)] == .q);
+    try testing.expect(bindings.keyboard[0][@intFromEnum(Action.b)] == null);
+    try testing.expect(bindings.keyboard[1][@intFromEnum(Action.start)] == .rshift);
+    try testing.expect(bindings.gamepad[1][@intFromEnum(Action.start)] == .back);
+    try testing.expect(bindings.hotkeys[@intFromEnum(HotkeyAction.quit)] == .backspace);
+}
+
+test "input bindings apply remapped inputs" {
+    var io = Io.init();
+    var bindings = Bindings.defaults();
+    bindings.setKeyboard(.a, null);
+    bindings.setKeyboardForPort(1, .x, .q);
+    bindings.setGamepad(.a, null);
+    bindings.setGamepadForPort(1, .c, .south);
+    bindings.setHotkey(.step, .backspace);
+
+    try testing.expect(bindings.applyKeyboard(&io, .q, true));
+    try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.X);
+    try testing.expect((io.pad[0] & Io.Button.A) != 0);
+
+    io.setButton(1, Io.Button.X, false);
+    try testing.expect(bindings.applyGamepad(&io, 1, .south, true));
+    try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.C);
+    try testing.expect((io.pad[0] & Io.Button.A) != 0);
+    try testing.expectEqual(HotkeyAction.step, bindings.hotkeyForKeyboard(.backspace).?);
 }

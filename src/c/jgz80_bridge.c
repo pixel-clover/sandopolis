@@ -28,6 +28,12 @@ struct Jgz80Handle {
     uint32_t m68k_bus_access_count;
 };
 
+static void reset_ym2612_state(Jgz80Handle* h) {
+    memset(h->ym_addr, 0, sizeof(h->ym_addr));
+    memset(h->ym_regs, 0, sizeof(h->ym_regs));
+    h->ym_key_mask = 0;
+}
+
 static uint8_t mapped_read_byte(Jgz80Handle* h, uint16_t addr) {
     const uint16_t zaddr = (uint16_t)(addr & 0xFFFFu);
     if (zaddr < 0x2000u) {
@@ -184,9 +190,7 @@ Jgz80Handle* jgz80_create(void) {
     bind_callbacks(h);
     memset(h->ram, 0, sizeof(h->ram));
     h->bank = 0;
-    memset(h->ym_addr, 0, sizeof(h->ym_addr));
-    memset(h->ym_regs, 0, sizeof(h->ym_regs));
-    h->ym_key_mask = 0;
+    reset_ym2612_state(h);
     h->psg_last = 0;
     memset(h->psg_tone, 0, sizeof(h->psg_tone));
     memset(h->psg_volume, 0x0F, sizeof(h->psg_volume));
@@ -209,9 +213,7 @@ void jgz80_reset(Jgz80Handle* handle) {
     handle->reset_line = false;
     memset(handle->ram, 0, sizeof(handle->ram));
     handle->bank = 0;
-    memset(handle->ym_addr, 0, sizeof(handle->ym_addr));
-    memset(handle->ym_regs, 0, sizeof(handle->ym_regs));
-    handle->ym_key_mask = 0;
+    reset_ym2612_state(handle);
     handle->psg_last = 0;
     memset(handle->psg_tone, 0, sizeof(handle->psg_tone));
     memset(handle->psg_volume, 0x0F, sizeof(handle->psg_volume));
@@ -320,6 +322,9 @@ void jgz80_write_reset(Jgz80Handle* handle, uint16_t val) {
     if (!handle) return;
     bind_callbacks(handle);
     if (val == 0u) {
+        if (!handle->reset_line) {
+            reset_ym2612_state(handle);
+        }
         handle->reset_line = true;
         handle->bus_ack = false;
         z80_reset(&handle->core);

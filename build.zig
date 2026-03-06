@@ -10,6 +10,10 @@ fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDe
     step.addIncludePath(deps.rocket68.path("src/m68k"));
     step.addIncludePath(deps.jgz80.path("."));
     step.addIncludePath(b.path("src/c"));
+    step.root_module.addIncludePath(deps.rocket68.path("include"));
+    step.root_module.addIncludePath(deps.rocket68.path("src/m68k"));
+    step.root_module.addIncludePath(deps.jgz80.path("."));
+    step.root_module.addIncludePath(b.path("src/c"));
 
     step.addCSourceFiles(.{
         .root = deps.rocket68.path("."),
@@ -46,6 +50,15 @@ pub fn build(b: *std.Build) void {
         .rocket68 = b.dependency("rocket68", .{}),
         .jgz80 = b.dependency("jgz80", .{}),
     };
+    const sandopolis_test_exports = b.createModule(.{
+        .root_source_file = b.path("src/test_exports.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sandopolis_test_exports.addIncludePath(cpu_deps.rocket68.path("include"));
+    sandopolis_test_exports.addIncludePath(cpu_deps.rocket68.path("src/m68k"));
+    sandopolis_test_exports.addIncludePath(cpu_deps.jgz80.path("."));
+    sandopolis_test_exports.addIncludePath(b.path("src/c"));
 
     // Create the executable
     const exe = b.addExecutable(.{
@@ -124,33 +137,46 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Check if sandopolis compiles");
     check.dependOn(&exe_check.step);
 
-    // Test executable (no SDL dependency)
-    const test_exe = b.addExecutable(.{
-        .name = "test_emu",
+    const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("test_emu.zig"),
+            .root_source_file = b.path("src/unit_tests.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+            },
         }),
     });
-    addExternalCpuCores(test_exe, b, cpu_deps);
+    addExternalCpuCores(unit_tests, b, cpu_deps);
 
-    b.installArtifact(test_exe);
+    const unit_run = b.addRunArtifact(unit_tests);
+    const unit_step = b.step("test-unit", "Run unit tests");
+    unit_step.dependOn(&unit_run.step);
 
-    const test_run_cmd = b.addRunArtifact(test_exe);
-    test_run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        test_run_cmd.addArgs(args);
-    }
+    const integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_src", .module = sandopolis_test_exports },
+            },
+        }),
+    });
+    addExternalCpuCores(integration_tests, b, cpu_deps);
 
-    const test_step = b.step("test-emu", "Run the emulator test");
-    test_step.dependOn(&test_run_cmd.step);
+    const integration_run = b.addRunArtifact(integration_tests);
+    const integration_step = b.step("test-integration", "Run integration tests");
+    integration_step.dependOn(&integration_run.step);
 
     const regression_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/regression_tests.zig"),
+            .root_source_file = b.path("tests/regression_tests.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_src", .module = sandopolis_test_exports },
+            },
         }),
     });
     addExternalCpuCores(regression_tests, b, cpu_deps);
@@ -158,4 +184,21 @@ pub fn build(b: *std.Build) void {
     const regression_run = b.addRunArtifact(regression_tests);
     const regression_step = b.step("test-regression", "Run regression tests");
     regression_step.dependOn(&regression_run.step);
+
+    const property_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/property_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const property_run = b.addRunArtifact(property_tests);
+    const property_step = b.step("test-property", "Run property-based tests");
+    property_step.dependOn(&property_run.step);
+
+    const test_step_all = b.step("test", "Run unit, integration, regression, and property tests");
+    test_step_all.dependOn(&unit_run.step);
+    test_step_all.dependOn(&integration_run.step);
+    test_step_all.dependOn(&regression_run.step);
+    test_step_all.dependOn(&property_run.step);
 }

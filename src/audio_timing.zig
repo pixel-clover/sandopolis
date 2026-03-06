@@ -1,3 +1,5 @@
+const std = @import("std");
+const testing = std.testing;
 const clock = @import("clock.zig");
 
 pub const PendingAudioFrames = struct {
@@ -33,3 +35,15 @@ pub const AudioTiming = struct {
         return out;
     }
 };
+
+test "audio timing accrues FM/PSG native-rate frames from master cycles" {
+    var timing = AudioTiming{};
+    timing.consumeMaster(clock.ntsc_master_cycles_per_frame);
+    const frames = timing.takePending();
+
+    try testing.expectEqual(@as(u32, 888), frames.fm_frames);
+    try testing.expectEqual(@as(u16, 936), timing.fm_master_remainder);
+
+    try testing.expectEqual(@as(u32, 3733), frames.psg_frames);
+    try testing.expectEqual(@as(u16, 120), timing.psg_master_remainder);
+}

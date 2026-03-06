@@ -49,9 +49,6 @@ make build
 # Run with a ROM file
 ./zig-out/bin/sandopolis path/to/rom.bin
 
-# Run test emulator (no GUI)
-./zig-out/bin/test_emu path/to/rom.bin
-
 # Example with Sonic & Knuckles
 ./zig-out/bin/sandopolis roms/sn.smd
 ```
@@ -88,7 +85,6 @@ sandopolis/
 ├── src/c/                 # C bridges (jgz80)
 ├── build.zig.zon          # Zig package dependencies (rocket68, jgz80, SDL bindings)
 ├── roms/                  # Place your Genesis ROMs here
-├── test_emu.zig          # Standalone test runner
 └── build.zig             # Build configuration
 ```
 

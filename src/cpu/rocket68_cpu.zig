@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const clock = @import("../clock.zig");
 const Bus = @import("../memory.zig").Bus;
 
@@ -9,6 +10,10 @@ const c = @cImport({
 var active_bus: ?*Bus = null;
 var active_cpu: ?*Cpu = null;
 var fallback_memory = [_]u8{0} ** 8;
+
+fn cpuTestDmaReadWord(_: ?*anyopaque, _: u32) u16 {
+    return 0x1234;
+}
 
 fn isVdpDataPortAddress(address: u32) bool {
     const addr = address & 0xFFFFFF;
@@ -262,3 +267,127 @@ pub const Cpu = struct {
         }
     }
 };
+
+test "cpu data-port writes accrue vdp fifo wait accounting" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    std.mem.writeInt(u32, bus.rom[0..4], 0x00FF_FE00, .big);
+    std.mem.writeInt(u32, bus.rom[4..8], 0x0000_0200, .big);
+
+    var pc: u32 = 0x0200;
+    bus.rom[pc] = 0x33;
+    bus.rom[pc + 1] = 0xFC;
+    pc += 2;
+    bus.rom[pc] = 0xAB;
+    bus.rom[pc + 1] = 0xCD;
+    pc += 2;
+    bus.rom[pc] = 0x00;
+    bus.rom[pc + 1] = 0xC0;
+    pc += 2;
+    bus.rom[pc] = 0x00;
+    bus.rom[pc + 1] = 0x00;
+    pc += 2;
+    bus.rom[pc] = 0x4E;
+    bus.rom[pc + 1] = 0x71;
+
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.writeData(0x0102);
+    bus.vdp.writeData(0x0304);
+    bus.vdp.writeData(0x0506);
+    bus.vdp.writeData(0x0708);
+
+    try testing.expectEqual(@as(u32, 24), bus.vdp.dataPortWriteWaitMasterCycles());
+
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    const ran = cpu.runCycles(&bus, 64);
+    try testing.expect(ran != 0);
+
+    const wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 4), wait.m68k_cycles);
+    try testing.expectEqual(@as(u32, 24), wait.master_cycles);
+    try testing.expect(!bus.vdp.shouldHaltCpu());
+    try testing.expectEqual(@as(u16, 0x000A), bus.vdp.addr);
+}
+
+test "cpu data-port reads accrue vdp fifo drain wait accounting" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.writeData(0xABCD);
+
+    cpu.noteBusAccessWait(&bus, 0x00C0_0000, 2, false);
+    const wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 4), wait.m68k_cycles);
+    try testing.expectEqual(@as(u32, 24), wait.master_cycles);
+}
+
+test "cpu z80-window accesses accrue wait accounting only when bus is granted" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    cpu.noteBusAccessWait(&bus, 0x00A0_4000, 1, false);
+    var wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 0), wait.m68k_cycles);
+    try testing.expectEqual(@as(u32, 0), wait.master_cycles);
+
+    bus.write16(0x00A1_1100, 0x0000); // Request/grant Z80 bus
+
+    cpu.noteBusAccessWait(&bus, 0x00A0_4000, 1, false);
+    wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 1), wait.m68k_cycles);
+    try testing.expectEqual(clock.m68kCyclesToMaster(1), wait.master_cycles);
+
+    cpu.noteBusAccessWait(&bus, 0x00A0_8000, 4, false);
+    wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 2), wait.m68k_cycles);
+    try testing.expectEqual(clock.m68kCyclesToMaster(2), wait.master_cycles);
+
+    bus.write16(0x00A1_1200, 0x0000); // Assert reset, revoking grant
+
+    cpu.noteBusAccessWait(&bus, 0x00A0_4000, 1, false);
+    wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 0), wait.m68k_cycles);
+    try testing.expectEqual(@as(u32, 0), wait.master_cycles);
+}
+
+test "cpu control-port writes wait for pending post-dma replay delay" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+    var cpu = Cpu.init();
+    cpu.reset(&bus);
+
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.dma_active = true;
+    bus.vdp.dma_fill = false;
+    bus.vdp.dma_copy = false;
+    bus.vdp.dma_length = 1;
+    bus.vdp.dma_remaining = 1;
+
+    bus.vdp.writeControl(0x4000);
+    bus.vdp.writeControl(0x0002);
+    bus.vdp.progressTransfers(24, null, cpuTestDmaReadWord);
+
+    cpu.noteBusAccessWait(&bus, 0x00C0_0004, 2, true);
+    var wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 8), wait.m68k_cycles);
+    try testing.expectEqual(@as(u32, 50), wait.master_cycles);
+
+    cpu.noteBusAccessWait(&bus, 0x00C0_0004, 4, true);
+    wait = cpu.takeWaitAccounting();
+    try testing.expectEqual(@as(u32, 8), wait.m68k_cycles);
+    try testing.expectEqual(@as(u32, 50), wait.master_cycles);
+}

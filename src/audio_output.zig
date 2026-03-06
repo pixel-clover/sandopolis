@@ -10,6 +10,8 @@ const StereoPan = struct {
     right: f32,
 };
 
+const ym_operator_offsets = [_]u8{ 0x00, 0x08, 0x04, 0x0C };
+
 const RateConverter = struct {
     in_rate_num: u32,
     in_rate_den: u16,
@@ -42,7 +44,49 @@ pub const AudioOutput = struct {
     timing_is_pal: bool = false,
     sample_chunk: [4096]i16 = [_]i16{0} ** 4096,
     ym_phase: [6]f32 = [_]f32{0.0} ** 6,
+    ym_level: [6]f32 = [_]f32{0.0} ** 6,
     psg: Psg = Psg{},
+
+    fn ymPortAndChannelBase(channel: u3) struct { port: u1, base: u8 } {
+        return if (channel >= 3)
+            .{ .port = 1, .base = @as(u8, channel - 3) }
+        else
+            .{ .port = 0, .base = channel };
+    }
+
+    fn ymOperatorRegister(z80: *const Z80, channel: u3, reg_base: u8, operator: u2) u8 {
+        const mapping = ymPortAndChannelBase(channel);
+        return z80.getYmRegister(mapping.port, reg_base + ym_operator_offsets[operator] + mapping.base);
+    }
+
+    fn ymTotalLevelToGain(total_level: u8) f32 {
+        return std.math.exp2(-@as(f32, @floatFromInt(total_level & 0x7F)) / 16.0);
+    }
+
+    fn ymAttackStep(z80: *const Z80, channel: u3) f32 {
+        const attack_rate = ymOperatorRegister(z80, channel, 0x50, 3) & 0x1F;
+        return 0.0001 + (@as(f32, @floatFromInt(attack_rate)) / 31.0) * 0.01;
+    }
+
+    fn ymReleaseStep(z80: *const Z80, channel: u3) f32 {
+        const release_rate = ymOperatorRegister(z80, channel, 0x80, 3) & 0x0F;
+        return 0.00002 + (@as(f32, @floatFromInt(release_rate)) / 15.0) * 0.002;
+    }
+
+    fn ymTargetGain(z80: *const Z80, channel: u3, keyed_on: bool, dac_enable: bool) f32 {
+        if (!keyed_on) return 0.0;
+        if (dac_enable and channel == 5) return 0.0;
+
+        const carrier_tl = ymOperatorRegister(z80, channel, 0x40, 3);
+        const algorithm_feedback = z80.getYmRegister(ymPortAndChannelBase(channel).port, 0xB0 + ymPortAndChannelBase(channel).base);
+        const algorithm = algorithm_feedback & 0x07;
+        const feedback = (algorithm_feedback >> 3) & 0x07;
+
+        var gain = 0.05 * ymTotalLevelToGain(carrier_tl);
+        gain *= 1.0 + @as(f32, @floatFromInt(algorithm)) * 0.04;
+        gain *= 1.0 + @as(f32, @floatFromInt(feedback)) * 0.03;
+        return gain;
+    }
 
     fn fmFrequencyFromChannel(z80: *const Z80, channel: u3) f32 {
         const is_high_bank = channel >= 3;
@@ -96,11 +140,13 @@ pub const AudioOutput = struct {
         self: *AudioOutput,
         frames: usize,
         psg_native_frames: u32,
+        z80: *const Z80,
         fm_hz: [6]f32,
-        fm_gain: [6]f32,
+        fm_target_gain: [6]f32,
         fm_pan: [6]StereoPan,
         ym_dac_gain: f32,
         ym_dac_sample: f32,
+        dac_pan: StereoPan,
     ) []const i16 {
         // Mix FM placeholder + resampled PSG into stereo output.
         const sample_rate: f32 = @floatFromInt(output_rate);
@@ -114,17 +160,27 @@ pub const AudioOutput = struct {
 
             // FM channels (placeholder sine synthesis until FM operators are ported).
             for (0..6) |ch| {
-                if (fm_gain[ch] <= 0.0001 or fm_hz[ch] <= 0.0) continue;
+                if (fm_hz[ch] <= 0.0) continue;
+
+                const channel: u3 = @intCast(ch);
+                const target_gain = fm_target_gain[ch];
+                if (self.ym_level[ch] < target_gain) {
+                    self.ym_level[ch] = @min(target_gain, self.ym_level[ch] + ymAttackStep(z80, channel));
+                } else if (self.ym_level[ch] > target_gain) {
+                    self.ym_level[ch] = @max(target_gain, self.ym_level[ch] - ymReleaseStep(z80, channel));
+                }
+                if (self.ym_level[ch] <= 0.0001) continue;
+
                 self.ym_phase[ch] += fm_hz[ch] / sample_rate;
                 if (self.ym_phase[ch] >= 1.0) self.ym_phase[ch] -= 1.0;
-                const voice = std.math.sin(self.ym_phase[ch] * two_pi) * fm_gain[ch];
+                const voice = std.math.sin(self.ym_phase[ch] * two_pi) * self.ym_level[ch];
                 l += voice * fm_pan[ch].left;
                 r += voice * fm_pan[ch].right;
             }
             if (ym_dac_gain > 0.0) {
                 const voice = ym_dac_sample * ym_dac_gain;
-                l += voice;
-                r += voice;
+                l += voice * dac_pan.left;
+                r += voice * dac_pan.right;
             }
 
             // Resample PSG from native chip ticks to output-rate stereo.
@@ -189,14 +245,15 @@ pub const AudioOutput = struct {
 
         const ym_key_mask = z80.getYmKeyMask();
         var fm_hz = [_]f32{0.0} ** 6;
-        var fm_gain = [_]f32{0.0} ** 6;
+        var fm_target_gain = [_]f32{0.0} ** 6;
         var fm_pan = [_]StereoPan{.{ .left = 0.0, .right = 0.0 }} ** 6;
+        const dac_pan = fmPanFromChannel(z80, 5);
         for (0..6) |ch| {
-            fm_hz[ch] = fmFrequencyFromChannel(z80, @intCast(ch));
-            fm_pan[ch] = fmPanFromChannel(z80, @intCast(ch));
-            if ((ym_key_mask & (@as(u8, 1) << @intCast(ch))) != 0 and !dac_enable) {
-                fm_gain[ch] = 0.025;
-            }
+            const channel: u3 = @intCast(ch);
+            fm_hz[ch] = fmFrequencyFromChannel(z80, channel);
+            fm_pan[ch] = fmPanFromChannel(z80, channel);
+            const keyed_on = (ym_key_mask & (@as(u8, 1) << @intCast(ch))) != 0;
+            fm_target_gain[ch] = ymTargetGain(z80, channel, keyed_on, dac_enable);
         }
 
         const max_frames_per_push = self.sample_chunk.len / channels;
@@ -208,7 +265,7 @@ pub const AudioOutput = struct {
                 remaining_psg_native
             else
                 @intCast((@as(u64, remaining_psg_native) * chunk_frames) / remaining_out_frames);
-            const samples = self.renderChunk(chunk_frames, chunk_psg_native, fm_hz, fm_gain, fm_pan, ym_dac_gain, ym_dac_sample);
+            const samples = self.renderChunk(chunk_frames, chunk_psg_native, z80, fm_hz, fm_target_gain, fm_pan, ym_dac_gain, ym_dac_sample, dac_pan);
             try zsdl3.putAudioStreamData(i16, self.stream, samples);
             remaining_psg_native -= chunk_psg_native;
             remaining_out_frames -= @intCast(chunk_frames);
@@ -229,7 +286,7 @@ test "rate converter keeps FM/PSG aligned over one NTSC frame" {
     const fm_out = output.fm_converter.toOutputFrames(pending.fm_frames, AudioOutput.output_rate);
     const psg_out = output.psg_converter.toOutputFrames(pending.psg_frames, AudioOutput.output_rate);
 
-    try std.testing.expectEqual(@as(u32, 799), fm_out);
+    try std.testing.expectEqual(@as(u32, 800), fm_out);
     try std.testing.expectEqual(@as(u32, 800), psg_out);
 }
 
@@ -255,13 +312,15 @@ test "psg native-rate rendering stays audible after downsampling" {
     var output = AudioOutput{
         .stream = @ptrFromInt(1),
     };
+    var z80 = Z80.init();
+    defer z80.deinit();
     output.psg.doCommand(0x90); // ch0 volume = 0
     output.psg.doCommand(0x85); // ch0 tone low = 5
     output.psg.doCommand(0x00); // ch0 tone high = 0
 
     const silent_fm = [_]f32{0.0} ** 6;
     const silent_pan = [_]StereoPan{.{ .left = 0.0, .right = 0.0 }} ** 6;
-    const samples = output.renderChunk(64, 256, silent_fm, silent_fm, silent_pan, 0.0, 0.0);
+    const samples = output.renderChunk(64, 256, &z80, silent_fm, silent_fm, silent_pan, 0.0, 0.0, .{ .left = 1.0, .right = 1.0 });
 
     var nonzero: usize = 0;
     for (samples) |sample| {

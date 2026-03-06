@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const clock = @import("clock.zig");
 const AudioTiming = @import("audio_timing.zig").AudioTiming;
 const Vdp = @import("vdp.zig").Vdp;
@@ -780,3 +781,558 @@ pub const Bus = struct {
         self.stepMaster(clock.m68kCyclesToMaster(m68k_cycles));
     }
 };
+
+fn makeRomWithSramHeader(
+    allocator: std.mem.Allocator,
+    rom_len: usize,
+    ram_type: u8,
+    start_address: u32,
+    end_address: u32,
+) ![]u8 {
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    rom[0x1B0] = 'R';
+    rom[0x1B1] = 'A';
+    rom[0x1B2] = ram_type;
+    rom[0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x1B4..0x1B8], start_address, .big);
+    std.mem.writeInt(u32, rom[0x1B8..0x1BC], end_address, .big);
+    return rom;
+}
+
+fn makeBasicGenesisRom(allocator: std.mem.Allocator, rom_len: usize) ![]u8 {
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    return rom;
+}
+
+fn writeSerial(rom: []u8, base: usize, serial: []const u8) void {
+    @memcpy(rom[base + 0x180 .. base + 0x180 + serial.len], serial);
+}
+
+test "cartridge odd-byte sram past end of rom is auto-mapped" {
+    const rom = try makeRomWithSramHeader(testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
+    defer testing.allocator.free(rom);
+
+    var bus = try Bus.initFromRomBytes(testing.allocator, rom);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(bus.isCartridgeRamMapped());
+    try testing.expect(bus.isCartridgeRamPersistent());
+
+    bus.write8(0x0020_0001, 0x5A);
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x0020_0001));
+    try testing.expectEqual(@as(u16, 0x5A5A), bus.read16(0x0020_0000));
+}
+
+test "forced 8kb sram checksum maps odd-byte persistent ram without header" {
+    const rom = try makeBasicGenesisRom(testing.allocator, 0x100000);
+    defer testing.allocator.free(rom);
+
+    var bus = try Bus.initFromRomBytesWithChecksum(testing.allocator, rom, 0x8135702C);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(bus.isCartridgeRamMapped());
+    try testing.expect(bus.isCartridgeRamPersistent());
+
+    bus.write8(0x0020_0001, 0xA5);
+    bus.write8(0x0020_3FFF, 0x5A);
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x0020_0001));
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x0020_3FFF));
+    try testing.expectEqual(@as(u16, 0xA5A5), bus.read16(0x0020_0000));
+}
+
+test "forced 32kb sram checksum maps full odd-byte 20ffff range without header" {
+    const rom = try makeBasicGenesisRom(testing.allocator, 0x100000);
+    defer testing.allocator.free(rom);
+
+    var bus = try Bus.initFromRomBytesWithChecksum(testing.allocator, rom, 0xA4F2F011);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(bus.isCartridgeRamMapped());
+    try testing.expect(bus.isCartridgeRamPersistent());
+
+    bus.write8(0x0020_0001, 0x12);
+    bus.write8(0x0020_FFFF, 0x34);
+    try testing.expectEqual(@as(u8, 0x12), bus.read8(0x0020_0001));
+    try testing.expectEqual(@as(u8, 0x34), bus.read8(0x0020_FFFF));
+    try testing.expectEqual(@as(u16, 0x3434), bus.read16(0x0020_FFFE));
+}
+
+test "sonic and knuckles lock-on cartridge header enables locked-on sram" {
+    var rom = try testing.allocator.alloc(u8, 0x400000);
+    defer testing.allocator.free(rom);
+    @memset(rom, 0);
+
+    @memcpy(rom[0x100..0x104], "SEGA");
+    writeSerial(rom, 0, "GM MK-1563 ");
+
+    @memcpy(rom[0x200000 + 0x100 .. 0x200000 + 0x104], "SEGA");
+    writeSerial(rom, 0x200000, "GM MK-1079 ");
+    rom[0x200000 + 0x1B0] = 'R';
+    rom[0x200000 + 0x1B1] = 'A';
+    rom[0x200000 + 0x1B2] = 0xF8;
+    rom[0x200000 + 0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x200000 + 0x1B4 .. 0x200000 + 0x1B8], 0x200001, .big);
+    std.mem.writeInt(u32, rom[0x200000 + 0x1B8 .. 0x200000 + 0x1BC], 0x203FFF, .big);
+
+    var bus = try Bus.initFromRomBytes(testing.allocator, rom);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(!bus.isCartridgeRamMapped());
+
+    bus.write16(0x00A1_30F0, 0x0001);
+    try testing.expect(bus.isCartridgeRamMapped());
+    bus.write8(0x0020_0001, 0xA5);
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x0020_0001));
+}
+
+test "cartridge sram map register toggles rom fallback" {
+    var rom = try makeRomWithSramHeader(testing.allocator, 0x400000, 0xF8, 0x200001, 0x203FFF);
+    defer testing.allocator.free(rom);
+    rom[0x200001] = 0x33;
+
+    var bus = try Bus.initFromRomBytes(testing.allocator, rom);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(!bus.isCartridgeRamMapped());
+    try testing.expectEqual(@as(u8, 0x33), bus.read8(0x0020_0001));
+
+    bus.write8(0x0020_0001, 0xAA);
+    try testing.expectEqual(@as(u8, 0x33), bus.read8(0x0020_0001));
+
+    bus.write16(0x00A1_30F0, 0x0001);
+    try testing.expect(bus.isCartridgeRamMapped());
+
+    bus.write8(0x0020_0001, 0xAA);
+    try testing.expectEqual(@as(u8, 0xAA), bus.read8(0x0020_0001));
+
+    bus.write16(0x00A1_30F0, 0x0000);
+    try testing.expect(!bus.isCartridgeRamMapped());
+    try testing.expectEqual(@as(u8, 0x33), bus.read8(0x0020_0001));
+
+    bus.write16(0x00A1_30F0, 0x0001);
+    try testing.expectEqual(@as(u8, 0xAA), bus.read8(0x0020_0001));
+}
+
+test "cartridge sixteen-bit sram stores both bytes of a word" {
+    const rom = try makeRomWithSramHeader(testing.allocator, 0x100000, 0xE0, 0x200000, 0x20FFFF);
+    defer testing.allocator.free(rom);
+
+    var bus = try Bus.initFromRomBytes(testing.allocator, rom);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expect(bus.hasCartridgeRam());
+    try testing.expect(bus.isCartridgeRamMapped());
+
+    bus.write16(0x0020_0000, 0x1234);
+    try testing.expectEqual(@as(u16, 0x1234), bus.read16(0x0020_0000));
+    try testing.expectEqual(@as(u8, 0x12), bus.read8(0x0020_0000));
+    try testing.expectEqual(@as(u8, 0x34), bus.read8(0x0020_0001));
+}
+
+test "persistent cartridge sram flushes to save file and reloads" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = try makeRomWithSramHeader(testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
+    defer testing.allocator.free(rom);
+    try tmp.dir.writeFile(.{ .sub_path = "persist.md", .data = rom });
+
+    const rom_path = try tmp.dir.realpathAlloc(testing.allocator, "persist.md");
+    defer testing.allocator.free(rom_path);
+
+    {
+        var bus = try Bus.init(testing.allocator, rom_path);
+        defer bus.deinit(testing.allocator);
+
+        const save_path = bus.persistentSavePath() orelse unreachable;
+        bus.write8(0x0020_0001, 0xA5);
+        bus.write8(0x0020_0003, 0x5A);
+        try bus.flushPersistentStorage();
+
+        var save_file = try std.fs.cwd().openFile(save_path, .{});
+        defer save_file.close();
+
+        var first_bytes: [2]u8 = undefined;
+        const bytes_read = try save_file.readAll(&first_bytes);
+        try testing.expectEqual(@as(usize, 2), bytes_read);
+        try testing.expectEqualSlices(u8, &[_]u8{ 0xA5, 0x5A }, first_bytes[0..]);
+    }
+
+    {
+        var bus = try Bus.init(testing.allocator, rom_path);
+        defer bus.deinit(testing.allocator);
+
+        try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x0020_0001));
+        try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x0020_0003));
+    }
+}
+
+test "z80 bus mapped memory and busreq registers behave as expected" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    // Without BUSREQ, 68k should not see/modify Z80 window.
+    bus.write8(0x00A0_0010, 0x5A);
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
+    try testing.expectEqual(@as(u16, 0x5A00), bus.read16(0x00A0_0010));
+
+    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+    try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1100));
+
+    bus.write8(0x00A0_0010, 0x5A);
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
+
+    bus.write16(0x00A1_1100, 0x0100); // Release Z80 bus
+    try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
+
+    // Once released, 68k window should be blocked again.
+    bus.write8(0x00A0_0010, 0xA5);
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A0_0010));
+    try testing.expectEqual(@as(u16, 0xA500), bus.read16(0x00A0_0010));
+}
+
+test "z80 bus request does not grant bus while reset is held" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1200, 0x0000); // Assert reset
+    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+
+    try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
+    bus.write8(0x00A0_0010, 0x5A);
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
+    try testing.expectEqual(@as(u16, 0x5A00), bus.read16(0x00A0_0010));
+
+    bus.write16(0x00A1_1200, 0x0100); // Release reset
+
+    try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1100));
+    bus.write8(0x00A0_0010, 0x5A);
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
+}
+
+test "z80 busack and reset reads preserve open-bus bits" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.open_bus = 0xA400;
+    try testing.expectEqual(@as(u16, 0xA500), bus.read16(0x00A1_1100));
+
+    bus.write16(0x00A1_1100, 0x0000); // Request/grant Z80 bus
+    bus.open_bus = 0xA400;
+    try testing.expectEqual(@as(u16, 0xA400), bus.read16(0x00A1_1100));
+
+    bus.write16(0x00A1_1200, 0x0000); // Assert reset
+    bus.open_bus = 0xB600;
+    try testing.expectEqual(@as(u16, 0xB600), bus.read16(0x00A1_1200));
+
+    bus.write16(0x00A1_1200, 0x0100); // Release reset
+    bus.open_bus = 0xB600;
+    try testing.expectEqual(@as(u16, 0xB700), bus.read16(0x00A1_1200));
+}
+
+test "unused vdp port reads return ff" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00C0_0011));
+    try testing.expectEqual(@as(u16, 0xFFFF), bus.read16(0x00C0_0010));
+}
+
+test "io version register reflects pal bit and word reads use byte value" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u8, 0xA0), bus.read8(0x00A1_0000));
+    try testing.expectEqual(@as(u8, 0xA0), bus.read8(0x00A1_0001));
+    try testing.expectEqual(@as(u16, 0x00A0), bus.read16(0x00A1_0000));
+
+    bus.vdp.pal_mode = true;
+    try testing.expectEqual(@as(u8, 0xE0), bus.read8(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0x00E0), bus.read16(0x00A1_0000));
+}
+
+test "io register pairs mirror byte registers and tx data defaults high" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u8, 0x7F), bus.read8(0x00A1_0002));
+    try testing.expectEqual(@as(u8, 0x7F), bus.read8(0x00A1_0003));
+    try testing.expectEqual(@as(u16, 0x007F), bus.read16(0x00A1_0002));
+
+    bus.io.write(0x09, 0x40);
+    try testing.expectEqual(@as(u8, 0x40), bus.read8(0x00A1_0008));
+    try testing.expectEqual(@as(u8, 0x40), bus.read8(0x00A1_0009));
+    try testing.expectEqual(@as(u16, 0x0040), bus.read16(0x00A1_0008));
+
+    try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00A1_000E));
+    try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00A1_000F));
+    try testing.expectEqual(@as(u16, 0x00FF), bus.read16(0x00A1_000E));
+}
+
+test "io port c data and control registers are exposed" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.io.write(0x07, 0x5A);
+    bus.io.write(0x0D, 0xA5);
+
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A1_0006));
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A1_0007));
+    try testing.expectEqual(@as(u16, 0x005A), bus.read16(0x00A1_0006));
+
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A1_000C));
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A1_000D));
+    try testing.expectEqual(@as(u16, 0x00A5), bus.read16(0x00A1_000C));
+}
+
+test "io register writes mirror even and odd addresses" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write8(0x00A1_0002, 0x40);
+    try testing.expectEqual(@as(u8, 0x40), bus.io.data[0]);
+
+    bus.write8(0x00A1_0008, 0x55);
+    try testing.expectEqual(@as(u8, 0x55), bus.io.read(0x09));
+
+    bus.write8(0x00A1_0006, 0xAA);
+    try testing.expectEqual(@as(u8, 0xAA), bus.io.read(0x07));
+
+    bus.write8(0x00A1_000C, 0x11);
+    try testing.expectEqual(@as(u8, 0x11), bus.io.read(0x0D));
+}
+
+test "bus stepping advances controller timing" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write8(0x00A1_0003, 0x00);
+    bus.write8(0x00A1_0009, 0x40);
+    bus.write8(0x00A1_0009, 0x00);
+
+    try testing.expectEqual(@as(u8, 0x03), bus.read8(0x00A1_0003) & 0x43);
+    bus.stepMaster(clock.m68kCyclesToMaster(29));
+    try testing.expectEqual(@as(u8, 0x03), bus.read8(0x00A1_0003) & 0x43);
+    bus.stepMaster(clock.m68kCyclesToMaster(1));
+    try testing.expectEqual(@as(u8, 0x43), bus.read8(0x00A1_0003) & 0x43);
+}
+
+test "z80 audio window latches YM2612 and PSG writes" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+
+    // YM2612 port 0: addr then data
+    bus.write8(0x00A0_4000, 0x22);
+    bus.write8(0x00A0_4001, 0x0F);
+    try testing.expectEqual(@as(u8, 0x0F), bus.z80.getYmRegister(0, 0x22));
+
+    // YM2612 port 1: addr then data
+    bus.write8(0x00A0_4002, 0x2B);
+    bus.write8(0x00A0_4003, 0x80);
+    try testing.expectEqual(@as(u8, 0x80), bus.z80.getYmRegister(1, 0x2B));
+
+    // PSG latch/data byte
+    bus.write8(0x00A0_7F11, 0x90);
+    try testing.expectEqual(@as(u8, 0x90), bus.z80.getPsgLast());
+}
+
+test "psg latch/data writes decode tone and volume registers" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+
+    // Tone channel 0: latch low nibble, then data high bits.
+    bus.write8(0x00A0_7F11, 0x80 | 0x0A); // ch0 tone low=0xA
+    bus.write8(0x00A0_7F11, 0x15); // high 6 bits
+    try testing.expectEqual(@as(u16, 0x15A), bus.z80.getPsgTone(0));
+
+    // Volume channel 2 attenuation.
+    bus.write8(0x00A0_7F11, 0xC0 | 0x10 | 0x07); // ch2 volume=7
+    try testing.expectEqual(@as(u8, 0x07), bus.z80.getPsgVolume(2));
+
+    // Noise register write.
+    bus.write8(0x00A0_7F11, 0xE0 | 0x03);
+    try testing.expectEqual(@as(u8, 0x03), bus.z80.getPsgNoise());
+}
+
+test "ym key-on register updates channel key mask" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+
+    // Key on channel 0 (operators set in upper nibble).
+    bus.write8(0x00A0_4000, 0x28);
+    bus.write8(0x00A0_4001, 0xF0);
+    try testing.expectEqual(@as(u8, 0x01), bus.z80.getYmKeyMask());
+
+    // Key on channel 4 (ch=1 with high-bank bit set).
+    bus.write8(0x00A0_4000, 0x28);
+    bus.write8(0x00A0_4001, 0xF5);
+    try testing.expectEqual(@as(u8, 0x11), bus.z80.getYmKeyMask());
+
+    // Key off channel 0.
+    bus.write8(0x00A0_4000, 0x28);
+    bus.write8(0x00A0_4001, 0x00);
+    try testing.expectEqual(@as(u8, 0x10), bus.z80.getYmKeyMask());
+}
+
+test "z80 reset clears ym2612 register shadow state" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+
+    bus.write8(0x00A0_4000, 0x22);
+    bus.write8(0x00A0_4001, 0x0F);
+    bus.write8(0x00A0_4000, 0x28);
+    bus.write8(0x00A0_4001, 0xF0);
+
+    try testing.expectEqual(@as(u8, 0x0F), bus.z80.getYmRegister(0, 0x22));
+    try testing.expectEqual(@as(u8, 0x01), bus.z80.getYmKeyMask());
+
+    bus.write16(0x00A1_1200, 0x0000); // Assert reset
+
+    try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmRegister(0, 0x22));
+    try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmRegister(0, 0x28));
+    try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmKeyMask());
+}
+
+test "z80 bank register selects 68k ROM window" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    // Populate distinct bytes in ROM bank 0 and bank 1.
+    bus.rom[0x0000] = 0x12;
+    bus.rom[0x8000] = 0x34;
+
+    bus.write16(0x00A1_1100, 0x0000); // Request Z80 bus
+
+    // Default bank is 0, so Z80 0x8000 maps to 68k 0x000000.
+    try testing.expectEqual(@as(u8, 0x12), bus.read8(0x00A0_8000));
+
+    // Bank register is 9-bit serial, shifted by writes to 0x6000..0x60FF.
+    // Program bank=1 by writing bit0=1 followed by zeros for remaining bits.
+    bus.write8(0x00A0_6000, 1);
+    for (0..8) |_| {
+        bus.write8(0x00A0_6000, 0);
+    }
+
+    try testing.expectEqual(@as(u16, 1), bus.z80.getBank());
+    try testing.expectEqual(@as(u8, 0x34), bus.read8(0x00A0_8000));
+}
+
+test "z80 68k-bus stall is applied before the next instruction" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    // Loop forever on: LD A,($8000) ; JR $0000
+    bus.z80.reset();
+    bus.z80.writeByte(0x0000, 0x3A);
+    bus.z80.writeByte(0x0001, 0x00);
+    bus.z80.writeByte(0x0002, 0x80);
+    bus.z80.writeByte(0x0003, 0x18);
+    bus.z80.writeByte(0x0004, 0xFB);
+
+    bus.rom[0x0000] = 0x12;
+
+    // This is enough time for the first banked read and its reciprocal stall,
+    // but not enough to begin the following JR if the stall is applied inline.
+    bus.stepMaster(258);
+    try testing.expectEqual(@as(u16, 0x0003), bus.z80.getPc());
+    try testing.expectEqual(@as(u32, 0), bus.z80_wait_master_cycles);
+    try testing.expectEqual(clock.m68kCyclesToMaster(11), bus.pendingM68kWaitMasterCycles());
+
+    // The next master cycle starts the JR, and the remaining instruction cost is
+    // carried as debt instead of letting the following instruction run early.
+    bus.stepMaster(1);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.getPc());
+    try testing.expect(bus.z80_master_credit < 0);
+
+    bus.stepMaster(164);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.getPc());
+    try testing.expectEqual(@as(i64, -1), bus.z80_master_credit);
+
+    bus.stepMaster(16);
+    try testing.expectEqual(@as(u16, 0x0003), bus.z80.getPc());
+    try testing.expect(bus.z80_master_credit < 0);
+    try testing.expectEqual(clock.m68kCyclesToMaster(22), bus.pendingM68kWaitMasterCycles());
+}
+
+test "z80 instruction overshoot carries between bus slices" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.z80.reset();
+    bus.z80.writeByte(0x0000, 0x00); // NOP
+    bus.z80.writeByte(0x0001, 0x00); // NOP
+
+    bus.stepMaster(clock.z80_divider);
+    try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
+    try testing.expectEqual(@as(i64, -45), bus.z80_master_credit);
+
+    bus.stepMaster(45);
+    try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
+    try testing.expectEqual(@as(i64, 0), bus.z80_master_credit);
+
+    bus.stepMaster(clock.z80_divider);
+    try testing.expectEqual(@as(u16, 0x0002), bus.z80.getPc());
+    try testing.expectEqual(@as(i64, -45), bus.z80_master_credit);
+}
+
+test "vdp memory-to-vram dma is progressed by vdp with fifo latency" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00E0_0000, 0xABCD);
+
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.dma_active = true;
+    bus.vdp.dma_fill = false;
+    bus.vdp.dma_copy = false;
+    bus.vdp.dma_source_addr = 0x00E0_0000;
+    bus.vdp.dma_length = 1;
+    bus.vdp.dma_remaining = 1;
+
+    try testing.expect(bus.vdp.shouldHaltCpu());
+
+    bus.stepMaster(8);
+    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[1]);
+    try testing.expect(bus.vdp.dma_active);
+
+    bus.stepMaster(8);
+    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[0]);
+    try testing.expect(bus.vdp.dma_active);
+
+    bus.stepMaster(8);
+    try testing.expectEqual(@as(u8, 0xAB), bus.vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0xCD), bus.vdp.vram[1]);
+    try testing.expect(!bus.vdp.dma_active);
+    try testing.expect(!bus.vdp.shouldHaltCpu());
+}
+
+test "vdp status high bits come from bus open bus" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00E0_0000, 0xA5A5);
+
+    const status = bus.read16(0x00C0_0004);
+    try testing.expectEqual(@as(u16, 0xA400), status & 0xFC00);
+    try testing.expectEqual(@as(u16, 0x0200), status & 0x0300);
+}

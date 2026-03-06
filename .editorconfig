@@ -10,7 +10,7 @@ indent_size = 4
 insert_final_newline = true
 trim_trailing_whitespace = true
 
-[*.zig]
+[*.{c,h,zig}]
 max_line_length = 100
 
 [*.md]
@@ -20,5 +20,5 @@ trim_trailing_whitespace = false
 [*.sh]
 indent_size = 2
 
-[*.{yml,yaml}]
+[*.{yml,yaml,json}]
 indent_size = 2

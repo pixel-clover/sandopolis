@@ -13,7 +13,7 @@ CACHE_DIR     := .zig-cache
 DOC_SRC       := src/root.zig
 DOC_OUT       := docs/api/
 COVERAGE_DIR  := coverage
-BINARY_NAME   := template-zig-project
+BINARY_NAME   := sandopolis
 BINARY_PATH   := $(BUILD_DIR)/bin/$(BINARY_NAME)
 TEST_EXECUTABLE := $(BUILD_DIR)/bin/test
 PREFIX        ?= /usr/local
@@ -44,9 +44,9 @@ run: build  ## Run the main application
 	@echo "Running $(BINARY_NAME)..."
 	$(ZIG) build run $(BUILD_OPTS) --
 
-test: ## Run tests and generate coverage data
-	@echo "Running tests with coverage enabled..."
-	$(ZIG) build test $(BUILD_OPTS) -Denable-coverage=true -j$(JOBS)
+test: ## Run all test suites
+	@echo "Running all test suites..."
+	$(ZIG) build test $(BUILD_OPTS) -j$(JOBS)
 
 release: ## Build in Release mode
 	@echo "Building the project in Release mode..."

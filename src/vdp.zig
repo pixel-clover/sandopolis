@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const clock = @import("clock.zig");
 
 pub const Vdp = struct {
@@ -1777,3 +1778,697 @@ pub const Vdp = struct {
         std.debug.print("VDP Code: {X} Addr: {X:0>4} Reg[1]: {X} Reg[15]: {X}\n", .{ self.code, self.addr, self.regs[1], self.regs[15] });
     }
 };
+
+fn vdpTestDmaReadWord(_: ?*anyopaque, _: u32) u16 {
+    return 0x1234;
+}
+
+test "vdp copy dma progresses internally" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 1;
+    vdp.code = 0x1;
+    vdp.addr = 0x0020;
+    vdp.vram[0x0010] = 0x12;
+    vdp.vram[0x0011] = 0x34;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = true;
+    vdp.dma_source_addr = 0x0010;
+    vdp.dma_length = 2;
+    vdp.dma_remaining = 2;
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u8, 0x12), vdp.vram[0x0020]);
+    try testing.expect(vdp.dma_active);
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u8, 0x34), vdp.vram[0x0021]);
+    try testing.expect(!vdp.dma_active);
+    try testing.expect(!vdp.dma_copy);
+}
+
+test "vdp memory-to-vram dma waits startup delay after control command" {
+    var vdp = Vdp.init();
+    vdp.regs[1] |= 0x10; // DMA enable
+    vdp.regs[15] = 2;
+    vdp.regs[19] = 1;
+    vdp.regs[20] = 0;
+
+    vdp.writeControl(0x4000);
+    vdp.writeControl(0x0080);
+
+    try testing.expect(vdp.dma_active);
+    try testing.expectEqual(@as(u8, 8), vdp.dma_start_delay_slots);
+    try testing.expect(vdp.shouldHaltCpu());
+
+    vdp.progressTransfers(56, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u32, 1), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 0), vdp.fifo_len);
+    try testing.expectEqual(@as(u16, 0x0000), vdp.addr);
+
+    vdp.progressTransfers(8, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u32, 0), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 1), vdp.fifo_len);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+    try testing.expect(vdp.dma_active);
+
+    vdp.progressTransfers(24, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u8, 0x12), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0x34), vdp.vram[1]);
+    try testing.expect(!vdp.dma_active);
+}
+
+test "vdp memory-to-vram dma to vsram uses shorter startup delay" {
+    var vdp = Vdp.init();
+    vdp.regs[1] |= 0x10; // DMA enable
+    vdp.regs[15] = 2;
+    vdp.regs[19] = 1;
+    vdp.regs[20] = 0;
+
+    vdp.writeControl(0x4000);
+    vdp.writeControl(0x0090);
+
+    try testing.expect(vdp.dma_active);
+    try testing.expectEqual(@as(u8, 5), vdp.dma_start_delay_slots);
+
+    vdp.progressTransfers(32, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u32, 1), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 0), vdp.fifo_len);
+
+    vdp.progressTransfers(8, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u32, 0), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 1), vdp.fifo_len);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.progressTransfers(24, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u8, 0x12), vdp.vsram[0]);
+    try testing.expectEqual(@as(u8, 0x34), vdp.vsram[1]);
+    try testing.expect(!vdp.dma_active);
+}
+
+test "vdp buffers control writes until memory-to-vram dma completes" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = false;
+    vdp.dma_length = 1;
+    vdp.dma_remaining = 1;
+
+    vdp.writeControl(0x4000);
+    vdp.writeControl(0x0002);
+
+    try testing.expect(!vdp.pending_command);
+    try testing.expectEqual(@as(u16, 0x0000), vdp.addr);
+    try testing.expectEqual(@as(u8, 0x1), vdp.code);
+
+    vdp.progressTransfers(24, null, vdpTestDmaReadWord);
+
+    try testing.expect(!vdp.dma_active);
+    try testing.expect(!vdp.pending_command);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+    try testing.expectEqual(@as(u8, 0x1), vdp.code);
+
+    vdp.progressTransfers(40, null, null);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.progressTransfers(10, null, null);
+    try testing.expectEqual(@as(u16, 0x8000), vdp.addr);
+    try testing.expectEqual(@as(u8, 0x1), vdp.code);
+}
+
+test "vdp buffers data writes until memory-to-vram dma completes" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = false;
+    vdp.dma_length = 1;
+    vdp.dma_remaining = 1;
+
+    vdp.writeData(0xBEEF);
+
+    try testing.expectEqual(@as(u16, 0x0000), vdp.addr);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
+
+    vdp.progressTransfers(24, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u8, 0x12), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0x34), vdp.vram[1]);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.progressTransfers(40, null, null);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[2]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[3]);
+
+    vdp.progressTransfers(10, null, null);
+    try testing.expectEqual(@as(u16, 0x0004), vdp.addr);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[2]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[3]);
+
+    vdp.progressTransfers(24, null, null);
+    try testing.expectEqual(@as(u8, 0xBE), vdp.vram[2]);
+    try testing.expectEqual(@as(u8, 0xEF), vdp.vram[3]);
+}
+
+test "vdp h40 buffered control writes replay after shorter delay" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = false;
+    vdp.dma_length = 1;
+    vdp.dma_remaining = 1;
+
+    vdp.writeControl(0x4000);
+    vdp.writeControl(0x0002);
+
+    vdp.progressTransfers(24, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.progressTransfers(32, null, null);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u16, 0x8000), vdp.addr);
+}
+
+test "vdp buffers new control writes while post-dma replay delay is active" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = false;
+    vdp.dma_length = 1;
+    vdp.dma_remaining = 1;
+
+    vdp.writeControl(0x4000);
+    vdp.writeControl(0x0002);
+
+    vdp.progressTransfers(24, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u16, 50), vdp.pending_port_write_delay_master_cycles);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.writeControl(0x4004);
+    vdp.writeControl(0x0000);
+
+    try testing.expectEqual(@as(u8, 4), vdp.pending_port_write_len);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.progressTransfers(49, null, null);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.progressTransfers(1, null, null);
+    try testing.expectEqual(@as(u16, 0x0004), vdp.addr);
+    try testing.expectEqual(@as(u8, 0x1), vdp.code);
+}
+
+test "vdp buffers new data writes while post-dma replay delay is active" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = false;
+    vdp.dma_length = 1;
+    vdp.dma_remaining = 1;
+
+    vdp.writeData(0xBEEF);
+
+    vdp.progressTransfers(24, null, vdpTestDmaReadWord);
+    try testing.expectEqual(@as(u16, 50), vdp.pending_port_write_delay_master_cycles);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+
+    vdp.writeData(0xCAFE);
+
+    try testing.expectEqual(@as(u8, 2), vdp.pending_port_write_len);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[2]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[3]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[4]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[5]);
+
+    vdp.progressTransfers(50, null, null);
+    try testing.expectEqual(@as(u16, 0x0006), vdp.addr);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[2]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[3]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[4]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[5]);
+
+    vdp.progressTransfers(24, null, null);
+    try testing.expectEqual(@as(u8, 0xBE), vdp.vram[2]);
+    try testing.expectEqual(@as(u8, 0xEF), vdp.vram[3]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[4]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[5]);
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u8, 0xCA), vdp.vram[4]);
+    try testing.expectEqual(@as(u8, 0xFE), vdp.vram[5]);
+}
+
+test "vdp queued writes accumulate sub-slot master cycles" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+
+    vdp.writeData(0xABCD);
+    try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
+
+    inline for (0..3) |_| {
+        vdp.progressTransfers(clock.m68k_divider, null, null);
+        try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
+        try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
+    }
+
+    vdp.progressTransfers(clock.m68k_divider, null, null);
+    try testing.expectEqual(@as(u8, 0xAB), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0xCD), vdp.vram[1]);
+}
+
+test "vdp data-port read prefetch sees queued fifo writes" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.writeData(0xABCD);
+
+    vdp.code = 0x0;
+    vdp.addr = 0x0000;
+    vdp.read_buffer = 0x1234;
+
+    try testing.expectEqual(@as(u16, 0x1234), vdp.readData());
+    try testing.expectEqual(@as(u16, 0xCDAB), vdp.read_buffer);
+}
+
+test "vdp data-port read prefetch sees pending fifo writes after drain" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.writeData(0x0102);
+    vdp.writeData(0x0304);
+    vdp.writeData(0x0506);
+    vdp.writeData(0x0708);
+    vdp.writeData(0xA1B2);
+
+    try testing.expectEqual(@as(u8, 4), vdp.fifo_len);
+    try testing.expectEqual(@as(u8, 1), vdp.pending_fifo_len);
+
+    vdp.code = 0x0;
+    vdp.addr = 0x0008;
+    vdp.read_buffer = 0x5678;
+
+    try testing.expectEqual(@as(u16, 0x5678), vdp.readData());
+    try testing.expectEqual(@as(u16, 0xB2A1), vdp.read_buffer);
+}
+
+test "vdp data-port read wait tracks fifo drain time" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+
+    vdp.writeData(0xABCD);
+    try testing.expectEqual(@as(u32, 24), vdp.dataPortReadWaitMasterCycles());
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u32, 16), vdp.dataPortReadWaitMasterCycles());
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u32, 8), vdp.dataPortReadWaitMasterCycles());
+
+    vdp.progressTransfers(8, null, null);
+    try testing.expectEqual(@as(u32, 0), vdp.dataPortReadWaitMasterCycles());
+}
+
+test "vdp reserves incremental waits for repeated blocked data-port writes" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+
+    vdp.writeData(0x0102);
+    vdp.writeData(0x0304);
+    vdp.writeData(0x0506);
+    vdp.writeData(0x0708);
+
+    const wait_first = vdp.reserveDataPortWriteWaitMasterCycles();
+    vdp.writeData(0x090A);
+
+    const wait_second = vdp.reserveDataPortWriteWaitMasterCycles();
+    vdp.writeData(0x0B0C);
+
+    try testing.expectEqual(@as(u32, 24), wait_first);
+    try testing.expectEqual(@as(u32, 8), wait_second);
+
+    vdp.progressTransfers(wait_first + wait_second, null, null);
+    try testing.expectEqual(@as(u16, 0x000C), vdp.addr);
+    try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & 0x0300);
+}
+
+test "vdp status reports fifo empty and full bits" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+
+    const fifo_status_mask: u16 = 0x0300;
+
+    try testing.expectEqual(@as(u16, 0x0200), vdp.readControl() & fifo_status_mask);
+
+    vdp.writeData(0x0102);
+    try testing.expectEqual(@as(u16, 0x0000), vdp.readControl() & fifo_status_mask);
+
+    vdp.writeData(0x0304);
+    vdp.writeData(0x0506);
+    vdp.writeData(0x0708);
+    try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & fifo_status_mask);
+
+    vdp.progressTransfers(24, null, null);
+    try testing.expectEqual(@as(u16, 0x0000), vdp.readControl() & fifo_status_mask);
+
+    vdp.progressTransfers(24, null, null);
+    try testing.expectEqual(@as(u16, 0x0200), vdp.readControl() & fifo_status_mask);
+}
+
+test "vdp hv counter advances with line master cycles" {
+    var vdp = Vdp.init();
+    _ = vdp.setScanlineState(10, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+
+    const hv0 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 10), @as(u8, @truncate(hv0 >> 8)));
+    try testing.expectEqual(@as(u8, 0x00), @as(u8, @truncate(hv0)));
+
+    vdp.step(100);
+    const hv1 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0x05), @as(u8, @truncate(hv1)));
+
+    vdp.step(vdp.hblankStartMasterCycles() - 100);
+    try testing.expect(vdp.hblank);
+
+    _ = vdp.setScanlineState(11, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    const hv2 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 11), @as(u8, @truncate(hv2 >> 8)));
+    try testing.expect(@as(u8, @truncate(hv2)) < @as(u8, @truncate(hv1)));
+}
+
+test "vdp reports vblank entry edge once" {
+    var vdp = Vdp.init();
+
+    try testing.expect(!vdp.setScanlineState(clock.ntsc_visible_lines - 1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame));
+    try testing.expect(vdp.setScanlineState(clock.ntsc_visible_lines, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame));
+    try testing.expect(!vdp.setScanlineState(clock.ntsc_visible_lines + 1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame));
+}
+
+test "vdp hint counter triggers every reg10+1 visible lines" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x10; // HINT enable
+    vdp.regs[10] = 2; // trigger cadence: 3 lines
+    vdp.beginFrame();
+
+    var triggered_lines = [_]u16{ 0, 0 };
+    var trigger_count: usize = 0;
+
+    for (0..8) |i| {
+        const line: u16 = @intCast(i);
+        if (vdp.consumeHintForLine(line, clock.ntsc_visible_lines)) {
+            if (trigger_count < triggered_lines.len) {
+                triggered_lines[trigger_count] = line;
+            }
+            trigger_count += 1;
+        }
+    }
+
+    try testing.expectEqual(@as(usize, 2), trigger_count);
+    try testing.expectEqual(@as(u16, 2), triggered_lines[0]);
+    try testing.expectEqual(@as(u16, 5), triggered_lines[1]);
+}
+
+test "vdp pal timing enters vblank at pal visible line count" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+
+    try testing.expect(!vdp.setScanlineState(clock.pal_visible_lines - 1, clock.pal_visible_lines, clock.pal_lines_per_frame));
+    try testing.expect(vdp.setScanlineState(clock.pal_visible_lines, clock.pal_visible_lines, clock.pal_lines_per_frame));
+}
+
+test "vdp interlace odd frame does not shift h counter" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x06; // Interlace mode 2
+    _ = vdp.setScanlineState(0, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+
+    vdp.odd_frame = false;
+    const hv_even = vdp.readHVCounter();
+    vdp.odd_frame = true;
+    const hv_odd = vdp.readHVCounter();
+
+    try testing.expectEqual(@as(u8, @truncate(hv_even)), @as(u8, @truncate(hv_odd)));
+}
+
+test "vdp adjusted hv counter samples future line master cycles" {
+    var vdp = Vdp.init();
+    _ = vdp.setScanlineState(10, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+
+    try testing.expectEqual(vdp.readHVCounter(), vdp.readHVCounterAdjusted(0x3039)); // MOVE
+
+    const hv_cmpi = vdp.readHVCounterAdjusted(0x0C39);
+    try testing.expectEqual(@as(u8, 0x01), @as(u8, @truncate(hv_cmpi)));
+
+    const hv_other = vdp.readHVCounterAdjusted(0x4A79);
+    try testing.expectEqual(@as(u8, 0x02), @as(u8, @truncate(hv_other)));
+}
+
+test "vdp h40 h counter jumps to the hsync range encoding" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81; // H40 mode
+    _ = vdp.setScanlineState(0, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+
+    vdp.line_master_cycle = 2912;
+    try testing.expectEqual(@as(u8, 0xB6), @as(u8, @truncate(vdp.readHVCounter())));
+
+    vdp.line_master_cycle = 2920;
+    try testing.expectEqual(@as(u8, 0xE4), @as(u8, @truncate(vdp.readHVCounter())));
+}
+
+test "vdp line timing points are mode-aware" {
+    var vdp = Vdp.init();
+    try testing.expectEqual(@as(u16, 2660), vdp.hInterruptMasterCycles());
+    try testing.expectEqual(@as(u16, 2640), vdp.hblankStartMasterCycles());
+
+    vdp.regs[12] = 0x81; // H40 mode
+    try testing.expectEqual(@as(u16, 2640), vdp.hInterruptMasterCycles());
+    try testing.expectEqual(@as(u16, 2768), vdp.hblankStartMasterCycles());
+}
+
+test "vdp adjusted status can see hblank edge earlier for non-move reads" {
+    var vdp = Vdp.init();
+    _ = vdp.setScanlineState(0, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    vdp.line_master_cycle = 2920;
+    vdp.hblank = false;
+
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x3039) & 0x0004); // MOVE
+    try testing.expectEqual(@as(u16, 0x0004), vdp.readControlAdjusted(0x4A79) & 0x0004);
+}
+
+test "vdp adjusted status can see vint edge earlier for non-move reads" {
+    var move_vdp = Vdp.init();
+    _ = move_vdp.setScanlineState(clock.ntsc_visible_lines - 1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    move_vdp.line_master_cycle = move_vdp.hInterruptMasterCycles() - 1;
+
+    try testing.expectEqual(@as(u16, 0), move_vdp.readControlAdjusted(0x3039) & 0x0080); // MOVE
+
+    var other_vdp = Vdp.init();
+    _ = other_vdp.setScanlineState(clock.ntsc_visible_lines - 1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    other_vdp.line_master_cycle = other_vdp.hInterruptMasterCycles() - 1;
+
+    try testing.expectEqual(@as(u16, 0x0080), other_vdp.readControlAdjusted(0x4A79) & 0x0080);
+}
+
+test "vdp status hblank bit follows mode-aware timing" {
+    var vdp = Vdp.init();
+    _ = vdp.setScanlineState(0, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    vdp.hblank = false;
+
+    vdp.line_master_cycle = 0;
+    try testing.expectEqual(@as(u16, 0x0004), vdp.readControl() & 0x0004);
+
+    vdp.line_master_cycle = 100;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0004);
+
+    vdp.line_master_cycle = 2940;
+    try testing.expectEqual(@as(u16, 0x0004), vdp.readControl() & 0x0004);
+}
+
+test "vdp ntsc 224-line v counter aliases after line 234" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = false;
+    vdp.regs[1] &= ~@as(u8, 0x08); // 224-line mode threshold
+
+    _ = vdp.setScanlineState(234, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    const hv_234 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0xEA), @as(u8, @truncate(hv_234 >> 8)));
+
+    _ = vdp.setScanlineState(235, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    const hv_235 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0xE5), @as(u8, @truncate(hv_235 >> 8)));
+}
+
+test "vdp hv counter advances to the next line during hblank" {
+    var vdp = Vdp.init();
+    _ = vdp.setScanlineState(10, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+
+    vdp.line_master_cycle = 2659;
+    try testing.expectEqual(@as(u8, 10), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    vdp.line_master_cycle = 2660;
+    try testing.expectEqual(@as(u8, 11), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "vdp ntsc v counter ignores the 240-line bit" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = false;
+    vdp.regs[1] |= 0x08; // Should not affect NTSC V counter mapping.
+
+    _ = vdp.setScanlineState(235, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    try testing.expectEqual(@as(u8, 0xE5), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "vdp pal 240-line v counter aliases after line 266" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+    vdp.regs[1] |= 0x08; // 240-line mode threshold
+
+    _ = vdp.setScanlineState(266, clock.pal_visible_lines, clock.pal_lines_per_frame);
+    const hv_266 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0x0A), @as(u8, @truncate(hv_266 >> 8)));
+
+    _ = vdp.setScanlineState(267, clock.pal_visible_lines, clock.pal_lines_per_frame);
+    const hv_267 = vdp.readHVCounter();
+    try testing.expectEqual(@as(u8, 0xD2), @as(u8, @truncate(hv_267 >> 8)));
+}
+
+test "vdp pal 224-line v counter follows the hardware alias window" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+    vdp.regs[1] &= ~@as(u8, 0x08); // 224-line mode
+
+    const expected = [_]u8{ 0xFF, 0x00, 0x01, 0x02, 0xCA, 0xCB, 0xCC };
+    for (expected, 255..) |expected_v, line| {
+        _ = vdp.setScanlineState(@intCast(line), clock.ntsc_visible_lines, clock.pal_lines_per_frame);
+        try testing.expectEqual(expected_v, @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+    }
+}
+
+test "vdp pal 240-line v counter follows the hardware alias window" {
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+    vdp.regs[1] |= 0x08; // 240-line mode
+
+    const expected = [_]u8{ 0xFF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0xD2, 0xD3 };
+    for (expected, 255..) |expected_v, line| {
+        _ = vdp.setScanlineState(@intCast(line), clock.pal_visible_lines, clock.pal_lines_per_frame);
+        try testing.expectEqual(expected_v, @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+    }
+}
+
+test "vdp interlace mode 2 doubles the external v counter" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x06; // Interlace mode 2
+    vdp.odd_frame = false;
+
+    const expected = [_]u8{ 0x00, 0x02, 0x04, 0x06, 0x08 };
+    for (expected, 0..) |expected_v, line| {
+        _ = vdp.setScanlineState(@intCast(line), clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+        try testing.expectEqual(expected_v, @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+    }
+}
+
+test "vdp hv latch holds value while latch bit is enabled" {
+    var vdp = Vdp.init();
+    vdp.regs[0] |= 0x02; // Enable H/V latch
+
+    _ = vdp.setScanlineState(32, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    vdp.step(400);
+    const before_latch = vdp.readHVCounter();
+
+    vdp.setHBlank(true); // Capture live counter on HBlank edge.
+    const latched = vdp.readHVCounter();
+    try testing.expectEqual(latched, vdp.readHVCounter());
+
+    _ = vdp.setScanlineState(33, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    vdp.step(800);
+    try testing.expectEqual(latched, vdp.readHVCounter());
+
+    // Disable latch and verify live counter becomes visible again.
+    vdp.writeControl(0x8000); // Reg0 = 0, clears latch mode
+    const live_after_disable = vdp.readHVCounter();
+    try testing.expect(live_after_disable != latched);
+    try testing.expect(before_latch != 0 or latched != 0);
+}
+
+test "vdp control decode does not treat 0xA*** command word as register write" {
+    var vdp = Vdp.init();
+
+    // 0xA000 has top bits 101 and is part of address/code command space.
+    vdp.writeControl(0xA000);
+    try testing.expect(vdp.pending_command);
+}
+
+test "vdp hv counter reads clear pending command latch" {
+    var vdp = Vdp.init();
+
+    vdp.writeControl(0xA000);
+    try testing.expect(vdp.pending_command);
+    _ = vdp.readHVCounter();
+    try testing.expect(!vdp.pending_command);
+
+    vdp.writeControl(0xA000);
+    try testing.expect(vdp.pending_command);
+    _ = vdp.readHVCounterAdjusted(0x4A79);
+    try testing.expect(!vdp.pending_command);
+}
+
+test "vdp renders plane B when plane A is transparent" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // Display enable + mode 5
+    vdp.regs[2] = 0x00; // Plane A base 0x0000
+    vdp.regs[4] = 0x01; // Plane B base 0x2000
+    vdp.regs[16] = 0x01; // 64-cell width
+
+    // Backdrop color left as black. Put visible blue-ish color at palette 0 color 1.
+    vdp.cram[2] = 0x02; // hi
+    vdp.cram[3] = 0x00; // lo
+
+    // Plane A tile entry at (0,0): tile 0 (all-zero -> transparent)
+    vdp.vram[0x0000] = 0x00;
+    vdp.vram[0x0001] = 0x00;
+
+    // Plane B tile entry at (0,0): tile 1, palette 0
+    vdp.vram[0x2000] = 0x00;
+    vdp.vram[0x2001] = 0x01;
+
+    // Tile 1 first row: all pixels index 1
+    const tile1_base: usize = 32;
+    vdp.vram[tile1_base + 0] = 0x11;
+    vdp.vram[tile1_base + 1] = 0x11;
+    vdp.vram[tile1_base + 2] = 0x11;
+    vdp.vram[tile1_base + 3] = 0x11;
+
+    vdp.renderScanline(0);
+    const pixel = vdp.framebuffer[0];
+    try testing.expect(pixel != 0xFF000000);
+}
