@@ -7,6 +7,7 @@ const SchedulerCpu = @import("../scheduler/runtime.zig").SchedulerCpu;
 const SchedulerInstructionStep = @import("../scheduler/runtime.zig").InstructionStep;
 
 const c = @cImport({
+    @cInclude("disasm.h");
     @cInclude("m68k.h");
 });
 
@@ -75,6 +76,21 @@ fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
     }
 
     memory.write32(address, value);
+}
+
+fn cpuDisasmRead8(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
+    const memory = active_memory orelse return 0;
+    return @intCast(memory.read8(address));
+}
+
+fn cpuDisasmRead16(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u16 {
+    const memory = active_memory orelse return 0;
+    return @intCast(memory.read16(address));
+}
+
+fn cpuDisasmRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
+    const memory = active_memory orelse return 0;
+    return @intCast(memory.read32(address));
 }
 
 fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
@@ -307,6 +323,41 @@ pub const Cpu = struct {
             });
         }
     }
+
+    pub fn formatInstruction(self: *const Cpu, memory: *MemoryInterface, pc: u32, buffer: []u8) []const u8 {
+        if (buffer.len == 0) return buffer[0..0];
+
+        var shadow = std.mem.zeroes(c.M68kCpu);
+        c.m68k_init(&shadow, &fallback_memory[0], fallback_memory.len);
+        c.m68k_set_context(&shadow, &self.core);
+        c.m68k_set_read8_callback(&shadow, cpuDisasmRead8);
+        c.m68k_set_read16_callback(&shadow, cpuDisasmRead16);
+        c.m68k_set_read32_callback(&shadow, cpuDisasmRead32);
+
+        const previous_memory = active_memory;
+        const previous_cpu = active_cpu;
+        active_memory = memory;
+        active_cpu = null;
+        defer {
+            active_memory = previous_memory;
+            active_cpu = previous_cpu;
+        }
+
+        buffer[0] = 0;
+        _ = c.m68k_disasm(&shadow, pc, @ptrCast(buffer.ptr), @intCast(buffer.len));
+        const len = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
+        return buffer[0..len];
+    }
+
+    pub fn formatCurrentInstruction(self: *const Cpu, memory: *MemoryInterface, buffer: []u8) []const u8 {
+        return self.formatInstruction(memory, self.core.pc, buffer);
+    }
+
+    pub fn debugCurrentInstruction(self: *const Cpu, memory: *MemoryInterface) void {
+        var buffer: [128]u8 = undefined;
+        const text = self.formatCurrentInstruction(memory, &buffer);
+        std.debug.print("68K {X:0>8}: {s}\n", .{ @as(u32, self.core.pc), text });
+    }
 };
 
 const Bus = @import("../bus/bus.zig").Bus;
@@ -437,4 +488,22 @@ test "cpu control-port writes wait for pending post-dma replay delay" {
     wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 8), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 50), wait.master_cycles);
+}
+
+test "cpu formats current instruction with the built-in disassembler" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    std.mem.writeInt(u32, bus.rom[0..4], 0x00FF_FE00, .big);
+    std.mem.writeInt(u32, bus.rom[4..8], 0x0000_0200, .big);
+    bus.rom[0x0200] = 0x4E;
+    bus.rom[0x0201] = 0x71;
+
+    var cpu = Cpu.init();
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
+
+    var buffer: [64]u8 = undefined;
+    const text = cpu.formatCurrentInstruction(&memory, &buffer);
+    try testing.expect(std.mem.indexOf(u8, text, "NOP") != null);
 }

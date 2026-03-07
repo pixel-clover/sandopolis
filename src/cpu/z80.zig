@@ -2,10 +2,13 @@ const c = @cImport({
     @cInclude("jgz80_bridge.h");
 });
 
+const std = @import("std");
+
 pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
 
     pub const YmWriteEvent = c.Jgz80YmWriteEvent;
+    pub const RegisterDump = c.Jgz80RegisterDump;
 
     pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
@@ -55,6 +58,48 @@ pub const Z80 = struct {
     pub fn getPc(self: *const Z80) u16 {
         if (self.handle) |h| return c.jgz80_get_pc(h);
         return 0;
+    }
+
+    pub fn getRegisterDump(self: *const Z80) RegisterDump {
+        if (self.handle) |h| return c.jgz80_get_register_dump(h);
+        return std.mem.zeroes(RegisterDump);
+    }
+
+    pub fn debugDump(self: *const Z80) void {
+        const dump = self.getRegisterDump();
+        std.debug.print("Z80 PC: {X:0>4} SP: {X:0>4} IX: {X:0>4} IY: {X:0>4} BANK: {X:0>3}\n", .{
+            dump.pc,
+            dump.sp,
+            dump.ix,
+            dump.iy,
+            self.getBank(),
+        });
+        std.debug.print("Z80 AF: {X:0>4} BC: {X:0>4} DE: {X:0>4} HL: {X:0>4}\n", .{
+            dump.af,
+            dump.bc,
+            dump.de,
+            dump.hl,
+        });
+        std.debug.print("Z80 AF': {X:0>4} BC': {X:0>4} DE': {X:0>4} HL': {X:0>4}\n", .{
+            dump.af_alt,
+            dump.bc_alt,
+            dump.de_alt,
+            dump.hl_alt,
+        });
+        std.debug.print(
+            "Z80 IR: {X:0>4} WZ: {X:0>4} IM: {d} IRQ: {X:0>2} IFF1: {d} IFF2: {d} HALT: {d} BUSREQ: {X:0>4} RESET: {X:0>4}\n",
+            .{
+                dump.ir,
+                dump.wz,
+                dump.interrupt_mode,
+                dump.irq_data,
+                dump.iff1,
+                dump.iff2,
+                dump.halted,
+                self.readBusReq(),
+                self.readReset(),
+            },
+        );
     }
 
     pub fn take68kBusAccessCount(self: *Z80) u32 {
@@ -143,3 +188,15 @@ pub const Z80 = struct {
         return 0x0100;
     }
 };
+
+test "z80 register dump reflects stepped state" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.writeByte(0x0000, 0x00); // NOP
+    try std.testing.expectEqual(@as(u32, 4), z80.stepInstruction());
+
+    const dump = z80.getRegisterDump();
+    try std.testing.expectEqual(@as(u16, 0x0001), dump.pc);
+    try std.testing.expectEqual(@as(u8, 0), dump.halted);
+}

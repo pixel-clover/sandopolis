@@ -18,24 +18,17 @@ A Sega Genesis/Mega Drive emulator written in Zig
 
 ---
 
-## Overview
-
 Sandopolis is a Sega Genesis/Mega Drive emulator writen in Zig (and C).
-It includes the main Genesis subsystems, including the Motorola 68000 CPU, VDP (Video Display Processor), Z80 sound processor,
-and controller/I/O path.
+It includes the main Genesis subsystems, including the Motorola 68000 CPU as the main CPU, VDP (Video Display Processor),
+Z80 as helper CPU for sound processing, and controller/I/O path.
 
-## Features
+### Features
 
-- Motorola 68000 CPU emulation via [rocket68](https://github.com/habedi/rocket68)
-- VDP implementation with support for:
-  - Tile rendering (Plane A, Plane B, and Sprites)
-  - VRAM, CRAM, and VSRAM access
-  - Hardware scrolling
-  - DMA transfer modes and VDP-managed transfer progression
-- Z80 core integration via [jgz80](https://github.com/carmiker/jgz80)
-- Controller input support (keyboard and gamepad)
-- SMD ROM format deinterleaving
-- Real-time rendering with SDL3
+- Implemented in Zig and C and fully portable to any platform, including WASM builds
+- Accurate Sega Genesis/Mega Drive emulation with good compatibility
+- Very configurable input and rendering settings
+- Debugging features including single stepping and register dumps
+- Has a permissive license that allows commercial use
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
@@ -45,15 +38,15 @@ See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
 ---
 
-## Quickstart
+### Quickstart
 
-### Building
+#### Building
 
 ```bash
 BUILD_TYPE=ReleaseFast make build
 ```
 
-### Running
+#### Running
 
 ```bash
 # Run with a ROM file
@@ -66,31 +59,38 @@ BUILD_TYPE=ReleaseFast make build
 BUILD_TYPE=ReleaseFast make run ARGS="roms/sn.smd"
 ```
 
-### Controls
+#### Controls
 
 Controls are configurable via `sandopolis_input.cfg` or `SANDOPOLIS_INPUT_CONFIG`.
+Controller type is also configurable per player with `controller.p1` / `controller.p2` set to `three_button` or `six_button`.
+Configurable gamepad bindings can also use `guide`, `left_stick`, `right_stick`, `misc1`, `left_trigger`, and `right_trigger`.
 The bindings below are the defaults.
 
-#### Keyboard (Player 1)
+##### Keyboard (Player 1)
+
 - Arrow Keys: D-Pad
 - A/S/D: Buttons A/B/C
 - Q/W/E: Buttons X/Y/Z
 - Tab: Mode
 - Enter: Start
 
-#### Keyboard (Player 2)
+##### Keyboard (Player 2)
+
 - I/J/K/L: D-Pad
 - U/O/P: Buttons A/B/C
 - Semicolon/Apostrophe/Slash: Buttons X/Y/Z
 - .: Mode
 - Right Shift: Start
 
-#### Keyboard Hotkeys
-- Space: Single step (debug mode)
+##### Keyboard Hotkeys
+
+- Space: Single step and dump the updated debug state
+- Backspace: Dump CPU/Z80/VDP registers and the current 68K instruction
 - Escape: Exit
 
-#### Gamepad
-- D-Pad: D-Pad
+##### Gamepad
+
+- D-Pad / Left Stick: D-Pad
 - South (A): Button A
 - East (B): Button B
 - West (X): Button X
@@ -101,6 +101,18 @@ The bindings below are the defaults.
 - Start: Start
 
 The first two SDL gamepads are assigned to player 1 and player 2.
+
+##### Raw SDL Joystick Fallback
+
+If SDL sees a controller as a joystick but not a gamepad, Sandopolis now assigns the first two non-gamepad joysticks to any remaining free player slots.
+
+- Axis 0 / Axis 1: D-Pad
+- Hat 0: D-Pad
+- Button 0/1/2/3: South/East/West/North
+- Button 4/5: Left Shoulder/Right Shoulder
+- Button 6/7: Back/Start
+
+Those fallback joystick inputs are translated through the existing gamepad bindings, so action remaps in `sandopolis_input.cfg` still apply.
 
 ---
 
@@ -115,5 +127,8 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
 ### Acknowledgements
 
 * The logo is from [SVG Repo](https://www.svgrepo.com/svg/519365/sonic-runners) with some modifications.
-* This project uses the [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing and
-  the [Ordered](https://github.com/CogitatorTech/minish) Zig library.
+* This project uses the following projects:
+    * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
+    * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU emulation
+    * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
+    * [SDL3](https://www.libsdl.org/) for the rendering and input

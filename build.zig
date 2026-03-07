@@ -15,6 +15,7 @@ fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDe
             "src/m68k/ops_arith.c",
             "src/m68k/ops_bit.c",
             "src/m68k/ops_control.c",
+            "src/disasm.c",
             "src/m68k/ops_logic.c",
             "src/m68k/ops_move.c",
         },
@@ -158,6 +159,30 @@ pub fn build(b: *std.Build) void {
     const unit_step = b.step("test-unit", "Run unit tests");
     unit_step.dependOn(&unit_run.step);
 
+    const frontend_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+            },
+        }),
+    });
+    addExternalCpuCores(frontend_tests, b, cpu_deps);
+    if (target.result.os.tag == .linux) {
+        const sdl3_dep = b.dependency("sdl3_linux", .{});
+        frontend_tests.addLibraryPath(sdl3_dep.path("lib"));
+        frontend_tests.addIncludePath(sdl3_dep.path("include"));
+        frontend_tests.linkSystemLibrary("SDL3");
+        frontend_tests.linkLibC();
+    } else {
+        frontend_tests.linkSystemLibrary("SDL3");
+    }
+    const frontend_run = b.addRunArtifact(frontend_tests);
+    const frontend_step = b.step("test-frontend", "Run frontend helper tests");
+    frontend_step.dependOn(&frontend_run.step);
+
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/integration_tests.zig"),
@@ -224,8 +249,9 @@ pub fn build(b: *std.Build) void {
     const docs_step = b.step("docs", "Generate API documentation");
     docs_step.dependOn(&install_docs.step);
 
-    const test_step_all = b.step("test", "Run unit, integration, regression, and property tests");
+    const test_step_all = b.step("test", "Run unit, frontend, integration, regression, and property tests");
     test_step_all.dependOn(&unit_run.step);
+    test_step_all.dependOn(&frontend_run.step);
     test_step_all.dependOn(&integration_run.step);
     test_step_all.dependOn(&regression_run.step);
     test_step_all.dependOn(&property_run.step);

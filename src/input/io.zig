@@ -6,6 +6,11 @@ pub const Io = struct {
     const th_high_delay_m68k_cycles: u32 = 30;
     const six_button_timeout_m68k_cycles: u32 = 12_150;
 
+    pub const ControllerType = enum {
+        three_button,
+        six_button,
+    };
+
     data: [3]u8, // 0=A, 1=B, 2=C
     ctrl: [3]u8, // 0=A, 1=B, 2=C
 
@@ -14,6 +19,7 @@ pub const Io = struct {
     flip_reset_counter: [2]u32,
     cycles_until_th_high: [2]u32,
     controller_th: [2]bool,
+    controller_types: [2]ControllerType,
 
     pub fn init() Io {
         return Io{
@@ -24,6 +30,7 @@ pub const Io = struct {
             .flip_reset_counter = [_]u32{0} ** 2,
             .cycles_until_th_high = [_]u32{0} ** 2,
             .controller_th = [_]bool{true} ** 2,
+            .controller_types = [_]ControllerType{.six_button} ** 2,
         };
     }
 
@@ -85,6 +92,10 @@ pub const Io = struct {
     };
 
     fn controllerState(self: *const Io, port: usize) ControllerState {
+        if (self.controller_types[port] == .three_button) {
+            return if (self.controller_th[port]) .th_high else .th_low_standard;
+        }
+
         if (self.controller_th[port]) {
             return if (self.th_flip_count[port] == 3) .th_high_six_button else .th_high;
         }
@@ -144,6 +155,14 @@ pub const Io = struct {
         }
     }
 
+    pub fn setControllerType(self: *Io, port: usize, controller_type: ControllerType) void {
+        self.controller_types[port] = controller_type;
+    }
+
+    pub fn getControllerType(self: *const Io, port: usize) ControllerType {
+        return self.controller_types[port];
+    }
+
     // Button Constants
     pub const Button = struct {
         pub const Up: u16 = 1 << 0;
@@ -198,4 +217,25 @@ test "controller six-button state resets after timeout" {
 
     io.tick(1);
     try testing.expectEqual(@as(u8, 0x7F), io.read(0x03));
+}
+
+test "three-button controllers ignore the six-button identification cycle" {
+    var io = Io.init();
+    io.setControllerType(0, .three_button);
+
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.Z, true);
+    io.setButton(0, Io.Button.C, true);
+
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    try testing.expectEqual(@as(u8, 0x5F), io.read(0x03));
+
+    io.write(0x03, 0x00);
+    try testing.expectEqual(@as(u8, 0x33), io.read(0x03));
 }

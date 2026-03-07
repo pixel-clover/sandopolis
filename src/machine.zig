@@ -34,4 +34,13 @@ pub const Machine = struct {
     pub fn runMasterSlice(self: *Machine, total_master_cycles: u32) void {
         scheduler.runMasterSlice(self.bus.schedulerRuntime(), self.cpu.schedulerRuntime(), &self.m68k_sync, total_master_cycles);
     }
+
+    pub fn debugDump(self: *Machine) void {
+        std.debug.print("=== Register Dump ===\n", .{});
+        self.cpu.debugDump();
+        var memory = self.bus.cpuMemory();
+        self.cpu.debugCurrentInstruction(&memory);
+        self.bus.z80.debugDump();
+        self.bus.vdp.debugDump();
+    }
 };

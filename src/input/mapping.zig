@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const Io = @import("io.zig").Io;
+const ControllerType = Io.ControllerType;
 
 pub const default_config_name = "sandopolis_input.cfg";
 pub const player_count: usize = 2;
@@ -22,6 +23,7 @@ pub const Action = enum(u8) {
 
 pub const HotkeyAction = enum(u8) {
     step,
+    registers,
     quit,
 };
 
@@ -79,6 +81,12 @@ pub const GamepadInput = enum(u8) {
     right_shoulder,
     back,
     start,
+    guide,
+    left_stick,
+    right_stick,
+    misc1,
+    left_trigger,
+    right_trigger,
 };
 
 const actions = [_]Action{
@@ -96,18 +104,20 @@ const actions = [_]Action{
     .start,
 };
 
-const hotkey_actions = [_]HotkeyAction{ .step, .quit };
+const hotkey_actions = [_]HotkeyAction{ .step, .registers, .quit };
 
 pub const Bindings = struct {
     keyboard: [player_count][actions.len]?KeyboardInput,
     gamepad: [player_count][actions.len]?GamepadInput,
     hotkeys: [hotkey_actions.len]?KeyboardInput,
+    controller_types: [player_count]ControllerType,
 
     pub fn defaults() Bindings {
         var bindings = Bindings{
             .keyboard = [_][actions.len]?KeyboardInput{[_]?KeyboardInput{null} ** actions.len} ** player_count,
             .gamepad = [_][actions.len]?GamepadInput{[_]?GamepadInput{null} ** actions.len} ** player_count,
             .hotkeys = [_]?KeyboardInput{null} ** hotkey_actions.len,
+            .controller_types = [_]ControllerType{.six_button} ** player_count,
         };
 
         bindings.setKeyboard(.up, .up);
@@ -152,6 +162,7 @@ pub const Bindings = struct {
         }
 
         bindings.setHotkey(.step, .space);
+        bindings.setHotkey(.registers, .backspace);
         bindings.setHotkey(.quit, .escape);
 
         return bindings;
@@ -201,6 +212,16 @@ pub const Bindings = struct {
         self.hotkeys[hotkeyIndex(action)] = input;
     }
 
+    pub fn setControllerType(self: *Bindings, port: usize, controller_type: ControllerType) void {
+        self.controller_types[port] = controller_type;
+    }
+
+    pub fn applyControllerTypes(self: *const Bindings, io: *Io) void {
+        for (0..player_count) |port| {
+            io.setControllerType(port, self.controller_types[port]);
+        }
+    }
+
     pub fn applyKeyboard(self: *const Bindings, io: *Io, input: KeyboardInput, pressed: bool) bool {
         var handled = false;
         for (0..player_count) |port| {
@@ -223,6 +244,14 @@ pub const Bindings = struct {
             }
         }
         return handled;
+    }
+
+    pub fn releaseGamepad(self: *const Bindings, io: *Io, port: usize) void {
+        for (actions) |action| {
+            if (self.gamepad[port][actionIndex(action)] != null) {
+                io.setButton(port, actionToIoButton(action), false);
+            }
+        }
     }
 
     pub fn hotkeyForKeyboard(self: *const Bindings, input: KeyboardInput) ?HotkeyAction {
@@ -251,6 +280,12 @@ pub const Bindings = struct {
             const action = parseHotkeyAction(lhs["hotkey.".len..]) orelse return error.UnknownHotkeyAction;
             const input = if (std.ascii.eqlIgnoreCase(rhs, "none")) null else parseKeyboardInput(rhs) orelse return error.UnknownKeyboardInput;
             self.setHotkey(action, input);
+            return;
+        }
+        if (std.mem.startsWith(u8, lhs, "controller.")) {
+            const port = parsePortName(lhs["controller.".len..]) orelse return error.UnknownPort;
+            const controller_type = parseControllerType(rhs) orelse return error.UnknownControllerType;
+            self.setControllerType(port, controller_type);
             return;
         }
 
@@ -366,21 +401,45 @@ fn parseGamepadInput(name: []const u8) ?GamepadInput {
     return null;
 }
 
+fn parseControllerType(name: []const u8) ?ControllerType {
+    if (std.ascii.eqlIgnoreCase(name, "three_button") or
+        std.ascii.eqlIgnoreCase(name, "three") or
+        std.ascii.eqlIgnoreCase(name, "3button") or
+        std.ascii.eqlIgnoreCase(name, "3-button"))
+    {
+        return .three_button;
+    }
+    if (std.ascii.eqlIgnoreCase(name, "six_button") or
+        std.ascii.eqlIgnoreCase(name, "six") or
+        std.ascii.eqlIgnoreCase(name, "6button") or
+        std.ascii.eqlIgnoreCase(name, "6-button"))
+    {
+        return .six_button;
+    }
+    return null;
+}
+
 test "input bindings parse overrides and unbinds" {
     const bindings = try Bindings.parseContents(
         \\# Player 1 remap
         \\keyboard.a = q
         \\keyboard.b = none
         \\keyboard.p2.start = rshift
-        \\gamepad.p2.start = back
+        \\gamepad.p2.start = guide
+        \\gamepad.mode = misc1
+        \\hotkey.registers = none
         \\hotkey.quit = backspace
+        \\controller.p2 = three_button
     );
 
     try testing.expect(bindings.keyboard[0][@intFromEnum(Action.a)] == .q);
     try testing.expect(bindings.keyboard[0][@intFromEnum(Action.b)] == null);
     try testing.expect(bindings.keyboard[1][@intFromEnum(Action.start)] == .rshift);
-    try testing.expect(bindings.gamepad[1][@intFromEnum(Action.start)] == .back);
+    try testing.expect(bindings.gamepad[1][@intFromEnum(Action.start)] == .guide);
+    try testing.expect(bindings.gamepad[0][@intFromEnum(Action.mode)] == .misc1);
+    try testing.expect(bindings.hotkeys[@intFromEnum(HotkeyAction.registers)] == null);
     try testing.expect(bindings.hotkeys[@intFromEnum(HotkeyAction.quit)] == .backspace);
+    try testing.expectEqual(ControllerType.three_button, bindings.controller_types[1]);
 }
 
 test "input bindings apply remapped inputs" {
@@ -388,17 +447,50 @@ test "input bindings apply remapped inputs" {
     var bindings = Bindings.defaults();
     bindings.setKeyboard(.a, null);
     bindings.setKeyboardForPort(1, .x, .q);
-    bindings.setGamepad(.a, null);
-    bindings.setGamepadForPort(1, .c, .south);
+    bindings.setGamepad(.a, .left_trigger);
+    bindings.setGamepad(.mode, .guide);
+    bindings.setGamepadForPort(1, .c, .left_stick);
     bindings.setHotkey(.step, .backspace);
+    bindings.setHotkey(.registers, .space);
 
     try testing.expect(bindings.applyKeyboard(&io, .q, true));
     try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.X);
     try testing.expect((io.pad[0] & Io.Button.A) != 0);
 
     io.setButton(1, Io.Button.X, false);
-    try testing.expect(bindings.applyGamepad(&io, 1, .south, true));
+    try testing.expect(bindings.applyGamepad(&io, 1, .left_stick, true));
     try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.C);
-    try testing.expect((io.pad[0] & Io.Button.A) != 0);
+    try testing.expect(bindings.applyGamepad(&io, 0, .left_trigger, true));
+    try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.A);
+    io.setButton(0, Io.Button.A, false);
+    try testing.expect(bindings.applyGamepad(&io, 0, .guide, true));
+    try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.Mode);
     try testing.expectEqual(HotkeyAction.step, bindings.hotkeyForKeyboard(.backspace).?);
+    try testing.expectEqual(HotkeyAction.registers, bindings.hotkeyForKeyboard(.space).?);
+}
+
+test "input bindings apply configured controller types" {
+    var io = Io.init();
+    var bindings = Bindings.defaults();
+    bindings.setControllerType(1, .three_button);
+
+    bindings.applyControllerTypes(&io);
+
+    try testing.expectEqual(ControllerType.six_button, io.getControllerType(0));
+    try testing.expectEqual(ControllerType.three_button, io.getControllerType(1));
+}
+
+test "input bindings release mapped gamepad inputs for one port" {
+    var io = Io.init();
+    const bindings = Bindings.defaults();
+
+    io.setButton(0, Io.Button.Up, true);
+    io.setButton(0, Io.Button.A, true);
+    io.setButton(1, Io.Button.Up, true);
+
+    bindings.releaseGamepad(&io, 0);
+
+    try testing.expect((io.pad[0] & Io.Button.Up) != 0);
+    try testing.expect((io.pad[0] & Io.Button.A) != 0);
+    try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.Up);
 }

@@ -15,6 +15,28 @@ typedef struct Jgz80YmWriteEvent {
     uint8_t value;
 } Jgz80YmWriteEvent;
 
+typedef struct Jgz80RegisterDump {
+    uint16_t pc;
+    uint16_t sp;
+    uint16_t ix;
+    uint16_t iy;
+    uint16_t af;
+    uint16_t bc;
+    uint16_t de;
+    uint16_t hl;
+    uint16_t af_alt;
+    uint16_t bc_alt;
+    uint16_t de_alt;
+    uint16_t hl_alt;
+    uint16_t ir;
+    uint16_t wz;
+    uint8_t interrupt_mode;
+    uint8_t irq_data;
+    uint8_t iff1;
+    uint8_t iff2;
+    uint8_t halted;
+} Jgz80RegisterDump;
+
 typedef uint8_t (*Jgz80HostReadFunc)(void *userdata, uint32_t addr);
 
 typedef void (*Jgz80HostWriteFunc)(void *userdata, uint32_t addr, uint8_t val);
@@ -39,6 +61,8 @@ void jgz80_set_host_callbacks(Jgz80Handle *handle, Jgz80HostReadFunc host_read, 
 uint16_t jgz80_get_bank(Jgz80Handle *handle);
 
 uint16_t jgz80_get_pc(Jgz80Handle *handle);
+
+Jgz80RegisterDump jgz80_get_register_dump(Jgz80Handle *handle);
 
 uint8_t jgz80_get_ym_register(Jgz80Handle *handle, uint8_t port, uint8_t reg);
 

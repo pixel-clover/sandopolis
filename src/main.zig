@@ -2,6 +2,7 @@ const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
 const AudioOutput = @import("audio/output.zig").AudioOutput;
+const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 const Machine = @import("machine.zig").Machine;
 
@@ -20,6 +21,37 @@ const GamepadSlot = struct {
     id: zsdl3.Joystick.Id,
     handle: *zsdl3.Gamepad,
 };
+
+const SdlJoystick = opaque {};
+
+const JoystickSlot = struct {
+    id: zsdl3.Joystick.Id,
+    handle: *SdlJoystick,
+};
+
+const DirectionState = struct {
+    left: bool = false,
+    right: bool = false,
+    up: bool = false,
+    down: bool = false,
+};
+
+const TriggerState = struct {
+    left: bool = false,
+    right: bool = false,
+};
+
+const GamepadTransition = struct {
+    input: InputBindings.GamepadInput,
+    pressed: bool,
+};
+
+const max_input_transitions: usize = 4;
+const gamepad_axis_threshold: i16 = 16_000;
+const joystick_hat_up: u8 = 0x01;
+const joystick_hat_right: u8 = 0x02;
+const joystick_hat_down: u8 = 0x04;
+const joystick_hat_left: u8 = 0x08;
 
 fn formatName(format: zsdl3.AudioFormat) []const u8 {
     return switch (format) {
@@ -88,7 +120,147 @@ fn gamepadInputFromButton(button: u8) ?InputBindings.GamepadInput {
     if (button == @intFromEnum(zsdl3.Gamepad.Button.right_shoulder)) return .right_shoulder;
     if (button == @intFromEnum(zsdl3.Gamepad.Button.back)) return .back;
     if (button == @intFromEnum(zsdl3.Gamepad.Button.start)) return .start;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.guide)) return .guide;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.left_stick)) return .left_stick;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.right_stick)) return .right_stick;
+    if (button == @intFromEnum(zsdl3.Gamepad.Button.misc1)) return .misc1;
     return null;
+}
+
+fn joystickInputFromButton(button: u8) ?InputBindings.GamepadInput {
+    return switch (button) {
+        0 => .south,
+        1 => .east,
+        2 => .west,
+        3 => .north,
+        4 => .left_shoulder,
+        5 => .right_shoulder,
+        6 => .back,
+        7 => .start,
+        else => null,
+    };
+}
+
+fn updateAxisPair(
+    negative: *bool,
+    positive: *bool,
+    value: i16,
+    negative_input: InputBindings.GamepadInput,
+    positive_input: InputBindings.GamepadInput,
+) [max_input_transitions]?GamepadTransition {
+    var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
+    var next_index: usize = 0;
+    const next_negative = value <= -gamepad_axis_threshold;
+    const next_positive = value >= gamepad_axis_threshold;
+
+    if (negative.* != next_negative) {
+        transitions[next_index] = .{
+            .input = negative_input,
+            .pressed = next_negative,
+        };
+        negative.* = next_negative;
+        next_index += 1;
+    }
+    if (positive.* != next_positive) {
+        transitions[next_index] = .{
+            .input = positive_input,
+            .pressed = next_positive,
+        };
+        positive.* = next_positive;
+    }
+
+    return transitions;
+}
+
+fn updateLeftStickState(state: *DirectionState, axis: zsdl3.Gamepad.Axis, value: i16) [max_input_transitions]?GamepadTransition {
+    return switch (axis) {
+        .leftx => updateAxisPair(&state.left, &state.right, value, .dpad_left, .dpad_right),
+        .lefty => updateAxisPair(&state.up, &state.down, value, .dpad_up, .dpad_down),
+        else => [_]?GamepadTransition{null} ** max_input_transitions,
+    };
+}
+
+fn updateTriggerState(
+    state: *bool,
+    value: i16,
+    input: InputBindings.GamepadInput,
+) [max_input_transitions]?GamepadTransition {
+    var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
+    const pressed = value >= gamepad_axis_threshold;
+    if (state.* != pressed) {
+        transitions[0] = .{
+            .input = input,
+            .pressed = pressed,
+        };
+        state.* = pressed;
+    }
+    return transitions;
+}
+
+fn updateGamepadAxisState(
+    stick_state: *DirectionState,
+    trigger_state: *TriggerState,
+    axis: zsdl3.Gamepad.Axis,
+    value: i16,
+) [max_input_transitions]?GamepadTransition {
+    return switch (axis) {
+        .leftx, .lefty => updateLeftStickState(stick_state, axis, value),
+        .left_trigger => updateTriggerState(&trigger_state.left, value, .left_trigger),
+        .right_trigger => updateTriggerState(&trigger_state.right, value, .right_trigger),
+        else => [_]?GamepadTransition{null} ** max_input_transitions,
+    };
+}
+
+fn updateJoystickAxisState(state: *DirectionState, axis: u8, value: i16) [max_input_transitions]?GamepadTransition {
+    return switch (axis) {
+        0 => updateAxisPair(&state.left, &state.right, value, .dpad_left, .dpad_right),
+        1 => updateAxisPair(&state.up, &state.down, value, .dpad_up, .dpad_down),
+        else => [_]?GamepadTransition{null} ** max_input_transitions,
+    };
+}
+
+fn updateHatState(state: *DirectionState, value: u8) [max_input_transitions]?GamepadTransition {
+    var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
+    var next_index: usize = 0;
+    const next_up = (value & joystick_hat_up) != 0;
+    const next_down = (value & joystick_hat_down) != 0;
+    const next_left = (value & joystick_hat_left) != 0;
+    const next_right = (value & joystick_hat_right) != 0;
+
+    if (state.up != next_up) {
+        transitions[next_index] = .{ .input = .dpad_up, .pressed = next_up };
+        state.up = next_up;
+        next_index += 1;
+    }
+    if (state.down != next_down) {
+        transitions[next_index] = .{ .input = .dpad_down, .pressed = next_down };
+        state.down = next_down;
+        next_index += 1;
+    }
+    if (state.left != next_left) {
+        transitions[next_index] = .{ .input = .dpad_left, .pressed = next_left };
+        state.left = next_left;
+        next_index += 1;
+    }
+    if (state.right != next_right) {
+        transitions[next_index] = .{ .input = .dpad_right, .pressed = next_right };
+        state.right = next_right;
+    }
+
+    return transitions;
+}
+
+fn applyInputTransitions(
+    bindings: *const InputBindings.Bindings,
+    io: *Io,
+    port: usize,
+    transitions: anytype,
+) void {
+    for (transitions) |maybe_transition| {
+        if (maybe_transition) |transition| {
+            _ = bindings.applyGamepad(io, port, transition.input, transition.pressed);
+        }
+    }
 }
 
 fn findGamepadPort(gamepads: *const [InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) ?usize {
@@ -100,12 +272,37 @@ fn findGamepadPort(gamepads: *const [InputBindings.player_count]?GamepadSlot, id
     return null;
 }
 
-fn assignGamepadSlot(gamepads: *[InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) void {
+fn findJoystickPort(joysticks: *const [InputBindings.player_count]?JoystickSlot, id: zsdl3.Joystick.Id) ?usize {
+    for (joysticks, 0..) |slot, port| {
+        if (slot) |assigned| {
+            if (assigned.id == id) return port;
+        }
+    }
+    return null;
+}
+
+fn portOccupied(
+    gamepads: *const [InputBindings.player_count]?GamepadSlot,
+    joysticks: *const [InputBindings.player_count]?JoystickSlot,
+    port: usize,
+) bool {
+    return gamepads[port] != null or joysticks[port] != null;
+}
+
+fn assignGamepadSlot(
+    gamepads: *[InputBindings.player_count]?GamepadSlot,
+    joysticks: *const [InputBindings.player_count]?JoystickSlot,
+    stick_states: *[InputBindings.player_count]DirectionState,
+    trigger_states: *[InputBindings.player_count]TriggerState,
+    id: zsdl3.Joystick.Id,
+) void {
     if (findGamepadPort(gamepads, id) != null) return;
     for (gamepads, 0..) |slot, port| {
-        if (slot == null) {
+        if (slot == null and !portOccupied(gamepads, joysticks, port)) {
             if (zsdl3.openGamepad(id)) |handle| {
                 gamepads[port] = .{ .id = id, .handle = handle };
+                stick_states[port] = .{};
+                trigger_states[port] = .{};
                 std.debug.print("Opened Gamepad ID: {d} for player {d}\n", .{ @intFromEnum(id), port + 1 });
             }
             return;
@@ -113,13 +310,69 @@ fn assignGamepadSlot(gamepads: *[InputBindings.player_count]?GamepadSlot, id: zs
     }
 }
 
-fn removeGamepadSlot(gamepads: *[InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) void {
+fn removeGamepadSlot(
+    gamepads: *[InputBindings.player_count]?GamepadSlot,
+    stick_states: *[InputBindings.player_count]DirectionState,
+    trigger_states: *[InputBindings.player_count]TriggerState,
+    bindings: *const InputBindings.Bindings,
+    io: *Io,
+    id: zsdl3.Joystick.Id,
+) void {
     for (gamepads, 0..) |slot, port| {
         if (slot) |assigned| {
             if (assigned.id == id) {
+                bindings.releaseGamepad(io, port);
+                stick_states[port] = .{};
+                trigger_states[port] = .{};
                 assigned.handle.close();
                 gamepads[port] = null;
                 std.debug.print("Closed Gamepad ID: {d} from player {d}\n", .{ @intFromEnum(id), port + 1 });
+                return;
+            }
+        }
+    }
+}
+
+fn assignJoystickSlot(
+    gamepads: *const [InputBindings.player_count]?GamepadSlot,
+    joysticks: *[InputBindings.player_count]?JoystickSlot,
+    axis_states: *[InputBindings.player_count]DirectionState,
+    hat_states: *[InputBindings.player_count]DirectionState,
+    id: zsdl3.Joystick.Id,
+) void {
+    if (SDL_IsGamepad(id)) return;
+    if (findJoystickPort(joysticks, id) != null) return;
+
+    for (joysticks, 0..) |slot, port| {
+        if (slot == null and !portOccupied(gamepads, joysticks, port)) {
+            if (SDL_OpenJoystick(id)) |handle| {
+                joysticks[port] = .{ .id = id, .handle = handle };
+                axis_states[port] = .{};
+                hat_states[port] = .{};
+                std.debug.print("Opened Joystick ID: {d} for player {d}\n", .{ @intFromEnum(id), port + 1 });
+            }
+            return;
+        }
+    }
+}
+
+fn removeJoystickSlot(
+    joysticks: *[InputBindings.player_count]?JoystickSlot,
+    axis_states: *[InputBindings.player_count]DirectionState,
+    hat_states: *[InputBindings.player_count]DirectionState,
+    bindings: *const InputBindings.Bindings,
+    io: *Io,
+    id: zsdl3.Joystick.Id,
+) void {
+    for (joysticks, 0..) |slot, port| {
+        if (slot) |assigned| {
+            if (assigned.id == id) {
+                bindings.releaseGamepad(io, port);
+                axis_states[port] = .{};
+                hat_states[port] = .{};
+                SDL_CloseJoystick(assigned.handle);
+                joysticks[port] = null;
+                std.debug.print("Closed Joystick ID: {d} from player {d}\n", .{ @intFromEnum(id), port + 1 });
                 return;
             }
         }
@@ -178,7 +431,7 @@ pub fn main() !void {
 
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
 
-    try zsdl3.init(.{ .audio = true, .video = true, .gamepad = true });
+    try zsdl3.init(.{ .audio = true, .video = true, .joystick = true, .gamepad = true });
     defer zsdl3.quit();
 
     const window = try zsdl3.Window.create(
@@ -201,9 +454,17 @@ pub fn main() !void {
 
     // Open up to two gamepads and assign them to players by SDL device ID.
     var gamepads = [_]?GamepadSlot{null} ** InputBindings.player_count;
+    var gamepad_sticks = [_]DirectionState{.{}} ** InputBindings.player_count;
+    var gamepad_triggers = [_]TriggerState{.{}} ** InputBindings.player_count;
+    var joysticks = [_]?JoystickSlot{null} ** InputBindings.player_count;
+    var joystick_axes = [_]DirectionState{.{}} ** InputBindings.player_count;
+    var joystick_hats = [_]DirectionState{.{}} ** InputBindings.player_count;
     defer {
         for (gamepads) |slot| {
             if (slot) |assigned| assigned.handle.close();
+        }
+        for (joysticks) |slot| {
+            if (slot) |assigned| SDL_CloseJoystick(assigned.handle);
         }
     }
     var count: c_int = 0;
@@ -211,7 +472,14 @@ pub fn main() !void {
         defer zsdl3.free(gamepads_ptr);
         const gamepad_count: usize = @intCast(@max(count, 0));
         for (0..@min(gamepad_count, InputBindings.player_count)) |i| {
-            assignGamepadSlot(&gamepads, gamepads_ptr[i]);
+            assignGamepadSlot(&gamepads, &joysticks, &gamepad_sticks, &gamepad_triggers, gamepads_ptr[i]);
+        }
+    }
+    if (SDL_GetJoysticks(&count)) |joysticks_ptr| {
+        defer zsdl3.free(joysticks_ptr);
+        const joystick_count: usize = @intCast(@max(count, 0));
+        for (0..joystick_count) |i| {
+            assignJoystickSlot(&gamepads, &joysticks, &joystick_axes, &joystick_hats, joysticks_ptr[i]);
         }
     }
 
@@ -256,6 +524,7 @@ pub fn main() !void {
         machine.deinit(allocator);
     }
     const bus = &machine.bus;
+    input_bindings.applyControllerTypes(&bus.io);
 
     const cpu = &machine.cpu;
 
@@ -530,7 +799,7 @@ pub fn main() !void {
 
     machine.reset();
     std.debug.print("CPU Reset complete.\n", .{});
-    cpu.debugDump();
+    machine.debugDump();
     const target_frame_ns: u64 = 1_000_000_000 / 60;
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = 240;
@@ -541,8 +810,10 @@ pub fn main() !void {
         while (zsdl3.pollEvent(&event)) {
             switch (event.type) {
                 zsdl3.EventType.quit => break :mainLoop,
-                zsdl3.EventType.gamepad_added => assignGamepadSlot(&gamepads, event.gdevice.which),
-                zsdl3.EventType.gamepad_removed => removeGamepadSlot(&gamepads, event.gdevice.which),
+                zsdl3.EventType.gamepad_added => assignGamepadSlot(&gamepads, &joysticks, &gamepad_sticks, &gamepad_triggers, event.gdevice.which),
+                zsdl3.EventType.gamepad_removed => removeGamepadSlot(&gamepads, &gamepad_sticks, &gamepad_triggers, &input_bindings, &bus.io, event.gdevice.which),
+                zsdl3.EventType.joystick_added => assignJoystickSlot(&gamepads, &joysticks, &joystick_axes, &joystick_hats, event.jdevice.which),
+                zsdl3.EventType.joystick_removed => removeJoystickSlot(&joysticks, &joystick_axes, &joystick_hats, &input_bindings, &bus.io, event.jdevice.which),
                 zsdl3.EventType.gamepad_button_down, zsdl3.EventType.gamepad_button_up => {
                     const pressed = (event.type == zsdl3.EventType.gamepad_button_down);
                     const button = event.gbutton.button;
@@ -550,6 +821,42 @@ pub fn main() !void {
                     if (gamepadInputFromButton(button)) |mapped_button| {
                         _ = input_bindings.applyGamepad(&bus.io, port, mapped_button, pressed);
                     }
+                },
+                zsdl3.EventType.gamepad_axis_motion => {
+                    const port = findGamepadPort(&gamepads, event.gaxis.which) orelse continue;
+                    const axis: zsdl3.Gamepad.Axis = @enumFromInt(event.gaxis.axis);
+                    applyInputTransitions(
+                        &input_bindings,
+                        &bus.io,
+                        port,
+                        updateGamepadAxisState(&gamepad_sticks[port], &gamepad_triggers[port], axis, event.gaxis.value),
+                    );
+                },
+                zsdl3.EventType.joystick_button_down, zsdl3.EventType.joystick_button_up => {
+                    const pressed = (event.type == zsdl3.EventType.joystick_button_down);
+                    const port = findJoystickPort(&joysticks, event.jbutton.which) orelse continue;
+                    if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
+                        _ = input_bindings.applyGamepad(&bus.io, port, mapped_button, pressed);
+                    }
+                },
+                zsdl3.EventType.joystick_axis_motion => {
+                    const port = findJoystickPort(&joysticks, event.jaxis.which) orelse continue;
+                    applyInputTransitions(
+                        &input_bindings,
+                        &bus.io,
+                        port,
+                        updateJoystickAxisState(&joystick_axes[port], event.jaxis.axis, event.jaxis.value),
+                    );
+                },
+                zsdl3.EventType.joystick_hat_motion => {
+                    if (event.jhat.hat != 0) continue;
+                    const port = findJoystickPort(&joysticks, event.jhat.which) orelse continue;
+                    applyInputTransitions(
+                        &input_bindings,
+                        &bus.io,
+                        port,
+                        updateHatState(&joystick_hats[port], event.jhat.value),
+                    );
                 },
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
                     const pressed = (event.type == zsdl3.EventType.key_down);
@@ -561,8 +868,9 @@ pub fn main() !void {
                             switch (input_bindings.hotkeyForKeyboard(mapped_key) orelse continue) {
                                 .step => {
                                     machine.runMasterSlice(clock.m68k_divider);
-                                    cpu.debugDump();
+                                    machine.debugDump();
                                 },
+                                .registers => machine.debugDump(),
                                 .quit => break :mainLoop,
                             }
                         }
@@ -648,7 +956,90 @@ pub fn main() !void {
     }
 }
 
+test "left stick transitions mirror dpad directions across threshold crossings" {
+    var state = DirectionState{};
+
+    var transitions = updateLeftStickState(&state, .leftx, -20_000);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_left, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
+    try std.testing.expect(transitions[1] == null);
+
+    transitions = updateLeftStickState(&state, .leftx, 0);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_left, transitions[0].?.input);
+    try std.testing.expect(!transitions[0].?.pressed);
+    try std.testing.expect(transitions[1] == null);
+
+    transitions = updateLeftStickState(&state, .lefty, 20_000);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_down, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
+}
+
+test "gamepad trigger transitions mirror threshold crossings" {
+    var state = false;
+
+    var transitions = updateTriggerState(&state, 20_000, .left_trigger);
+    try std.testing.expectEqual(InputBindings.GamepadInput.left_trigger, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
+    try std.testing.expect(transitions[1] == null);
+
+    transitions = updateTriggerState(&state, 0, .left_trigger);
+    try std.testing.expectEqual(InputBindings.GamepadInput.left_trigger, transitions[0].?.input);
+    try std.testing.expect(!transitions[0].?.pressed);
+    try std.testing.expect(transitions[1] == null);
+}
+
+test "gamepad button mapping includes guide and stick clicks" {
+    try std.testing.expectEqual(InputBindings.GamepadInput.guide, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.guide)).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.left_stick, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.left_stick)).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.right_stick, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.right_stick)).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.misc1, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.misc1)).?);
+}
+
+test "joystick hat transitions mirror dpad directions and diagonals" {
+    var state = DirectionState{};
+
+    var transitions = updateHatState(&state, joystick_hat_up | joystick_hat_left);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_up, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_left, transitions[1].?.input);
+    try std.testing.expect(transitions[1].?.pressed);
+    try std.testing.expect(transitions[2] == null);
+
+    transitions = updateHatState(&state, joystick_hat_right);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_up, transitions[0].?.input);
+    try std.testing.expect(!transitions[0].?.pressed);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_left, transitions[1].?.input);
+    try std.testing.expect(!transitions[1].?.pressed);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_right, transitions[2].?.input);
+    try std.testing.expect(transitions[2].?.pressed);
+    try std.testing.expect(transitions[3] == null);
+}
+
+test "joystick axis transitions mirror the first stick axes" {
+    var state = DirectionState{};
+
+    var transitions = updateJoystickAxisState(&state, 0, 20_000);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_right, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
+    try std.testing.expect(transitions[1] == null);
+
+    transitions = updateJoystickAxisState(&state, 1, -20_000);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_up, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
+}
+
+test "joystick button fallback maps conventional start and face buttons" {
+    try std.testing.expectEqual(InputBindings.GamepadInput.south, joystickInputFromButton(0).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.right_shoulder, joystickInputFromButton(5).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.start, joystickInputFromButton(7).?);
+    try std.testing.expect(joystickInputFromButton(8) == null);
+}
+
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
+extern fn SDL_GetJoysticks(count: *c_int) ?[*]zsdl3.Joystick.Id;
+extern fn SDL_IsGamepad(id: zsdl3.Joystick.Id) bool;
+extern fn SDL_OpenJoystick(id: zsdl3.Joystick.Id) ?*SdlJoystick;
+extern fn SDL_CloseJoystick(joystick: *SdlJoystick) void;
 extern fn SDL_OpenAudioDeviceStream(
     device: zsdl3.AudioDeviceId,
     spec: *const SdlAudioSpecRaw,

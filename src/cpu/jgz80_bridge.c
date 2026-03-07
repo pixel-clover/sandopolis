@@ -330,6 +330,33 @@ uint16_t jgz80_get_pc(Jgz80Handle *handle) {
     return handle->core.pc;
 }
 
+Jgz80RegisterDump jgz80_get_register_dump(Jgz80Handle *handle) {
+    Jgz80RegisterDump dump;
+    memset(&dump, 0, sizeof(dump));
+    if (!handle) return dump;
+
+    dump.pc = handle->core.pc;
+    dump.sp = handle->core.sp;
+    dump.ix = handle->core.ix;
+    dump.iy = handle->core.iy;
+    dump.af = handle->core.af;
+    dump.bc = handle->core.bc;
+    dump.de = handle->core.de;
+    dump.hl = handle->core.hl;
+    dump.af_alt = handle->core.a_f_;
+    dump.bc_alt = handle->core.b_c_;
+    dump.de_alt = handle->core.d_e_;
+    dump.hl_alt = handle->core.h_l_;
+    dump.ir = (uint16_t)(((uint16_t) handle->core.i << 8) | handle->core.r);
+    dump.wz = handle->core.mem_ptr;
+    dump.interrupt_mode = handle->core.interrupt_mode;
+    dump.irq_data = handle->core.irq_data;
+    dump.iff1 = handle->core.iff1 ? 1u : 0u;
+    dump.iff2 = handle->core.iff2 ? 1u : 0u;
+    dump.halted = handle->core.halted ? 1u : 0u;
+    return dump;
+}
+
 uint8_t jgz80_get_ym_register(Jgz80Handle *handle, uint8_t port, uint8_t reg) {
     if (!handle || (port & ~1u) != 0u) return 0u;
     return handle->ym_regs[port][reg];
