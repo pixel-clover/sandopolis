@@ -52,6 +52,16 @@ const joystick_hat_right: u8 = 0x02;
 const joystick_hat_down: u8 = 0x04;
 const joystick_hat_left: u8 = 0x08;
 
+fn frameDurationNs(is_pal: bool) u64 {
+    const master_cycles_per_frame: u32 = if (is_pal) clock.pal_master_cycles_per_frame else clock.ntsc_master_cycles_per_frame;
+    const master_clock: u32 = if (is_pal) clock.master_clock_pal else clock.master_clock_ntsc;
+    return @intCast((@as(u128, master_cycles_per_frame) * std.time.ns_per_s) / master_clock);
+}
+
+fn uncappedBootFrames(audio_enabled: bool) u32 {
+    return if (audio_enabled) 0 else 240;
+}
+
 fn formatName(format: zsdl3.AudioFormat) []const u8 {
     return switch (format) {
         .S16LE => "S16LE",
@@ -813,9 +823,8 @@ pub fn main() !void {
     machine.reset();
     std.debug.print("CPU Reset complete.\n", .{});
     machine.debugDump();
-    const target_frame_ns: u64 = 1_000_000_000 / 60;
     var frame_counter: u32 = 0;
-    const uncapped_boot_frames: u32 = 240;
+    const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
 
     mainLoop: while (true) {
         const frame_start = std.time.nanoTimestamp();
@@ -957,9 +966,13 @@ pub fn main() !void {
         if ((frame_counter % 300) == 0) {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, cpu.core.pc });
         }
-        const audio_frames = bus.audio_timing.takePending();
         if (audio) |*a| {
-            try a.output.pushPending(audio_frames, &bus.z80, bus.vdp.pal_mode);
+            if (a.output.canAcceptPending()) {
+                const audio_frames = bus.audio_timing.takePending();
+                try a.output.pushPending(audio_frames, &bus.z80, bus.vdp.pal_mode);
+            }
+        } else {
+            _ = bus.audio_timing.takePending();
         }
 
         // Update texture from framebuffer
@@ -973,6 +986,7 @@ pub fn main() !void {
 
         frame_counter += 1;
         if (frame_counter > uncapped_boot_frames) {
+            const target_frame_ns = frameDurationNs(bus.vdp.pal_mode);
             const frame_elapsed: u64 = @intCast(std.time.nanoTimestamp() - frame_start);
             if (frame_elapsed < target_frame_ns) {
                 std.Thread.sleep(target_frame_ns - frame_elapsed);
@@ -1077,6 +1091,16 @@ test "joystick button fallback maps conventional start and face buttons" {
     try std.testing.expectEqual(InputBindings.GamepadInput.right_shoulder, joystickInputFromButton(5).?);
     try std.testing.expectEqual(InputBindings.GamepadInput.start, joystickInputFromButton(7).?);
     try std.testing.expect(joystickInputFromButton(8) == null);
+}
+
+test "frame duration uses console master clock" {
+    try std.testing.expectEqual(@as(u64, 16_688_154), frameDurationNs(false));
+    try std.testing.expectEqual(@as(u64, 20_120_133), frameDurationNs(true));
+}
+
+test "audio-enabled runs do not use uncapped boot frames" {
+    try std.testing.expectEqual(@as(u32, 0), uncappedBootFrames(true));
+    try std.testing.expectEqual(@as(u32, 240), uncappedBootFrames(false));
 }
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;

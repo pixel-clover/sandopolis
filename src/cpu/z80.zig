@@ -8,6 +8,8 @@ pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
 
     pub const YmWriteEvent = c.Jgz80YmWriteEvent;
+    pub const YmDacSampleEvent = c.Jgz80YmDacSampleEvent;
+    pub const PsgCommandEvent = c.Jgz80PsgCommandEvent;
     pub const RegisterDump = c.Jgz80RegisterDump;
 
     pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
@@ -131,16 +133,20 @@ pub const Z80 = struct {
         return 0;
     }
 
-    pub fn takeYmDacSamples(self: *Z80, dest: []u8) usize {
+    pub fn takeYmDacSamples(self: *Z80, dest: []YmDacSampleEvent) usize {
         if (dest.len == 0) return 0;
         if (self.handle) |h| return c.jgz80_take_ym_dac_samples(h, dest.ptr, @intCast(dest.len));
         return 0;
     }
 
-    pub fn takePsgCommands(self: *Z80, dest: []u8) usize {
+    pub fn takePsgCommands(self: *Z80, dest: []PsgCommandEvent) usize {
         if (dest.len == 0) return 0;
         if (self.handle) |h| return c.jgz80_take_psg_commands(h, dest.ptr, @intCast(dest.len));
         return 0;
+    }
+
+    pub fn setAudioMasterOffset(self: *Z80, master_offset: u32) void {
+        if (self.handle) |h| c.jgz80_set_audio_master_offset(h, master_offset);
     }
 
     pub fn getPsgLast(self: *const Z80) u8 {
@@ -199,4 +205,32 @@ test "z80 register dump reflects stepped state" {
     const dump = z80.getRegisterDump();
     try std.testing.expectEqual(@as(u16, 0x0001), dump.pc);
     try std.testing.expectEqual(@as(u8, 0), dump.halted);
+}
+
+test "z80 audio events retain scheduler master offsets" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x4000, 0x2A);
+    z80.writeByte(0x4001, 0x56);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x0F);
+    z80.writeByte(0x7F11, 0x90);
+
+    var ym_events: [1]Z80.YmWriteEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12), ym_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x22), ym_events[0].reg);
+    try std.testing.expectEqual(@as(u8, 0x0F), ym_events[0].value);
+
+    var ym_dac_events: [1]Z80.YmDacSampleEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmDacSamples(ym_dac_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12), ym_dac_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x56), ym_dac_events[0].value);
+
+    var psg_events: [1]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12), psg_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
 }

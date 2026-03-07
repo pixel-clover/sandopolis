@@ -39,7 +39,7 @@ const NoiseState = struct {
     real_output_bit: u1 = 0,
     frequency_mode: u2 = 0,
     noise_type: NoiseType = .periodic,
-    shift_register: u16 = 0,
+    shift_register: u16 = 0x8000,
 };
 
 const LatchedCommand = struct {
@@ -125,8 +125,11 @@ pub const Psg = struct {
             } else {
                 self.noise.noise_type = if ((command & 4) != 0) .white else .periodic;
                 self.noise.frequency_mode = @intCast(command & 3);
-                // Reset shift register on noise register write.
-                self.noise.shift_register = 1;
+                // A noise-mode write reloads the generator back to its startup seed.
+                self.noise.countdown = 0;
+                self.noise.fake_output_bit = 0;
+                self.noise.real_output_bit = 0;
+                self.noise.shift_register = 0x8000;
             }
         }
     }
@@ -196,4 +199,20 @@ test "psg noise produces output" {
         if (s != 0) nonzero += 1;
     }
     try std.testing.expect(nonzero > 0);
+}
+
+test "psg noise register write restores the startup sequence" {
+    var startup = Psg{};
+    var reset = Psg{};
+
+    startup.doCommand(0xF0);
+    reset.doCommand(0xF0);
+    reset.doCommand(0xE0); // Periodic noise, mode 0: same mode as startup.
+
+    var startup_buf: [32]i16 = [_]i16{0} ** 32;
+    var reset_buf: [32]i16 = [_]i16{0} ** 32;
+    startup.update(&startup_buf, startup_buf.len);
+    reset.update(&reset_buf, reset_buf.len);
+
+    try std.testing.expectEqualSlices(i16, startup_buf[0..], reset_buf[0..]);
 }

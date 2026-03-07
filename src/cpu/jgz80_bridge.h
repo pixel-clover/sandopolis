@@ -10,10 +10,21 @@ extern "C" {
 typedef struct Jgz80Handle Jgz80Handle;
 
 typedef struct Jgz80YmWriteEvent {
+    uint32_t master_offset;
     uint8_t port;
     uint8_t reg;
     uint8_t value;
 } Jgz80YmWriteEvent;
+
+typedef struct Jgz80PsgCommandEvent {
+    uint32_t master_offset;
+    uint8_t value;
+} Jgz80PsgCommandEvent;
+
+typedef struct Jgz80YmDacSampleEvent {
+    uint32_t master_offset;
+    uint8_t value;
+} Jgz80YmDacSampleEvent;
 
 typedef struct Jgz80RegisterDump {
     uint16_t pc;
@@ -70,9 +81,9 @@ uint8_t jgz80_get_ym_key_mask(Jgz80Handle *handle);
 
 uint16_t jgz80_take_ym_writes(Jgz80Handle *handle, Jgz80YmWriteEvent *dest, uint16_t max_events);
 
-uint16_t jgz80_take_ym_dac_samples(Jgz80Handle *handle, uint8_t *dest, uint16_t max_samples);
+uint16_t jgz80_take_ym_dac_samples(Jgz80Handle *handle, Jgz80YmDacSampleEvent *dest, uint16_t max_samples);
 
-uint16_t jgz80_take_psg_commands(Jgz80Handle *handle, uint8_t *dest, uint16_t max_commands);
+uint16_t jgz80_take_psg_commands(Jgz80Handle *handle, Jgz80PsgCommandEvent *dest, uint16_t max_commands);
 
 uint8_t jgz80_get_psg_last(Jgz80Handle *handle);
 
@@ -83,6 +94,8 @@ uint8_t jgz80_get_psg_volume(Jgz80Handle *handle, uint8_t channel);
 uint8_t jgz80_get_psg_noise(Jgz80Handle *handle);
 
 uint32_t jgz80_take_68k_bus_access_count(Jgz80Handle *handle);
+
+void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset);
 
 void jgz80_assert_irq(Jgz80Handle *handle, uint8_t data);
 

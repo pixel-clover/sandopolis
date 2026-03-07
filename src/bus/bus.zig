@@ -487,6 +487,7 @@ pub const Bus = struct {
                 continue;
             }
 
+            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             const instruction_cycles = self.z80.stepInstruction();
             if (instruction_cycles == 0) {
                 if (remaining != 0) self.advanceNonZ80Master(remaining);
@@ -941,7 +942,7 @@ test "ym key-on register updates channel key mask" {
     try testing.expectEqual(@as(u8, 0x10), bus.z80.getYmKeyMask());
 }
 
-test "ym dac writes are queued for audio output" {
+test "ym dac writes stay in the dedicated DAC queue for audio output" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -951,11 +952,14 @@ test "ym dac writes are queued for audio output" {
     bus.write8(0x00A0_4001, 0x12);
     bus.write8(0x00A0_4001, 0x34);
 
-    var samples: [4]u8 = undefined;
-    const count = bus.z80.takeYmDacSamples(samples[0..]);
+    var writes: [4]Z80.YmWriteEvent = undefined;
+    try testing.expectEqual(@as(usize, 0), bus.z80.takeYmWrites(writes[0..]));
+
+    var dac_samples: [4]Z80.YmDacSampleEvent = undefined;
+    const count = bus.z80.takeYmDacSamples(dac_samples[0..]);
     try testing.expectEqual(@as(usize, 2), count);
-    try testing.expectEqual(@as(u8, 0x12), samples[0]);
-    try testing.expectEqual(@as(u8, 0x34), samples[1]);
+    try testing.expectEqual(@as(u8, 0x12), dac_samples[0].value);
+    try testing.expectEqual(@as(u8, 0x34), dac_samples[1].value);
 }
 
 test "z80 reset clears ym2612 register shadow state" {

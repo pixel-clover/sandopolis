@@ -357,8 +357,11 @@ fn audioTimingChunkingProperty(input: AudioChunkCase) !void {
     combined.consumeMaster(input.first + input.second);
     const combined_frames = combined.takePending();
 
+    try testing.expectEqual(combined_frames.master_cycles, split_frames.master_cycles);
     try testing.expectEqual(combined_frames.fm_frames, split_frames.fm_frames);
     try testing.expectEqual(combined_frames.psg_frames, split_frames.psg_frames);
+    try testing.expectEqual(combined_frames.fm_start_remainder, split_frames.fm_start_remainder);
+    try testing.expectEqual(combined_frames.psg_start_remainder, split_frames.psg_start_remainder);
     try testing.expectEqual(combined.fm_master_remainder, split.fm_master_remainder);
     try testing.expectEqual(combined.psg_master_remainder, split.psg_master_remainder);
 }
