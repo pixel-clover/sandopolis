@@ -26,7 +26,7 @@
         },
         .rocket68 = .{
             .url = "https://github.com/habedi/rocket68/archive/refs/heads/main.tar.gz",
-            .hash = "rocket68-0.1.0-alpha.5-Jd6gXB6fAgDPOK3HLuFVkwAu6e_IEg4q-oaKxujrCp3s",
+            .hash = "rocket68-0.1.0-alpha.5-Jd6gXIGhAgDEazdf8Egn0nuf7v_kLUc7Lh9ngn1ATOJX",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md" },

@@ -14,7 +14,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Z80 core integration: jgz80 bridge with host callbacks.
 - [x] Z80 bus control (basic): BUSREQ/RESET registers and 68k window gating.
 - [ ] Memory mapping (complete): Remaining mirror/open-bus/edge behavior.
-- [ ] Bus arbitration (accurate): Cycle-accurate 68k/Z80 contention behavior.
+- [ ] Bus arbitration (accurate): Per-access Z80→68K contention with interleaved VDP progression is modeled; full cycle-accurate mid-instruction arbitration remains incomplete.
 
 ### Video display processor
 
@@ -31,8 +31,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Interlace mode 2: Double-resolution tile height support.
 - [x] Display enable: Proper blanking when the display bit is cleared.
 - [x] VRAM read buffer: Prefetch buffer for correct VRAM read behavior.
-- [ ] DMA timing: Memory-to-VRAM startup delay, non-fill DMA CPU halting, and post-DMA replay delay are modeled; cycle-accurate transfer/stall behavior remains incomplete.
-- [ ] FIFO emulation: FIFO queueing, status bits, write-side wait accounting, read-side drain waits, and queued-read prefetch behavior are implemented; remaining per-access timing/control-port behavior is incomplete.
+- [ ] DMA timing: Memory-to-VRAM startup delay, non-fill DMA CPU halting with mode-aware halt quantum, and post-DMA replay delay are modeled; cycle-accurate transfer/stall behavior remains incomplete.
+- [ ] FIFO emulation: FIFO queueing with mode-aware access slot timing (H32/H40, active/blanking), status bits, write-side wait accounting, read-side drain waits, and queued-read prefetch behavior are implemented; remaining per-access timing/control-port behavior is incomplete.
 - [ ] VDP accuracy: Mode-aware HV/status timing has improved; remaining hardware-accurate quirks, conflict behavior, exact port timing, and broader open-bus behavior are still incomplete.
 
 ### Audio subsystem
@@ -41,8 +41,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Audio timing: Master-clock accumulation into FM/PSG frame counts.
 - [x] Mixer: Audio output integration via SDL3.
 - [x] Basic FM/PSG output: Synthesized output from latched YM/PSG register state.
-- [ ] SN76489 (PSG): Chip-accurate emulation.
-- [ ] YM2612 (FM): Chip-accurate 6-channel FM emulation.
+- [x] SN76489 (PSG): Chip-accurate emulation (ported from clownmdemu-core).
+- [ ] YM2612 (FM): 6-channel FM synthesis with all 8 algorithms, ADSR envelopes with key scaling, SSG-EG envelope modes, LFO AM/FM, channel 3 special mode, and DAC; remaining chip-accurate phase/rate/timer behavior is incomplete.
 - [ ] Audio fidelity: Hardware-faithful mixing/filter/timing behavior.
 
 ### Input and interaction

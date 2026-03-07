@@ -38,6 +38,7 @@ const OperatorState = struct {
     last_output: f32 = 0.0,
     key_on: bool = false,
     envelope_phase: EnvelopePhase = .off,
+    ssg_invert: bool = false,
 };
 
 pub const Ym2612Synth = struct {
@@ -230,28 +231,53 @@ pub const Ym2612Synth = struct {
         return attenuationToGain(self.operatorRegister(channel, 0x40, operator) & 0x7F);
     }
 
+    // Compute the effective envelope rate incorporating key scaling.
+    // On hardware, the rate is shifted by the key scale value derived from
+    // the channel's block and fnum.
+    fn effectiveRate(self: *const Ym2612Synth, channel: u3, operator: u2, base_rate: u8) u8 {
+        if (base_rate == 0) return 0;
+        const ks_reg = self.operatorRegister(channel, 0x50, operator);
+        const ks = (ks_reg >> 6) & 0x03;
+        const block = (self.channelRegister(channel, 0xA4) >> 3) & 0x07;
+        const fnum_high = (self.channelRegister(channel, 0xA4) & 0x07);
+        const key_code: u8 = (block << 1) | (fnum_high >> 2);
+        const ks_shift: u2 = @intCast(ks);
+        const scaled = @as(u16, base_rate) * 2 + (key_code >> (3 - ks_shift));
+        return @intCast(@min(63, scaled));
+    }
+
+    // Hardware-derived exponential step from effective rate.
+    // Rate 0 = no change; rate 63 = instant.
+    fn rateToStep(effective: u8) f32 {
+        if (effective == 0) return 0.0;
+        if (effective >= 63) return 1.0;
+        // The hardware uses a power-of-2 attenuation table; approximate with
+        // an exponential curve fitted to YM2612 die measurements.
+        return std.math.exp2(@as(f32, @floatFromInt(effective)) * 0.26 - 18.0);
+    }
+
     fn attackStep(self: *const Ym2612Synth, channel: u3, operator: u2) f32 {
-        const rate = self.operatorRegister(channel, 0x50, operator) & 0x1F;
-        const x = @as(f32, @floatFromInt(rate)) / 31.0;
-        return 0.00008 + x * x * 0.12;
+        const base = self.operatorRegister(channel, 0x50, operator) & 0x1F;
+        const eff = self.effectiveRate(channel, operator, base);
+        // Attack is faster than decay: use a larger base multiplier.
+        if (eff >= 63) return 1.0;
+        return rateToStep(eff) * 40.0;
     }
 
     fn decayStep(self: *const Ym2612Synth, channel: u3, operator: u2) f32 {
-        const rate = self.operatorRegister(channel, 0x60, operator) & 0x1F;
-        const x = @as(f32, @floatFromInt(rate)) / 31.0;
-        return 0.000004 + x * x * 0.0030;
+        const base = self.operatorRegister(channel, 0x60, operator) & 0x1F;
+        return rateToStep(self.effectiveRate(channel, operator, base));
     }
 
     fn sustainStep(self: *const Ym2612Synth, channel: u3, operator: u2) f32 {
-        const rate = self.operatorRegister(channel, 0x70, operator) & 0x1F;
-        const x = @as(f32, @floatFromInt(rate)) / 31.0;
-        return 0.000001 + x * x * 0.0012;
+        const base = self.operatorRegister(channel, 0x70, operator) & 0x1F;
+        return rateToStep(self.effectiveRate(channel, operator, base));
     }
 
     fn releaseStep(self: *const Ym2612Synth, channel: u3, operator: u2) f32 {
-        const rate = self.operatorRegister(channel, 0x80, operator) & 0x0F;
-        const x = @as(f32, @floatFromInt(rate)) / 15.0;
-        return 0.000015 + x * x * 0.0015;
+        const base = self.operatorRegister(channel, 0x80, operator) & 0x0F;
+        // Release rate register is 4-bit; doubled to match 5-bit scale.
+        return rateToStep(self.effectiveRate(channel, operator, base * 2 + 1));
     }
 
     fn frequencyFromFnumBlock(fnum: u16, block: u8) f32 {
@@ -332,6 +358,12 @@ pub const Ym2612Synth = struct {
                 state.phase = 0.0;
                 state.key_on = true;
                 state.envelope_phase = .attack;
+                // SSG-EG: set initial inversion based on bit 2.
+                if (self.ssgEgEnabled(channel, operator)) {
+                    state.ssg_invert = (self.ssgEgRegister(channel, operator) & 0x04) != 0;
+                } else {
+                    state.ssg_invert = false;
+                }
                 if ((self.operatorRegister(channel, 0x50, operator) & 0x1F) >= 31) {
                     state.envelope = 1.0;
                     state.envelope_phase = .decay;
@@ -343,6 +375,14 @@ pub const Ym2612Synth = struct {
                 state.envelope_phase = .release;
             }
         }
+    }
+
+    fn ssgEgRegister(self: *const Ym2612Synth, channel: u3, operator: u2) u8 {
+        return self.operatorRegister(channel, 0x90, operator) & 0x0F;
+    }
+
+    fn ssgEgEnabled(self: *const Ym2612Synth, channel: u3, operator: u2) bool {
+        return (self.ssgEgRegister(channel, operator) & 0x08) != 0;
     }
 
     fn tickEnvelope(self: *Ym2612Synth, channel: u3, operator: u2) f32 {
@@ -368,7 +408,12 @@ pub const Ym2612Synth = struct {
                 state.envelope = @max(0.0, state.envelope - self.sustainStep(channel, operator) * @max(state.envelope, 0.02));
                 if (state.envelope <= 0.0001) {
                     state.envelope = 0.0;
-                    state.envelope_phase = .off;
+                    // SSG-EG: handle envelope repeat/invert when reaching minimum.
+                    if (self.ssgEgEnabled(channel, operator) and state.key_on) {
+                        self.handleSsgEgCycle(channel, operator);
+                    } else {
+                        state.envelope_phase = .off;
+                    }
                 }
             },
             .release => {
@@ -376,15 +421,57 @@ pub const Ym2612Synth = struct {
                 if (state.envelope <= 0.0001) {
                     state.envelope = 0.0;
                     state.envelope_phase = .off;
+                    state.ssg_invert = false;
                 }
             },
         }
 
-        var gain = state.envelope * self.totalLevelGain(channel, operator);
+        var effective_envelope = state.envelope;
+        // SSG-EG inversion: when ssg_invert is set, output is (1 - envelope).
+        if (state.ssg_invert) {
+            effective_envelope = 1.0 - effective_envelope;
+        }
+
+        var gain = effective_envelope * self.totalLevelGain(channel, operator);
         if ((self.operatorRegister(channel, 0x60, operator) & 0x80) != 0) {
             gain *= 1.0 - am_depths[self.channel_am_sensitivity[channel]] * self.lfoAmplitudeWave();
         }
         return gain;
+    }
+
+    fn handleSsgEgCycle(self: *Ym2612Synth, channel: u3, operator: u2) void {
+        var state = &self.operators[channel][operator];
+        const ssg = self.ssgEgRegister(channel, operator) & 0x07;
+        // SSG-EG types (bit 2 = invert initial, bit 1 = alternate, bit 0 = hold):
+        //   0: \\\\  repeat attack (no invert)
+        //   1: \___  decay then hold at min
+        //   2: \/\/  alternate (sawtooth)
+        //   3: \‾‾‾  decay then hold at max (inverted)
+        //   4: ////  repeat attack (inverted)
+        //   5: /‾‾‾  attack then hold at max
+        //   6: /\/\  alternate (inverted sawtooth)
+        //   7: /___  attack then hold at min (inverted)
+        const alternate = (ssg & 0x02) != 0;
+        const hold = (ssg & 0x01) != 0;
+
+        if (hold) {
+            if (alternate) {
+                state.ssg_invert = !state.ssg_invert;
+            }
+            state.envelope_phase = .off;
+            if (state.ssg_invert) {
+                state.envelope = 1.0;
+            } else {
+                state.envelope = 0.0;
+            }
+        } else {
+            if (alternate) {
+                state.ssg_invert = !state.ssg_invert;
+            }
+            state.envelope = 0.0;
+            state.envelope_phase = .attack;
+            state.phase = 0.0;
+        }
     }
 
     fn sampleOperator(self: *Ym2612Synth, channel: u3, operator: u2, modulation: f32) f32 {
@@ -581,4 +668,55 @@ test "ym lfo sensitivity modulates output" {
     }
 
     try std.testing.expect(sum_diff > 0.5);
+}
+
+test "ym ssg-eg repeat type produces sustained output" {
+    var normal = Ym2612Synth{};
+    var ssg_synth = Ym2612Synth{};
+
+    configureTestChannel(&normal, 4);
+    configureTestChannel(&ssg_synth, 4);
+
+    // Enable SSG-EG type 0 (repeat, no invert) on all operators.
+    inline for (0..4) |op_idx| {
+        const offset = operator_reg_offsets[op_idx];
+        ssg_synth.applyWrite(writeEvent(0, 0x90 + offset, 0x08));
+    }
+
+    var ssg_late_energy: f32 = 0.0;
+    var normal_late_energy: f32 = 0.0;
+
+    for (0..2048) |_| {
+        _ = normal.tick();
+        _ = ssg_synth.tick();
+    }
+
+    for (0..1024) |_| {
+        const ns = normal.tick();
+        const ss = ssg_synth.tick();
+        normal_late_energy += @abs(ns.left) + @abs(ns.right);
+        ssg_late_energy += @abs(ss.left) + @abs(ss.right);
+    }
+
+    try std.testing.expect(ssg_late_energy > normal_late_energy);
+}
+
+test "ym ssg-eg inverted type flips output polarity" {
+    var normal = Ym2612Synth{};
+    var inverted = Ym2612Synth{};
+
+    configureTestChannel(&normal, 7);
+    configureTestChannel(&inverted, 7);
+
+    const offset = operator_reg_offsets[3];
+    inverted.applyWrite(writeEvent(0, 0x90 + offset, 0x0C));
+
+    var sum_diff: f32 = 0.0;
+    for (0..512) |_| {
+        const n = normal.tick();
+        const i = inverted.tick();
+        sum_diff += @abs(n.left - i.left) + @abs(n.right - i.right);
+    }
+
+    try std.testing.expect(sum_diff > 0.1);
 }

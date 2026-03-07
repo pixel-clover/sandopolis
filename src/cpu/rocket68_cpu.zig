@@ -94,10 +94,8 @@ fn cpuDisasmRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
 }
 
 fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
-    // Do NOT clear irq_level here — rocket68 reads it after this callback
-    // to compute the autovector (24 + irq_level). Clearing it would make
-    // every interrupt use vector 24 (spurious) instead of the correct one.
-    // The level is cleared when the VDP status register is read.
+    // Rocket68 clears irq_level after computing the autovector and updating
+    // SR, so the interrupt fires once per assertion (edge-triggered model).
     return -1;
 }
 

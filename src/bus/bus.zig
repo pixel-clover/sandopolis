@@ -370,16 +370,20 @@ pub const Bus = struct {
     fn recordZ80M68kBusAccesses(self: *Bus, access_count: u32) void {
         if (access_count == 0) return;
 
-        const alternating_extra = if (self.z80_odd_access)
-            (access_count / 2) + (access_count % 2)
-        else
-            access_count / 2;
-
-        self.z80_wait_master_cycles += access_count * 49 + alternating_extra;
-        if (!self.vdp.shouldHaltCpu()) {
-            self.m68k_wait_master_cycles += access_count * clock.m68kCyclesToMaster(11);
-        }
-        if ((access_count & 1) != 0) {
+        // Apply contention per-access so VDP transfers can interleave.
+        const vdp_halting = self.vdp.shouldHaltCpu();
+        var remaining = access_count;
+        while (remaining > 0) : (remaining -= 1) {
+            const extra: u32 = if (self.z80_odd_access) 1 else 0;
+            const z80_wait: u32 = 49 + extra;
+            self.z80_wait_master_cycles += z80_wait;
+            if (!vdp_halting) {
+                self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(11);
+            }
+            // Advance VDP/audio between contention events for finer interleaving.
+            if (remaining > 1) {
+                self.advanceNonZ80Master(z80_wait);
+            }
             self.z80_odd_access = !self.z80_odd_access;
         }
     }
