@@ -64,6 +64,7 @@ BUILD_TYPE=ReleaseFast make run ARGS="roms/sn.smd"
 Controls are configurable via `sandopolis_input.cfg` or `SANDOPOLIS_INPUT_CONFIG`.
 Controller type is also configurable per player with `controller.p1` / `controller.p2` set to `three_button` or `six_button`.
 Configurable gamepad bindings can also use `guide`, `left_stick`, `right_stick`, `misc1`, `left_trigger`, and `right_trigger`.
+Analog thresholds are configurable with `analog.gamepad_axis`, `analog.joystick_axis`, and `analog.trigger`.
 The bindings below are the defaults.
 
 ##### Keyboard (Player 1)

@@ -17,6 +17,7 @@ pub const SchedulerBus = struct {
     consume_wait_master_cycles_fn: *const fn (?*anyopaque, u32) u32,
     step_master_fn: *const fn (?*anyopaque, u32) void,
     cpu_memory_fn: *const fn (?*anyopaque) MemoryInterface,
+    dma_halt_quantum_fn: *const fn (?*anyopaque) u32,
 
     pub fn shouldHaltM68k(self: SchedulerBus) bool {
         return self.should_halt_m68k_fn(self.ctx);
@@ -36,6 +37,10 @@ pub const SchedulerBus = struct {
 
     pub fn cpuMemory(self: SchedulerBus) MemoryInterface {
         return self.cpu_memory_fn(self.ctx);
+    }
+
+    pub fn dmaHaltQuantum(self: SchedulerBus) u32 {
+        return self.dma_halt_quantum_fn(self.ctx);
     }
 };
 

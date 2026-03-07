@@ -65,9 +65,24 @@ pub const Vdp = struct {
     dbg_unknown_writes: u64,
 
     const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
-    const dma_access_slot_cycles: u32 = 8;
+    // Access slot timing varies by display mode and blanking state.
+    // During active display, the VDP uses most slots for rendering;
+    // during blanking, more slots are available for transfers.
+    const active_access_slot_cycles_h40: u32 = 16;
+    const active_access_slot_cycles_h32: u32 = 20;
+    const blanking_access_slot_cycles_h40: u32 = 8;
+    const blanking_access_slot_cycles_h32: u32 = 10;
     const dma_fifo_latency_slots: u8 = 3;
     const pending_port_write_replay_delay_pixels: u16 = 5;
+
+    pub fn accessSlotCycles(self: *const Vdp) u32 {
+        const in_blanking = self.vblank or self.hblank;
+        if (self.isH40()) {
+            return if (in_blanking) blanking_access_slot_cycles_h40 else active_access_slot_cycles_h40;
+        } else {
+            return if (in_blanking) blanking_access_slot_cycles_h32 else active_access_slot_cycles_h32;
+        }
+    }
 
     const VdpWriteFifoEntry = struct {
         code: u8 = 0,
@@ -250,8 +265,9 @@ pub const Vdp = struct {
     }
 
     fn advanceTransferPhase(self: *Vdp, master_cycles: u32) void {
+        const slot_cycles = self.accessSlotCycles();
         const total_cycles = @as(u32, self.transfer_master_remainder) + master_cycles;
-        self.transfer_master_remainder = @intCast(total_cycles % dma_access_slot_cycles);
+        self.transfer_master_remainder = @intCast(total_cycles % slot_cycles);
     }
 
     fn pendingPortWriteReplayDelayMasterCycles(self: *const Vdp) u16 {
@@ -292,8 +308,9 @@ pub const Vdp = struct {
 
     fn projectedAdvanceTransferPhase(self: *Vdp, master_cycles: u32) void {
         const projected = &self.projected_data_port_write_wait;
+        const slot_cycles = self.accessSlotCycles();
         const total_cycles = @as(u32, projected.transfer_remainder) + master_cycles;
-        projected.transfer_remainder = @intCast(total_cycles % dma_access_slot_cycles);
+        projected.transfer_remainder = @intCast(total_cycles % slot_cycles);
     }
 
     fn projectedProcessAccessSlot(self: *Vdp) void {
@@ -335,7 +352,7 @@ pub const Vdp = struct {
                 continue;
             }
 
-            const slot_wait = dma_access_slot_cycles - @as(u32, projected.transfer_remainder);
+            const slot_wait = self.accessSlotCycles() - @as(u32, projected.transfer_remainder);
             wait_master_cycles += slot_wait;
             projected.transfer_remainder = 0;
             self.projectedProcessAccessSlot();
@@ -1325,9 +1342,10 @@ pub const Vdp = struct {
             }
         }
 
+        const slot_cycles = self.accessSlotCycles();
         const total_cycles = @as(u32, self.transfer_master_remainder) + available_master_cycles;
-        const access_slots = total_cycles / dma_access_slot_cycles;
-        self.transfer_master_remainder = @intCast(total_cycles % dma_access_slot_cycles);
+        const access_slots = total_cycles / slot_cycles;
+        self.transfer_master_remainder = @intCast(total_cycles % slot_cycles);
         if (access_slots == 0) return;
 
         if (self.dma_active and !self.dma_fill) {
@@ -1361,7 +1379,7 @@ pub const Vdp = struct {
         const blocked = pending_ahead != 0 or self.fifoIsFull();
         if (!blocked) return 0;
 
-        return self.fifoSlotsUntilNextOpen(pending_ahead) * dma_access_slot_cycles;
+        return self.fifoSlotsUntilNextOpen(pending_ahead) * self.accessSlotCycles();
     }
 
     pub fn reserveDataPortWriteWaitMasterCycles(self: *Vdp) u32 {
@@ -1373,7 +1391,7 @@ pub const Vdp = struct {
         if (self.dma_active and self.dma_fill) return 0;
         if (self.fifoIsEmpty() and self.pendingFifoIsEmpty()) return 0;
 
-        return self.fifoSlotsUntilDrained(self.pending_fifo_len) * dma_access_slot_cycles;
+        return self.fifoSlotsUntilDrained(self.pending_fifo_len) * self.accessSlotCycles();
     }
 
     pub fn shouldHaltCpu(self: *const Vdp) bool {
@@ -1834,6 +1852,7 @@ test "vdp copy dma progresses internally" {
 
 test "vdp memory-to-vram dma waits startup delay after control command" {
     var vdp = Vdp.init();
+    try testing.expectEqual(@as(u32, 99999), vdp.accessSlotCycles());
     vdp.regs[1] |= 0x10; // DMA enable
     vdp.regs[15] = 2;
     vdp.regs[19] = 1;
@@ -2068,17 +2087,24 @@ test "vdp queued writes accumulate sub-slot master cycles" {
     vdp.code = 0x1;
     vdp.addr = 0x0000;
 
+    // H32 active mode: 20 master cycles per access slot.
+    // With latency 3, the write commits after 3 full access slots = 60 master cycles.
+    // Each call advances 7 master cycles, so we need ceil(60/7) = 9 calls.
+    try testing.expectEqual(@as(u32, 20), vdp.accessSlotCycles());
+
     vdp.writeData(0xABCD);
     try testing.expectEqual(@as(u16, 0x0002), vdp.addr);
     try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
     try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
 
-    inline for (0..3) |_| {
+    // After 8 calls (56 master cycles): 2 slots fired, latency 3→1. Not committed.
+    inline for (0..8) |_| {
         vdp.progressTransfers(clock.m68k_divider, null, null);
-        try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
-        try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
     }
+    try testing.expectEqual(@as(u8, 0), vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0), vdp.vram[1]);
 
+    // After 9th call (63 master cycles): 3 slots fired, latency 1→0. Committed!
     vdp.progressTransfers(clock.m68k_divider, null, null);
     try testing.expectEqual(@as(u8, 0xAB), vdp.vram[0]);
     try testing.expectEqual(@as(u8, 0xCD), vdp.vram[1]);
@@ -2586,4 +2612,60 @@ test "vdp high priority plane A hides low priority sprite" {
 
     vdp.renderScanline(0);
     try testing.expectEqual(vdp.getPaletteColor(1), vdp.framebuffer[0]);
+}
+
+test "vdp access slot cycles vary by mode and blanking state" {
+    var vdp = Vdp.init();
+
+    // H32 active (default: regs[12]=0, not blanking)
+    try testing.expectEqual(@as(u32, 20), vdp.accessSlotCycles());
+
+    // H32 blanking
+    vdp.vblank = true;
+    try testing.expectEqual(@as(u32, 10), vdp.accessSlotCycles());
+
+    // H40 blanking
+    vdp.regs[12] = 0x81;
+    try testing.expectEqual(@as(u32, 8), vdp.accessSlotCycles());
+
+    // H40 active
+    vdp.vblank = false;
+    try testing.expectEqual(@as(u32, 16), vdp.accessSlotCycles());
+
+    // HBlank also counts as blanking
+    vdp.hblank = true;
+    try testing.expectEqual(@as(u32, 8), vdp.accessSlotCycles());
+}
+
+test "vdp fifo drains faster during blanking" {
+    // During blanking, access slots are shorter (8 cycles in H40 vs 16 active),
+    // so FIFO entries drain in fewer master cycles.
+    var active_vdp = Vdp.init();
+    active_vdp.regs[12] = 0x81; // H40
+    active_vdp.regs[15] = 2;
+    active_vdp.code = 0x1;
+    active_vdp.addr = 0x0000;
+    active_vdp.writeData(0xABCD);
+
+    var blank_vdp = Vdp.init();
+    blank_vdp.regs[12] = 0x81; // H40
+    blank_vdp.regs[15] = 2;
+    blank_vdp.code = 0x1;
+    blank_vdp.addr = 0x0000;
+    blank_vdp.vblank = true;
+    blank_vdp.writeData(0xABCD);
+
+    // Progress both by the same number of master cycles.
+    // Blanking VDP should drain the FIFO sooner.
+    const cycles: u32 = 32;
+    active_vdp.progressTransfers(cycles, null, null);
+    blank_vdp.progressTransfers(cycles, null, null);
+
+    // Blanking VDP: 32/8 = 4 slots → tick latency 4 times (3→2→1→0 + service)
+    try testing.expectEqual(@as(u8, 0xAB), blank_vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0xCD), blank_vdp.vram[1]);
+
+    // Active VDP: 32/16 = 2 slots → tick latency 2 times (3→2→1), not serviced yet
+    try testing.expectEqual(@as(u8, 0), active_vdp.vram[0]);
+    try testing.expectEqual(@as(u8, 0), active_vdp.vram[1]);
 }

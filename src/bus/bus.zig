@@ -430,6 +430,11 @@ pub const Bus = struct {
         return self.cpuMemory();
     }
 
+    fn schedulerDmaHaltQuantum(ctx: ?*anyopaque) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 8));
+        return self.vdp.accessSlotCycles();
+    }
+
     pub fn schedulerRuntime(self: *Bus) SchedulerBus {
         return .{
             .ctx = self,
@@ -438,6 +443,7 @@ pub const Bus = struct {
             .consume_wait_master_cycles_fn = schedulerConsumeM68kWaitMasterCycles,
             .step_master_fn = schedulerStepMaster,
             .cpu_memory_fn = schedulerCpuMemory,
+            .dma_halt_quantum_fn = schedulerDmaHaltQuantum,
         };
     }
 

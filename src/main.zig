@@ -47,7 +47,6 @@ const GamepadTransition = struct {
 };
 
 const max_input_transitions: usize = 4;
-const gamepad_axis_threshold: i16 = 16_000;
 const joystick_hat_up: u8 = 0x01;
 const joystick_hat_right: u8 = 0x02;
 const joystick_hat_down: u8 = 0x04;
@@ -145,13 +144,14 @@ fn updateAxisPair(
     negative: *bool,
     positive: *bool,
     value: i16,
+    threshold: i16,
     negative_input: InputBindings.GamepadInput,
     positive_input: InputBindings.GamepadInput,
 ) [max_input_transitions]?GamepadTransition {
     var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
     var next_index: usize = 0;
-    const next_negative = value <= -gamepad_axis_threshold;
-    const next_positive = value >= gamepad_axis_threshold;
+    const next_negative = value <= -threshold;
+    const next_positive = value >= threshold;
 
     if (negative.* != next_negative) {
         transitions[next_index] = .{
@@ -172,10 +172,15 @@ fn updateAxisPair(
     return transitions;
 }
 
-fn updateLeftStickState(state: *DirectionState, axis: zsdl3.Gamepad.Axis, value: i16) [max_input_transitions]?GamepadTransition {
+fn updateLeftStickState(
+    state: *DirectionState,
+    axis: zsdl3.Gamepad.Axis,
+    value: i16,
+    threshold: i16,
+) [max_input_transitions]?GamepadTransition {
     return switch (axis) {
-        .leftx => updateAxisPair(&state.left, &state.right, value, .dpad_left, .dpad_right),
-        .lefty => updateAxisPair(&state.up, &state.down, value, .dpad_up, .dpad_down),
+        .leftx => updateAxisPair(&state.left, &state.right, value, threshold, .dpad_left, .dpad_right),
+        .lefty => updateAxisPair(&state.up, &state.down, value, threshold, .dpad_up, .dpad_down),
         else => [_]?GamepadTransition{null} ** max_input_transitions,
     };
 }
@@ -183,10 +188,11 @@ fn updateLeftStickState(state: *DirectionState, axis: zsdl3.Gamepad.Axis, value:
 fn updateTriggerState(
     state: *bool,
     value: i16,
+    threshold: i16,
     input: InputBindings.GamepadInput,
 ) [max_input_transitions]?GamepadTransition {
     var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
-    const pressed = value >= gamepad_axis_threshold;
+    const pressed = value >= threshold;
     if (state.* != pressed) {
         transitions[0] = .{
             .input = input,
@@ -202,19 +208,26 @@ fn updateGamepadAxisState(
     trigger_state: *TriggerState,
     axis: zsdl3.Gamepad.Axis,
     value: i16,
+    axis_threshold: i16,
+    trigger_threshold: i16,
 ) [max_input_transitions]?GamepadTransition {
     return switch (axis) {
-        .leftx, .lefty => updateLeftStickState(stick_state, axis, value),
-        .left_trigger => updateTriggerState(&trigger_state.left, value, .left_trigger),
-        .right_trigger => updateTriggerState(&trigger_state.right, value, .right_trigger),
+        .leftx, .lefty => updateLeftStickState(stick_state, axis, value, axis_threshold),
+        .left_trigger => updateTriggerState(&trigger_state.left, value, trigger_threshold, .left_trigger),
+        .right_trigger => updateTriggerState(&trigger_state.right, value, trigger_threshold, .right_trigger),
         else => [_]?GamepadTransition{null} ** max_input_transitions,
     };
 }
 
-fn updateJoystickAxisState(state: *DirectionState, axis: u8, value: i16) [max_input_transitions]?GamepadTransition {
+fn updateJoystickAxisState(
+    state: *DirectionState,
+    axis: u8,
+    value: i16,
+    threshold: i16,
+) [max_input_transitions]?GamepadTransition {
     return switch (axis) {
-        0 => updateAxisPair(&state.left, &state.right, value, .dpad_left, .dpad_right),
-        1 => updateAxisPair(&state.up, &state.down, value, .dpad_up, .dpad_down),
+        0 => updateAxisPair(&state.left, &state.right, value, threshold, .dpad_left, .dpad_right),
+        1 => updateAxisPair(&state.up, &state.down, value, threshold, .dpad_up, .dpad_down),
         else => [_]?GamepadTransition{null} ** max_input_transitions,
     };
 }
@@ -829,7 +842,14 @@ pub fn main() !void {
                         &input_bindings,
                         &bus.io,
                         port,
-                        updateGamepadAxisState(&gamepad_sticks[port], &gamepad_triggers[port], axis, event.gaxis.value),
+                        updateGamepadAxisState(
+                            &gamepad_sticks[port],
+                            &gamepad_triggers[port],
+                            axis,
+                            event.gaxis.value,
+                            input_bindings.gamepad_axis_threshold,
+                            input_bindings.trigger_threshold,
+                        ),
                     );
                 },
                 zsdl3.EventType.joystick_button_down, zsdl3.EventType.joystick_button_up => {
@@ -845,7 +865,12 @@ pub fn main() !void {
                         &input_bindings,
                         &bus.io,
                         port,
-                        updateJoystickAxisState(&joystick_axes[port], event.jaxis.axis, event.jaxis.value),
+                        updateJoystickAxisState(
+                            &joystick_axes[port],
+                            event.jaxis.axis,
+                            event.jaxis.value,
+                            input_bindings.joystick_axis_threshold,
+                        ),
                     );
                 },
                 zsdl3.EventType.joystick_hat_motion => {
@@ -959,17 +984,17 @@ pub fn main() !void {
 test "left stick transitions mirror dpad directions across threshold crossings" {
     var state = DirectionState{};
 
-    var transitions = updateLeftStickState(&state, .leftx, -20_000);
+    var transitions = updateLeftStickState(&state, .leftx, -20_000, 16_000);
     try std.testing.expectEqual(InputBindings.GamepadInput.dpad_left, transitions[0].?.input);
     try std.testing.expect(transitions[0].?.pressed);
     try std.testing.expect(transitions[1] == null);
 
-    transitions = updateLeftStickState(&state, .leftx, 0);
+    transitions = updateLeftStickState(&state, .leftx, 0, 16_000);
     try std.testing.expectEqual(InputBindings.GamepadInput.dpad_left, transitions[0].?.input);
     try std.testing.expect(!transitions[0].?.pressed);
     try std.testing.expect(transitions[1] == null);
 
-    transitions = updateLeftStickState(&state, .lefty, 20_000);
+    transitions = updateLeftStickState(&state, .lefty, 20_000, 16_000);
     try std.testing.expectEqual(InputBindings.GamepadInput.dpad_down, transitions[0].?.input);
     try std.testing.expect(transitions[0].?.pressed);
 }
@@ -977,15 +1002,34 @@ test "left stick transitions mirror dpad directions across threshold crossings" 
 test "gamepad trigger transitions mirror threshold crossings" {
     var state = false;
 
-    var transitions = updateTriggerState(&state, 20_000, .left_trigger);
+    var transitions = updateTriggerState(&state, 20_000, 16_000, .left_trigger);
     try std.testing.expectEqual(InputBindings.GamepadInput.left_trigger, transitions[0].?.input);
     try std.testing.expect(transitions[0].?.pressed);
     try std.testing.expect(transitions[1] == null);
 
-    transitions = updateTriggerState(&state, 0, .left_trigger);
+    transitions = updateTriggerState(&state, 0, 16_000, .left_trigger);
     try std.testing.expectEqual(InputBindings.GamepadInput.left_trigger, transitions[0].?.input);
     try std.testing.expect(!transitions[0].?.pressed);
     try std.testing.expect(transitions[1] == null);
+}
+
+test "axis helpers honor custom thresholds" {
+    var stick_state = DirectionState{};
+    var trigger_state = TriggerState{};
+
+    var transitions = updateLeftStickState(&stick_state, .leftx, 14_000, 15_000);
+    try std.testing.expect(transitions[0] == null);
+
+    transitions = updateLeftStickState(&stick_state, .leftx, 16_000, 15_000);
+    try std.testing.expectEqual(InputBindings.GamepadInput.dpad_right, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
+
+    transitions = updateTriggerState(&trigger_state.left, 14_000, 15_000, .left_trigger);
+    try std.testing.expect(transitions[0] == null);
+
+    transitions = updateGamepadAxisState(&stick_state, &trigger_state, .left_trigger, 16_000, 15_000, 15_000);
+    try std.testing.expectEqual(InputBindings.GamepadInput.left_trigger, transitions[0].?.input);
+    try std.testing.expect(transitions[0].?.pressed);
 }
 
 test "gamepad button mapping includes guide and stick clicks" {
@@ -1018,12 +1062,12 @@ test "joystick hat transitions mirror dpad directions and diagonals" {
 test "joystick axis transitions mirror the first stick axes" {
     var state = DirectionState{};
 
-    var transitions = updateJoystickAxisState(&state, 0, 20_000);
+    var transitions = updateJoystickAxisState(&state, 0, 20_000, 16_000);
     try std.testing.expectEqual(InputBindings.GamepadInput.dpad_right, transitions[0].?.input);
     try std.testing.expect(transitions[0].?.pressed);
     try std.testing.expect(transitions[1] == null);
 
-    transitions = updateJoystickAxisState(&state, 1, -20_000);
+    transitions = updateJoystickAxisState(&state, 1, -20_000, 16_000);
     try std.testing.expectEqual(InputBindings.GamepadInput.dpad_up, transitions[0].?.input);
     try std.testing.expect(transitions[0].?.pressed);
 }

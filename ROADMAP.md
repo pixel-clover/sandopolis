@@ -50,7 +50,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Input mapping (basic): Default keyboard bindings for player 1/player 2, default gamepad bindings for the first two controllers, and keyboard hotkeys.
 - [x] Controller I/O (basic): Timed TH behavior and 3/6-button protocol path implemented.
 - [ ] Controller I/O (complete): Per-port 3-button/6-button controller selection is configurable, and the frontend now has a basic raw SDL joystick fallback for non-gamepad controllers; full edge-case behavior and broader device coverage remain incomplete.
-- [ ] Input mapping: Player 1/player 2 keyboard/gamepad bindings and keyboard hotkeys are configurable via `sandopolis_input.cfg` or `SANDOPOLIS_INPUT_CONFIG`; UI/profile/device-management polish is still incomplete.
+- [ ] Input mapping: Player 1/player 2 keyboard/gamepad bindings, keyboard hotkeys, and analog thresholds are configurable via `sandopolis_input.cfg` or `SANDOPOLIS_INPUT_CONFIG`; UI/profile/device-management polish is still incomplete.
 - [x] SRAM support: Header-driven and checksum-forced cartridge SRAM with persistent `.sav` load/store.
 
 ### Compatibility and tooling

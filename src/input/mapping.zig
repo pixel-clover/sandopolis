@@ -5,6 +5,9 @@ const ControllerType = Io.ControllerType;
 
 pub const default_config_name = "sandopolis_input.cfg";
 pub const player_count: usize = 2;
+pub const default_gamepad_axis_threshold: i16 = 16_000;
+pub const default_joystick_axis_threshold: i16 = 16_000;
+pub const default_trigger_threshold: i16 = 16_000;
 
 pub const Action = enum(u8) {
     up,
@@ -111,6 +114,9 @@ pub const Bindings = struct {
     gamepad: [player_count][actions.len]?GamepadInput,
     hotkeys: [hotkey_actions.len]?KeyboardInput,
     controller_types: [player_count]ControllerType,
+    gamepad_axis_threshold: i16,
+    joystick_axis_threshold: i16,
+    trigger_threshold: i16,
 
     pub fn defaults() Bindings {
         var bindings = Bindings{
@@ -118,6 +124,9 @@ pub const Bindings = struct {
             .gamepad = [_][actions.len]?GamepadInput{[_]?GamepadInput{null} ** actions.len} ** player_count,
             .hotkeys = [_]?KeyboardInput{null} ** hotkey_actions.len,
             .controller_types = [_]ControllerType{.six_button} ** player_count,
+            .gamepad_axis_threshold = default_gamepad_axis_threshold,
+            .joystick_axis_threshold = default_joystick_axis_threshold,
+            .trigger_threshold = default_trigger_threshold,
         };
 
         bindings.setKeyboard(.up, .up);
@@ -216,6 +225,18 @@ pub const Bindings = struct {
         self.controller_types[port] = controller_type;
     }
 
+    pub fn setGamepadAxisThreshold(self: *Bindings, threshold: i16) void {
+        self.gamepad_axis_threshold = threshold;
+    }
+
+    pub fn setJoystickAxisThreshold(self: *Bindings, threshold: i16) void {
+        self.joystick_axis_threshold = threshold;
+    }
+
+    pub fn setTriggerThreshold(self: *Bindings, threshold: i16) void {
+        self.trigger_threshold = threshold;
+    }
+
     pub fn applyControllerTypes(self: *const Bindings, io: *Io) void {
         for (0..player_count) |port| {
             io.setControllerType(port, self.controller_types[port]);
@@ -287,6 +308,22 @@ pub const Bindings = struct {
             const controller_type = parseControllerType(rhs) orelse return error.UnknownControllerType;
             self.setControllerType(port, controller_type);
             return;
+        }
+        if (std.mem.startsWith(u8, lhs, "analog.")) {
+            const threshold = try parseAnalogThreshold(rhs);
+            if (std.ascii.eqlIgnoreCase(lhs["analog.".len..], "gamepad_axis")) {
+                self.setGamepadAxisThreshold(threshold);
+                return;
+            }
+            if (std.ascii.eqlIgnoreCase(lhs["analog.".len..], "joystick_axis")) {
+                self.setJoystickAxisThreshold(threshold);
+                return;
+            }
+            if (std.ascii.eqlIgnoreCase(lhs["analog.".len..], "trigger")) {
+                self.setTriggerThreshold(threshold);
+                return;
+            }
+            return error.UnknownAnalogTarget;
         }
 
         return error.UnknownBindingTarget;
@@ -419,6 +456,12 @@ fn parseControllerType(name: []const u8) ?ControllerType {
     return null;
 }
 
+fn parseAnalogThreshold(name: []const u8) !i16 {
+    const threshold = try std.fmt.parseUnsigned(u16, name, 10);
+    if (threshold > std.math.maxInt(i16)) return error.InvalidAnalogThreshold;
+    return @intCast(threshold);
+}
+
 test "input bindings parse overrides and unbinds" {
     const bindings = try Bindings.parseContents(
         \\# Player 1 remap
@@ -427,6 +470,8 @@ test "input bindings parse overrides and unbinds" {
         \\keyboard.p2.start = rshift
         \\gamepad.p2.start = guide
         \\gamepad.mode = misc1
+        \\analog.gamepad_axis = 12000
+        \\analog.trigger = 20000
         \\hotkey.registers = none
         \\hotkey.quit = backspace
         \\controller.p2 = three_button
@@ -437,6 +482,9 @@ test "input bindings parse overrides and unbinds" {
     try testing.expect(bindings.keyboard[1][@intFromEnum(Action.start)] == .rshift);
     try testing.expect(bindings.gamepad[1][@intFromEnum(Action.start)] == .guide);
     try testing.expect(bindings.gamepad[0][@intFromEnum(Action.mode)] == .misc1);
+    try testing.expectEqual(@as(i16, 12_000), bindings.gamepad_axis_threshold);
+    try testing.expectEqual(@as(i16, default_joystick_axis_threshold), bindings.joystick_axis_threshold);
+    try testing.expectEqual(@as(i16, 20_000), bindings.trigger_threshold);
     try testing.expect(bindings.hotkeys[@intFromEnum(HotkeyAction.registers)] == null);
     try testing.expect(bindings.hotkeys[@intFromEnum(HotkeyAction.quit)] == .backspace);
     try testing.expectEqual(ControllerType.three_button, bindings.controller_types[1]);
@@ -467,6 +515,12 @@ test "input bindings apply remapped inputs" {
     try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.Mode);
     try testing.expectEqual(HotkeyAction.step, bindings.hotkeyForKeyboard(.backspace).?);
     try testing.expectEqual(HotkeyAction.registers, bindings.hotkeyForKeyboard(.space).?);
+}
+
+test "input bindings reject out-of-range analog thresholds" {
+    try testing.expectError(error.InvalidAnalogThreshold, Bindings.parseContents(
+        \\analog.trigger = 40000
+    ));
 }
 
 test "input bindings apply configured controller types" {

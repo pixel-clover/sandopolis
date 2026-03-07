@@ -5,7 +5,6 @@ const SchedulerBus = @import("runtime.zig").SchedulerBus;
 const SchedulerCpu = @import("runtime.zig").SchedulerCpu;
 
 pub const idle_master_quantum: u32 = 56;
-pub const halt_master_quantum: u32 = 8;
 
 pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M68kSync, total_master_cycles: u32) void {
     var remaining = total_master_cycles;
@@ -22,7 +21,7 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
         }
 
         if (vdp_halts_cpu) {
-            const quantum = @min(remaining, halt_master_quantum);
+            const quantum = @min(remaining, bus.dmaHaltQuantum());
             remaining -= quantum;
             bus.stepMaster(m68k_sync.flushStalledMaster(quantum));
             continue;
