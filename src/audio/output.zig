@@ -1,17 +1,11 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
-const clock = @import("clock.zig");
-const PendingAudioFrames = @import("audio_timing.zig").PendingAudioFrames;
-const Z80 = @import("z80.zig").Z80;
+const clock = @import("../clock.zig");
+const PendingAudioFrames = @import("timing.zig").PendingAudioFrames;
+const Z80 = @import("../cpu/z80.zig").Z80;
 const YmWriteEvent = Z80.YmWriteEvent;
 const Psg = @import("psg.zig").Psg;
-
-const StereoPan = struct {
-    left: f32,
-    right: f32,
-};
-
-const ym_operator_offsets = [_]u8{ 0x00, 0x08, 0x04, 0x0C };
+const Ym2612Synth = @import("ym2612.zig").Ym2612Synth;
 
 const RateConverter = struct {
     in_rate_num: u32,
@@ -48,10 +42,7 @@ pub const AudioOutput = struct {
     sample_chunk: [4096]i16 = [_]i16{0} ** 4096,
     ym_write_buffer: [max_ym_writes_per_push]YmWriteEvent = undefined,
     psg_command_buffer: [max_psg_commands_per_push]u8 = undefined,
-    ym_shadow_regs: [2][256]u8 = [_][256]u8{[_]u8{0} ** 256} ** 2,
-    ym_key_mask_shadow: u8 = 0,
-    ym_phase: [6]f32 = [_]f32{0.0} ** 6,
-    ym_level: [6]f32 = [_]f32{0.0} ** 6,
+    ym_synth: Ym2612Synth = .{},
     psg: Psg = Psg{},
 
     fn ymPortAndChannelBase(channel: u3) struct { port: u1, base: u8 } {
@@ -59,40 +50,6 @@ pub const AudioOutput = struct {
             .{ .port = 1, .base = @as(u8, channel - 3) }
         else
             .{ .port = 0, .base = channel };
-    }
-
-    fn ymOperatorRegister(z80: *const Z80, channel: u3, reg_base: u8, operator: u2) u8 {
-        const mapping = AudioOutput.ymPortAndChannelBase(channel);
-        return z80.getYmRegister(mapping.port, reg_base + ym_operator_offsets[operator] + mapping.base);
-    }
-
-    fn ymTotalLevelToGain(total_level: u8) f32 {
-        return std.math.exp2(-@as(f32, @floatFromInt(total_level & 0x7F)) / 16.0);
-    }
-
-    fn ymAttackStep(z80: *const Z80, channel: u3) f32 {
-        const attack_rate = ymOperatorRegister(z80, channel, 0x50, 3) & 0x1F;
-        return 0.0001 + (@as(f32, @floatFromInt(attack_rate)) / 31.0) * 0.01;
-    }
-
-    fn ymReleaseStep(z80: *const Z80, channel: u3) f32 {
-        const release_rate = ymOperatorRegister(z80, channel, 0x80, 3) & 0x0F;
-        return 0.00002 + (@as(f32, @floatFromInt(release_rate)) / 15.0) * 0.002;
-    }
-
-    fn ymTargetGain(z80: *const Z80, channel: u3, keyed_on: bool, dac_enable: bool) f32 {
-        if (!keyed_on) return 0.0;
-        if (dac_enable and channel == 5) return 0.0;
-
-        const carrier_tl = ymOperatorRegister(z80, channel, 0x40, 3);
-        const algorithm_feedback = z80.getYmRegister(ymPortAndChannelBase(channel).port, 0xB0 + ymPortAndChannelBase(channel).base);
-        const algorithm = algorithm_feedback & 0x07;
-        const feedback = (algorithm_feedback >> 3) & 0x07;
-
-        var gain = 0.05 * ymTotalLevelToGain(carrier_tl);
-        gain *= 1.0 + @as(f32, @floatFromInt(algorithm)) * 0.04;
-        gain *= 1.0 + @as(f32, @floatFromInt(feedback)) * 0.03;
-        return gain;
     }
 
     fn ymDacEnabled(z80: *const Z80) bool {
@@ -107,87 +64,8 @@ pub const AudioOutput = struct {
         return ymDacByteToSample(z80.getYmRegister(0, 0x2A));
     }
 
-    fn ymOperatorRegisterFromShadow(self: *const AudioOutput, channel: u3, reg_base: u8, operator: u2) u8 {
-        const mapping = AudioOutput.ymPortAndChannelBase(channel);
-        return self.ym_shadow_regs[mapping.port][reg_base + ym_operator_offsets[operator] + mapping.base];
-    }
-
-    fn ymAttackStepFromShadow(self: *const AudioOutput, channel: u3) f32 {
-        const attack_rate = self.ymOperatorRegisterFromShadow(channel, 0x50, 3) & 0x1F;
-        return 0.0001 + (@as(f32, @floatFromInt(attack_rate)) / 31.0) * 0.01;
-    }
-
-    fn ymReleaseStepFromShadow(self: *const AudioOutput, channel: u3) f32 {
-        const release_rate = self.ymOperatorRegisterFromShadow(channel, 0x80, 3) & 0x0F;
-        return 0.00002 + (@as(f32, @floatFromInt(release_rate)) / 15.0) * 0.002;
-    }
-
-    fn ymDacEnabledFromShadow(self: *const AudioOutput) bool {
-        return (self.ym_shadow_regs[0][0x2B] & 0x80) != 0;
-    }
-
-    fn ymDacCurrentSampleFromShadow(self: *const AudioOutput) f32 {
-        return ymDacByteToSample(self.ym_shadow_regs[0][0x2A]);
-    }
-
-    fn ymTargetGainFromShadow(self: *const AudioOutput, channel: u3) f32 {
-        const keyed_on = (self.ym_key_mask_shadow & (@as(u8, 1) << @intCast(channel))) != 0;
-        if (!keyed_on) return 0.0;
-        if (self.ymDacEnabledFromShadow() and channel == 5) return 0.0;
-
-        const carrier_tl = self.ymOperatorRegisterFromShadow(channel, 0x40, 3);
-        const mapping = AudioOutput.ymPortAndChannelBase(channel);
-        const algorithm_feedback = self.ym_shadow_regs[mapping.port][0xB0 + mapping.base];
-        const algorithm = algorithm_feedback & 0x07;
-        const feedback = (algorithm_feedback >> 3) & 0x07;
-
-        var gain = 0.05 * ymTotalLevelToGain(carrier_tl);
-        gain *= 1.0 + @as(f32, @floatFromInt(algorithm)) * 0.04;
-        gain *= 1.0 + @as(f32, @floatFromInt(feedback)) * 0.03;
-        return gain;
-    }
-
-    fn fmFrequencyFromShadow(self: *const AudioOutput, channel: u3) f32 {
-        const mapping = ymPortAndChannelBase(channel);
-        const fnum_low = self.ym_shadow_regs[mapping.port][0xA0 + mapping.base];
-        const high = self.ym_shadow_regs[mapping.port][0xA4 + mapping.base];
-        const block = (high >> 3) & 0x07;
-        const fnum_high = high & 0x07;
-        const fnum: u16 = (@as(u16, fnum_high) << 8) | @as(u16, fnum_low);
-        if (fnum == 0) return 0.0;
-
-        const base_hz = 0.052_7 * @as(f32, @floatFromInt(fnum));
-        return base_hz * @as(f32, @floatFromInt(@as(u32, 1) << @intCast(block)));
-    }
-
-    fn fmPanFromShadow(self: *const AudioOutput, channel: u3) StereoPan {
-        const mapping = ymPortAndChannelBase(channel);
-        const pan = self.ym_shadow_regs[mapping.port][0xB4 + mapping.base];
-        const right_on = (pan & 0x40) != 0;
-        const left_on = (pan & 0x80) != 0;
-        return .{
-            .left = if (left_on) 1.0 else 0.0,
-            .right = if (right_on) 1.0 else 0.0,
-        };
-    }
-
     fn applyYmWriteEvent(self: *AudioOutput, event: YmWriteEvent) void {
-        const port: u1 = @intCast(event.port & 1);
-        self.ym_shadow_regs[port][event.reg] = event.value;
-        if (port == 0 and event.reg == 0x28) {
-            var channel = event.value & 0x03;
-            if (channel != 0x03) {
-                if ((event.value & 0x04) != 0) {
-                    channel +%= 3;
-                }
-                const channel_mask: u8 = @as(u8, 1) << @intCast(channel);
-                if ((event.value & 0xF0) != 0) {
-                    self.ym_key_mask_shadow |= channel_mask;
-                } else {
-                    self.ym_key_mask_shadow &= ~channel_mask;
-                }
-            }
-        }
+        self.ym_synth.applyWrite(event);
     }
 
     fn fmFrequencyFromChannel(z80: *const Z80, channel: u3) f32 {
@@ -203,35 +81,28 @@ pub const AudioOutput = struct {
         return base_hz * @as(f32, @floatFromInt(@as(u32, 1) << @intCast(block)));
     }
 
-    fn fmPanFromChannel(z80: *const Z80, channel: u3) StereoPan {
-        const is_high_bank = channel >= 3;
-        const port: u1 = if (is_high_bank) 1 else 0;
-        const base: u8 = if (is_high_bank) channel - 3 else channel;
-        const pan = z80.getYmRegister(port, 0xB4 + base);
-        const right_on = (pan & 0x40) != 0;
-        const left_on = (pan & 0x80) != 0;
-        return .{
-            .left = if (left_on) 1.0 else 0.0,
-            .right = if (right_on) 1.0 else 0.0,
-        };
-    }
-
     fn renderChunk(
         self: *AudioOutput,
         frames: usize,
+        ym_native_frames: u32,
         psg_native_frames: u32,
         ym_writes: []const YmWriteEvent,
         psg_commands: []const u8,
     ) []const i16 {
-        const sample_rate: f32 = @floatFromInt(output_rate);
-        const two_pi = std.math.tau;
         var psg_native_cursor: u32 = 0;
         var last_psg_sample: i16 = 0;
+        var ym_native_cursor: u32 = 0;
+        var last_ym_left: f32 = 0.0;
+        var last_ym_right: f32 = 0.0;
         var ym_write_cursor: usize = 0;
         var psg_command_cursor: usize = 0;
         var i: usize = 0;
         while (i < frames) : (i += 1) {
-            const target_ym_writes: usize = @intCast((@as(u64, i + 1) * ym_writes.len) / frames);
+            const target_ym_native: u32 = @intCast((@as(u64, i + 1) * ym_native_frames) / frames);
+            const target_ym_writes: usize = if (ym_native_frames == 0)
+                @intCast((@as(u64, i + 1) * ym_writes.len) / frames)
+            else
+                @intCast((@as(u64, target_ym_native) * ym_writes.len) / ym_native_frames);
             while (ym_write_cursor < target_ym_writes) : (ym_write_cursor += 1) {
                 self.applyYmWriteEvent(ym_writes[ym_write_cursor]);
             }
@@ -244,32 +115,24 @@ pub const AudioOutput = struct {
             var l: f32 = 0.0;
             var r: f32 = 0.0;
 
-            for (0..6) |ch| {
-                const channel: u3 = @intCast(ch);
-                const fm_hz = self.fmFrequencyFromShadow(channel);
-                if (fm_hz <= 0.0) continue;
-
-                const target_gain = self.ymTargetGainFromShadow(channel);
-                if (self.ym_level[ch] < target_gain) {
-                    self.ym_level[ch] = @min(target_gain, self.ym_level[ch] + self.ymAttackStepFromShadow(channel));
-                } else if (self.ym_level[ch] > target_gain) {
-                    self.ym_level[ch] = @max(target_gain, self.ym_level[ch] - self.ymReleaseStepFromShadow(channel));
+            const ym_samples_to_generate = target_ym_native - ym_native_cursor;
+            if (ym_samples_to_generate != 0) {
+                var sum_left: f32 = 0.0;
+                var sum_right: f32 = 0.0;
+                var generated = ym_samples_to_generate;
+                while (generated != 0) : (generated -= 1) {
+                    const ym_sample = self.ym_synth.tick();
+                    last_ym_left = ym_sample.left;
+                    last_ym_right = ym_sample.right;
+                    sum_left += ym_sample.left;
+                    sum_right += ym_sample.right;
+                    ym_native_cursor += 1;
                 }
-                if (self.ym_level[ch] <= 0.0001) continue;
-
-                self.ym_phase[ch] += fm_hz / sample_rate;
-                if (self.ym_phase[ch] >= 1.0) self.ym_phase[ch] -= 1.0;
-                const voice = std.math.sin(self.ym_phase[ch] * two_pi) * self.ym_level[ch];
-                const pan = self.fmPanFromShadow(channel);
-                l += voice * pan.left;
-                r += voice * pan.right;
-            }
-
-            if (self.ymDacEnabledFromShadow()) {
-                const voice = self.ymDacCurrentSampleFromShadow() * 0.16;
-                const dac_pan = self.fmPanFromShadow(5);
-                l += voice * dac_pan.left;
-                r += voice * dac_pan.right;
+                l += sum_left / @as(f32, @floatFromInt(ym_samples_to_generate));
+                r += sum_right / @as(f32, @floatFromInt(ym_samples_to_generate));
+            } else {
+                l += last_ym_left;
+                r += last_ym_right;
             }
 
             const target_native = @as(u32, @intCast((@as(u64, i + 1) * psg_native_frames) / frames));
@@ -311,6 +174,7 @@ pub const AudioOutput = struct {
         const master_clock = if (is_pal) clock.master_clock_pal else clock.master_clock_ntsc;
         setConverterRate(&self.fm_converter, master_clock);
         setConverterRate(&self.psg_converter, master_clock);
+        self.ym_synth.setTimingMode(is_pal);
     }
 
     pub fn pushPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
@@ -328,6 +192,7 @@ pub const AudioOutput = struct {
         const psg_command_count = z80.takePsgCommands(self.psg_command_buffer[0..]);
 
         const max_frames_per_push = self.sample_chunk.len / channels;
+        var remaining_ym_native = pending.fm_frames;
         var remaining_psg_native = pending.psg_frames;
         var remaining_out_frames = out_frames;
         var remaining_ym_writes = ym_write_count;
@@ -337,6 +202,10 @@ pub const AudioOutput = struct {
         while (out_frames > 0) {
             const chunk_frames: usize = @min(out_frames, max_frames_per_push);
             const chunk_out_frames: u32 = @intCast(chunk_frames);
+            const chunk_ym_native: u32 = if (remaining_out_frames == chunk_out_frames)
+                remaining_ym_native
+            else
+                @intCast((@as(u64, remaining_ym_native) * chunk_frames) / remaining_out_frames);
             const chunk_psg_native: u32 = if (remaining_out_frames == chunk_frames)
                 remaining_psg_native
             else
@@ -351,11 +220,13 @@ pub const AudioOutput = struct {
                 @intCast((@as(u64, remaining_psg_commands) * chunk_frames) / remaining_out_frames);
             const samples = self.renderChunk(
                 chunk_frames,
+                chunk_ym_native,
                 chunk_psg_native,
                 self.ym_write_buffer[ym_write_offset .. ym_write_offset + chunk_ym_writes],
                 self.psg_command_buffer[psg_command_offset .. psg_command_offset + chunk_psg_commands],
             );
             try zsdl3.putAudioStreamData(i16, self.stream, samples);
+            remaining_ym_native -= chunk_ym_native;
             remaining_psg_native -= chunk_psg_native;
             remaining_out_frames -= chunk_out_frames;
             remaining_ym_writes -= chunk_ym_writes;
@@ -409,7 +280,7 @@ test "psg native-rate rendering stays audible after downsampling" {
     output.psg.doCommand(0x85); // ch0 tone low = 5
     output.psg.doCommand(0x00); // ch0 tone high = 0
 
-    const samples = output.renderChunk(64, 256, &.{}, &.{});
+    const samples = output.renderChunk(64, 0, 256, &.{}, &.{});
 
     var nonzero: usize = 0;
     for (samples) |sample| {
@@ -439,7 +310,7 @@ test "ym dac state uses port 0 and queued samples stay audible" {
 
     const ym_write_count = z80.takeYmWrites(output.ym_write_buffer[0..]);
     try std.testing.expectEqual(@as(usize, 5), ym_write_count);
-    const samples = output.renderChunk(96, 0, output.ym_write_buffer[0..ym_write_count], &.{});
+    const samples = output.renderChunk(96, 96, 0, output.ym_write_buffer[0..ym_write_count], &.{});
 
     var nonzero: usize = 0;
     for (samples) |sample| {
@@ -461,14 +332,15 @@ test "fm high bank frequency uses port 1 a0 and a4" {
 }
 
 test "sonic boot synthesized audio chunk is nonzero" {
-    const Bus = @import("memory.zig").Bus;
-    const Cpu = @import("cpu/cpu.zig").Cpu;
-    const frame_scheduler = @import("frame_scheduler.zig");
+    const Bus = @import("../bus/bus.zig").Bus;
+    const Cpu = @import("../cpu/cpu.zig").Cpu;
+    const frame_scheduler = @import("../scheduler/frame_scheduler.zig");
 
     var bus = try Bus.init(std.testing.allocator, "roms/sn.smd");
     defer bus.deinit(std.testing.allocator);
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
     var m68k_sync = clock.M68kSync{};
 
     const visible_lines = clock.ntsc_visible_lines;
@@ -489,15 +361,15 @@ test "sonic boot synthesized audio chunk is nonzero" {
             const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
             const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
 
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, first_event_master_cycles);
+            frame_scheduler.runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, first_event_master_cycles);
             if (hblank_start_master_cycles == first_event_master_cycles) bus.vdp.setHBlank(true);
             if (hint_master_cycles == first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) cpu.requestInterrupt(4);
 
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, second_event_master_cycles - first_event_master_cycles);
+            frame_scheduler.runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, second_event_master_cycles - first_event_master_cycles);
             if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) bus.vdp.setHBlank(true);
             if (hint_master_cycles == second_event_master_cycles and hint_master_cycles != first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) cpu.requestInterrupt(4);
 
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
+            frame_scheduler.runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
             if (entering_vblank) bus.z80.clearIrq();
         }
@@ -512,6 +384,7 @@ test "sonic boot synthesized audio chunk is nonzero" {
         const ym_write_count = bus.z80.takeYmWrites(output.ym_write_buffer[0..]);
         const psg_command_count = bus.z80.takePsgCommands(output.psg_command_buffer[0..]);
         const max_frames_per_push = output.sample_chunk.len / AudioOutput.channels;
+        var remaining_ym_native = pending.fm_frames;
         var remaining_psg_native = pending.psg_frames;
         var remaining_out_frames = out_frames;
         var remaining_ym_writes = ym_write_count;
@@ -521,6 +394,10 @@ test "sonic boot synthesized audio chunk is nonzero" {
         while (out_frames > 0) {
             const chunk_frames: usize = @min(out_frames, max_frames_per_push);
             const chunk_out_frames: u32 = @intCast(chunk_frames);
+            const chunk_ym_native: u32 = if (remaining_out_frames == chunk_out_frames)
+                remaining_ym_native
+            else
+                @intCast((@as(u64, remaining_ym_native) * chunk_frames) / remaining_out_frames);
             const chunk_psg_native: u32 = if (remaining_out_frames == chunk_out_frames)
                 remaining_psg_native
             else
@@ -536,6 +413,7 @@ test "sonic boot synthesized audio chunk is nonzero" {
 
             const samples = output.renderChunk(
                 chunk_frames,
+                chunk_ym_native,
                 chunk_psg_native,
                 output.ym_write_buffer[ym_write_offset .. ym_write_offset + chunk_ym_writes],
                 output.psg_command_buffer[psg_command_offset .. psg_command_offset + chunk_psg_commands],
@@ -544,6 +422,7 @@ test "sonic boot synthesized audio chunk is nonzero" {
                 if (sample != 0) total_nonzero += 1;
             }
 
+            remaining_ym_native -= chunk_ym_native;
             remaining_psg_native -= chunk_psg_native;
             remaining_out_frames -= chunk_out_frames;
             remaining_ym_writes -= chunk_ym_writes;

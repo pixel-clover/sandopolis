@@ -24,7 +24,7 @@ Priorities, in order:
 
 Quick examples:
 
-- Good: add a VDP timing helper inside `src/vdp.zig` with module-local tests.
+- Good: add a VDP timing helper inside `src/video/vdp.zig` with module-local tests.
 - Good: add a regression ROM boot assertion in `tests/regression_tests.zig`.
 - Bad: move emulator core behavior into `src/main.zig`.
 - Bad: add a new debug-only behavior path without tests.
@@ -33,10 +33,13 @@ Quick examples:
 
 - `src/main.zig`: SDL frontend, event loop, rendering, audio device setup.
 - `src/api.zig`: API/doc entrypoint used for generated documentation.
-- `src/unit_tests.zig`: aggregate unit-test root that imports inline module tests.
-- `src/`: core emulator modules (`memory.zig`, `vdp.zig`, `io.zig`, `z80.zig`, `audio_*`, etc.).
-- `src/c/`: C bridge code for external CPU cores.
-- `src/cpu/`: 68K wrapper and CPU entrypoint.
+- `src/bus/`: cartridge loading/persistence, memory map, open-bus behavior, Z80 arbitration, and VDP/audio timing coordination.
+- `src/scheduler/`: frame/master-clock scheduling.
+- `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
+- `src/audio/`: audio output, PSG helpers, and audio timing.
+- `src/input/`: controller I/O and configurable input mapping.
+- `src/video/`: VDP and video timing/rendering logic.
+- `src/`: remaining core emulator modules (`machine.zig`, etc.).
 - `tests/`: non-unit suites only:
   - `integration_tests.zig`
   - `regression_tests.zig`
@@ -54,10 +57,10 @@ Quick examples:
 ## Architecture Constraints
 
 - `Bus` is the central coordination point for memory, timing, Z80 arbitration, VDP progression, and audio timing.
-- `frame_scheduler.runMasterSlice()` is the authoritative scheduler path for frame execution.
+- `scheduler/frame_scheduler.runMasterSlice()` is the authoritative scheduler path for frame execution.
 - Timing-sensitive changes must respect the interaction between:
   - `Bus.stepMaster()`
-  - `frame_scheduler.runMasterSlice()`
+  - `scheduler/frame_scheduler.runMasterSlice()`
   - `Cpu.stepInstruction()`
   - `Vdp.progressTransfers()`
 - Keep frontend concerns separate from emulation concerns.
@@ -88,7 +91,7 @@ Use this sequence for a new change:
    - `tests/` for integration/regression/property coverage
 4. Run `zig build test`.
 5. Run `zig build check`.
-6. Update docs (`README.md`, `ROADMAP.md`, `src/api.zig`-visible exports) if behavior or workflow changed.
+6. Update docs (`README.md`, `ROADMAP.md`, `src/api.zig` exports) if behavior or workflow changed.
 
 ## Testing Expectations
 

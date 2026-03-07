@@ -1,13 +1,16 @@
 const std = @import("std");
 const testing = std.testing;
 const clock = @import("../clock.zig");
-const Bus = @import("../memory.zig").Bus;
+const MemoryInterface = @import("memory_interface.zig").MemoryInterface;
+const runtime_state = @import("runtime_state.zig");
+const SchedulerCpu = @import("../scheduler/runtime.zig").SchedulerCpu;
+const SchedulerInstructionStep = @import("../scheduler/runtime.zig").InstructionStep;
 
 const c = @cImport({
     @cInclude("m68k.h");
 });
 
-var active_bus: ?*Bus = null;
+var active_memory: ?*MemoryInterface = null;
 var active_cpu: ?*Cpu = null;
 var fallback_memory = [_]u8{0} ** 8;
 
@@ -27,51 +30,51 @@ fn isVdpControlPortAddress(address: u32) bool {
 }
 
 fn cpuRead8(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
-    const bus = active_bus orelse return 0;
+    const memory = active_memory orelse return 0;
     const cpu = active_cpu orelse return 0;
-    cpu.noteBusAccessWait(bus, address, 1, false);
-    return @intCast(bus.read8(address));
+    cpu.noteBusAccessWait(memory, address, 1, false);
+    return @intCast(memory.read8(address));
 }
 
 fn cpuRead16(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u16 {
-    const bus = active_bus orelse return 0;
+    const memory = active_memory orelse return 0;
     const cpu = active_cpu orelse return 0;
-    cpu.noteBusAccessWait(bus, address, 2, false);
-    return @intCast(bus.read16(address));
+    cpu.noteBusAccessWait(memory, address, 2, false);
+    return @intCast(memory.read16(address));
 }
 
 fn cpuRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
-    const bus = active_bus orelse return 0;
+    const memory = active_memory orelse return 0;
     const cpu = active_cpu orelse return 0;
-    cpu.noteBusAccessWait(bus, address, 4, false);
-    return @intCast(bus.read32(address));
+    cpu.noteBusAccessWait(memory, address, 4, false);
+    return @intCast(memory.read32(address));
 }
 
 fn cpuWrite8(_: ?*c.M68kCpu, address: c.u32, value: c.u8) callconv(.c) void {
-    const bus = active_bus orelse return;
+    const memory = active_memory orelse return;
     const cpu = active_cpu orelse return;
-    cpu.noteBusAccessWait(bus, address, 1, true);
-    bus.write8(address, value);
+    cpu.noteBusAccessWait(memory, address, 1, true);
+    memory.write8(address, value);
 }
 
 fn cpuWrite16(_: ?*c.M68kCpu, address: c.u32, value: c.u16) callconv(.c) void {
-    const bus = active_bus orelse return;
+    const memory = active_memory orelse return;
     const cpu = active_cpu orelse return;
-    cpu.noteBusAccessWait(bus, address, 2, true);
-    bus.write16(address, value);
+    cpu.noteBusAccessWait(memory, address, 2, true);
+    memory.write16(address, value);
 }
 
 fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
-    const bus = active_bus orelse return;
+    const memory = active_memory orelse return;
     const cpu = active_cpu orelse return;
-    cpu.noteBusAccessWait(bus, address, 4, true);
+    cpu.noteBusAccessWait(memory, address, 4, true);
     if (isVdpDataPortAddress(address)) {
-        bus.write16(address, @intCast((value >> 16) & 0xFFFF));
-        bus.write16(address + 2, @intCast(value & 0xFFFF));
+        memory.write16(address, @intCast((value >> 16) & 0xFFFF));
+        memory.write16(address + 2, @intCast(value & 0xFFFF));
         return;
     }
 
-    bus.write32(address, value);
+    memory.write32(address, value);
 }
 
 fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
@@ -80,10 +83,6 @@ fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
     // every interrupt use vector 24 (spurious) instead of the correct one.
     // The level is cleared when the VDP status register is read.
     return -1;
-}
-
-pub fn getActiveCpu() ?*Cpu {
-    return active_cpu;
 }
 
 pub const Cpu = struct {
@@ -129,8 +128,20 @@ pub const Cpu = struct {
         return self;
     }
 
-    pub fn reset(self: *Cpu, bus: *Bus) void {
-        active_bus = bus;
+    fn currentOpcodeFromCpu(ctx: ?*anyopaque) u16 {
+        const self: *Cpu = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.core.ir;
+    }
+
+    fn clearInterruptFromCpu(ctx: ?*anyopaque) void {
+        const self: *Cpu = @ptrCast(@alignCast(ctx orelse return));
+        self.clearInterrupt();
+    }
+
+    pub fn reset(self: *Cpu, memory: *MemoryInterface) void {
+        active_memory = memory;
+        active_cpu = self;
+        runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
         c.m68k_reset(&self.core);
 
         // Some ROMs/test payloads leave vectors unset. Keep behavior deterministic by
@@ -147,6 +158,9 @@ pub const Cpu = struct {
         self.halted = self.core.stopped;
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
+        runtime_state.clearActive();
+        active_memory = null;
+        active_cpu = null;
     }
 
     fn addBusWaitMaster(self: *Cpu, master_cycles: u32) void {
@@ -158,45 +172,46 @@ pub const Cpu = struct {
         self.pending_wait_master_cycles += master_cycles;
     }
 
-    pub fn noteBusAccessWait(self: *Cpu, bus: *Bus, address: u32, size_bytes: u8, is_write: bool) void {
-        self.addBusWaitMaster(bus.m68kAccessWaitMasterCycles(address, size_bytes));
+    pub fn noteBusAccessWait(self: *Cpu, memory: *MemoryInterface, address: u32, size_bytes: u8, is_write: bool) void {
+        self.addBusWaitMaster(memory.m68kAccessWaitMasterCycles(address, size_bytes));
 
         if (!isVdpDataPortAddress(address)) {
             if (is_write and isVdpControlPortAddress(address)) {
-                self.addBusWaitMaster(bus.vdp.controlPortWriteWaitMasterCycles());
+                self.addBusWaitMaster(memory.controlPortWriteWaitMasterCycles());
             }
             return;
         }
 
         if (!is_write) {
             if (size_bytes >= 4) {
-                self.addBusWaitMaster(bus.vdp.dataPortReadWaitMasterCycles());
-                self.addBusWaitMaster(bus.vdp.dataPortReadWaitMasterCycles());
+                self.addBusWaitMaster(memory.dataPortReadWaitMasterCycles());
+                self.addBusWaitMaster(memory.dataPortReadWaitMasterCycles());
                 return;
             }
 
-            self.addBusWaitMaster(bus.vdp.dataPortReadWaitMasterCycles());
+            self.addBusWaitMaster(memory.dataPortReadWaitMasterCycles());
             return;
         }
 
         if (size_bytes >= 4) {
-            self.addBusWaitMaster(bus.vdp.reserveDataPortWriteWaitMasterCycles());
-            self.addBusWaitMaster(bus.vdp.reserveDataPortWriteWaitMasterCycles());
+            self.addBusWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
+            self.addBusWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
             return;
         }
 
-        self.addBusWaitMaster(bus.vdp.reserveDataPortWriteWaitMasterCycles());
+        self.addBusWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
     }
 
-    pub fn step(self: *Cpu, bus: *Bus) void {
-        _ = self.stepInstruction(bus);
+    pub fn step(self: *Cpu, memory: *MemoryInterface) void {
+        _ = self.stepInstruction(memory);
     }
 
-    pub fn stepInstruction(self: *Cpu, bus: *Bus) InstructionStep {
+    pub fn stepInstruction(self: *Cpu, memory: *MemoryInterface) InstructionStep {
         _ = trace_enabled;
 
-        active_bus = bus;
+        active_memory = memory;
         active_cpu = self;
+        runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
         self.core.target_cycles = 0;
@@ -210,6 +225,9 @@ pub const Cpu = struct {
         self.core.cycles_remaining = 0;
         self.cycles += ran_cycles;
         self.halted = self.core.stopped;
+        runtime_state.clearActive();
+        active_memory = null;
+        active_cpu = null;
 
         return .{
             .m68k_cycles = ran_cycles,
@@ -217,16 +235,39 @@ pub const Cpu = struct {
         };
     }
 
-    pub fn runCycles(self: *Cpu, bus: *Bus, budget: u32) u32 {
+    pub fn runCycles(self: *Cpu, memory: *MemoryInterface, budget: u32) u32 {
         if (budget == 0) return 0;
 
-        active_bus = bus;
+        active_memory = memory;
         active_cpu = self;
+        runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
         const ran = c.m68k_execute(&self.core, @intCast(budget));
         const consumed: u32 = if (ran > 0) @intCast(ran) else 0;
         self.cycles += consumed;
         self.halted = self.core.stopped;
+        runtime_state.clearActive();
+        active_memory = null;
+        active_cpu = null;
         return consumed;
+    }
+
+    fn schedulerStepInstruction(ctx: ?*anyopaque, memory: *MemoryInterface) SchedulerInstructionStep {
+        const self: *Cpu = @ptrCast(@alignCast(ctx orelse unreachable));
+        const instruction = self.stepInstruction(memory);
+        return .{
+            .m68k_cycles = instruction.m68k_cycles,
+            .wait = .{
+                .m68k_cycles = instruction.wait.m68k_cycles,
+                .master_cycles = instruction.wait.master_cycles,
+            },
+        };
+    }
+
+    pub fn schedulerRuntime(self: *Cpu) SchedulerCpu {
+        return .{
+            .ctx = self,
+            .step_instruction_fn = schedulerStepInstruction,
+        };
     }
 
     pub fn takeWaitAccounting(self: *Cpu) WaitAccounting {
@@ -268,6 +309,8 @@ pub const Cpu = struct {
     }
 };
 
+const Bus = @import("../bus/bus.zig").Bus;
+
 test "cpu data-port writes accrue vdp fifo wait accounting" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
@@ -302,9 +345,10 @@ test "cpu data-port writes accrue vdp fifo wait accounting" {
     try testing.expectEqual(@as(u32, 24), bus.vdp.dataPortWriteWaitMasterCycles());
 
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
-    const ran = cpu.runCycles(&bus, 64);
+    const ran = cpu.runCycles(&memory, 64);
     try testing.expect(ran != 0);
 
     const wait = cpu.takeWaitAccounting();
@@ -318,14 +362,15 @@ test "cpu data-port reads accrue vdp fifo drain wait accounting" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
     bus.vdp.regs[15] = 2;
     bus.vdp.code = 0x1;
     bus.vdp.addr = 0x0000;
     bus.vdp.writeData(0xABCD);
 
-    cpu.noteBusAccessWait(&bus, 0x00C0_0000, 2, false);
+    cpu.noteBusAccessWait(&memory, 0x00C0_0000, 2, false);
     const wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 4), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 24), wait.master_cycles);
@@ -335,28 +380,29 @@ test "cpu z80-window accesses accrue wait accounting only when bus is granted" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
-    cpu.noteBusAccessWait(&bus, 0x00A0_4000, 1, false);
+    cpu.noteBusAccessWait(&memory, 0x00A0_4000, 1, false);
     var wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 0), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 0), wait.master_cycles);
 
     bus.write16(0x00A1_1100, 0x0100); // Request/grant Z80 bus
 
-    cpu.noteBusAccessWait(&bus, 0x00A0_4000, 1, false);
+    cpu.noteBusAccessWait(&memory, 0x00A0_4000, 1, false);
     wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 1), wait.m68k_cycles);
     try testing.expectEqual(clock.m68kCyclesToMaster(1), wait.master_cycles);
 
-    cpu.noteBusAccessWait(&bus, 0x00A0_8000, 4, false);
+    cpu.noteBusAccessWait(&memory, 0x00A0_8000, 4, false);
     wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 2), wait.m68k_cycles);
     try testing.expectEqual(clock.m68kCyclesToMaster(2), wait.master_cycles);
 
     bus.write16(0x00A1_1200, 0x0000); // Assert reset, revoking grant
 
-    cpu.noteBusAccessWait(&bus, 0x00A0_4000, 1, false);
+    cpu.noteBusAccessWait(&memory, 0x00A0_4000, 1, false);
     wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 0), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 0), wait.master_cycles);
@@ -366,7 +412,8 @@ test "cpu control-port writes wait for pending post-dma replay delay" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
     bus.vdp.regs[15] = 2;
     bus.vdp.code = 0x1;
@@ -381,12 +428,12 @@ test "cpu control-port writes wait for pending post-dma replay delay" {
     bus.vdp.writeControl(0x0002);
     bus.vdp.progressTransfers(24, null, cpuTestDmaReadWord);
 
-    cpu.noteBusAccessWait(&bus, 0x00C0_0004, 2, true);
+    cpu.noteBusAccessWait(&memory, 0x00C0_0004, 2, true);
     var wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 8), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 50), wait.master_cycles);
 
-    cpu.noteBusAccessWait(&bus, 0x00C0_0004, 4, true);
+    cpu.noteBusAccessWait(&memory, 0x00C0_0004, 4, true);
     wait = cpu.takeWaitAccounting();
     try testing.expectEqual(@as(u32, 8), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 50), wait.master_cycles);

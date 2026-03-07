@@ -1,9 +1,9 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
-const frame_scheduler = @import("frame_scheduler.zig");
-const AudioOutput = @import("audio_output.zig").AudioOutput;
-const InputBindings = @import("input_mapping.zig");
+const AudioOutput = @import("audio/output.zig").AudioOutput;
+const InputBindings = @import("input/mapping.zig");
+const Machine = @import("machine.zig").Machine;
 
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
@@ -248,15 +248,16 @@ pub fn main() !void {
         std.debug.print("Loaded input config: {s}\n", .{path});
     }
 
-    var bus = try @import("memory.zig").Bus.init(allocator, rom_path);
+    var machine = try Machine.init(allocator, rom_path);
     defer {
-        bus.flushPersistentStorage() catch |err| {
+        machine.flushPersistentStorage() catch |err| {
             std.debug.print("Failed to flush persistent SRAM: {s}\n", .{@errorName(err)});
         };
-        bus.deinit(allocator);
+        machine.deinit(allocator);
     }
+    const bus = &machine.bus;
 
-    var cpu = @import("cpu/cpu.zig").Cpu.init();
+    const cpu = &machine.cpu;
 
     // -- Setup Test Environment (Dummy ROM for Tile Rendering) --
     if (rom_path == null) {
@@ -527,11 +528,9 @@ pub fn main() !void {
         std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{ ssp, pc });
     }
 
-    cpu.reset(&bus);
+    machine.reset();
     std.debug.print("CPU Reset complete.\n", .{});
     cpu.debugDump();
-
-    var m68k_sync = clock.M68kSync{};
     const target_frame_ns: u64 = 1_000_000_000 / 60;
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = 240;
@@ -561,7 +560,7 @@ pub fn main() !void {
                         if (pressed) {
                             switch (input_bindings.hotkeyForKeyboard(mapped_key) orelse continue) {
                                 .step => {
-                                    frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.m68k_divider);
+                                    machine.runMasterSlice(clock.m68k_divider);
                                     cpu.debugDump();
                                 },
                                 .quit => break :mainLoop,
@@ -593,7 +592,7 @@ pub fn main() !void {
             const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
             const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
 
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, first_event_master_cycles);
+            machine.runMasterSlice(first_event_master_cycles);
 
             if (hblank_start_master_cycles == first_event_master_cycles) {
                 bus.vdp.setHBlank(true);
@@ -602,7 +601,7 @@ pub fn main() !void {
                 cpu.requestInterrupt(4);
             }
 
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, second_event_master_cycles - first_event_master_cycles);
+            machine.runMasterSlice(second_event_master_cycles - first_event_master_cycles);
 
             if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) {
                 bus.vdp.setHBlank(true);
@@ -611,7 +610,7 @@ pub fn main() !void {
                 cpu.requestInterrupt(4);
             }
 
-            frame_scheduler.runMasterSlice(&bus, &cpu, &m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
+            machine.runMasterSlice(clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
             if (entering_vblank) {
                 bus.z80.clearIrq();

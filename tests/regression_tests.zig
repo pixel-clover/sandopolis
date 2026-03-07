@@ -2,7 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const sandopolis = @import("sandopolis_src");
 const clock = sandopolis.clock;
-const frame_scheduler = sandopolis.frame_scheduler;
+const scheduler = sandopolis.scheduler;
 const Bus = sandopolis.Bus;
 const Cpu = sandopolis.Cpu;
 
@@ -28,7 +28,7 @@ fn runEmulatedFrames(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, frames: u
             const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
             const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
 
-            frame_scheduler.runMasterSlice(bus, cpu, m68k_sync, first_event_master_cycles);
+            scheduler.runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), m68k_sync, first_event_master_cycles);
 
             if (hblank_start_master_cycles == first_event_master_cycles) {
                 bus.vdp.setHBlank(true);
@@ -37,7 +37,7 @@ fn runEmulatedFrames(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, frames: u
                 cpu.requestInterrupt(4);
             }
 
-            frame_scheduler.runMasterSlice(bus, cpu, m68k_sync, second_event_master_cycles - first_event_master_cycles);
+            scheduler.runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), m68k_sync, second_event_master_cycles - first_event_master_cycles);
 
             if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) {
                 bus.vdp.setHBlank(true);
@@ -46,7 +46,7 @@ fn runEmulatedFrames(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, frames: u
                 cpu.requestInterrupt(4);
             }
 
-            frame_scheduler.runMasterSlice(bus, cpu, m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
+            scheduler.runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
             if (entering_vblank) {
                 bus.z80.clearIrq();
@@ -90,7 +90,8 @@ test "sonic rom advances startup state across frames" {
     var bus = try Bus.init(testing.allocator, "roms/sn.smd");
     defer bus.deinit(testing.allocator);
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
     var m68k_sync = clock.M68kSync{};
     runEmulatedFrames(&bus, &cpu, &m68k_sync, 12);
@@ -103,7 +104,8 @@ test "sonic rom reaches non-uniform visible output" {
     var bus = try Bus.init(testing.allocator, "roms/sn.smd");
     defer bus.deinit(testing.allocator);
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
     var m68k_sync = clock.M68kSync{};
     runEmulatedFrames(&bus, &cpu, &m68k_sync, 90);
@@ -126,7 +128,8 @@ test "sonic rom initializes audio shadow state" {
     var bus = try Bus.init(testing.allocator, "roms/sn.smd");
     defer bus.deinit(testing.allocator);
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
     var m68k_sync = clock.M68kSync{};
     runEmulatedFrames(&bus, &cpu, &m68k_sync, 180);

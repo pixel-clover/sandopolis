@@ -28,7 +28,7 @@ fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDe
         .flags = &.{"-std=c11"},
     });
     step.addCSourceFiles(.{
-        .files = &.{"src/c/jgz80_bridge.c"},
+        .files = &.{"src/cpu/jgz80_bridge.c"},
         .flags = &.{"-std=c11"},
     });
     step.linkLibC();
@@ -38,11 +38,11 @@ fn addCpuIncludePaths(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDep
     step.addIncludePath(deps.rocket68.path("include"));
     step.addIncludePath(deps.rocket68.path("src/m68k"));
     step.addIncludePath(deps.jgz80.path("."));
-    step.addIncludePath(b.path("src/c"));
+    step.addIncludePath(b.path("src/cpu"));
     step.root_module.addIncludePath(deps.rocket68.path("include"));
     step.root_module.addIncludePath(deps.rocket68.path("src/m68k"));
     step.root_module.addIncludePath(deps.jgz80.path("."));
-    step.root_module.addIncludePath(b.path("src/c"));
+    step.root_module.addIncludePath(b.path("src/cpu"));
 }
 
 pub fn build(b: *std.Build) void {
@@ -50,19 +50,20 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const zsdl = b.dependency("zsdl", .{});
+    const minish = b.dependency("minish", .{});
     const cpu_deps: CpuDeps = .{
         .rocket68 = b.dependency("rocket68", .{}),
         .jgz80 = b.dependency("jgz80", .{}),
     };
-    const sandopolis_test_exports = b.createModule(.{
-        .root_source_file = b.path("src/test_exports.zig"),
+    const sandopolis_api = b.createModule(.{
+        .root_source_file = b.path("src/api.zig"),
         .target = target,
         .optimize = optimize,
     });
-    sandopolis_test_exports.addIncludePath(cpu_deps.rocket68.path("include"));
-    sandopolis_test_exports.addIncludePath(cpu_deps.rocket68.path("src/m68k"));
-    sandopolis_test_exports.addIncludePath(cpu_deps.jgz80.path("."));
-    sandopolis_test_exports.addIncludePath(b.path("src/c"));
+    sandopolis_api.addIncludePath(cpu_deps.rocket68.path("include"));
+    sandopolis_api.addIncludePath(cpu_deps.rocket68.path("src/m68k"));
+    sandopolis_api.addIncludePath(cpu_deps.jgz80.path("."));
+    sandopolis_api.addIncludePath(b.path("src/cpu"));
 
     // Create the executable
     const exe = b.addExecutable(.{
@@ -143,7 +144,7 @@ pub fn build(b: *std.Build) void {
 
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/unit_tests.zig"),
+            .root_source_file = b.path("src/api.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -163,7 +164,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "sandopolis_src", .module = sandopolis_test_exports },
+                .{ .name = "sandopolis_src", .module = sandopolis_api },
             },
         }),
     });
@@ -179,7 +180,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "sandopolis_src", .module = sandopolis_test_exports },
+                .{ .name = "sandopolis_src", .module = sandopolis_api },
             },
         }),
     });
@@ -194,8 +195,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/property_tests.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_src", .module = sandopolis_api },
+                .{ .name = "minish", .module = minish.module("minish") },
+            },
         }),
     });
+    addExternalCpuCores(property_tests, b, cpu_deps);
     const property_run = b.addRunArtifact(property_tests);
     const property_step = b.step("test-property", "Run property-based tests");
     property_step.dependOn(&property_run.step);

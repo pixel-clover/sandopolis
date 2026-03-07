@@ -12,7 +12,8 @@ test "cpu reset applies fallback vectors when ROM vectors are invalid" {
     std.mem.writeInt(u32, bus.rom[4..8], 0x0000_0200, .big);
 
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
 
     try testing.expectEqual(@as(u32, 0x00FF_FE00), @as(u32, cpu.core.a_regs[7].l));
     try testing.expectEqual(@as(u32, 0x0000_0200), @as(u32, cpu.core.pc));

@@ -1,18 +1,18 @@
 const std = @import("std");
 const testing = std.testing;
-const clock = @import("clock.zig");
-const Bus = @import("memory.zig").Bus;
-const Cpu = @import("cpu/cpu.zig").Cpu;
+const clock = @import("../clock.zig");
+const SchedulerBus = @import("runtime.zig").SchedulerBus;
+const SchedulerCpu = @import("runtime.zig").SchedulerCpu;
 
 pub const idle_master_quantum: u32 = 56;
 pub const halt_master_quantum: u32 = 8;
 
-pub fn runMasterSlice(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, total_master_cycles: u32) void {
+pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M68kSync, total_master_cycles: u32) void {
     var remaining = total_master_cycles;
     remaining -= m68k_sync.consumeDebt(remaining);
 
     while (remaining > 0) {
-        const vdp_halts_cpu = bus.vdp.shouldHaltCpu();
+        const vdp_halts_cpu = bus.shouldHaltM68k();
 
         if (bus.pendingM68kWaitMasterCycles() != 0) {
             const stalled_master = bus.consumeM68kWaitMasterCycles(remaining);
@@ -34,7 +34,8 @@ pub fn runMasterSlice(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, total_ma
             continue;
         }
 
-        const step = cpu.stepInstruction(bus);
+        var memory = bus.cpuMemory();
+        const step = cpu.stepInstruction(&memory);
         const stepped_master = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles;
         if (stepped_master == 0) {
             const quantum = @min(remaining, idle_master_quantum);
@@ -54,6 +55,8 @@ pub fn runMasterSlice(bus: *Bus, cpu: *Cpu, m68k_sync: *clock.M68kSync, total_ma
 }
 
 test "frame scheduler stalls cpu while vdp dma owns the bus" {
+    const Bus = @import("../bus/bus.zig").Bus;
+    const Cpu = @import("../cpu/cpu.zig").Cpu;
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -64,7 +67,8 @@ test "frame scheduler stalls cpu while vdp dma owns the bus" {
     bus.write16(0x00E0_0000, 0xABCD);
 
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
     var m68k_sync = clock.M68kSync{};
 
     const pc_before = @as(u32, cpu.core.pc);
@@ -79,7 +83,7 @@ test "frame scheduler stalls cpu while vdp dma owns the bus" {
     bus.vdp.dma_length = 1;
     bus.vdp.dma_remaining = 1;
 
-    runMasterSlice(&bus, &cpu, &m68k_sync, 8);
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, 8);
 
     try testing.expectEqual(pc_before, @as(u32, cpu.core.pc));
     try testing.expect(bus.vdp.dma_active);
@@ -87,6 +91,8 @@ test "frame scheduler stalls cpu while vdp dma owns the bus" {
 }
 
 test "frame scheduler does not stall cpu for pending vdp fifo writes" {
+    const Bus = @import("../bus/bus.zig").Bus;
+    const Cpu = @import("../cpu/cpu.zig").Cpu;
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -109,16 +115,19 @@ test "frame scheduler does not stall cpu for pending vdp fifo writes" {
     try testing.expect(!bus.vdp.shouldHaltCpu());
 
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
     var m68k_sync = clock.M68kSync{};
 
     const pc_before = @as(u32, cpu.core.pc);
-    runMasterSlice(&bus, &cpu, &m68k_sync, 56);
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, 56);
 
     try testing.expect(@as(u32, cpu.core.pc) != pc_before);
 }
 
 test "frame scheduler consumes pending z80-induced m68k wait before running cpu" {
+    const Bus = @import("../bus/bus.zig").Bus;
+    const Cpu = @import("../cpu/cpu.zig").Cpu;
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -130,25 +139,28 @@ test "frame scheduler consumes pending z80-induced m68k wait before running cpu"
     bus.rom[0x0203] = 0x71;
 
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
     var m68k_sync = clock.M68kSync{};
 
     bus.m68k_wait_master_cycles = clock.m68kCyclesToMaster(11);
 
     const pc_before = @as(u32, cpu.core.pc);
-    runMasterSlice(&bus, &cpu, &m68k_sync, 56);
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, 56);
     try testing.expectEqual(pc_before, @as(u32, cpu.core.pc));
     try testing.expectEqual(clock.m68kCyclesToMaster(3), bus.pendingM68kWaitMasterCycles());
 
-    runMasterSlice(&bus, &cpu, &m68k_sync, clock.m68kCyclesToMaster(3));
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, clock.m68kCyclesToMaster(3));
     try testing.expectEqual(pc_before, @as(u32, cpu.core.pc));
     try testing.expectEqual(@as(u32, 0), bus.pendingM68kWaitMasterCycles());
 
-    runMasterSlice(&bus, &cpu, &m68k_sync, 56);
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, 56);
     try testing.expect(@as(u32, cpu.core.pc) != pc_before);
 }
 
 test "frame scheduler interleaves z80 contention within a master slice" {
+    const Bus = @import("../bus/bus.zig").Bus;
+    const Cpu = @import("../cpu/cpu.zig").Cpu;
     var base_bus = try Bus.init(testing.allocator, null);
     defer base_bus.deinit(testing.allocator);
 
@@ -160,9 +172,10 @@ test "frame scheduler interleaves z80 contention within a master slice" {
     }
 
     var base_cpu = Cpu.init();
-    base_cpu.reset(&base_bus);
+    var base_memory = base_bus.cpuMemory();
+    base_cpu.reset(&base_memory);
     var base_sync = clock.M68kSync{};
-    runMasterSlice(&base_bus, &base_cpu, &base_sync, 224);
+    runMasterSlice(base_bus.schedulerRuntime(), base_cpu.schedulerRuntime(), &base_sync, 224);
 
     var contended_bus = try Bus.init(testing.allocator, null);
     defer contended_bus.deinit(testing.allocator);
@@ -178,10 +191,11 @@ test "frame scheduler interleaves z80 contention within a master slice" {
     contended_bus.rom[0x0000] = 0x12;
 
     var contended_cpu = Cpu.init();
-    contended_cpu.reset(&contended_bus);
+    var contended_memory = contended_bus.cpuMemory();
+    contended_cpu.reset(&contended_memory);
     var contended_sync = clock.M68kSync{};
 
-    runMasterSlice(&contended_bus, &contended_cpu, &contended_sync, 224);
+    runMasterSlice(contended_bus.schedulerRuntime(), contended_cpu.schedulerRuntime(), &contended_sync, 224);
 
     try testing.expect(@as(u32, contended_cpu.core.pc) < @as(u32, base_cpu.core.pc));
     try testing.expect(@as(u32, contended_cpu.core.pc) > 0x0200);
@@ -189,6 +203,8 @@ test "frame scheduler interleaves z80 contention within a master slice" {
 }
 
 test "frame scheduler carries instruction overshoot between slices" {
+    const Bus = @import("../bus/bus.zig").Bus;
+    const Cpu = @import("../cpu/cpu.zig").Cpu;
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -200,18 +216,19 @@ test "frame scheduler carries instruction overshoot between slices" {
     bus.rom[0x0203] = 0x71;
 
     var cpu = Cpu.init();
-    cpu.reset(&bus);
+    var memory = bus.cpuMemory();
+    cpu.reset(&memory);
     var m68k_sync = clock.M68kSync{};
 
-    runMasterSlice(&bus, &cpu, &m68k_sync, 7);
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, 7);
     try testing.expectEqual(@as(u32, 0x0202), @as(u32, cpu.core.pc));
     try testing.expectEqual(@as(u32, 21), m68k_sync.debt_master_cycles);
 
-    runMasterSlice(&bus, &cpu, &m68k_sync, 21);
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, 21);
     try testing.expectEqual(@as(u32, 0x0202), @as(u32, cpu.core.pc));
     try testing.expectEqual(@as(u32, 0), m68k_sync.debt_master_cycles);
 
-    runMasterSlice(&bus, &cpu, &m68k_sync, 7);
+    runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), &m68k_sync, 7);
     try testing.expectEqual(@as(u32, 0x0204), @as(u32, cpu.core.pc));
     try testing.expectEqual(@as(u32, 21), m68k_sync.debt_master_cycles);
 }

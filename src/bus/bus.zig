@@ -1,233 +1,25 @@
 const std = @import("std");
 const testing = std.testing;
-const clock = @import("clock.zig");
-const AudioTiming = @import("audio_timing.zig").AudioTiming;
-const Vdp = @import("vdp.zig").Vdp;
-const Io = @import("io.zig").Io;
-const Z80 = @import("z80.zig").Z80;
-const rocket68 = @import("cpu/rocket68_cpu.zig");
-
-fn looksLikeGenesis(rom: []const u8) bool {
-    if (rom.len < 0x104) return false;
-    return std.mem.eql(u8, rom[0x100..0x104], "SEGA");
-}
-
-fn deinterleaveSmdPayload(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
-    const block_size: usize = 16 * 1024;
-    if (payload.len % block_size != 0) return error.InvalidSmd;
-
-    var out = try allocator.alloc(u8, payload.len);
-    var i: usize = 0;
-    while (i < payload.len) : (i += block_size) {
-        const block = payload[i .. i + block_size];
-        var j: usize = 0;
-        while (j < block_size / 2) : (j += 1) {
-            out[i + j * 2] = block[j];
-            out[i + j * 2 + 1] = block[j + (block_size / 2)];
-        }
-    }
-
-    return out;
-}
-
-const CartridgeRamType = enum {
-    none,
-    sixteen_bit,
-    eight_bit_even,
-    eight_bit_odd,
-};
-
-const sonic_and_knuckles_serial = "GM MK-1563 ";
-const force_8kb_sram_checksums = [_]u32{
-    0x8135702C, // NHL 96 (USA, Europe)
-    0xF509145F, // Might and Magic: Gates to Another World (USA, Europe)
-    0x6EF7104A, // Might and Magic III: Isles of Terra (USA) (Proto)
-    0x2491DF2F, // NBA Action '94 (USA) (Beta) (1994-01-04)
-};
-const force_32kb_sram_checksums = [_]u32{
-    0xA4F2F011, // Al Michaels Announces HardBall III (USA, Europe)
-};
-const forced_sram_start_address: u32 = 0x200001;
-
-const CartridgeRam = struct {
-    data: ?[]u8,
-    ram_type: CartridgeRamType,
-    persistent: bool,
-    dirty: bool,
-    mapped: bool,
-    start_address: u32,
-    end_address: u32,
-
-    fn initEmpty() CartridgeRam {
-        return .{
-            .data = null,
-            .ram_type = .none,
-            .persistent = false,
-            .dirty = false,
-            .mapped = false,
-            .start_address = 0,
-            .end_address = 0,
-        };
-    }
-
-    fn initForced(allocator: std.mem.Allocator, rom_len: usize, ram_len: usize) !CartridgeRam {
-        const data = try allocator.alloc(u8, ram_len);
-        @memset(data, 0);
-
-        return .{
-            .data = data,
-            .ram_type = .eight_bit_odd,
-            .persistent = true,
-            .dirty = false,
-            .mapped = forced_sram_start_address >= rom_len,
-            .start_address = forced_sram_start_address,
-            .end_address = forced_sram_start_address + @as(u32, @intCast((ram_len - 1) * 2)),
-        };
-    }
-
-    fn initFromRomHeader(allocator: std.mem.Allocator, rom: []const u8, checksum: u32) !CartridgeRam {
-        if (std.mem.indexOfScalar(u32, &force_8kb_sram_checksums, checksum) != null) {
-            return initForced(allocator, rom.len, 8 * 1024);
-        }
-
-        if (std.mem.indexOfScalar(u32, &force_32kb_sram_checksums, checksum) != null) {
-            return initForced(allocator, rom.len, 32 * 1024);
-        }
-
-        var header_rom = rom;
-        if (rom.len > 2 * 1024 * 1024 and
-            rom.len >= 0x18B and
-            std.mem.eql(u8, rom[0x180..0x18B], sonic_and_knuckles_serial))
-        {
-            const lock_on_rom = rom[2 * 1024 * 1024 ..];
-            if (lock_on_rom.len >= 0x1BC) {
-                header_rom = lock_on_rom;
-            }
-        }
-
-        if (header_rom.len < 0x1BC) return initEmpty();
-
-        const header = header_rom[0x1B0..0x1BC];
-        if (!(header[0] == 'R' and header[1] == 'A' and header[3] == 0x20)) {
-            return initEmpty();
-        }
-
-        const ram_type: CartridgeRamType = switch (header[2]) {
-            0xA0, 0xE0 => .sixteen_bit,
-            0xB0, 0xF0 => .eight_bit_even,
-            0xB8, 0xF8 => .eight_bit_odd,
-            else => return initEmpty(),
-        };
-        const persistent = (header[2] & 0x40) != 0;
-        const start_address = std.mem.readInt(u32, header[4..8], .big);
-        const end_address = std.mem.readInt(u32, header[8..12], .big);
-        if (start_address > end_address) return initEmpty();
-
-        const ram_len_u32: u32 = switch (ram_type) {
-            .none => 0,
-            .sixteen_bit => end_address - start_address + 1,
-            .eight_bit_even, .eight_bit_odd => ((end_address - start_address) / 2) + 1,
-        };
-        if (ram_len_u32 == 0) return initEmpty();
-
-        const ram_len: usize = @intCast(ram_len_u32);
-        const data = try allocator.alloc(u8, ram_len);
-        @memset(data, 0);
-
-        return .{
-            .data = data,
-            .ram_type = ram_type,
-            .persistent = persistent,
-            .dirty = false,
-            .mapped = start_address >= rom.len,
-            .start_address = start_address,
-            .end_address = end_address,
-        };
-    }
-
-    fn deinit(self: *CartridgeRam, allocator: std.mem.Allocator) void {
-        if (self.data) |data| allocator.free(data);
-        self.* = initEmpty();
-    }
-
-    fn hasStorage(self: *const CartridgeRam) bool {
-        return self.data != null;
-    }
-
-    fn clearDirty(self: *CartridgeRam) void {
-        self.dirty = false;
-    }
-
-    fn setMapped(self: *CartridgeRam, mapped: bool) void {
-        if (!self.hasStorage()) return;
-        self.mapped = mapped;
-    }
-
-    fn mapIndex(self: *const CartridgeRam, address: u32) ?usize {
-        const data = self.data orelse return null;
-        if (!self.mapped) return null;
-        if (address < self.start_address or address > self.end_address) return null;
-
-        const index_u32: u32 = switch (self.ram_type) {
-            .none => return null,
-            .sixteen_bit => address - self.start_address,
-            .eight_bit_even, .eight_bit_odd => blk: {
-                if ((address & 1) != (self.start_address & 1)) return null;
-                break :blk (address - self.start_address) / 2;
-            },
-        };
-
-        const index: usize = @intCast(index_u32);
-        if (index >= data.len) return null;
-        return index;
-    }
-
-    fn readByte(self: *const CartridgeRam, address: u32) ?u8 {
-        const data = self.data orelse return null;
-        const index = self.mapIndex(address) orelse return null;
-        return data[index];
-    }
-
-    fn writeByte(self: *CartridgeRam, address: u32, value: u8) bool {
-        const data = self.data orelse return false;
-        const index = self.mapIndex(address) orelse return false;
-        data[index] = value;
-        self.dirty = true;
-        return true;
-    }
-
-    fn readWord(self: *const CartridgeRam, address: u32) ?u16 {
-        const msb = self.readByte(address);
-        const lsb = self.readByte(address + 1);
-        if (msb) |high| {
-            if (lsb) |low| {
-                return (@as(u16, high) << 8) | low;
-            }
-            return (@as(u16, high) << 8) | high;
-        }
-        if (lsb) |low| {
-            return (@as(u16, low) << 8) | low;
-        }
-        return null;
-    }
-
-    fn writeWord(self: *CartridgeRam, address: u32, value: u16) bool {
-        const msb = @as(u8, @truncate((value >> 8) & 0xFF));
-        const lsb = @as(u8, @truncate(value & 0xFF));
-        const wrote_high = self.writeByte(address, msb);
-        const wrote_low = self.writeByte(address + 1, lsb);
-        return wrote_high or wrote_low;
-    }
-};
+const Cartridge = @import("cartridge.zig").Cartridge;
+const io_window = @import("io_window.zig");
+const vdp_ports = @import("vdp_ports.zig");
+const z80_host_bridge = @import("z80_host_bridge.zig");
+const clock = @import("../clock.zig");
+const AudioTiming = @import("../audio/timing.zig").AudioTiming;
+const Vdp = @import("../video/vdp.zig").Vdp;
+const Io = @import("../input/io.zig").Io;
+const Z80 = @import("../cpu/z80.zig").Z80;
+const MemoryInterface = @import("../cpu/memory_interface.zig").MemoryInterface;
+const SchedulerBus = @import("../scheduler/runtime.zig").SchedulerBus;
 
 pub const Bus = struct {
     rom: []u8,
-    cartridge_ram: CartridgeRam,
-    save_path: ?[]u8,
+    cartridge: Cartridge,
     ram: [64 * 1024]u8, // 64KB Work RAM
     vdp: Vdp,
     io: Io,
     z80: Z80,
+    z80_host_bridge: z80_host_bridge.HostBridge,
     audio_timing: AudioTiming,
     io_master_remainder: u8,
     z80_master_credit: i64,
@@ -235,29 +27,15 @@ pub const Bus = struct {
     z80_odd_access: bool,
     m68k_wait_master_cycles: u32,
     open_bus: u16,
-
-    fn readRomByte(self: *const Bus, address: u32) u8 {
-        if (self.rom.len == 0) return 0;
-        const rom_len_u32: u32 = @intCast(self.rom.len);
-        if (address >= rom_len_u32) return 0; // open bus — prevents lock-on misdetection
-        return self.rom[@intCast(address)];
-    }
-
-    fn initWithRomData(
-        allocator: std.mem.Allocator,
-        rom_data: []u8,
-        rom_path: ?[]const u8,
-        checksum_override: ?u32,
-    ) !Bus {
-        const checksum = checksum_override orelse std.hash.Crc32.hash(rom_data);
-        var bus = Bus{
-            .rom = rom_data,
-            .cartridge_ram = try CartridgeRam.initFromRomHeader(allocator, rom_data, checksum),
-            .save_path = null,
+    fn initWithCartridge(cartridge: Cartridge) Bus {
+        const bus = Bus{
+            .rom = cartridge.rom,
+            .cartridge = cartridge,
             .ram = [_]u8{0} ** (64 * 1024),
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),
+            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte),
             .audio_timing = .{},
             .io_master_remainder = 0,
             .z80_master_credit = 0,
@@ -266,81 +44,27 @@ pub const Bus = struct {
             .m68k_wait_master_cycles = 0,
             .open_bus = 0,
         };
-
-        if (bus.cartridge_ram.persistent and bus.cartridge_ram.hasStorage() and rom_path != null) {
-            bus.save_path = try savePathForRom(allocator, rom_path.?);
-            try bus.loadPersistentStorage();
-        }
-
         return bus;
     }
 
-    fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
-        const extension = std.fs.path.extension(rom_path);
-        if (extension.len == 0) {
-            return std.fmt.allocPrint(allocator, "{s}.sav", .{rom_path});
-        }
-
-        return std.fmt.allocPrint(allocator, "{s}.sav", .{rom_path[0 .. rom_path.len - extension.len]});
-    }
-
-    fn writeCartridgeRegisterByte(self: *Bus, address: u32, value: u8) bool {
-        if (address == 0xA130F1) {
-            self.cartridge_ram.setMapped((value & 1) != 0);
-            return true;
-        }
-        return false;
-    }
-
-    fn writeCartridgeRegisterWord(self: *Bus, address: u32, value: u16) bool {
-        const register_address = address | 1;
-        return self.writeCartridgeRegisterByte(register_address, @truncate(value));
-    }
-
     pub fn hasCartridgeRam(self: *const Bus) bool {
-        return self.cartridge_ram.hasStorage();
+        return self.cartridge.hasRam();
     }
 
     pub fn isCartridgeRamMapped(self: *const Bus) bool {
-        return self.cartridge_ram.mapped;
+        return self.cartridge.isRamMapped();
     }
 
     pub fn isCartridgeRamPersistent(self: *const Bus) bool {
-        return self.cartridge_ram.persistent;
+        return self.cartridge.isRamPersistent();
     }
 
     pub fn persistentSavePath(self: *const Bus) ?[]const u8 {
-        return self.save_path;
-    }
-
-    fn loadPersistentStorage(self: *Bus) !void {
-        const save_path = self.save_path orelse return;
-        if (!self.cartridge_ram.persistent) return;
-        if (!self.cartridge_ram.hasStorage()) return;
-
-        const file = std.fs.cwd().openFile(save_path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return,
-            else => return err,
-        };
-        defer file.close();
-
-        const data = self.cartridge_ram.data.?;
-        const bytes_read = try file.readAll(data);
-        if (bytes_read < data.len) {
-            @memset(data[bytes_read..], 0);
-        }
-        self.cartridge_ram.clearDirty();
+        return self.cartridge.persistentSavePath();
     }
 
     pub fn flushPersistentStorage(self: *Bus) !void {
-        const save_path = self.save_path orelse return;
-        if (!self.cartridge_ram.persistent or !self.cartridge_ram.dirty) return;
-
-        const data = self.cartridge_ram.data orelse return;
-        const file = try std.fs.cwd().createFile(save_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(data);
-        self.cartridge_ram.clearDirty();
+        try self.cartridge.flushPersistentStorage();
     }
 
     fn isZ80WindowAddress(address: u32) bool {
@@ -370,26 +94,14 @@ pub const Bus = struct {
         return wait;
     }
 
-    fn readHostByteForZ80(self: *Bus, address: u32) u8 {
-        const addr = address & 0xFFFFFF;
-        if (addr >= 0xA00000 and addr < 0xA10000) return 0xFF;
-        return self.read8(addr);
+    fn z80HostWindowReadByte(ctx: ?*anyopaque, address: u32) u8 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0xFF));
+        return self.read8(address);
     }
 
-    fn writeHostByteForZ80(self: *Bus, address: u32, value: u8) void {
-        const addr = address & 0xFFFFFF;
-        if (addr >= 0xA00000 and addr < 0xA10000) return;
-        self.write8(addr, value);
-    }
-
-    fn z80HostReadCallback(userdata: ?*anyopaque, address: u32) callconv(.c) u8 {
-        const self: *Bus = @ptrCast(@alignCast(userdata orelse return 0xFF));
-        return self.readHostByteForZ80(address);
-    }
-
-    fn z80HostWriteCallback(userdata: ?*anyopaque, address: u32, value: u8) callconv(.c) void {
-        const self: *Bus = @ptrCast(@alignCast(userdata orelse return));
-        self.writeHostByteForZ80(address, value);
+    fn z80HostWindowWriteByte(ctx: ?*anyopaque, address: u32, value: u8) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        self.write8(address, value);
     }
 
     fn vdpDmaReadWordCallback(userdata: ?*anyopaque, address: u32) u16 {
@@ -398,7 +110,7 @@ pub const Bus = struct {
     }
 
     fn ensureZ80HostWindow(self: *Bus) void {
-        self.z80.setHostCallbacks(self, z80HostReadCallback, z80HostWriteCallback);
+        self.z80_host_bridge.bind(&self.z80, self);
     }
 
     fn latchOpenBus(self: *Bus, value: u16) u16 {
@@ -419,113 +131,90 @@ pub const Bus = struct {
         return self.readMirroredZ80ControlRegister(self.z80.readReset());
     }
 
-    fn readVdpStatus(self: *Bus) u16 {
-        const opcode: u16 = if (rocket68.getActiveCpu()) |cpu| cpu.core.ir else 0;
-        const status = self.vdp.readControlAdjusted(opcode) | (self.open_bus & 0xFC00);
-        self.open_bus = status;
-        return status;
-    }
-
-    fn readVdpHVCounter(self: *Bus) u16 {
-        const opcode: u16 = if (rocket68.getActiveCpu()) |cpu| cpu.core.ir else 0;
-        const word = self.vdp.readHVCounterAdjusted(opcode);
-        self.open_bus = word;
-        return word;
-    }
-
-    fn readVersionRegister(self: *const Bus) u8 {
-        var value: u8 = 0x20 | 0x80; // No Mega-CD, overseas region
-        if (self.vdp.pal_mode) value |= 0x40;
-        return value;
-    }
-
-    fn readIoRegisterByte(self: *Bus, address: u32) u8 {
-        return switch (address & 0x1F) {
-            0x00, 0x01 => self.readVersionRegister(),
-            0x02, 0x03 => self.io.read(0x03),
-            0x04, 0x05 => self.io.read(0x05),
-            0x06, 0x07 => self.io.read(0x07),
-            0x08, 0x09 => self.io.read(0x09),
-            0x0A, 0x0B => self.io.read(0x0B),
-            0x0C, 0x0D => self.io.read(0x0D),
-            0x0E, 0x0F, 0x14, 0x15, 0x1A, 0x1B => 0xFF,
-            else => 0x00,
-        };
-    }
-
-    fn writeIoRegisterByte(self: *Bus, address: u32, value: u8) void {
-        switch (address & 0x1F) {
-            0x02, 0x03 => self.io.write(0x03, value),
-            0x04, 0x05 => self.io.write(0x05, value),
-            0x06, 0x07 => self.io.write(0x07, value),
-            0x08, 0x09 => self.io.write(0x09, value),
-            0x0A, 0x0B => self.io.write(0x0B, value),
-            0x0C, 0x0D => self.io.write(0x0D, value),
-            else => {},
-        }
-    }
-
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
-        var rom_data: []u8 = undefined;
-
-        if (rom_path) |path| {
-            const file = try std.fs.cwd().openFile(path, .{});
-            defer file.close();
-
-            const size = try file.getEndPos();
-            const raw = try allocator.alloc(u8, size);
-            _ = try file.readAll(raw);
-
-            if (std.mem.endsWith(u8, path, ".smd")) {
-                var candidate: ?[]u8 = null;
-
-                if (raw.len > 512) {
-                    if (deinterleaveSmdPayload(allocator, raw[512..])) |tmp| {
-                        if (looksLikeGenesis(tmp)) candidate = tmp else allocator.free(tmp);
-                    } else |_| {}
-                }
-
-                if (candidate == null) {
-                    if (deinterleaveSmdPayload(allocator, raw)) |tmp| {
-                        if (looksLikeGenesis(tmp)) candidate = tmp else allocator.free(tmp);
-                    } else |_| {}
-                }
-
-                if (candidate) |rom| {
-                    allocator.free(raw);
-                    rom_data = rom;
-                } else {
-                    rom_data = raw;
-                }
-            } else {
-                rom_data = raw;
-            }
-        } else {
-            // Allocate dummy ROM if no path provided (for testing)
-            rom_data = try allocator.alloc(u8, 4 * 1024 * 1024); // 4MB max
-            @memset(rom_data, 0);
-        }
-
-        return initWithRomData(allocator, rom_data, rom_path, null);
+        const cartridge = try Cartridge.init(allocator, rom_path);
+        return initWithCartridge(cartridge);
     }
 
     pub fn initFromRomBytes(allocator: std.mem.Allocator, rom_bytes: []const u8) !Bus {
-        const rom_data = try allocator.alloc(u8, rom_bytes.len);
-        std.mem.copyForwards(u8, rom_data, rom_bytes);
-        return initWithRomData(allocator, rom_data, null, null);
+        const cartridge = try Cartridge.initFromRomBytes(allocator, rom_bytes);
+        return initWithCartridge(cartridge);
     }
 
     pub fn initFromRomBytesWithChecksum(allocator: std.mem.Allocator, rom_bytes: []const u8, checksum: u32) !Bus {
-        const rom_data = try allocator.alloc(u8, rom_bytes.len);
-        std.mem.copyForwards(u8, rom_data, rom_bytes);
-        return initWithRomData(allocator, rom_data, null, checksum);
+        const cartridge = try Cartridge.initFromRomBytesWithChecksum(allocator, rom_bytes, checksum);
+        return initWithCartridge(cartridge);
     }
 
     pub fn deinit(self: *Bus, allocator: std.mem.Allocator) void {
         self.z80.deinit();
-        self.cartridge_ram.deinit(allocator);
-        if (self.save_path) |save_path| allocator.free(save_path);
-        allocator.free(self.rom);
+        self.cartridge.deinit(allocator);
+    }
+
+    fn cpuMemoryRead8(ctx: ?*anyopaque, address: u32) u8 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.read8(address);
+    }
+
+    fn cpuMemoryRead16(ctx: ?*anyopaque, address: u32) u16 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.read16(address);
+    }
+
+    fn cpuMemoryRead32(ctx: ?*anyopaque, address: u32) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.read32(address);
+    }
+
+    fn cpuMemoryWrite8(ctx: ?*anyopaque, address: u32, value: u8) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        self.write8(address, value);
+    }
+
+    fn cpuMemoryWrite16(ctx: ?*anyopaque, address: u32, value: u16) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        self.write16(address, value);
+    }
+
+    fn cpuMemoryWrite32(ctx: ?*anyopaque, address: u32, value: u32) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        self.write32(address, value);
+    }
+
+    fn cpuMemoryM68kAccessWaitMasterCycles(ctx: ?*anyopaque, address: u32, size_bytes: u8) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.m68kAccessWaitMasterCycles(address, size_bytes);
+    }
+
+    fn cpuMemoryDataPortReadWaitMasterCycles(ctx: ?*anyopaque) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.vdp.dataPortReadWaitMasterCycles();
+    }
+
+    fn cpuMemoryReserveDataPortWriteWaitMasterCycles(ctx: ?*anyopaque) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.vdp.reserveDataPortWriteWaitMasterCycles();
+    }
+
+    fn cpuMemoryControlPortWriteWaitMasterCycles(ctx: ?*anyopaque) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.vdp.controlPortWriteWaitMasterCycles();
+    }
+
+    pub fn cpuMemory(self: *Bus) MemoryInterface {
+        return .{
+            .ctx = self,
+            .read8Fn = cpuMemoryRead8,
+            .read16Fn = cpuMemoryRead16,
+            .read32Fn = cpuMemoryRead32,
+            .write8Fn = cpuMemoryWrite8,
+            .write16Fn = cpuMemoryWrite16,
+            .write32Fn = cpuMemoryWrite32,
+            .m68kAccessWaitMasterCyclesFn = cpuMemoryM68kAccessWaitMasterCycles,
+            .dataPortReadWaitMasterCyclesFn = cpuMemoryDataPortReadWaitMasterCycles,
+            .reserveDataPortWriteWaitMasterCyclesFn = cpuMemoryReserveDataPortWriteWaitMasterCycles,
+            .controlPortWriteWaitMasterCyclesFn = cpuMemoryControlPortWriteWaitMasterCycles,
+        };
     }
 
     // ---------------------------------------------------------
@@ -535,7 +224,7 @@ pub const Bus = struct {
     pub fn read8(self: *Bus, address: u32) u8 {
         const addr = address & 0xFFFFFF; // 24-bit address bus
 
-        if (self.cartridge_ram.readByte(addr)) |value| {
+        if (self.cartridge.readByte(addr)) |value| {
             return value;
         }
 
@@ -546,7 +235,7 @@ pub const Bus = struct {
 
         if (addr < 0xA00000) {
             // ROM (mirrored into the 4MB cartridge window for smaller images).
-            return self.readRomByte(addr);
+            return self.cartridge.readRomByte(addr);
         } else if (addr >= 0xE00000 and addr < 0x1000000) {
             // RAM (Mirrored at 0xE00000 - 0xFFFFFF)
             // Mask to 64KB (0xFFFF)
@@ -558,25 +247,10 @@ pub const Bus = struct {
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            const port = addr & 0x1F;
-            if (port < 0x04) {
-                const word = self.vdp.readData();
-                self.open_bus = word;
-                return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
-            }
-            if (port < 0x08) {
-                const word = self.readVdpStatus();
-                if (rocket68.getActiveCpu()) |cpu| cpu.clearInterrupt();
-                return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
-            }
-            if (port < 0x10) {
-                const word = self.readVdpHVCounter();
-                return if ((addr & 1) == 0) @intCast((word >> 8) & 0xFF) else @intCast(word & 0xFF);
-            }
-            return 0xFF;
+            return vdp_ports.readByte(&self.vdp, &self.open_bus, addr);
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
-            return self.readIoRegisterByte(addr);
+            return io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr);
         }
 
         // Unmapped / IO Stub
@@ -585,7 +259,7 @@ pub const Bus = struct {
 
     pub fn read16(self: *Bus, address: u32) u16 {
         const addr = address & 0xFFFFFF;
-        if (self.cartridge_ram.readWord(addr)) |value| {
+        if (self.cartridge.readWord(addr)) |value| {
             return self.latchOpenBus(value);
         }
         if (addr == 0xA11100) { // Z80 Bus Request
@@ -595,16 +269,9 @@ pub const Bus = struct {
         } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
             return self.latchOpenBus(self.open_bus & 0xFF00);
         } else if (addr >= 0xA10000 and addr < 0xA10020) {
-            return self.latchOpenBus(self.readIoRegisterByte(addr));
+            return self.latchOpenBus(io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr));
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            const port = addr & 0x1F;
-            if (port < 0x04) return self.latchOpenBus(self.vdp.readData());
-            if (port < 0x08) {
-                const status = self.readVdpStatus();
-                if (rocket68.getActiveCpu()) |cpu| cpu.clearInterrupt();
-                return status;
-            }
-            if (port < 0x10) return self.readVdpHVCounter();
+            return vdp_ports.readWord(&self.vdp, &self.open_bus, addr);
         }
 
         // M68k accesses are generally word-aligned, but we'll support unaligned for safety
@@ -628,8 +295,8 @@ pub const Bus = struct {
         const addr = address & 0xFFFFFF;
         self.open_bus = (@as(u16, value) << 8) | value;
 
-        if (self.writeCartridgeRegisterByte(addr, value)) return;
-        if (self.cartridge_ram.writeByte(addr, value)) return;
+        if (self.cartridge.writeRegisterByte(addr, value)) return;
+        if (self.cartridge.writeByte(addr, value)) return;
 
         if (addr == 0xA11100) {
             self.z80.writeBusReq(@as(u16, value) << 8);
@@ -658,15 +325,9 @@ pub const Bus = struct {
             return;
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
             // IO
-            self.writeIoRegisterByte(addr, value);
+            io_window.writeRegisterByte(&self.io, addr, value);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            const port = addr & 0x1F;
-            const word: u16 = if ((addr & 1) == 0) (@as(u16, value) << 8) else @as(u16, value);
-            if (port < 0x04) {
-                self.vdp.writeData(word);
-            } else if (port < 0x08) {
-                self.vdp.writeControl(word);
-            }
+            vdp_ports.writeByte(&self.vdp, addr, value);
             return;
         }
     }
@@ -675,16 +336,11 @@ pub const Bus = struct {
         const addr = address & 0xFFFFFF;
         self.open_bus = value;
 
-        if (self.writeCartridgeRegisterWord(addr, value)) return;
-        if (self.cartridge_ram.writeWord(addr, value)) return;
+        if (self.cartridge.writeRegisterWord(addr, value)) return;
+        if (self.cartridge.writeWord(addr, value)) return;
 
         if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            const port = addr & 0x1F;
-            if (port < 0x04) {
-                self.vdp.writeData(value);
-            } else if (port < 0x08) {
-                self.vdp.writeControl(value);
-            }
+            vdp_ports.writeWord(&self.vdp, addr, value);
             return;
         }
 
@@ -703,9 +359,7 @@ pub const Bus = struct {
     pub fn write32(self: *Bus, address: u32, value: u32) void {
         const addr = address & 0xFFFFFF;
         if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            // VDP 32-bit writes are treated as two 16-bit writes
-            self.write16(address, @intCast((value >> 16) & 0xFFFF));
-            self.write16(address + 2, @intCast(value & 0xFFFF));
+            vdp_ports.writeLong(&self.vdp, addr, value);
             return;
         }
 
@@ -745,6 +399,46 @@ pub const Bus = struct {
 
     pub fn pendingM68kWaitMasterCycles(self: *const Bus) u32 {
         return self.m68k_wait_master_cycles;
+    }
+
+    pub fn shouldHaltM68k(self: *const Bus) bool {
+        return self.vdp.shouldHaltCpu();
+    }
+
+    fn schedulerShouldHaltM68k(ctx: ?*anyopaque) bool {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return false));
+        return self.shouldHaltM68k();
+    }
+
+    fn schedulerPendingM68kWaitMasterCycles(ctx: ?*anyopaque) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.pendingM68kWaitMasterCycles();
+    }
+
+    fn schedulerConsumeM68kWaitMasterCycles(ctx: ?*anyopaque, max_master_cycles: u32) u32 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
+        return self.consumeM68kWaitMasterCycles(max_master_cycles);
+    }
+
+    fn schedulerStepMaster(ctx: ?*anyopaque, master_cycles: u32) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        self.stepMaster(master_cycles);
+    }
+
+    fn schedulerCpuMemory(ctx: ?*anyopaque) MemoryInterface {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse unreachable));
+        return self.cpuMemory();
+    }
+
+    pub fn schedulerRuntime(self: *Bus) SchedulerBus {
+        return .{
+            .ctx = self,
+            .should_halt_m68k_fn = schedulerShouldHaltM68k,
+            .pending_wait_master_cycles_fn = schedulerPendingM68kWaitMasterCycles,
+            .consume_wait_master_cycles_fn = schedulerConsumeM68kWaitMasterCycles,
+            .step_master_fn = schedulerStepMaster,
+            .cpu_memory_fn = schedulerCpuMemory,
+        };
     }
 
     pub fn consumeM68kWaitMasterCycles(self: *Bus, max_master_cycles: u32) u32 {

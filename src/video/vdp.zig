@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const clock = @import("clock.zig");
+const clock = @import("../clock.zig");
 
 pub const Vdp = struct {
     vram: [64 * 1024]u8,
