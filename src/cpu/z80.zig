@@ -3,6 +3,7 @@ const c = @cImport({
 });
 
 const std = @import("std");
+const clock = @import("../clock.zig");
 
 pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
@@ -266,4 +267,47 @@ test "z80 reset emits a timed ym reset event without dropping earlier ym audio e
     var ym_reset_events: [1]Z80.YmResetEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
     try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
+}
+
+test "z80 ym status read exposes busy on data writes" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.setAudioMasterOffset(0);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x0F);
+
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4000) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4001) & 0x80);
+
+    z80.setAudioMasterOffset(64 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4001) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);
+}
+
+test "z80 ym status read reports and clears timer a overflow" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.setAudioMasterOffset(0);
+    z80.writeByte(0x4000, 0x24);
+    z80.writeByte(0x4001, 0xFF);
+    z80.writeByte(0x4000, 0x25);
+    z80.writeByte(0x4001, 0x03);
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x05);
+
+    z80.setAudioMasterOffset(48 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x01), z80.readByte(0x4000) & 0x01);
+
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x10);
+    z80.setAudioMasterOffset(49 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
 }

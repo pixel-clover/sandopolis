@@ -628,6 +628,8 @@ const Opn2Core = struct {
         self.mol = 0;
         self.mor = 0;
 
+        // YM2612 output is multiplexed: the latched channel sample only reaches the
+        // pins on one phase, while muted phases leak the sign bit instead.
         const out_enabled = test_dac or ((slot & 0x03) == 0x03);
         var sign = out >> 8;
         if (out >= 0) {
@@ -1469,6 +1471,45 @@ test "ym dac output appears when enabled" {
     }
 
     try std.testing.expect(enabled_energy > disabled_energy);
+}
+
+test "ym channel output uses gated sample and muted-phase sign leakage" {
+    var core = Opn2Core{};
+    core.cycles = 3;
+    core.ch_lock = 32;
+    core.ch_lock_l = 1;
+    core.ch_lock_r = 0;
+
+    core.channelOutput();
+
+    try std.testing.expectEqual(@as(i16, 99), core.mol);
+    try std.testing.expectEqual(@as(i16, 3), core.mor);
+}
+
+test "ym channel output keeps negative samples free of extra ladder shaping" {
+    var core = Opn2Core{};
+    core.cycles = 3;
+    core.ch_lock = -32;
+    core.ch_lock_l = 1;
+    core.ch_lock_r = 0;
+
+    core.channelOutput();
+
+    try std.testing.expectEqual(@as(i16, -96), core.mol);
+    try std.testing.expectEqual(@as(i16, -3), core.mor);
+}
+
+test "ym channel output leaks only sign when the mux phase is inactive" {
+    var core = Opn2Core{};
+    core.cycles = 2;
+    core.ch_lock = 32;
+    core.ch_lock_l = 1;
+    core.ch_lock_r = 1;
+
+    core.channelOutput();
+
+    try std.testing.expectEqual(@as(i16, 3), core.mol);
+    try std.testing.expectEqual(@as(i16, 3), core.mor);
 }
 
 test "ym fmGenerate tolerates fully attenuated levels" {

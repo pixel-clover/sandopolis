@@ -244,6 +244,7 @@ pub const Bus = struct {
             // Z80 address-space window.
             if (!self.hasZ80BusFor68k()) return @truncate((self.open_bus >> 8) & 0xFF);
             self.ensureZ80HostWindow();
+            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
@@ -891,6 +892,22 @@ test "z80 audio window latches YM2612 and PSG writes" {
     // PSG latch/data byte
     bus.write8(0x00A0_7F11, 0x90);
     try testing.expectEqual(@as(u8, 0x90), bus.z80.getPsgLast());
+}
+
+test "m68k ym status reads advance busy timing through the z80 window" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+
+    bus.write8(0x00A0_4000, 0x22);
+    bus.write8(0x00A0_4001, 0x0F);
+    try testing.expectEqual(@as(u8, 0x80), bus.read8(0x00A0_4000) & 0x80);
+
+    bus.audio_timing.consumeMaster(64 * ym_internal_master_cycles);
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A0_4000) & 0x80);
 }
 
 test "psg latch/data writes decode tone and volume registers" {

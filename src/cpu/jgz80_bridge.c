@@ -11,6 +11,8 @@ enum {
     YM_WRITE_BUFFER_CAPACITY = 32768,
     YM_RESET_BUFFER_CAPACITY = 64,
     PSG_COMMAND_BUFFER_CAPACITY = 8192,
+    YM_INTERNAL_MASTER_CYCLES = 42,
+    YM_BUSY_CYCLES = 32,
 };
 
 struct Jgz80Handle {
@@ -21,6 +23,30 @@ struct Jgz80Handle {
     uint8_t ym_addr[2];
     uint8_t ym_regs[2][256];
     uint8_t ym_key_mask;
+    uint32_t ym_offset_cursor;
+    uint16_t ym_internal_master_remainder;
+    uint8_t ym_cycle;
+    uint8_t ym_busy_cycles_remaining;
+    uint8_t ym_last_status_read;
+    uint16_t ym_timer_a_cnt;
+    uint16_t ym_timer_a_reg;
+    uint8_t ym_timer_a_load_lock;
+    uint8_t ym_timer_a_load;
+    uint8_t ym_timer_a_enable;
+    uint8_t ym_timer_a_reset;
+    uint8_t ym_timer_a_load_latch;
+    uint8_t ym_timer_a_overflow_flag;
+    uint8_t ym_timer_a_overflow;
+    uint16_t ym_timer_b_cnt;
+    uint8_t ym_timer_b_subcnt;
+    uint8_t ym_timer_b_reg;
+    uint8_t ym_timer_b_load_lock;
+    uint8_t ym_timer_b_load;
+    uint8_t ym_timer_b_enable;
+    uint8_t ym_timer_b_reset;
+    uint8_t ym_timer_b_load_latch;
+    uint8_t ym_timer_b_overflow_flag;
+    uint8_t ym_timer_b_overflow;
     uint32_t audio_event_sequence;
     Jgz80YmWriteEvent ym_write_events[YM_WRITE_BUFFER_CAPACITY];
     uint16_t ym_write_write_index;
@@ -59,6 +85,33 @@ static void clear_ym2612_shadow_state(Jgz80Handle *h) {
     h->ym_key_mask = 0;
 }
 
+static void clear_ym2612_runtime_state(Jgz80Handle *h) {
+    h->ym_offset_cursor = h->audio_master_offset;
+    h->ym_internal_master_remainder = 0;
+    h->ym_cycle = 0;
+    h->ym_busy_cycles_remaining = 0;
+    h->ym_last_status_read = 0;
+    h->ym_timer_a_cnt = 0;
+    h->ym_timer_a_reg = 0;
+    h->ym_timer_a_load_lock = 0;
+    h->ym_timer_a_load = 0;
+    h->ym_timer_a_enable = 0;
+    h->ym_timer_a_reset = 0;
+    h->ym_timer_a_load_latch = 0;
+    h->ym_timer_a_overflow_flag = 0;
+    h->ym_timer_a_overflow = 0;
+    h->ym_timer_b_cnt = 0;
+    h->ym_timer_b_subcnt = 0;
+    h->ym_timer_b_reg = 0;
+    h->ym_timer_b_load_lock = 0;
+    h->ym_timer_b_load = 0;
+    h->ym_timer_b_enable = 0;
+    h->ym_timer_b_reset = 0;
+    h->ym_timer_b_load_latch = 0;
+    h->ym_timer_b_overflow_flag = 0;
+    h->ym_timer_b_overflow = 0;
+}
+
 static void clear_ym2612_event_queues(Jgz80Handle *h) {
     h->ym_write_write_index = 0;
     h->ym_write_read_index = 0;
@@ -73,6 +126,7 @@ static void clear_ym2612_event_queues(Jgz80Handle *h) {
 
 static void reset_ym2612_state(Jgz80Handle *h) {
     clear_ym2612_shadow_state(h);
+    clear_ym2612_runtime_state(h);
     clear_ym2612_event_queues(h);
 }
 
@@ -134,6 +188,137 @@ static void push_ym_reset_event(Jgz80Handle *h) {
     ++h->ym_reset_count;
 }
 
+static void ym_do_timer_a(Jgz80Handle *h) {
+    uint8_t load = h->ym_timer_a_overflow;
+    if (h->ym_cycle == 2u) {
+        load |= (uint8_t)(h->ym_timer_a_load_lock == 0u && h->ym_timer_a_load != 0u);
+        h->ym_timer_a_load_lock = h->ym_timer_a_load;
+    }
+
+    uint16_t time = h->ym_timer_a_load_latch != 0u ? h->ym_timer_a_reg : h->ym_timer_a_cnt;
+    h->ym_timer_a_load_latch = load;
+
+    if (h->ym_cycle == 1u && h->ym_timer_a_load_lock != 0u) {
+        time = (uint16_t)(time + 1u);
+    }
+
+    if (h->ym_timer_a_reset != 0u) {
+        h->ym_timer_a_reset = 0u;
+        h->ym_timer_a_overflow_flag = 0u;
+    } else {
+        h->ym_timer_a_overflow_flag |= (uint8_t)(h->ym_timer_a_overflow & h->ym_timer_a_enable);
+    }
+
+    h->ym_timer_a_overflow = (uint8_t)(time >> 10);
+    h->ym_timer_a_cnt = (uint16_t)(time & 0x03FFu);
+}
+
+static void ym_do_timer_b(Jgz80Handle *h) {
+    uint8_t load = h->ym_timer_b_overflow;
+    if (h->ym_cycle == 2u) {
+        load |= (uint8_t)(h->ym_timer_b_load_lock == 0u && h->ym_timer_b_load != 0u);
+        h->ym_timer_b_load_lock = h->ym_timer_b_load;
+    }
+
+    uint16_t time = h->ym_timer_b_load_latch != 0u ? h->ym_timer_b_reg : h->ym_timer_b_cnt;
+    h->ym_timer_b_load_latch = load;
+
+    if (h->ym_cycle == 1u) {
+        h->ym_timer_b_subcnt = (uint8_t)(h->ym_timer_b_subcnt + 1u);
+    }
+    if (h->ym_timer_b_subcnt == 0x10u && h->ym_timer_b_load_lock != 0u) {
+        time = (uint16_t)(time + 1u);
+    }
+    h->ym_timer_b_subcnt &= 0x0Fu;
+
+    if (h->ym_timer_b_reset != 0u) {
+        h->ym_timer_b_reset = 0u;
+        h->ym_timer_b_overflow_flag = 0u;
+    } else {
+        h->ym_timer_b_overflow_flag |= (uint8_t)(h->ym_timer_b_overflow & h->ym_timer_b_enable);
+    }
+
+    h->ym_timer_b_overflow = (uint8_t)(time >> 8);
+    h->ym_timer_b_cnt = (uint16_t)(time & 0x00FFu);
+}
+
+static void advance_ym_internal_cycle(Jgz80Handle *h) {
+    if (h->ym_busy_cycles_remaining != 0u) {
+        --h->ym_busy_cycles_remaining;
+    }
+
+    ym_do_timer_a(h);
+    ym_do_timer_b(h);
+    h->ym_cycle = (uint8_t)((h->ym_cycle + 1u) % 24u);
+}
+
+static void advance_ym_master(Jgz80Handle *h, uint32_t master_cycles) {
+    uint32_t remaining = master_cycles;
+    while (remaining != 0u) {
+        const uint32_t until_boundary = h->ym_internal_master_remainder == 0u
+            ? YM_INTERNAL_MASTER_CYCLES
+            : (uint32_t)(YM_INTERNAL_MASTER_CYCLES - h->ym_internal_master_remainder);
+
+        if (remaining < until_boundary) {
+            h->ym_internal_master_remainder =
+                (uint16_t)(h->ym_internal_master_remainder + remaining);
+            return;
+        }
+
+        remaining -= until_boundary;
+        h->ym_internal_master_remainder = 0u;
+        advance_ym_internal_cycle(h);
+    }
+}
+
+static void advance_ym_to_current_offset(Jgz80Handle *h) {
+    if (h->audio_master_offset < h->ym_offset_cursor) {
+        h->ym_offset_cursor = h->audio_master_offset;
+        return;
+    }
+
+    advance_ym_master(h, h->audio_master_offset - h->ym_offset_cursor);
+    h->ym_offset_cursor = h->audio_master_offset;
+}
+
+static uint8_t ym_status(Jgz80Handle *h) {
+    return (uint8_t)(
+        ((h->ym_busy_cycles_remaining != 0u) ? 0x80u : 0u) |
+        ((h->ym_timer_b_overflow_flag & 0x01u) << 1) |
+        (h->ym_timer_a_overflow_flag & 0x01u)
+    );
+}
+
+static void apply_ym_data_write_runtime_state(Jgz80Handle *h, uint8_t port, uint8_t reg, uint8_t value) {
+    h->ym_busy_cycles_remaining = YM_BUSY_CYCLES;
+
+    if (port != 0u) return;
+
+    switch (reg) {
+        case 0x24:
+            h->ym_timer_a_reg &= 0x0003u;
+            h->ym_timer_a_reg |= (uint16_t) value << 2;
+            break;
+        case 0x25:
+            h->ym_timer_a_reg &= 0x03FCu;
+            h->ym_timer_a_reg |= value & 0x03u;
+            break;
+        case 0x26:
+            h->ym_timer_b_reg = value;
+            break;
+        case 0x27:
+            h->ym_timer_a_load = value & 0x01u;
+            h->ym_timer_a_enable = (value >> 2) & 0x01u;
+            h->ym_timer_a_reset = (value >> 4) & 0x01u;
+            h->ym_timer_b_load = (value >> 1) & 0x01u;
+            h->ym_timer_b_enable = (value >> 3) & 0x01u;
+            h->ym_timer_b_reset = (value >> 5) & 0x01u;
+            break;
+        default:
+            break;
+    }
+}
+
 static uint8_t mapped_read_byte(Jgz80Handle *h, uint16_t addr) {
     const uint16_t zaddr = (uint16_t)(addr & 0xFFFFu);
     if (zaddr < 0x2000u) {
@@ -141,7 +326,11 @@ static uint8_t mapped_read_byte(Jgz80Handle *h, uint16_t addr) {
     }
 
     if (zaddr >= 0x4000u && zaddr < 0x6000u) {
-        return 0u;
+        if ((zaddr & 0x03u) == 0u) {
+            advance_ym_to_current_offset(h);
+            h->ym_last_status_read = ym_status(h);
+        }
+        return h->ym_last_status_read;
     }
 
     if (zaddr == 0x7F11u) {
@@ -175,6 +364,7 @@ static void mapped_write_byte(Jgz80Handle *h, uint16_t addr, uint8_t val) {
     }
 
     if (zaddr >= 0x4000u && zaddr < 0x6000u) {
+        advance_ym_to_current_offset(h);
         const uint8_t port_index = (uint8_t)((zaddr >> 1) & 1u);
         const bool is_data = (zaddr & 1u) != 0u;
         if (!is_data) {
@@ -182,6 +372,7 @@ static void mapped_write_byte(Jgz80Handle *h, uint16_t addr, uint8_t val) {
         } else {
             const uint8_t reg = h->ym_addr[port_index];
             h->ym_regs[port_index][reg] = val;
+            apply_ym_data_write_runtime_state(h, port_index, reg, val);
             if (port_index == 0u && reg == 0x2Au) {
                 push_ym_dac_sample(h, val);
             } else {
@@ -339,13 +530,16 @@ void jgz80_step(Jgz80Handle *handle, uint32_t cycles) {
     bind_callbacks(handle);
     if (handle->bus_req || handle->reset_line) return;
     (void) z80_step_n(&handle->core, cycles);
+    advance_ym_master(handle, cycles * 15u);
 }
 
 uint32_t jgz80_step_one(Jgz80Handle *handle) {
     if (!handle) return 0;
     bind_callbacks(handle);
     if (handle->bus_req || handle->reset_line) return 0;
-    return z80_step(&handle->core);
+    const uint32_t cycles = z80_step(&handle->core);
+    advance_ym_master(handle, cycles * 15u);
+    return cycles;
 }
 
 uint8_t jgz80_read_byte(Jgz80Handle *handle, uint16_t addr) {
@@ -503,6 +697,12 @@ uint32_t jgz80_take_68k_bus_access_count(Jgz80Handle *handle) {
 
 void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset) {
     if (!handle) return;
+    if (master_offset < handle->ym_offset_cursor) {
+        handle->ym_offset_cursor = master_offset;
+    } else {
+        advance_ym_master(handle, master_offset - handle->ym_offset_cursor);
+        handle->ym_offset_cursor = master_offset;
+    }
     handle->audio_master_offset = master_offset;
 }
 
@@ -538,6 +738,7 @@ void jgz80_write_reset(Jgz80Handle *handle, uint16_t val) {
     if (val == 0u) {
         if (!handle->reset_line) {
             clear_ym2612_shadow_state(handle);
+            clear_ym2612_runtime_state(handle);
             push_ym_reset_event(handle);
         }
         handle->reset_line = true;
