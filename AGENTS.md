@@ -50,6 +50,7 @@ Quick examples:
 
 - Unit tests belong in the Zig module they exercise.
 - Integration, regression, and property-based tests belong in `tests/`.
+- Non-unit tests should use the public API from `src/api.zig`. If they need lower-level control than `Machine` exposes, add or extend the explicit `sandopolis.testing` facade instead of re-exporting raw core structs.
 - `tests/integration_tests.zig` is for stable public-API and cross-module wiring coverage that is not tied to a specific bug history.
 - `tests/regression_tests.zig` is for bug reproductions, timing regressions, and ROM-backed behavior checks.
 - `tests/property_tests.zig` is for invariant-style and randomized coverage.
@@ -116,6 +117,7 @@ Minimal unit-test checklist:
 ## Documentation Expectations
 
 - Public-facing API docs are generated from `src/api.zig`.
+- Keep `src/api.zig` focused on deliberate public surfaces. Do not re-export raw internal coordination types like `Bus`, `Cpu`, `Vdp`, or `Z80`; add facade/view types instead.
 - If a type should show up in generated docs, re-export it from `src/api.zig`.
 - User workflow changes should update `README.md`.
 - Progress/completeness wording should update `ROADMAP.md` when it materially changes.

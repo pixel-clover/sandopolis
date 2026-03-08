@@ -1187,7 +1187,7 @@ fn writeEvent(port: u1, reg: u8, value: u8) YmWriteEvent {
 
 fn keyEvent(channel: u3, operators: u4) YmWriteEvent {
     const mapping = channelPortBase(channel);
-    const channel_bits = mapping.base | (mapping.port << 2);
+    const channel_bits = mapping.base | (@as(u8, mapping.port) << 2);
     return writeEvent(0, 0x28, (@as(u8, operators) << 4) | channel_bits);
 }
 

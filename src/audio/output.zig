@@ -876,9 +876,9 @@ test "ym dac state uses port 0 and queued writes stay audible" {
     try std.testing.expectEqual(@as(usize, 2), ym_write_count);
     try std.testing.expectEqual(@as(usize, 3), ym_dac_count);
     const samples = output.renderChunk(
-        pendingWindow(96 * clock.fm_master_cycles_per_sample),
+        pendingWindow(@as(u32, 96) * clock.fm_master_cycles_per_sample),
         0,
-        96 * clock.fm_master_cycles_per_sample,
+        @as(u32, 96) * clock.fm_master_cycles_per_sample,
         96,
         output.ym_write_buffer[0..ym_write_count],
         output.ym_dac_buffer[0..ym_dac_count],
@@ -904,7 +904,7 @@ test "ym dac state uses port 0 and queued writes stay audible" {
 }
 
 test "chunked ym dac rendering matches single chunk output" {
-    const pending = pendingWindow(96 * clock.fm_master_cycles_per_sample);
+    const pending = pendingWindow(@as(u32, 96) * clock.fm_master_cycles_per_sample);
     const ym_writes = [_]YmWriteEvent{
         .{ .master_offset = 0, .sequence = 0, .port = 0, .reg = 0x2B, .value = 0x80 },
         .{ .master_offset = 0, .sequence = 1, .port = 1, .reg = 0xB6, .value = 0xC0 },
@@ -1116,13 +1116,13 @@ test "psg command timestamps keep late mute out of early samples" {
         .{ .master_offset = 0, .value = 0x90 },
         .{ .master_offset = 0, .value = 0x81 },
         .{ .master_offset = 0, .value = 0x00 },
-        .{ .master_offset = 512 * clock.psg_master_cycles_per_sample, .value = 0x9F },
+        .{ .master_offset = @as(u32, 512) * clock.psg_master_cycles_per_sample, .value = 0x9F },
     };
 
     const samples = output.renderChunk(
-        pendingWindow(1024 * clock.psg_master_cycles_per_sample),
+        pendingWindow(@as(u32, 1024) * clock.psg_master_cycles_per_sample),
         0,
-        1024 * clock.psg_master_cycles_per_sample,
+        @as(u32, 1024) * clock.psg_master_cycles_per_sample,
         128,
         &.{},
         &.{},
@@ -1153,7 +1153,7 @@ test "master offsets account for pending start remainders when converting to nat
 
 test "chunked psg rendering matches single chunk output with start remainders" {
     const pending = pendingWindowWithRemainders(
-        1024 * clock.psg_master_cycles_per_sample,
+        @as(u32, 1024) * clock.psg_master_cycles_per_sample,
         0,
         clock.psg_master_cycles_per_sample - 17,
     );
@@ -1161,7 +1161,7 @@ test "chunked psg rendering matches single chunk output with start remainders" {
         .{ .master_offset = 0, .value = 0x90 },
         .{ .master_offset = 0, .value = 0x81 },
         .{ .master_offset = 0, .value = 0x00 },
-        .{ .master_offset = 511 * clock.psg_master_cycles_per_sample + 60, .value = 0x9F },
+        .{ .master_offset = @as(u32, 511) * clock.psg_master_cycles_per_sample + 60, .value = 0x9F },
     };
     const chunk_frames = [_]u32{ 19, 47, 71 };
 
@@ -1247,7 +1247,7 @@ test "discard pending drains a nonzero-output audio window without leaving queue
     z80.writeByte(0x7F11, 0x81);
     z80.writeByte(0x7F11, 0x00);
 
-    try output.discardPending(pendingWindow(96 * clock.fm_master_cycles_per_sample), &z80, false);
+    try output.discardPending(pendingWindow(@as(u32, 96) * clock.fm_master_cycles_per_sample), &z80, false);
 
     var ym_writes: [1]YmWriteEvent = undefined;
     var ym_dac_samples: [1]YmDacSampleEvent = undefined;

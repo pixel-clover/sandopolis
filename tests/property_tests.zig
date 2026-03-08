@@ -3,13 +3,12 @@ const testing = std.testing;
 const minish = @import("minish");
 const sandopolis = @import("sandopolis_src");
 
-const Bus = sandopolis.Bus;
-const AudioTiming = sandopolis.AudioTiming;
-const Io = sandopolis.Io;
-const Vdp = sandopolis.Vdp;
 const clock = sandopolis.clock;
-
-const empty_rom = [_]u8{};
+const AudioTiming = sandopolis.testing.AudioTiming;
+const Button = sandopolis.testing.Button;
+const ControllerIo = sandopolis.testing.ControllerIo;
+const Emulator = sandopolis.testing.Emulator;
+const Vdp = sandopolis.testing.Vdp;
 
 const AudioChunkCase = struct {
     first: u32,
@@ -321,31 +320,29 @@ const z80_control_byte_gen = minish.gen.Generator(Z80ControlByteCase){
     .freeFn = null,
 };
 
-fn initEmptyBus() !Bus {
-    return Bus.initFromRomBytes(testing.allocator, &empty_rom);
+fn initEmptyEmulator() !Emulator {
+    return Emulator.initEmpty(testing.allocator);
 }
 
-fn seedOpenBus(bus: *Bus, value: u16) void {
-    bus.write16(0x00E0_0000, value);
-    _ = bus.read16(0x00E0_0000);
+fn seedOpenBus(emulator: *Emulator, value: u16) void {
+    emulator.write16(0x00E0_0000, value);
+    _ = emulator.read16(0x00E0_0000);
 }
 
 fn configureVdpFromCase(vdp: *Vdp, input: VdpStateCase) void {
-    vdp.* = Vdp.init();
-    vdp.pal_mode = input.pal_mode;
-    if (input.h40) {
-        vdp.regs[12] = 0x81;
-    }
+    vdp.reset();
+    vdp.setPalMode(input.pal_mode);
+    vdp.setH40(input.h40);
     const total_lines = if (input.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
     const visible_lines = if (input.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
     const line = input.scanline % total_lines;
     _ = vdp.setScanlineState(line, visible_lines, total_lines);
-    vdp.line_master_cycle = input.line_master_cycle;
-    vdp.odd_frame = input.odd_frame;
-    vdp.dma_active = input.dma_active;
-    vdp.vint_pending = input.vint_pending;
-    vdp.sprite_overflow = input.sprite_overflow;
-    vdp.sprite_collision = input.sprite_collision;
+    vdp.setLineMasterCycle(input.line_master_cycle);
+    vdp.setOddFrame(input.odd_frame);
+    vdp.setDmaActive(input.dma_active);
+    vdp.setVintPending(input.vint_pending);
+    vdp.setSpriteOverflow(input.sprite_overflow);
+    vdp.setSpriteCollision(input.sprite_collision);
 }
 
 fn makeRomWithSramHeader(
@@ -368,12 +365,14 @@ fn makeRomWithSramHeader(
 }
 
 fn audioTimingChunkingProperty(input: AudioChunkCase) !void {
-    var split = AudioTiming{};
+    var split = try AudioTiming.init(testing.allocator);
+    defer split.deinit(testing.allocator);
     split.consumeMaster(input.first);
     split.consumeMaster(input.second);
     const split_frames = split.takePending();
 
-    var combined = AudioTiming{};
+    var combined = try AudioTiming.init(testing.allocator);
+    defer combined.deinit(testing.allocator);
     combined.consumeMaster(input.first + input.second);
     const combined_frames = combined.takePending();
 
@@ -382,30 +381,30 @@ fn audioTimingChunkingProperty(input: AudioChunkCase) !void {
     try testing.expectEqual(combined_frames.psg_frames, split_frames.psg_frames);
     try testing.expectEqual(combined_frames.fm_start_remainder, split_frames.fm_start_remainder);
     try testing.expectEqual(combined_frames.psg_start_remainder, split_frames.psg_start_remainder);
-    try testing.expectEqual(combined.fm_master_remainder, split.fm_master_remainder);
-    try testing.expectEqual(combined.psg_master_remainder, split.psg_master_remainder);
+    try testing.expectEqual(combined.fmMasterRemainder(), split.fmMasterRemainder());
+    try testing.expectEqual(combined.psgMasterRemainder(), split.psgMasterRemainder());
 }
 
 fn workRamByteMirrorProperty(input: RamByteMirrorCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
     const offset = @as(u32, input.address);
     const base_address = 0xE00000 | offset;
     const mirror_address = 0xFF0000 | offset;
 
-    bus.write8(base_address, input.first_value);
-    try testing.expectEqual(input.first_value, bus.read8(base_address));
-    try testing.expectEqual(input.first_value, bus.read8(mirror_address));
+    emulator.write8(base_address, input.first_value);
+    try testing.expectEqual(input.first_value, emulator.read8(base_address));
+    try testing.expectEqual(input.first_value, emulator.read8(mirror_address));
 
-    bus.write8(mirror_address, input.second_value);
-    try testing.expectEqual(input.second_value, bus.read8(base_address));
-    try testing.expectEqual(input.second_value, bus.read8(mirror_address));
+    emulator.write8(mirror_address, input.second_value);
+    try testing.expectEqual(input.second_value, emulator.read8(base_address));
+    try testing.expectEqual(input.second_value, emulator.read8(mirror_address));
 }
 
 fn workRamWordProperty(input: RamWordCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
     const offset = @as(u32, input.address);
     const base_address = 0xE00000 | offset;
@@ -413,60 +412,61 @@ fn workRamWordProperty(input: RamWordCase) !void {
     const high_byte: u8 = @truncate(input.value >> 8);
     const low_byte: u8 = @truncate(input.value);
 
-    bus.write16(base_address, input.value);
+    emulator.write16(base_address, input.value);
 
-    try testing.expectEqual(input.value, bus.read16(base_address));
-    try testing.expectEqual(input.value, bus.read16(mirror_address));
-    try testing.expectEqual(high_byte, bus.read8(base_address));
-    try testing.expectEqual(low_byte, bus.read8(base_address + 1));
-    try testing.expectEqual(high_byte, bus.read8(mirror_address));
-    try testing.expectEqual(low_byte, bus.read8(mirror_address + 1));
+    try testing.expectEqual(input.value, emulator.read16(base_address));
+    try testing.expectEqual(input.value, emulator.read16(mirror_address));
+    try testing.expectEqual(high_byte, emulator.read8(base_address));
+    try testing.expectEqual(low_byte, emulator.read8(base_address + 1));
+    try testing.expectEqual(high_byte, emulator.read8(mirror_address));
+    try testing.expectEqual(low_byte, emulator.read8(mirror_address + 1));
 }
 
 fn oddByteSramProperty(input: OddByteSramCase) !void {
     const rom = try makeRomWithSramHeader(testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
     defer testing.allocator.free(rom);
 
-    var bus = try Bus.initFromRomBytes(testing.allocator, rom);
-    defer bus.deinit(testing.allocator);
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
 
     const address = 0x0020_0001 + @as(u32, input.byte_index) * 2;
     const paired_word_address = address - 1;
 
-    bus.write8(address, input.value);
+    emulator.write8(address, input.value);
 
-    try testing.expect(bus.hasCartridgeRam());
-    try testing.expect(bus.isCartridgeRamMapped());
-    try testing.expectEqual(input.value, bus.read8(address));
-    try testing.expectEqual(@as(u16, input.value) << 8 | input.value, bus.read16(paired_word_address));
-    try testing.expectEqual(@as(u8, 0), bus.read8(paired_word_address));
+    try testing.expect(emulator.hasCartridgeRam());
+    try testing.expect(emulator.isCartridgeRamMapped());
+    try testing.expectEqual(input.value, emulator.read8(address));
+    try testing.expectEqual(@as(u16, input.value) << 8 | input.value, emulator.read16(paired_word_address));
+    try testing.expectEqual(@as(u8, 0), emulator.read8(paired_word_address));
 }
 
 fn sixteenBitSramProperty(input: SixteenBitSramCase) !void {
     const rom = try makeRomWithSramHeader(testing.allocator, 0x100000, 0xE0, 0x200000, 0x20FFFF);
     defer testing.allocator.free(rom);
 
-    var bus = try Bus.initFromRomBytes(testing.allocator, rom);
-    defer bus.deinit(testing.allocator);
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
 
     const address = 0x0020_0000 + @as(u32, input.word_index) * 2;
     const high_byte: u8 = @truncate(input.value >> 8);
     const low_byte: u8 = @truncate(input.value);
 
-    bus.write16(address, input.value);
+    emulator.write16(address, input.value);
 
-    try testing.expect(bus.hasCartridgeRam());
-    try testing.expect(bus.isCartridgeRamMapped());
-    try testing.expectEqual(input.value, bus.read16(address));
-    try testing.expectEqual(high_byte, bus.read8(address));
-    try testing.expectEqual(low_byte, bus.read8(address + 1));
+    try testing.expect(emulator.hasCartridgeRam());
+    try testing.expect(emulator.isCartridgeRamMapped());
+    try testing.expectEqual(input.value, emulator.read16(address));
+    try testing.expectEqual(high_byte, emulator.read8(address));
+    try testing.expectEqual(low_byte, emulator.read8(address + 1));
 }
 
 fn sixButtonReadProperty(input: SixButtonCase) !void {
-    var io = Io.init();
+    var io = try ControllerIo.init(testing.allocator);
+    defer io.deinit(testing.allocator);
     io.write(0x09, 0x40);
 
-    const buttons = [_]u16{ Io.Button.Z, Io.Button.Y, Io.Button.X, Io.Button.Mode, Io.Button.B, Io.Button.C };
+    const buttons = [_]u16{ Button.Z, Button.Y, Button.X, Button.Mode, Button.B, Button.C };
     for (buttons, 0..) |button, index| {
         const pressed = ((input.pressed_mask >> @intCast(index)) & 1) != 0;
         io.setButton(0, button, pressed);
@@ -484,7 +484,8 @@ fn sixButtonReadProperty(input: SixButtonCase) !void {
 }
 
 fn thHighDelayProperty(input: TickSplitCase) !void {
-    var io = Io.init();
+    var io = try ControllerIo.init(testing.allocator);
+    defer io.deinit(testing.allocator);
 
     io.write(0x03, 0x00);
     io.write(0x09, 0x40);
@@ -499,10 +500,11 @@ fn thHighDelayProperty(input: TickSplitCase) !void {
 }
 
 fn sixButtonTimeoutProperty(input: TickSplitCase) !void {
-    var io = Io.init();
+    var io = try ControllerIo.init(testing.allocator);
+    defer io.deinit(testing.allocator);
 
     io.write(0x09, 0x40);
-    io.setButton(0, Io.Button.Z, true);
+    io.setButton(0, Button.Z, true);
 
     io.write(0x03, 0x00);
     io.write(0x03, 0x40);
@@ -520,72 +522,76 @@ fn sixButtonTimeoutProperty(input: TickSplitCase) !void {
 }
 
 fn busControlRegisterMirrorProperty(input: BusControlCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1200, if (input.reset_asserted) 0x0000 else 0x0100);
-    bus.write16(0x00A1_1100, if (input.request_bus) 0x0100 else 0x0000);
+    emulator.write16(0x00A1_1200, if (input.reset_asserted) 0x0000 else 0x0100);
+    emulator.write16(0x00A1_1100, if (input.request_bus) 0x0100 else 0x0000);
 
-    seedOpenBus(&bus, input.open_bus);
-    const bus_ack = bus.read16(0x00A1_1100);
+    seedOpenBus(&emulator, input.open_bus);
+    const bus_ack = emulator.read16(0x00A1_1100);
     const expected_bus_ack_bit: u16 = if (input.request_bus and !input.reset_asserted) 0x0000 else 0x0100;
     try testing.expectEqual((input.open_bus & ~@as(u16, 0x0100)) | expected_bus_ack_bit, bus_ack);
 
-    seedOpenBus(&bus, input.open_bus);
-    const reset = bus.read16(0x00A1_1200);
+    seedOpenBus(&emulator, input.open_bus);
+    const reset = emulator.read16(0x00A1_1200);
     const expected_reset_bit: u16 = if (input.reset_asserted) 0x0000 else 0x0100;
     try testing.expectEqual((input.open_bus & ~@as(u16, 0x0100)) | expected_reset_bit, reset);
 }
 
 fn vdpStatusOpenBusHighBitsProperty(input: OpenBusStatusCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
-    seedOpenBus(&bus, input.open_bus);
-    const status = bus.read16(0x00C0_0004);
+    seedOpenBus(&emulator, input.open_bus);
+    const status = emulator.read16(0x00C0_0004);
     try testing.expectEqual(input.open_bus & @as(u16, 0xFC00), status & @as(u16, 0xFC00));
 }
 
 fn z80WindowBlockedReadProperty(input: Z80WindowCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
-    seedOpenBus(&bus, input.open_bus);
+    seedOpenBus(&emulator, input.open_bus);
     const address = 0x00A0_0000 + @as(u32, input.offset);
-    try testing.expectEqual(@as(u8, @truncate(input.open_bus >> 8)), bus.read8(address));
-    try testing.expectEqual(input.open_bus & @as(u16, 0xFF00), bus.read16(address));
+    try testing.expectEqual(@as(u8, @truncate(input.open_bus >> 8)), emulator.read8(address));
+    try testing.expectEqual(input.open_bus & @as(u16, 0xFF00), emulator.read16(address));
 }
 
 fn unusedVdpPortReadProperty(input: UnusedVdpPortCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
     const address = 0x00C0_0000 + @as(u32, input.even_offset);
-    try testing.expectEqual(@as(u8, 0xFF), bus.read8(address));
-    try testing.expectEqual(@as(u8, 0xFF), bus.read8(address + 1));
-    try testing.expectEqual(@as(u16, 0xFFFF), bus.read16(address));
+    try testing.expectEqual(@as(u8, 0xFF), emulator.read8(address));
+    try testing.expectEqual(@as(u8, 0xFF), emulator.read8(address + 1));
+    try testing.expectEqual(@as(u16, 0xFFFF), emulator.read16(address));
 }
 
 fn vdpMoveAdjustedHvProperty(input: VdpStateCase) !void {
-    var vdp = Vdp.init();
+    var vdp = try Vdp.init(testing.allocator);
+    defer vdp.deinit(testing.allocator);
     configureVdpFromCase(&vdp, input);
     try testing.expectEqual(vdp.readHVCounter(), vdp.readHVCounterAdjusted(0x3039));
 }
 
 fn vdpMoveAdjustedStatusProperty(input: VdpStateCase) !void {
-    var immediate = Vdp.init();
+    var immediate = try Vdp.init(testing.allocator);
+    defer immediate.deinit(testing.allocator);
     configureVdpFromCase(&immediate, input);
 
-    var adjusted = immediate;
+    var adjusted = try immediate.clone(testing.allocator);
+    defer adjusted.deinit(testing.allocator);
 
     try testing.expectEqual(immediate.readControl(), adjusted.readControlAdjusted(0x3039));
 }
 
 fn vdpFifoStatusProperty(input: VdpFifoCase) !void {
-    var vdp = Vdp.init();
-    vdp.regs[15] = 2;
-    vdp.code = 0x1;
-    vdp.addr = 0x0000;
+    var vdp = try Vdp.init(testing.allocator);
+    defer vdp.deinit(testing.allocator);
+    vdp.setRegister(15, 2);
+    vdp.setCode(0x1);
+    vdp.setAddr(0x0000);
 
     var word: u16 = 0x0102;
     var i: u8 = 0;
@@ -594,26 +600,26 @@ fn vdpFifoStatusProperty(input: VdpFifoCase) !void {
         word +%= 0x0202;
     }
 
-    vdp.progressTransfers(input.progress_master_cycles, null, null);
+    vdp.progressTransfers(input.progress_master_cycles);
 
     const status = vdp.readControl() & 0x0300;
-    const expected: u16 = if (vdp.fifo_len == 0)
+    const expected: u16 = if (vdp.fifoLen() == 0)
         0x0200
-    else if (vdp.fifo_len == 4)
+    else if (vdp.fifoLen() == 4)
         0x0100
     else
         0x0000;
 
-    try testing.expect(vdp.fifo_len <= 4);
+    try testing.expect(vdp.fifoLen() <= 4);
     try testing.expectEqual(expected, status);
 }
 
-fn initVdpWaitCase(input: VdpWaitCase) Vdp {
-    var vdp = Vdp.init();
-    vdp.regs[12] = if (input.h40) 0x81 else 0x00;
-    vdp.regs[15] = 2;
-    vdp.code = 0x1;
-    vdp.addr = 0x0000;
+fn initVdpWaitCase(input: VdpWaitCase) !Vdp {
+    var vdp = try Vdp.init(testing.allocator);
+    vdp.setH40(input.h40);
+    vdp.setRegister(15, 2);
+    vdp.setCode(0x1);
+    vdp.setAddr(0x0000);
 
     var word: u16 = 0x0102;
     var i: u8 = 0;
@@ -622,125 +628,87 @@ fn initVdpWaitCase(input: VdpWaitCase) Vdp {
         word +%= 0x0202;
     }
 
-    progressVdpTransfersWithEvents(&vdp, input.progress_master_cycles);
+    vdp.progressTransfersWithEvents(input.progress_master_cycles);
     return vdp;
 }
 
-fn progressVdpTransfersWithEvents(vdp: *Vdp, master_cycles: u32) void {
-    const visible_lines: u16 = if (vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
-    const total_lines: u16 = if (vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
-    var remaining = master_cycles;
-
-    while (remaining != 0) {
-        if (!vdp.hblank and !vdp.vblank and vdp.line_master_cycle == vdp.hblankStartMasterCycles()) {
-            vdp.setHBlank(true);
-            continue;
-        }
-
-        const to_line_end = clock.ntsc_master_cycles_per_line - vdp.line_master_cycle;
-        var chunk = @as(u32, to_line_end);
-        var hit_hblank = false;
-        if (!vdp.hblank and !vdp.vblank) {
-            const to_hblank = vdp.hblankStartMasterCycles() - vdp.line_master_cycle;
-            if (to_hblank < chunk) {
-                chunk = to_hblank;
-                hit_hblank = true;
-            }
-        }
-
-        if (chunk > remaining) {
-            chunk = remaining;
-            hit_hblank = false;
-        }
-
-        vdp.step(chunk);
-        vdp.progressTransfers(chunk, null, null);
-        remaining -= chunk;
-
-        if (remaining == 0) break;
-        if (hit_hblank) {
-            vdp.setHBlank(true);
-            continue;
-        }
-        if (chunk == to_line_end) {
-            const next_line: u16 = if (vdp.scanline + 1 >= total_lines) 0 else vdp.scanline + 1;
-            _ = vdp.setScanlineState(next_line, visible_lines, total_lines);
-            vdp.setHBlank(false);
-        }
-    }
-}
-
 fn vdpReadWaitMatchesDrainProperty(input: VdpWaitCase) !void {
-    var vdp = initVdpWaitCase(input);
+    var vdp = try initVdpWaitCase(input);
+    defer vdp.deinit(testing.allocator);
     const predicted = vdp.dataPortReadWaitMasterCycles();
 
     if (predicted == 0) {
-        try testing.expect(vdp.fifo_len == 0 and vdp.pending_fifo_len == 0);
+        try testing.expect(vdp.fifoLen() == 0 and vdp.pendingFifoLen() == 0);
         return;
     }
 
-    var before = vdp;
-    progressVdpTransfersWithEvents(&before, predicted - 1);
-    try testing.expect(before.fifo_len != 0 or before.pending_fifo_len != 0);
+    var before = try vdp.clone(testing.allocator);
+    defer before.deinit(testing.allocator);
+    before.progressTransfersWithEvents(predicted - 1);
+    try testing.expect(before.fifoLen() != 0 or before.pendingFifoLen() != 0);
 
-    var drained = vdp;
-    progressVdpTransfersWithEvents(&drained, predicted);
-    try testing.expectEqual(@as(u8, 0), drained.fifo_len);
-    try testing.expectEqual(@as(u8, 0), drained.pending_fifo_len);
+    var drained = try vdp.clone(testing.allocator);
+    defer drained.deinit(testing.allocator);
+    drained.progressTransfersWithEvents(predicted);
+    try testing.expectEqual(@as(u8, 0), drained.fifoLen());
+    try testing.expectEqual(@as(u8, 0), drained.pendingFifoLen());
     try testing.expectEqual(@as(u32, 0), drained.dataPortReadWaitMasterCycles());
 }
 
 fn vdpWriteWaitMatchesNextOpenProperty(input: VdpWaitCase) !void {
-    var vdp = initVdpWaitCase(input);
+    var vdp = try initVdpWaitCase(input);
+    defer vdp.deinit(testing.allocator);
     const predicted = vdp.dataPortWriteWaitMasterCycles();
 
     if (predicted == 0) {
-        try testing.expect(vdp.pending_fifo_len == 0 and vdp.fifo_len < vdp.fifo.len);
+        try testing.expect(vdp.pendingFifoLen() == 0 and vdp.fifoLen() < 4);
         return;
     }
 
-    var before = vdp;
-    progressVdpTransfersWithEvents(&before, predicted - 1);
-    try testing.expect(before.pending_fifo_len != 0 or before.fifo_len == before.fifo.len);
+    var before = try vdp.clone(testing.allocator);
+    defer before.deinit(testing.allocator);
+    before.progressTransfersWithEvents(predicted - 1);
+    try testing.expect(before.pendingFifoLen() != 0 or before.fifoLen() == 4);
 
-    var opened = vdp;
-    progressVdpTransfersWithEvents(&opened, predicted);
-    try testing.expect(opened.pending_fifo_len == 0 and opened.fifo_len < opened.fifo.len);
+    var opened = try vdp.clone(testing.allocator);
+    defer opened.deinit(testing.allocator);
+    opened.progressTransfersWithEvents(predicted);
+    try testing.expect(opened.pendingFifoLen() == 0 and opened.fifoLen() < 4);
     try testing.expectEqual(@as(u32, 0), opened.dataPortWriteWaitMasterCycles());
 }
 
 fn z80WindowBlockedWriteProperty(input: Z80WindowWriteCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
     const address = 0x00A0_0000 + @as(u32, input.offset);
 
-    bus.write16(0x00A1_1100, 0x0100);
-    bus.write8(address, input.granted_value);
-    try testing.expectEqual(input.granted_value, bus.read8(address));
+    emulator.write16(0x00A1_1100, 0x0100);
+    emulator.write8(address, input.granted_value);
+    try testing.expectEqual(input.granted_value, emulator.read8(address));
 
-    bus.write16(0x00A1_1100, 0x0000);
-    bus.write8(address, input.blocked_value);
+    emulator.write16(0x00A1_1100, 0x0000);
+    emulator.write8(address, input.blocked_value);
 
-    bus.write16(0x00A1_1100, 0x0100);
-    try testing.expectEqual(input.granted_value, bus.read8(address));
+    emulator.write16(0x00A1_1100, 0x0100);
+    try testing.expectEqual(input.granted_value, emulator.read8(address));
 }
 
 fn z80ControlLowByteNoOpProperty(input: Z80ControlByteCase) !void {
-    var bus = try initEmptyBus();
-    defer bus.deinit(testing.allocator);
+    var emulator = try initEmptyEmulator();
+    defer emulator.deinit(testing.allocator);
 
-    bus.write8(0x00A1_1200, if (input.release_reset) 0x01 else 0x00);
-    bus.write8(0x00A1_1100, if (input.request_bus) 0x01 else 0x00);
+    emulator.write8(0x00A1_1200, if (input.release_reset) 0x01 else 0x00);
+    emulator.write8(0x00A1_1100, if (input.request_bus) 0x01 else 0x00);
 
-    const busreq_before = bus.read16(0x00A1_1100) & 0x0100;
-    const reset_before = bus.read16(0x00A1_1200) & 0x0100;
+    const busreq_before = emulator.read16(0x00A1_1100) & 0x0100;
+    const reset_before = emulator.read16(0x00A1_1200) & 0x0100;
 
-    bus.write8(0x00A1_1101, input.low_busreq_value);
-    bus.write8(0x00A1_1201, input.low_reset_value);
+    emulator.write8(0x00A1_1101, input.low_busreq_value);
+    emulator.write8(0x00A1_1201, input.low_reset_value);
 
-    try testing.expectEqual(busreq_before, bus.read16(0x00A1_1100) & 0x0100);
-    try testing.expectEqual(reset_before, bus.read16(0x00A1_1200) & 0x0100);
+    try testing.expectEqual(busreq_before, emulator.read16(0x00A1_1100) & 0x0100);
+    try testing.expectEqual(reset_before, emulator.read16(0x00A1_1200) & 0x0100);
 }
 
 test "property: audio timing is chunk-invariant" {
