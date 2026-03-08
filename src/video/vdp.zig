@@ -47,7 +47,7 @@ pub const Vdp = struct {
     pending_port_write_head: u8,
     pending_port_write_len: u8,
     pending_port_write_delay_master_cycles: u16,
-    transfer_master_remainder: u8,
+    transfer_line_master_cycle: u16,
     projected_data_port_write_wait: ProjectedDataPortWriteWait,
 
     // Timing for V-BLANK
@@ -78,6 +78,13 @@ pub const Vdp = struct {
         addr: u16 = 0,
         word: u16 = 0,
         latency: u8 = 0,
+        second_service_pending: bool = false,
+    };
+
+    pub const ProjectedFifoEntry = struct {
+        latency: u8 = 0,
+        requires_second_service: bool = false,
+        second_service_pending: bool = false,
     };
 
     pub const PendingPortWrite = union(enum) {
@@ -99,10 +106,14 @@ pub const Vdp = struct {
 
     pub const ProjectedDataPortWriteWait = struct {
         valid: bool = false,
-        fifo_latencies: [4]u8 = [_]u8{0} ** 4,
+        fifo_entries: [4]ProjectedFifoEntry = [_]ProjectedFifoEntry{.{}} ** 4,
         fifo_len: u8 = 0,
+        pending_fifo_entries: [16]ProjectedFifoEntry = [_]ProjectedFifoEntry{.{}} ** 16,
         pending_fifo_len: u8 = 0,
-        transfer_remainder: u8 = 0,
+        transfer_scanline: u16 = 0,
+        transfer_line_master_cycle: u16 = 0,
+        transfer_hblank: bool = false,
+        transfer_odd_frame: bool = false,
         pending_port_write_delay_master_cycles: u16 = 0,
     };
 
@@ -142,7 +153,7 @@ pub const Vdp = struct {
             .pending_port_write_head = 0,
             .pending_port_write_len = 0,
             .pending_port_write_delay_master_cycles = 0,
-            .transfer_master_remainder = 0,
+            .transfer_line_master_cycle = 0,
             .projected_data_port_write_wait = .{},
             .scanline = 0,
             .line_master_cycle = 0,
@@ -259,6 +270,8 @@ pub const Vdp = struct {
     pub const advanceAddr = fifo_mod.advanceAddr;
     pub const writeControl = fifo_mod.writeControl;
     pub const progressTransfers = fifo_mod.progressTransfers;
+    pub const resetTransferPhase = fifo_mod.resetTransferPhase;
+    pub const nextTransferStepMasterCycles = fifo_mod.nextTransferStepMasterCycles;
     pub const dataPortWriteWaitMasterCycles = fifo_mod.dataPortWriteWaitMasterCycles;
     pub const reserveDataPortWriteWaitMasterCycles = fifo_mod.reserveDataPortWriteWaitMasterCycles;
     pub const dataPortReadWaitMasterCycles = fifo_mod.dataPortReadWaitMasterCycles;

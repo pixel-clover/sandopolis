@@ -21,6 +21,7 @@ struct Jgz80Handle {
     uint8_t ym_addr[2];
     uint8_t ym_regs[2][256];
     uint8_t ym_key_mask;
+    uint32_t audio_event_sequence;
     Jgz80YmWriteEvent ym_write_events[YM_WRITE_BUFFER_CAPACITY];
     uint16_t ym_write_write_index;
     uint16_t ym_write_read_index;
@@ -75,6 +76,12 @@ static void reset_ym2612_state(Jgz80Handle *h) {
     clear_ym2612_event_queues(h);
 }
 
+static uint32_t next_audio_event_sequence(Jgz80Handle *h) {
+    uint32_t sequence = h->audio_event_sequence;
+    h->audio_event_sequence += 1u;
+    return sequence;
+}
+
 static void push_ym_write_event(Jgz80Handle *h, uint8_t port, uint8_t reg, uint8_t value) {
     if (h->ym_write_count == YM_WRITE_BUFFER_CAPACITY) {
         h->ym_write_read_index = (uint16_t)((h->ym_write_read_index + 1u) % YM_WRITE_BUFFER_CAPACITY);
@@ -82,6 +89,7 @@ static void push_ym_write_event(Jgz80Handle *h, uint8_t port, uint8_t reg, uint8
     }
 
     h->ym_write_events[h->ym_write_write_index].master_offset = h->audio_master_offset;
+    h->ym_write_events[h->ym_write_write_index].sequence = next_audio_event_sequence(h);
     h->ym_write_events[h->ym_write_write_index].port = port;
     h->ym_write_events[h->ym_write_write_index].reg = reg;
     h->ym_write_events[h->ym_write_write_index].value = value;
@@ -108,6 +116,7 @@ static void push_ym_dac_sample(Jgz80Handle *h, uint8_t value) {
     }
 
     h->ym_dac_samples[h->ym_dac_write_index].master_offset = h->audio_master_offset;
+    h->ym_dac_samples[h->ym_dac_write_index].sequence = next_audio_event_sequence(h);
     h->ym_dac_samples[h->ym_dac_write_index].value = value;
     h->ym_dac_write_index = (uint16_t)((h->ym_dac_write_index + 1u) % YM_DAC_BUFFER_CAPACITY);
     ++h->ym_dac_count;
@@ -120,6 +129,7 @@ static void push_ym_reset_event(Jgz80Handle *h) {
     }
 
     h->ym_reset_events[h->ym_reset_write_index].master_offset = h->audio_master_offset;
+    h->ym_reset_events[h->ym_reset_write_index].sequence = next_audio_event_sequence(h);
     h->ym_reset_write_index = (uint16_t)((h->ym_reset_write_index + 1u) % YM_RESET_BUFFER_CAPACITY);
     ++h->ym_reset_count;
 }
@@ -287,6 +297,7 @@ Jgz80Handle *jgz80_create(void) {
     memset(h->ram, 0, sizeof(h->ram));
     h->bank = 0;
     h->audio_master_offset = 0;
+    h->audio_event_sequence = 0;
     reset_ym2612_state(h);
     h->psg_last = 0;
     memset(h->psg_tone, 0, sizeof(h->psg_tone));
@@ -311,6 +322,7 @@ void jgz80_reset(Jgz80Handle *handle) {
     memset(handle->ram, 0, sizeof(handle->ram));
     handle->bank = 0;
     handle->audio_master_offset = 0;
+    handle->audio_event_sequence = 0;
     reset_ym2612_state(handle);
     handle->psg_last = 0;
     memset(handle->psg_tone, 0, sizeof(handle->psg_tone));

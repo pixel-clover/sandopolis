@@ -1065,6 +1065,8 @@ pub const Ym2612Synth = struct {
 
     pub fn applyWrite(self: *Ym2612Synth, event: YmWriteEvent) void {
         self.enqueueWrite(.{
+            .master_offset = event.master_offset,
+            .sequence = event.sequence,
             .port = @intCast(event.port & 0x01),
             .reg = event.reg,
             .value = event.value,
@@ -1180,7 +1182,7 @@ fn channelPortBase(channel: u3) struct { port: u1, base: u8 } {
 }
 
 fn writeEvent(port: u1, reg: u8, value: u8) YmWriteEvent {
-    return .{ .master_offset = 0, .port = port, .reg = reg, .value = value };
+    return .{ .master_offset = 0, .sequence = 0, .port = port, .reg = reg, .value = value };
 }
 
 fn keyEvent(channel: u3, operators: u4) YmWriteEvent {

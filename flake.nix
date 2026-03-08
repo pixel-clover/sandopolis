@@ -54,8 +54,8 @@
                 echo "Common commands:"
                 echo "  make build"
                 echo "  make test"
-                echo "  make docs"
-                echo "  make run ARGS=\"roms/sn.smd\""
+                echo "  make help"
+                echo "  BUILD_TYPE=ReleaseFast make run ARGS=\"'tests/testroms/titan-overdrive2.bin'\""
               '';
           };
         }

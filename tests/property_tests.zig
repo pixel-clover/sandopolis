@@ -82,6 +82,12 @@ const VdpFifoCase = struct {
     progress_master_cycles: u8,
 };
 
+const VdpWaitCase = struct {
+    h40: bool,
+    write_count: u8,
+    progress_master_cycles: u8,
+};
+
 const Z80WindowWriteCase = struct {
     offset: u16,
     granted_value: u8,
@@ -265,6 +271,20 @@ const vdp_fifo_gen = minish.gen.Generator(VdpFifoCase){
             return .{
                 .write_count = try tc.choiceInRange(u8, 0, 6),
                 .progress_master_cycles = try tc.choiceInRange(u8, 0, 64),
+            };
+        }
+    }.generate,
+    .shrinkFn = null,
+    .freeFn = null,
+};
+
+const vdp_wait_gen = minish.gen.Generator(VdpWaitCase){
+    .generateFn = struct {
+        fn generate(tc: *minish.TestCase) minish.GenError!VdpWaitCase {
+            return .{
+                .h40 = (try tc.choiceInRange(u8, 0, 1)) != 0,
+                .write_count = try tc.choiceInRange(u8, 0, 8),
+                .progress_master_cycles = try tc.choiceInRange(u8, 0, 127),
             };
         }
     }.generate,
@@ -588,6 +608,107 @@ fn vdpFifoStatusProperty(input: VdpFifoCase) !void {
     try testing.expectEqual(expected, status);
 }
 
+fn initVdpWaitCase(input: VdpWaitCase) Vdp {
+    var vdp = Vdp.init();
+    vdp.regs[12] = if (input.h40) 0x81 else 0x00;
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+
+    var word: u16 = 0x0102;
+    var i: u8 = 0;
+    while (i < input.write_count) : (i += 1) {
+        vdp.writeData(word);
+        word +%= 0x0202;
+    }
+
+    progressVdpTransfersWithEvents(&vdp, input.progress_master_cycles);
+    return vdp;
+}
+
+fn progressVdpTransfersWithEvents(vdp: *Vdp, master_cycles: u32) void {
+    const visible_lines: u16 = if (vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
+    const total_lines: u16 = if (vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+    var remaining = master_cycles;
+
+    while (remaining != 0) {
+        if (!vdp.hblank and !vdp.vblank and vdp.line_master_cycle == vdp.hblankStartMasterCycles()) {
+            vdp.setHBlank(true);
+            continue;
+        }
+
+        const to_line_end = clock.ntsc_master_cycles_per_line - vdp.line_master_cycle;
+        var chunk = @as(u32, to_line_end);
+        var hit_hblank = false;
+        if (!vdp.hblank and !vdp.vblank) {
+            const to_hblank = vdp.hblankStartMasterCycles() - vdp.line_master_cycle;
+            if (to_hblank < chunk) {
+                chunk = to_hblank;
+                hit_hblank = true;
+            }
+        }
+
+        if (chunk > remaining) {
+            chunk = remaining;
+            hit_hblank = false;
+        }
+
+        vdp.step(chunk);
+        vdp.progressTransfers(chunk, null, null);
+        remaining -= chunk;
+
+        if (remaining == 0) break;
+        if (hit_hblank) {
+            vdp.setHBlank(true);
+            continue;
+        }
+        if (chunk == to_line_end) {
+            const next_line: u16 = if (vdp.scanline + 1 >= total_lines) 0 else vdp.scanline + 1;
+            _ = vdp.setScanlineState(next_line, visible_lines, total_lines);
+            vdp.setHBlank(false);
+        }
+    }
+}
+
+fn vdpReadWaitMatchesDrainProperty(input: VdpWaitCase) !void {
+    var vdp = initVdpWaitCase(input);
+    const predicted = vdp.dataPortReadWaitMasterCycles();
+
+    if (predicted == 0) {
+        try testing.expect(vdp.fifo_len == 0 and vdp.pending_fifo_len == 0);
+        return;
+    }
+
+    var before = vdp;
+    progressVdpTransfersWithEvents(&before, predicted - 1);
+    try testing.expect(before.fifo_len != 0 or before.pending_fifo_len != 0);
+
+    var drained = vdp;
+    progressVdpTransfersWithEvents(&drained, predicted);
+    try testing.expectEqual(@as(u8, 0), drained.fifo_len);
+    try testing.expectEqual(@as(u8, 0), drained.pending_fifo_len);
+    try testing.expectEqual(@as(u32, 0), drained.dataPortReadWaitMasterCycles());
+}
+
+fn vdpWriteWaitMatchesNextOpenProperty(input: VdpWaitCase) !void {
+    var vdp = initVdpWaitCase(input);
+    const predicted = vdp.dataPortWriteWaitMasterCycles();
+
+    if (predicted == 0) {
+        try testing.expect(vdp.pending_fifo_len == 0 and vdp.fifo_len < vdp.fifo.len);
+        return;
+    }
+
+    var before = vdp;
+    progressVdpTransfersWithEvents(&before, predicted - 1);
+    try testing.expect(before.pending_fifo_len != 0 or before.fifo_len == before.fifo.len);
+
+    var opened = vdp;
+    progressVdpTransfersWithEvents(&opened, predicted);
+    try testing.expect(opened.pending_fifo_len == 0 and opened.fifo_len < opened.fifo.len);
+    try testing.expectEqual(@as(u32, 0), opened.dataPortWriteWaitMasterCycles());
+}
+
 fn z80WindowBlockedWriteProperty(input: Z80WindowWriteCase) !void {
     var bus = try initEmptyBus();
     defer bus.deinit(testing.allocator);
@@ -724,6 +845,20 @@ test "property: VDP fifo status bits reflect fifo occupancy boundaries" {
     try minish.check(testing.allocator, vdp_fifo_gen, vdpFifoStatusProperty, .{
         .num_runs = 128,
         .seed = 0xF1F01234,
+    });
+}
+
+test "property: VDP data-port read wait matches actual drain time" {
+    try minish.check(testing.allocator, vdp_wait_gen, vdpReadWaitMatchesDrainProperty, .{
+        .num_runs = 128,
+        .seed = 0xDA7A1234,
+    });
+}
+
+test "property: VDP data-port write wait matches actual open time" {
+    try minish.check(testing.allocator, vdp_wait_gen, vdpWriteWaitMatchesNextOpenProperty, .{
+        .num_runs = 128,
+        .seed = 0x0F3E1234,
     });
 }
 

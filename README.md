@@ -53,10 +53,10 @@ BUILD_TYPE=ReleaseFast make build
 ./zig-out/bin/sandopolis path/to/rom.bin
 
 # Example with Sonic & Knuckles
-./zig-out/bin/sandopolis roms/sn.smd
+./zig-out/bin/sandopolis <path-to-rom>
 
 # Or use the convenience target
-BUILD_TYPE=ReleaseFast make run ARGS="roms/sn.smd"
+BUILD_TYPE=ReleaseFast make run ARGS="<path-to-rom>"
 ```
 
 #### Controls

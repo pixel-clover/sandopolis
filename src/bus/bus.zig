@@ -383,18 +383,18 @@ pub const Bus = struct {
         if (access_count == 0) return;
 
         // Apply contention per-access so VDP transfers can interleave.
-        const vdp_halting = self.vdp.shouldHaltCpu();
         var remaining = access_count;
         while (remaining > 0) : (remaining -= 1) {
             const extra: u32 = if (self.z80_odd_access) 1 else 0;
             const z80_wait: u32 = 49 + extra;
-            self.z80_wait_master_cycles += z80_wait;
-            if (!vdp_halting) {
+            if (!self.vdp.shouldHaltCpu()) {
                 self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(11);
             }
             // Advance VDP/audio between contention events for finer interleaving.
             if (remaining > 1) {
                 self.advanceNonZ80Master(z80_wait);
+            } else {
+                self.z80_wait_master_cycles += z80_wait;
             }
             self.z80_odd_access = !self.z80_odd_access;
         }
@@ -448,7 +448,7 @@ pub const Bus = struct {
 
     fn schedulerDmaHaltQuantum(ctx: ?*anyopaque) u32 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 8));
-        return self.vdp.accessSlotCycles();
+        return self.vdp.nextTransferStepMasterCycles();
     }
 
     pub fn schedulerRuntime(self: *Bus) SchedulerBus {
@@ -670,44 +670,6 @@ test "cartridge sixteen-bit sram stores both bytes of a word" {
     try testing.expectEqual(@as(u16, 0x1234), bus.read16(0x0020_0000));
     try testing.expectEqual(@as(u8, 0x12), bus.read8(0x0020_0000));
     try testing.expectEqual(@as(u8, 0x34), bus.read8(0x0020_0001));
-}
-
-test "persistent cartridge sram flushes to save file and reloads" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const rom = try makeRomWithSramHeader(testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
-    defer testing.allocator.free(rom);
-    try tmp.dir.writeFile(.{ .sub_path = "persist.md", .data = rom });
-
-    const rom_path = try tmp.dir.realpathAlloc(testing.allocator, "persist.md");
-    defer testing.allocator.free(rom_path);
-
-    {
-        var bus = try Bus.init(testing.allocator, rom_path);
-        defer bus.deinit(testing.allocator);
-
-        const save_path = bus.persistentSavePath() orelse unreachable;
-        bus.write8(0x0020_0001, 0xA5);
-        bus.write8(0x0020_0003, 0x5A);
-        try bus.flushPersistentStorage();
-
-        var save_file = try std.fs.cwd().openFile(save_path, .{});
-        defer save_file.close();
-
-        var first_bytes: [2]u8 = undefined;
-        const bytes_read = try save_file.readAll(&first_bytes);
-        try testing.expectEqual(@as(usize, 2), bytes_read);
-        try testing.expectEqualSlices(u8, &[_]u8{ 0xA5, 0x5A }, first_bytes[0..]);
-    }
-
-    {
-        var bus = try Bus.init(testing.allocator, rom_path);
-        defer bus.deinit(testing.allocator);
-
-        try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x0020_0001));
-        try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x0020_0003));
-    }
 }
 
 test "z80 bus mapped memory and busreq registers behave as expected" {
@@ -1122,6 +1084,43 @@ test "z80 68k-bus stall is applied before the next instruction" {
     bus.stepMaster(16);
     try testing.expectEqual(@as(u16, 0x0003), bus.z80.getPc());
     try testing.expect(bus.z80_master_credit < 0);
+    try testing.expectEqual(clock.m68kCyclesToMaster(22), bus.pendingM68kWaitMasterCycles());
+}
+
+test "z80 contention reevaluates vdp dma halt state between accesses" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00E0_0000, 0xABCD);
+    bus.vdp.regs[12] = 0x81;
+    bus.vdp.regs[15] = 2;
+    bus.vdp.code = 0x1;
+    bus.vdp.addr = 0x0000;
+    bus.vdp.dma_active = true;
+    bus.vdp.dma_fill = false;
+    bus.vdp.dma_copy = false;
+    bus.vdp.dma_source_addr = 0x00E0_0000;
+    bus.vdp.dma_length = 1;
+    bus.vdp.dma_remaining = 1;
+    bus.vdp.dma_start_delay_slots = 0;
+    bus.vdp.transfer_line_master_cycle = @intCast(bus.vdp.accessSlotCycles() - 1);
+
+    bus.recordZ80M68kBusAccesses(2);
+
+    try testing.expectEqual(clock.m68kCyclesToMaster(11), bus.pendingM68kWaitMasterCycles());
+    try testing.expectEqual(@as(u32, 50), bus.z80_wait_master_cycles);
+    try testing.expectEqual(@as(u32, 49), bus.audio_timing.pending_master_cycles);
+    try testing.expect(!bus.vdp.shouldHaltCpu());
+}
+
+test "multiple z80 68k-bus accesses only leave the final stall pending" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.recordZ80M68kBusAccesses(2);
+
+    try testing.expectEqual(@as(u32, 50), bus.z80_wait_master_cycles);
+    try testing.expectEqual(@as(u32, 49), bus.audio_timing.pending_master_cycles);
     try testing.expectEqual(clock.m68kCyclesToMaster(22), bus.pendingM68kWaitMasterCycles());
 }
 

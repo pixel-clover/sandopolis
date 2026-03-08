@@ -1,7 +1,38 @@
+const std = @import("std");
+const testing = std.testing;
+const clock = @import("../clock.zig");
 const Vdp = @import("vdp.zig").Vdp;
 
 const dma_fifo_latency_slots: u8 = 3;
 const pending_port_write_replay_delay_pixels: u16 = 5;
+const h32_access_slots = [_]u8{ 5, 13, 21, 37, 45, 53, 69, 77, 85, 101, 109, 117, 132, 133, 147, 161 };
+const h40_access_slots = [_]u8{ 6, 14, 22, 38, 46, 54, 70, 78, 86, 102, 110, 118, 134, 142, 150, 165, 166, 190 };
+const h32_refresh_slots = [_]u8{ 1, 33, 65, 97, 129 };
+const h40_refresh_slots = [_]u8{ 26, 58, 90, 122, 154, 204 };
+const h32_slot_count: u16 = 171;
+const h40_slot_count: u16 = 210;
+const h40_hsync_slot_start: u16 = 184;
+const h40_hsync_slot_count: u16 = 17;
+const h40_hsync_slot_base_master: u16 = 2944;
+const h40_hsync_pattern_master: u16 = 166;
+const h40_hsync_end_master: u16 = 3276;
+
+const TransferPhaseState = struct {
+    scanline: u16,
+    line_master_cycle: u16,
+    hblank: bool,
+    odd_frame: bool,
+};
+
+const TransferPhaseBoundary = enum {
+    hblank_start,
+    line_end,
+};
+
+const TransferPhaseBoundaryEvent = struct {
+    kind: TransferPhaseBoundary,
+    wait_master_cycles: u32,
+};
 
 // -- FIFO queue operations --
 
@@ -27,6 +58,7 @@ fn makeWriteFifoEntry(self: *const Vdp, value: u16, latency: u8) Vdp.VdpWriteFif
         .addr = self.addr,
         .word = value,
         .latency = latency,
+        .second_service_pending = false,
     };
 }
 
@@ -100,10 +132,203 @@ fn popPendingPortWrite(self: *Vdp) ?Vdp.PendingPortWrite {
 
 // -- Transfer timing --
 
-fn advanceTransferPhase(self: *Vdp, master_cycles: u32) void {
-    const slot_cycles = self.accessSlotCycles();
-    const total_cycles = @as(u32, self.transfer_master_remainder) + master_cycles;
-    self.transfer_master_remainder = @intCast(total_cycles % slot_cycles);
+fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
+    self.transfer_line_master_cycle +%= @intCast(master_cycles);
+}
+
+fn slotIndexInSet(slot_idx: u16, comptime slot_set: []const u8) bool {
+    inline for (slot_set) |set_idx| {
+        if (slot_idx == set_idx) return true;
+    }
+    return false;
+}
+
+fn transferSlotCount(self: *const Vdp) u16 {
+    return if (self.isH40()) h40_slot_count else h32_slot_count;
+}
+
+fn h40PixelStartMasterCycles(pixel: u16) u16 {
+    if (pixel < h40_hsync_slot_start * 2) return pixel * 8;
+    if (pixel >= 402) return h40_hsync_end_master + ((pixel - 402) * 8);
+
+    const hsync_pixel = pixel - (h40_hsync_slot_start * 2);
+    const pattern = hsync_pixel / 17;
+    const pattern_pixel = hsync_pixel % 17;
+    const pattern_base = pattern * h40_hsync_pattern_master;
+    const pixel_offset = switch (pattern_pixel) {
+        0 => 0,
+        1...8 => 8 + ((pattern_pixel - 1) * 10),
+        9...10 => 87 + ((pattern_pixel - 9) * 9),
+        else => 106 + ((pattern_pixel - 11) * 10),
+    };
+    return h40_hsync_slot_base_master + pattern_base + pixel_offset;
+}
+
+fn transferSlotStartMasterCycles(self: *const Vdp, slot_idx: u16) u16 {
+    if (!self.isH40()) return slot_idx * 20;
+    return h40PixelStartMasterCycles(slot_idx * 2);
+}
+
+fn transferSlotEndMasterCycles(self: *const Vdp, slot_idx: u16) u16 {
+    const next_slot = slot_idx + 1;
+    if (next_slot < transferSlotCount(self)) return transferSlotStartMasterCycles(self, next_slot);
+    return clock.ntsc_master_cycles_per_line;
+}
+
+fn transferSlotIsRefresh(self: *const Vdp, slot_idx: u16) bool {
+    return if (self.isH40())
+        slotIndexInSet(slot_idx, &h40_refresh_slots)
+    else
+        slotIndexInSet(slot_idx, &h32_refresh_slots);
+}
+
+fn transferSlotIsAccess(self: *const Vdp, slot_idx: u16, blanking: bool) bool {
+    if (blanking) return !transferSlotIsRefresh(self, slot_idx);
+    return if (self.isH40())
+        slotIndexInSet(slot_idx, &h40_access_slots)
+    else
+        slotIndexInSet(slot_idx, &h32_access_slots);
+}
+
+fn activeVisibleLinesForPhase(self: *const Vdp) u16 {
+    if (!self.pal_mode) return clock.ntsc_visible_lines;
+    return if ((self.regs[1] & 0x08) != 0) clock.pal_visible_lines else clock.ntsc_visible_lines;
+}
+
+fn totalLinesForOddFrame(self: *const Vdp, odd_frame: bool) u16 {
+    if ((self.regs[12] & 0x06) != 0x06) {
+        return if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+    }
+
+    if (self.pal_mode) {
+        return if (odd_frame) clock.pal_lines_per_frame else clock.pal_lines_per_frame - 1;
+    }
+
+    return if (odd_frame) clock.ntsc_lines_per_frame + 1 else clock.ntsc_lines_per_frame;
+}
+
+fn phaseIsVBlank(self: *const Vdp, phase: TransferPhaseState) bool {
+    return phase.scanline >= activeVisibleLinesForPhase(self);
+}
+
+fn phaseIsBlanking(self: *const Vdp, phase: TransferPhaseState) bool {
+    return phaseIsVBlank(self, phase) or phase.hblank;
+}
+
+fn currentTransferPhase(self: *const Vdp) TransferPhaseState {
+    return .{
+        .scanline = self.scanline,
+        .line_master_cycle = self.transfer_line_master_cycle,
+        .hblank = self.hblank,
+        .odd_frame = self.odd_frame,
+    };
+}
+
+fn projectedTransferPhase(self: *const Vdp) TransferPhaseState {
+    const projected = &self.projected_data_port_write_wait;
+    return .{
+        .scanline = projected.transfer_scanline,
+        .line_master_cycle = projected.transfer_line_master_cycle,
+        .hblank = projected.transfer_hblank,
+        .odd_frame = projected.transfer_odd_frame,
+    };
+}
+
+fn storeProjectedTransferPhase(self: *Vdp, phase: TransferPhaseState) void {
+    self.projected_data_port_write_wait.transfer_scanline = phase.scanline;
+    self.projected_data_port_write_wait.transfer_line_master_cycle = phase.line_master_cycle;
+    self.projected_data_port_write_wait.transfer_hblank = phase.hblank;
+    self.projected_data_port_write_wait.transfer_odd_frame = phase.odd_frame;
+}
+
+fn nextTransferPhaseBoundary(self: *const Vdp, phase: TransferPhaseState) TransferPhaseBoundaryEvent {
+    const line_end_wait = clock.ntsc_master_cycles_per_line - phase.line_master_cycle;
+    if (!phase.hblank and !phaseIsVBlank(self, phase)) {
+        const hblank_start = self.hblankStartMasterCycles();
+        if (phase.line_master_cycle < hblank_start) {
+            return .{
+                .kind = .hblank_start,
+                .wait_master_cycles = hblank_start - phase.line_master_cycle,
+            };
+        }
+    }
+
+    return .{
+        .kind = .line_end,
+        .wait_master_cycles = line_end_wait,
+    };
+}
+
+fn applyTransferPhaseBoundary(self: *const Vdp, phase: *TransferPhaseState, boundary: TransferPhaseBoundary) void {
+    switch (boundary) {
+        .hblank_start => {
+            phase.line_master_cycle = self.hblankStartMasterCycles();
+            phase.hblank = true;
+        },
+        .line_end => {
+            const total_lines = totalLinesForOddFrame(self, phase.odd_frame);
+            phase.scanline += 1;
+            if (phase.scanline >= total_lines) {
+                phase.scanline = 0;
+                phase.odd_frame = !phase.odd_frame;
+            }
+            phase.line_master_cycle = 0;
+            phase.hblank = false;
+        },
+    }
+}
+
+fn advanceTransferPhaseState(self: *const Vdp, phase: *TransferPhaseState, master_cycles: u32) void {
+    var remaining = master_cycles;
+    while (remaining != 0) {
+        const boundary = nextTransferPhaseBoundary(self, phase.*);
+        if (remaining < boundary.wait_master_cycles) {
+            phase.line_master_cycle += @intCast(remaining);
+            return;
+        }
+
+        remaining -= boundary.wait_master_cycles;
+        applyTransferPhaseBoundary(self, phase, boundary.kind);
+    }
+}
+
+const TransferEvent = struct {
+    slot_idx: u16,
+    wait_master_cycles: u32,
+};
+
+fn nextTransferEventForState(self: *const Vdp, line_master_cycle: u16, blanking: bool, needs_non_refresh: bool, needs_access_only: bool) ?TransferEvent {
+    var slot_idx: u16 = 0;
+    while (slot_idx < transferSlotCount(self)) : (slot_idx += 1) {
+        const slot_end = transferSlotEndMasterCycles(self, slot_idx);
+        if (slot_end <= line_master_cycle) continue;
+
+        const is_refresh = transferSlotIsRefresh(self, slot_idx);
+        const has_non_refresh_effect = needs_non_refresh and !is_refresh;
+        const has_access_effect = needs_access_only and transferSlotIsAccess(self, slot_idx, blanking);
+        if (has_non_refresh_effect or has_access_effect) {
+            return .{
+                .slot_idx = slot_idx,
+                .wait_master_cycles = slot_end - line_master_cycle,
+            };
+        }
+    }
+
+    return null;
+}
+
+fn nextTransferStepForState(self: *const Vdp, line_master_cycle: u16, blanking: bool) u32 {
+    const needs_non_refresh = (self.dma_active and !self.dma_fill and !self.dma_copy) or
+        !fifoIsEmpty(self) or
+        !pendingFifoIsEmpty(self);
+    const needs_access_only = self.dma_copy;
+    const event = nextTransferEventForState(self, line_master_cycle, blanking, needs_non_refresh, needs_access_only) orelse
+        return clock.ntsc_master_cycles_per_line - line_master_cycle;
+    return event.wait_master_cycles;
+}
+
+pub fn nextTransferStepMasterCycles(self: *const Vdp) u32 {
+    return nextTransferStepForState(self, self.transfer_line_master_cycle, self.vblank or self.hblank);
 }
 
 fn pendingPortWriteReplayDelayMasterCycles(self: *const Vdp) u16 {
@@ -119,22 +344,112 @@ fn invalidateProjectedDataPortWriteWait(self: *Vdp) void {
     self.projected_data_port_write_wait.valid = false;
 }
 
-fn syncProjectedDataPortWriteWait(self: *Vdp) void {
-    if (self.projected_data_port_write_wait.valid) return;
+pub fn resetTransferPhase(self: *Vdp) void {
+    self.transfer_line_master_cycle = self.line_master_cycle;
+    invalidateProjectedDataPortWriteWait(self);
+}
 
-    self.projected_data_port_write_wait = .{
-        .valid = true,
-        .fifo_len = self.fifo_len,
-        .pending_fifo_len = self.pending_fifo_len,
-        .transfer_remainder = self.transfer_master_remainder,
-        .pending_port_write_delay_master_cycles = self.pending_port_write_delay_master_cycles,
+fn entryRequiresSecondService(code: u8) bool {
+    return switch (code & 0xF) {
+        0x3, 0x5 => false,
+        else => true,
     };
+}
+
+fn makeProjectedFifoEntry(entry: Vdp.VdpWriteFifoEntry) Vdp.ProjectedFifoEntry {
+    return .{
+        .latency = entry.latency,
+        .requires_second_service = entryRequiresSecondService(entry.code),
+        .second_service_pending = entry.second_service_pending,
+    };
+}
+
+fn shiftSimEntriesLeft(entries: []Vdp.ProjectedFifoEntry, len: *u8) void {
+    if (len.* == 0) return;
+
+    var i: usize = 1;
+    while (i < @as(usize, len.*)) : (i += 1) {
+        entries[i - 1] = entries[i];
+    }
+    len.* -= 1;
+}
+
+fn moveSimPendingIntoFifo(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8, pending_entries: []Vdp.ProjectedFifoEntry, pending_len: *u8) void {
+    if (pending_len.* == 0 or @as(usize, fifo_len.*) >= fifo_entries.len) return;
+
+    fifo_entries[@as(usize, fifo_len.*)] = pending_entries[0];
+    fifo_len.* += 1;
+    shiftSimEntriesLeft(pending_entries, pending_len);
+}
+
+fn processSimAccessSlot(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8, pending_entries: []Vdp.ProjectedFifoEntry, pending_len: *u8) void {
+    if (fifo_len.* == 0 or fifo_entries[0].latency != 0) return;
+
+    if (fifo_entries[0].requires_second_service and !fifo_entries[0].second_service_pending) {
+        fifo_entries[0].second_service_pending = true;
+        return;
+    }
+
+    shiftSimEntriesLeft(fifo_entries, fifo_len);
+    moveSimPendingIntoFifo(fifo_entries, fifo_len, pending_entries, pending_len);
+}
+
+fn tickSimLatency(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: u8) void {
+    var i: usize = 0;
+    while (i < @as(usize, fifo_len)) : (i += 1) {
+        if (fifo_entries[i].latency > 0) {
+            fifo_entries[i].latency -= 1;
+        }
+    }
+}
+
+fn processSimTransferSlot(self: *const Vdp, slot_idx: u16, blanking: bool, fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8, pending_entries: []Vdp.ProjectedFifoEntry, pending_len: *u8) void {
+    if (transferSlotIsRefresh(self, slot_idx)) return;
+
+    tickSimLatency(fifo_entries, fifo_len.*);
+    if (transferSlotIsAccess(self, slot_idx, blanking)) {
+        processSimAccessSlot(fifo_entries, fifo_len, pending_entries, pending_len);
+    }
+}
+
+fn snapshotSimFifos(self: *const Vdp, fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8, pending_entries: []Vdp.ProjectedFifoEntry, pending_len: *u8) void {
+    fifo_len.* = 0;
+    pending_len.* = 0;
 
     var i: usize = 0;
     while (i < @as(usize, self.fifo_len)) : (i += 1) {
         const idx = (@as(usize, self.fifo_head) + i) % self.fifo.len;
-        self.projected_data_port_write_wait.fifo_latencies[i] = self.fifo[idx].latency;
+        fifo_entries[i] = makeProjectedFifoEntry(self.fifo[idx]);
+        fifo_len.* += 1;
     }
+
+    i = 0;
+    while (i < @as(usize, self.pending_fifo_len)) : (i += 1) {
+        const idx = (@as(usize, self.pending_fifo_head) + i) % self.pending_fifo.len;
+        pending_entries[i] = makeProjectedFifoEntry(self.pending_fifo[idx]);
+        pending_len.* += 1;
+    }
+}
+
+fn syncProjectedDataPortWriteWait(self: *Vdp) void {
+    if (self.projected_data_port_write_wait.valid) return;
+
+    const phase = currentTransferPhase(self);
+    self.projected_data_port_write_wait = .{
+        .valid = true,
+        .transfer_scanline = phase.scanline,
+        .transfer_line_master_cycle = phase.line_master_cycle,
+        .transfer_hblank = phase.hblank,
+        .transfer_odd_frame = phase.odd_frame,
+        .pending_port_write_delay_master_cycles = self.pending_port_write_delay_master_cycles,
+    };
+    snapshotSimFifos(
+        self,
+        self.projected_data_port_write_wait.fifo_entries[0..],
+        &self.projected_data_port_write_wait.fifo_len,
+        self.projected_data_port_write_wait.pending_fifo_entries[0..],
+        &self.projected_data_port_write_wait.pending_fifo_len,
+    );
 }
 
 fn projectedDataPortWriteHasRoom(self: *const Vdp) bool {
@@ -143,35 +458,22 @@ fn projectedDataPortWriteHasRoom(self: *const Vdp) bool {
 }
 
 fn projectedAdvanceTransferPhase(self: *Vdp, master_cycles: u32) void {
-    const projected = &self.projected_data_port_write_wait;
-    const slot_cycles = self.accessSlotCycles();
-    const total_cycles = @as(u32, projected.transfer_remainder) + master_cycles;
-    projected.transfer_remainder = @intCast(total_cycles % slot_cycles);
+    var phase = projectedTransferPhase(self);
+    advanceTransferPhaseState(self, &phase, master_cycles);
+    storeProjectedTransferPhase(self, phase);
 }
 
-fn projectedProcessAccessSlot(self: *Vdp) void {
+fn projectedProcessTransferSlot(self: *Vdp, slot_idx: u16, blanking: bool) void {
     const projected = &self.projected_data_port_write_wait;
-
-    var i: usize = 0;
-    while (i < @as(usize, projected.fifo_len)) : (i += 1) {
-        if (projected.fifo_latencies[i] > 0) {
-            projected.fifo_latencies[i] -= 1;
-        }
-    }
-
-    if (projected.fifo_len > 0 and projected.fifo_latencies[0] == 0) {
-        i = 1;
-        while (i < @as(usize, projected.fifo_len)) : (i += 1) {
-            projected.fifo_latencies[i - 1] = projected.fifo_latencies[i];
-        }
-        projected.fifo_len -= 1;
-    }
-
-    if (projected.pending_fifo_len != 0 and @as(usize, projected.fifo_len) < self.fifo.len) {
-        projected.fifo_latencies[projected.fifo_len] = dma_fifo_latency_slots;
-        projected.fifo_len += 1;
-        projected.pending_fifo_len -= 1;
-    }
+    processSimTransferSlot(
+        self,
+        slot_idx,
+        blanking,
+        projected.fifo_entries[0..],
+        &projected.fifo_len,
+        projected.pending_fifo_entries[0..],
+        &projected.pending_fifo_len,
+    );
 }
 
 fn reserveProjectedDataPortWriteWait(self: *Vdp) u32 {
@@ -180,6 +482,7 @@ fn reserveProjectedDataPortWriteWait(self: *Vdp) u32 {
     var wait_master_cycles: u32 = 0;
     while (!projectedDataPortWriteHasRoom(self)) {
         const projected = &self.projected_data_port_write_wait;
+        var phase = projectedTransferPhase(self);
 
         if (projected.pending_port_write_delay_master_cycles != 0) {
             wait_master_cycles += projected.pending_port_write_delay_master_cycles;
@@ -188,14 +491,34 @@ fn reserveProjectedDataPortWriteWait(self: *Vdp) u32 {
             continue;
         }
 
-        const slot_wait = self.accessSlotCycles() - @as(u32, projected.transfer_remainder);
-        wait_master_cycles += slot_wait;
-        projected.transfer_remainder = 0;
-        projectedProcessAccessSlot(self);
+        const boundary = nextTransferPhaseBoundary(self, phase);
+        const event = nextTransferEventForState(self, phase.line_master_cycle, phaseIsBlanking(self, phase), true, false);
+        if (event) |slot_event| {
+            if (slot_event.wait_master_cycles <= boundary.wait_master_cycles) {
+                wait_master_cycles += slot_event.wait_master_cycles;
+                phase.line_master_cycle += @intCast(slot_event.wait_master_cycles);
+                storeProjectedTransferPhase(self, phase);
+                projectedProcessTransferSlot(self, slot_event.slot_idx, phaseIsBlanking(self, phase));
+                if (slot_event.wait_master_cycles == boundary.wait_master_cycles) {
+                    phase = projectedTransferPhase(self);
+                    applyTransferPhaseBoundary(self, &phase, boundary.kind);
+                    storeProjectedTransferPhase(self, phase);
+                }
+                continue;
+            }
+        }
+
+        wait_master_cycles += boundary.wait_master_cycles;
+        advanceTransferPhaseState(self, &phase, boundary.wait_master_cycles);
+        storeProjectedTransferPhase(self, phase);
     }
 
     const projected = &self.projected_data_port_write_wait;
-    projected.fifo_latencies[projected.fifo_len] = dma_fifo_latency_slots;
+    projected.fifo_entries[@as(usize, projected.fifo_len)] = .{
+        .latency = dma_fifo_latency_slots,
+        .requires_second_service = entryRequiresSecondService(self.code),
+        .second_service_pending = false,
+    };
     projected.fifo_len += 1;
     return wait_master_cycles;
 }
@@ -212,97 +535,69 @@ fn fifoTickLatency(self: *Vdp) void {
 
 // -- Drain analysis --
 
-fn fifoSlotsUntilNextOpen(self: *const Vdp, pending_ahead: u8) u32 {
-    var fifo_latencies = [_]u8{0} ** 4;
+fn fifoWaitUntilNextOpen(self: *const Vdp) u32 {
+    var fifo_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 4;
+    var pending_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 16;
     var fifo_len: u8 = 0;
+    var pending_len: u8 = 0;
+    snapshotSimFifos(self, fifo_entries[0..], &fifo_len, pending_entries[0..], &pending_len);
 
-    var i: usize = 0;
-    while (i < @as(usize, self.fifo_len)) : (i += 1) {
-        const idx = (@as(usize, self.fifo_head) + i) % self.fifo.len;
-        fifo_latencies[i] = self.fifo[idx].latency;
-        fifo_len += 1;
-    }
+    if (pending_len == 0 and @as(usize, fifo_len) < fifo_entries.len) return 0;
 
-    var queued_ahead = pending_ahead;
-    while (fifo_len < fifo_latencies.len and queued_ahead > 0) {
-        fifo_latencies[fifo_len] = dma_fifo_latency_slots;
-        fifo_len += 1;
-        queued_ahead -= 1;
-    }
+    var wait_master_cycles: u32 = 0;
+    var phase = currentTransferPhase(self);
 
-    if (fifo_len < fifo_latencies.len and queued_ahead == 0) return 0;
-
-    var slots: u32 = 0;
     while (true) {
-        slots += 1;
-
-        i = 0;
-        while (i < fifo_len) : (i += 1) {
-            if (fifo_latencies[i] > 0) {
-                fifo_latencies[i] -= 1;
-            }
-        }
-
-        if (fifo_len > 0 and fifo_latencies[0] == 0) {
-            i = 1;
-            while (i < fifo_len) : (i += 1) {
-                fifo_latencies[i - 1] = fifo_latencies[i];
-            }
-            fifo_len -= 1;
-        }
-
-        while (fifo_len < fifo_latencies.len) {
-            if (queued_ahead > 0) {
-                fifo_latencies[fifo_len] = dma_fifo_latency_slots;
-                fifo_len += 1;
-                queued_ahead -= 1;
+        const boundary = nextTransferPhaseBoundary(self, phase);
+        const event = nextTransferEventForState(self, phase.line_master_cycle, phaseIsBlanking(self, phase), true, false);
+        if (event) |slot_event| {
+            if (slot_event.wait_master_cycles <= boundary.wait_master_cycles) {
+                wait_master_cycles += slot_event.wait_master_cycles;
+                phase.line_master_cycle += @intCast(slot_event.wait_master_cycles);
+                processSimTransferSlot(self, slot_event.slot_idx, phaseIsBlanking(self, phase), fifo_entries[0..], &fifo_len, pending_entries[0..], &pending_len);
+                if (pending_len == 0 and @as(usize, fifo_len) < fifo_entries.len) return wait_master_cycles;
+                if (slot_event.wait_master_cycles == boundary.wait_master_cycles) {
+                    applyTransferPhaseBoundary(self, &phase, boundary.kind);
+                }
                 continue;
             }
-
-            return slots;
         }
+
+        wait_master_cycles += boundary.wait_master_cycles;
+        applyTransferPhaseBoundary(self, &phase, boundary.kind);
+        if (pending_len == 0 and @as(usize, fifo_len) < fifo_entries.len) return wait_master_cycles;
     }
 }
 
-fn fifoSlotsUntilDrained(self: *const Vdp, pending_ahead: u8) u32 {
-    var fifo_latencies = [_]u8{0} ** 4;
+fn fifoWaitUntilDrained(self: *const Vdp) u32 {
+    var fifo_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 4;
+    var pending_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 16;
     var fifo_len: u8 = 0;
+    var pending_len: u8 = 0;
+    snapshotSimFifos(self, fifo_entries[0..], &fifo_len, pending_entries[0..], &pending_len);
 
-    var i: usize = 0;
-    while (i < @as(usize, self.fifo_len)) : (i += 1) {
-        const idx = (@as(usize, self.fifo_head) + i) % self.fifo.len;
-        fifo_latencies[i] = self.fifo[idx].latency;
-        fifo_len += 1;
-    }
-
-    var queued_ahead = pending_ahead;
-    var slots: u32 = 0;
-    while (fifo_len != 0 or queued_ahead != 0) {
-        slots += 1;
-
-        i = 0;
-        while (i < fifo_len) : (i += 1) {
-            if (fifo_latencies[i] > 0) {
-                fifo_latencies[i] -= 1;
+    var phase = currentTransferPhase(self);
+    var wait_master_cycles: u32 = 0;
+    while (fifo_len != 0 or pending_len != 0) {
+        const boundary = nextTransferPhaseBoundary(self, phase);
+        const event = nextTransferEventForState(self, phase.line_master_cycle, phaseIsBlanking(self, phase), true, false);
+        if (event) |slot_event| {
+            if (slot_event.wait_master_cycles <= boundary.wait_master_cycles) {
+                wait_master_cycles += slot_event.wait_master_cycles;
+                phase.line_master_cycle += @intCast(slot_event.wait_master_cycles);
+                processSimTransferSlot(self, slot_event.slot_idx, phaseIsBlanking(self, phase), fifo_entries[0..], &fifo_len, pending_entries[0..], &pending_len);
+                if (slot_event.wait_master_cycles == boundary.wait_master_cycles) {
+                    applyTransferPhaseBoundary(self, &phase, boundary.kind);
+                }
+                continue;
             }
         }
 
-        if (fifo_len > 0 and fifo_latencies[0] == 0) {
-            i = 1;
-            while (i < fifo_len) : (i += 1) {
-                fifo_latencies[i - 1] = fifo_latencies[i];
-            }
-            fifo_len -= 1;
-        }
-
-        if (queued_ahead != 0 and fifo_len < fifo_latencies.len) {
-            fifo_latencies[fifo_len] = dma_fifo_latency_slots;
-            fifo_len += 1;
-            queued_ahead -= 1;
-        }
+        wait_master_cycles += boundary.wait_master_cycles;
+        applyTransferPhaseBoundary(self, &phase, boundary.kind);
     }
 
-    return slots;
+    return wait_master_cycles;
 }
 
 // -- Data port read --
@@ -518,35 +813,22 @@ fn finishDmaIfIdle(self: *Vdp) void {
     }
 }
 
-fn progressMemoryToVramDma(self: *Vdp, access_slots: u32, read_ctx: ?*anyopaque, read_word: Vdp.DmaReadFn) void {
-    var slots_left = access_slots;
-    while (slots_left > 0) : (slots_left -= 1) {
-        var can_transfer = true;
-        if (self.dma_start_delay_slots != 0) {
-            self.dma_start_delay_slots -= 1;
-            can_transfer = self.dma_start_delay_slots == 0;
-        }
-
-        if (can_transfer and !fifoIsFull(self) and self.dma_remaining > 0) {
-            const word = read_word(read_ctx, self.dma_source_addr);
-            const entry = makeWriteFifoEntry(self, word, dma_fifo_latency_slots);
-            self.dma_source_addr +%= 2;
-            self.dma_remaining -= 1;
-            fifoPush(self, entry);
-            advanceAddr(self);
-        }
-
-        fifoTickLatency(self);
-
-        serviceFifoFront(self);
-        if (!fifoIsFull(self) and !pendingFifoIsEmpty(self)) {
-            const pending = pendingFifoFront(self).*;
-            pendingFifoPop(self);
-            fifoPush(self, pending);
-        }
+fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopaque, read_word: Vdp.DmaReadFn) void {
+    var can_transfer = true;
+    if (self.dma_start_delay_slots != 0) {
+        self.dma_start_delay_slots -= 1;
+        can_transfer = self.dma_start_delay_slots == 0;
     }
 
-    finishDmaIfIdle(self);
+    if (!can_transfer or fifoIsFull(self) or self.dma_remaining == 0) return;
+    if (slot_idx != 0 and transferSlotIsRefresh(self, slot_idx - 1)) return;
+
+    const word = read_word(read_ctx, self.dma_source_addr);
+    const entry = makeWriteFifoEntry(self, word, dma_fifo_latency_slots);
+    self.dma_source_addr +%= 2;
+    self.dma_remaining -= 1;
+    fifoPush(self, entry);
+    advanceAddr(self);
 }
 
 fn progressVramCopyDma(self: *Vdp, access_slots: u32) void {
@@ -571,6 +853,22 @@ fn progressVramCopyDma(self: *Vdp, access_slots: u32) void {
     finishDmaIfIdle(self);
 }
 
+fn serviceAccessSlot(self: *Vdp) void {
+    if (!fifoIsEmpty(self)) {
+        serviceFifoFront(self);
+        if (!fifoIsFull(self) and !pendingFifoIsEmpty(self)) {
+            const pending = pendingFifoFront(self).*;
+            pendingFifoPop(self);
+            fifoPush(self, pending);
+        }
+        return;
+    }
+
+    if (self.dma_active and self.dma_copy) {
+        progressVramCopyDma(self, 1);
+    }
+}
+
 fn serviceFifoFront(self: *Vdp) void {
     if (fifoIsEmpty(self)) return;
 
@@ -578,8 +876,16 @@ fn serviceFifoFront(self: *Vdp) void {
     if (entry.latency != 0) return;
 
     const committed = entry.*;
+    if (!committed.second_service_pending) {
+        writeTargetWord(self, committed.code, committed.addr, committed.word);
+    }
+
+    if (entryRequiresSecondService(committed.code) and !committed.second_service_pending) {
+        entry.second_service_pending = true;
+        return;
+    }
+
     fifoPop(self);
-    writeTargetWord(self, committed.code, committed.addr, committed.word);
 }
 
 fn applyBufferedPortWrites(self: *Vdp) void {
@@ -600,7 +906,7 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
     var available_master_cycles = master_cycles;
     if (self.pending_port_write_delay_master_cycles != 0) {
         const delay_step = @min(available_master_cycles, self.pending_port_write_delay_master_cycles);
-        advanceTransferPhase(self, delay_step);
+        advanceTransferCursor(self, delay_step);
         self.pending_port_write_delay_master_cycles -= @intCast(delay_step);
         available_master_cycles -= delay_step;
 
@@ -609,34 +915,33 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
         }
     }
 
-    const slot_cycles = self.accessSlotCycles();
-    const total_cycles = @as(u32, self.transfer_master_remainder) + available_master_cycles;
-    const access_slots = total_cycles / slot_cycles;
-    self.transfer_master_remainder = @intCast(total_cycles % slot_cycles);
-    if (access_slots == 0) return;
+    if (available_master_cycles == 0) return;
 
-    if (self.dma_active and !self.dma_fill) {
-        if (self.dma_copy) {
-            progressVramCopyDma(self, access_slots);
-            return;
+    const blanking = self.vblank or self.hblank;
+    const end_master_cycle: u16 = @intCast(self.transfer_line_master_cycle + available_master_cycles);
+    var slot_idx: u16 = 0;
+    while (slot_idx < transferSlotCount(self)) : (slot_idx += 1) {
+        const slot_end = transferSlotEndMasterCycles(self, slot_idx);
+        if (slot_end <= self.transfer_line_master_cycle) continue;
+        if (slot_end > end_master_cycle) break;
+
+        if (!transferSlotIsRefresh(self, slot_idx)) {
+            if (self.dma_active and !self.dma_fill and !self.dma_copy) {
+                if (read_word) |reader| {
+                    progressMemoryToVramDmaReadSlot(self, slot_idx, read_ctx, reader);
+                }
+            }
+
+            fifoTickLatency(self);
         }
 
-        if (read_word) |reader| {
-            progressMemoryToVramDma(self, access_slots, read_ctx, reader);
-        }
-        return;
-    }
-
-    var slots_left = access_slots;
-    while (slots_left > 0) : (slots_left -= 1) {
-        fifoTickLatency(self);
-        serviceFifoFront(self);
-        if (!fifoIsFull(self) and !pendingFifoIsEmpty(self)) {
-            const pending = pendingFifoFront(self).*;
-            pendingFifoPop(self);
-            fifoPush(self, pending);
+        if (transferSlotIsAccess(self, slot_idx, blanking)) {
+            serviceAccessSlot(self);
         }
     }
+
+    self.transfer_line_master_cycle = end_master_cycle;
+    finishDmaIfIdle(self);
 }
 
 // -- Wait queries --
@@ -648,7 +953,7 @@ pub fn dataPortWriteWaitMasterCycles(self: *const Vdp) u32 {
     const blocked = pending_ahead != 0 or fifoIsFull(self);
     if (!blocked) return 0;
 
-    return fifoSlotsUntilNextOpen(self, pending_ahead) * self.accessSlotCycles();
+    return fifoWaitUntilNextOpen(self);
 }
 
 pub fn reserveDataPortWriteWaitMasterCycles(self: *Vdp) u32 {
@@ -660,7 +965,7 @@ pub fn dataPortReadWaitMasterCycles(self: *const Vdp) u32 {
     if (self.dma_active and self.dma_fill) return 0;
     if (fifoIsEmpty(self) and pendingFifoIsEmpty(self)) return 0;
 
-    return fifoSlotsUntilDrained(self, self.pending_fifo_len) * self.accessSlotCycles();
+    return fifoWaitUntilDrained(self);
 }
 
 pub fn shouldHaltCpu(self: *const Vdp) bool {
@@ -748,4 +1053,143 @@ pub fn writeControl(self: *Vdp, value: u16) void {
             self.pending_fifo_len = 0;
         }
     }
+}
+
+test "data port write wait accounts for pending fifo entries" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x1;
+
+    for (0..5) |i| {
+        vdp.writeData(@intCast(0x1000 + i));
+    }
+
+    try testing.expectEqual(@as(u32, 96), vdp.dataPortWriteWaitMasterCycles());
+
+    vdp.progressTransfers(48, null, null);
+    try testing.expectEqual(@as(u32, 48), vdp.dataPortWriteWaitMasterCycles());
+
+    vdp.progressTransfers(16, null, null);
+    try testing.expectEqual(@as(u32, 32), vdp.dataPortWriteWaitMasterCycles());
+
+    vdp.progressTransfers(32, null, null);
+    try testing.expectEqual(@as(u32, 0), vdp.dataPortWriteWaitMasterCycles());
+}
+
+test "reserving data port write wait composes projected fifo timing" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x1;
+
+    for (0..5) |i| {
+        vdp.writeData(@intCast(0x2000 + i));
+    }
+
+    try testing.expectEqual(@as(u32, 96), vdp.reserveDataPortWriteWaitMasterCycles());
+    try testing.expectEqual(@as(u32, 32), vdp.reserveDataPortWriteWaitMasterCycles());
+}
+
+test "data port waits account for partial transfer remainder" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x1;
+
+    vdp.writeData(0x1234);
+    vdp.progressTransfers(15, null, null);
+    try testing.expectEqual(@as(u32, 49), vdp.dataPortReadWaitMasterCycles());
+
+    vdp.writeData(0x2000);
+    vdp.writeData(0x2001);
+    vdp.writeData(0x2002);
+    vdp.writeData(0x2003);
+    vdp.progressTransfers(15, null, null);
+
+    try testing.expectEqual(@as(u32, 81), vdp.dataPortWriteWaitMasterCycles());
+    try testing.expectEqual(@as(u32, 81), vdp.reserveDataPortWriteWaitMasterCycles());
+}
+
+test "VRAM fifo entries commit before their second service slot" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x1;
+    vdp.addr = 0x0020;
+
+    vdp.writeData(0xABCD);
+    vdp.progressTransfers(48, null, null);
+
+    try testing.expectEqual(@as(u8, 0xAB), vdp.vramReadByte(0x0020));
+    try testing.expectEqual(@as(u8, 0xCD), vdp.vramReadByte(0x0021));
+    try testing.expectEqual(@as(u8, 1), vdp.fifo_len);
+    try testing.expect(vdp.fifo[vdp.fifo_head].second_service_pending);
+    try testing.expectEqual(@as(u32, 16), vdp.dataPortReadWaitMasterCycles());
+
+    vdp.progressTransfers(16, null, null);
+    try testing.expectEqual(@as(u8, 0), vdp.fifo_len);
+}
+
+test "CRAM fifo entries still drain in a single service slot" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x3;
+    vdp.addr = 0x0004;
+
+    vdp.writeData(0x1357);
+    try testing.expectEqual(@as(u32, 48), vdp.dataPortReadWaitMasterCycles());
+
+    vdp.progressTransfers(48, null, null);
+    try testing.expectEqual(@as(u8, 0), vdp.fifo_len);
+    try testing.expectEqual(@as(u8, 0x13), vdp.cram[0x0004]);
+    try testing.expectEqual(@as(u8, 0x57), vdp.cram[0x0005]);
+}
+
+test "data port read wait crosses the external hblank edge" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x3;
+    vdp.addr = 0x0000;
+    vdp.scanline = 12;
+    vdp.line_master_cycle = vdp.hblankStartMasterCycles() - 1;
+    vdp.transfer_line_master_cycle = vdp.line_master_cycle;
+
+    vdp.writeData(0x1234);
+    vdp.fifo[vdp.fifo_head].latency = 0;
+
+    try testing.expectEqual(@as(u32, 9), vdp.dataPortReadWaitMasterCycles());
+
+    var progressed = vdp;
+    progressed.step(1);
+    progressed.progressTransfers(1, null, null);
+    progressed.setHBlank(true);
+    progressed.progressTransfers(8, null, null);
+
+    try testing.expectEqual(@as(u8, 0), progressed.fifo_len);
+}
+
+test "projected data port write wait carries hblank phase across reservations" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x3;
+    vdp.addr = 0x0000;
+    vdp.scanline = 12;
+    vdp.line_master_cycle = vdp.hblankStartMasterCycles() - 1;
+    vdp.transfer_line_master_cycle = vdp.line_master_cycle;
+
+    for (0..5) |i| {
+        vdp.writeData(@intCast(0x2000 + i));
+    }
+
+    var i: usize = 0;
+    while (i < @as(usize, vdp.fifo_len)) : (i += 1) {
+        const idx = (@as(usize, vdp.fifo_head) + i) % vdp.fifo.len;
+        vdp.fifo[idx].latency = 0;
+    }
+
+    i = 0;
+    while (i < @as(usize, vdp.pending_fifo_len)) : (i += 1) {
+        const idx = (@as(usize, vdp.pending_fifo_head) + i) % vdp.pending_fifo.len;
+        vdp.pending_fifo[idx].latency = 0;
+    }
+
+    try testing.expectEqual(@as(u32, 17), vdp.reserveDataPortWriteWaitMasterCycles());
+    try testing.expectEqual(@as(u32, 8), vdp.reserveDataPortWriteWaitMasterCycles());
 }

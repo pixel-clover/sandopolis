@@ -44,14 +44,15 @@ Quick examples:
   - `integration_tests.zig`
   - `regression_tests.zig`
   - `property_tests.zig`
-- `tests/testroms/`: public-domain and community test ROMs for hardware verification and testing; see `tests/testroms/README.md`.
-- `roms/`: local ROMs for manual testing; not part of the distributable build. This directory can be missing or empty.
-- `tmp/`: scratch/reference repos; do not treat them as a Sandopolis source. This directory can be missing or empty.
+- `tests/testroms/`: local (public-domain and community) ROMs for testing and hardware verification; see `tests/testroms/README.md`.
 
 ## Testing Layout Rules
 
 - Unit tests belong in the Zig module they exercise.
 - Integration, regression, and property-based tests belong in `tests/`.
+- `tests/integration_tests.zig` is for stable public-API and cross-module wiring coverage that is not tied to a specific bug history.
+- `tests/regression_tests.zig` is for bug reproductions, timing regressions, and ROM-backed behavior checks.
+- `tests/property_tests.zig` is for invariant-style and randomized coverage.
 - ROM-dependent tests belong in `tests/regression_tests.zig`.
 - `tests/testroms/` contains community test ROMs for hardware verification. Use these for targeted regression tests against known hardware behavior. `roms/` is for local game ROMs used in manual testing only.
 - If you move code across modules, move or rewrite the unit tests with it.
@@ -83,7 +84,7 @@ Also run these when relevant:
 1. `zig build docs --prefix .` for docs/API/build-doc changes
 2. `make test` when touching the Makefile or contributor workflow
 3. `make docs` when touching docs generation paths
-4. `zig build run -- roms/sn.smd` or `make run ARGS="roms/sn.smd"` for frontend/manual runtime checks
+4. `zig build run -- <path-to-rom>` or `make run ARGS="<path-to-rom>"` for frontend/manual runtime checks
 
 ## First Contribution Flow
 

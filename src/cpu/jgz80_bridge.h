@@ -11,6 +11,7 @@ typedef struct Jgz80Handle Jgz80Handle;
 
 typedef struct Jgz80YmWriteEvent {
     uint32_t master_offset;
+    uint32_t sequence;
     uint8_t port;
     uint8_t reg;
     uint8_t value;
@@ -23,11 +24,13 @@ typedef struct Jgz80PsgCommandEvent {
 
 typedef struct Jgz80YmDacSampleEvent {
     uint32_t master_offset;
+    uint32_t sequence;
     uint8_t value;
 } Jgz80YmDacSampleEvent;
 
 typedef struct Jgz80YmResetEvent {
     uint32_t master_offset;
+    uint32_t sequence;
 } Jgz80YmResetEvent;
 
 typedef struct Jgz80RegisterDump {

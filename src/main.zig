@@ -431,21 +431,6 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
     return null;
 }
 
-fn findDefaultRomPath(allocator: std.mem.Allocator) !?[]u8 {
-    var dir = std.fs.cwd().openDir("roms", .{ .iterate = true }) catch return null;
-    defer dir.close();
-
-    var it = dir.iterate();
-    while (try it.next()) |entry| {
-        if (entry.kind != .file) continue;
-        const name = entry.name;
-        if (std.mem.endsWith(u8, name, ".smd") or std.mem.endsWith(u8, name, ".bin") or std.mem.endsWith(u8, name, ".md")) {
-            return try std.fmt.allocPrint(allocator, "roms/{s}", .{name});
-        }
-    }
-    return null;
-}
-
 pub fn main() !void {
     // -- Emulator Initialization --
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
@@ -514,20 +499,12 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     var rom_path: ?[]const u8 = null;
-    var owned_rom_path: ?[]u8 = null;
-    defer if (owned_rom_path) |p| allocator.free(p);
     if (args.len > 1) {
         rom_path = args[1];
         std.debug.print("Loading ROM: {s}\n", .{rom_path.?});
     } else {
-        owned_rom_path = try findDefaultRomPath(allocator);
-        if (owned_rom_path) |path| {
-            rom_path = path;
-            std.debug.print("No ROM argument provided. Auto-loading: {s}\n", .{path});
-        } else {
-            std.debug.print("No ROM file specified. Usage: sandopolis <rom_file>\n", .{});
-            std.debug.print("Loading dummy test ROM...\n", .{});
-        }
+        std.debug.print("No ROM file specified. Usage: sandopolis <rom_file>\n", .{});
+        std.debug.print("Loading dummy test ROM...\n", .{});
     }
 
     const input_config_path = try InputBindings.defaultConfigPath(allocator);

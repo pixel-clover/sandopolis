@@ -35,3 +35,9 @@ zig build test-property
 
 The [testroms](testroms) directory contains public-domain and community test ROMs for hardware verification and testing.
 Check [testroms/README.md](testroms/README.md) for more details.
+
+### Suite Roles
+
+- `integration_tests.zig`: stable multi-module and public-API wiring tests using synthetic data, temporary files, or deterministic checked-in assets.
+- `regression_tests.zig`: bug reproductions, timing-sensitive regressions, and ROM-backed hardware checks, especially with `tests/testroms/`.
+- `property_tests.zig`: invariant and randomized coverage.

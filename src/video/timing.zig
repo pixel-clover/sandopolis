@@ -1,3 +1,5 @@
+const std = @import("std");
+const testing = std.testing;
 const clock = @import("../clock.zig");
 const Vdp = @import("vdp.zig").Vdp;
 const fifo = @import("fifo.zig");
@@ -286,12 +288,12 @@ pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
 pub fn step(self: *Vdp, cycles: u32) void {
     const total = @as(u32, self.line_master_cycle) + cycles;
     self.line_master_cycle = @intCast(total % clock.ntsc_master_cycles_per_line);
-    self.hblank = self.line_master_cycle >= hblankStartMasterCycles(self);
 }
 
 pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: u16) bool {
     if (line != self.scanline) {
         self.line_master_cycle = 0;
+        fifo.resetTransferPhase(self);
     }
     self.scanline = line;
     const in_vblank = line >= visible_lines and line < total_lines;
@@ -304,6 +306,9 @@ pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: 
 }
 
 pub fn setHBlank(self: *Vdp, active: bool) void {
+    if (self.hblank != active) {
+        fifo.resetTransferPhase(self);
+    }
     if (!self.hblank and active and self.isHVCounterLatchEnabled()) {
         self.hv_latched = computeLiveHVCounter(self);
         self.hv_latched_valid = true;
@@ -327,4 +332,65 @@ pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
         return (self.regs[0] & 0x10) != 0;
     }
     return false;
+}
+
+test "H40 status hblank flag turns on after the external hblank edge" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+
+    const hblank_signal_start = vdp.hblankStartMasterCycles();
+    vdp.line_master_cycle = hblank_signal_start;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0004);
+
+    vdp.line_master_cycle = hblank_signal_start + 95;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0004);
+
+    vdp.line_master_cycle = hblank_signal_start + 96;
+    try testing.expectEqual(@as(u16, 0x0004), vdp.readControl() & 0x0004);
+}
+
+test "HV counter advances to the next scanline at the H interrupt boundary" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.scanline = 0x22;
+
+    const hint_boundary = vdp.hInterruptMasterCycles();
+    vdp.line_master_cycle = hint_boundary - 1;
+    try testing.expectEqual(@as(u8, 0x22), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    vdp.line_master_cycle = hint_boundary;
+    try testing.expectEqual(@as(u8, 0x23), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "stepping to the hblank boundary preserves the external hblank edge" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x02;
+    vdp.regs[12] = 0x81;
+    vdp.scanline = 0x22;
+
+    vdp.step(vdp.hblankStartMasterCycles());
+    try testing.expect(!vdp.hblank);
+    try testing.expect(!vdp.hv_latched_valid);
+
+    vdp.setHBlank(true);
+    try testing.expect(vdp.hblank);
+    try testing.expect(vdp.hv_latched_valid);
+}
+
+test "H40 line transitions rephase VDP transfer timing" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+
+    vdp.setHBlank(true);
+    vdp.progressTransfers(clock.ntsc_master_cycles_per_line - vdp.hblankStartMasterCycles(), null, null);
+    try testing.expectEqual(@as(u32, 4), vdp.nextTransferStepMasterCycles());
+
+    vdp.setHBlank(false);
+    try testing.expectEqual(vdp.accessSlotCycles(), vdp.nextTransferStepMasterCycles());
+
+    vdp.progressTransfers(vdp.hblankStartMasterCycles(), null, null);
+    try testing.expectEqual(vdp.accessSlotCycles(), vdp.nextTransferStepMasterCycles());
+
+    vdp.setHBlank(true);
+    try testing.expectEqual(vdp.accessSlotCycles(), vdp.nextTransferStepMasterCycles());
 }
