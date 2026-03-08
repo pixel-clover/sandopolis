@@ -45,6 +45,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Controller I/O with timed TH behavior and 3/6-button protocol
 - [x] SRAM support with persistent `.sav` load/store
 - [x] Configurable input mapping via config file with keyboard, gamepad, and analog threshold settings
+- [x] Resizable window and fullscreen toggle
+- [x] GIF animation recording support
 - [ ] Input management polish; UI, profiles, and device management are incomplete
 - [ ] Controller I/O edge cases and broader device coverage
 

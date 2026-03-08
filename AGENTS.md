@@ -41,6 +41,7 @@ Quick examples:
 - `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
 - `src/audio/`: YM2612 FM synthesizer, SN76489 PSG emulation, rate conversion, DC-blocking filters, and the output mixing pipeline.
 - `src/input/`: controller I/O and configurable input mapping.
+- `src/recording/`: GIF animation recording with LZW compression and crash-safe output.
 - `src/video/`: VDP and video timing/rendering logic.
 - `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
 - `src/`: remaining core emulator modules (`machine.zig`, etc.).
