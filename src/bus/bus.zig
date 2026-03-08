@@ -320,6 +320,7 @@ pub const Bus = struct {
             // Z80 address-space window.
             if (!self.hasZ80BusFor68k()) return;
             self.ensureZ80HostWindow();
+            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             self.z80.writeByte(zaddr, value);
             return;
@@ -327,7 +328,14 @@ pub const Bus = struct {
             // IO
             io_window.writeRegisterByte(&self.io, addr, value);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            vdp_ports.writeByte(&self.vdp, addr, value);
+            const port = addr & 0x1F;
+            if (port >= 0x11 and port < 0x18 and (port & 1) == 1) {
+                // PSG write via VDP port (0xC00011 and mirrors).
+                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+                self.z80.writeByte(0x7F11, value);
+            } else {
+                vdp_ports.writeByte(&self.vdp, addr, value);
+            }
             return;
         }
     }
@@ -340,7 +348,14 @@ pub const Bus = struct {
         if (self.cartridge.writeWord(addr, value)) return;
 
         if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            vdp_ports.writeWord(&self.vdp, addr, value);
+            const port = addr & 0x1F;
+            if (port >= 0x10 and port < 0x18 and (port & 1) == 0) {
+                // Word write to PSG range — low byte reaches PSG.
+                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+                self.z80.writeByte(0x7F11, @intCast(value & 0xFF));
+            } else {
+                vdp_ports.writeWord(&self.vdp, addr, value);
+            }
             return;
         }
 
@@ -357,12 +372,7 @@ pub const Bus = struct {
     }
 
     pub fn write32(self: *Bus, address: u32, value: u32) void {
-        const addr = address & 0xFFFFFF;
-        if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            vdp_ports.writeLong(&self.vdp, addr, value);
-            return;
-        }
-
+        // Route through write16 so VDP PSG port interception is applied.
         self.write16(address, @intCast((value >> 16) & 0xFFFF));
         self.write16(address + 2, @intCast(value & 0xFFFF));
     }
@@ -879,6 +889,25 @@ test "bus stepping advances controller timing" {
     try testing.expectEqual(@as(u8, 0x43), bus.read8(0x00A1_0003) & 0x43);
 }
 
+test "m68k z80 window writes use current audio master offset" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+
+    // Advance audio timing to create a non-zero offset.
+    bus.audio_timing.consumeMaster(5000);
+
+    // YM write through Z80 window should pick up the current audio offset.
+    bus.write8(0x00A0_4000, 0x22);
+    bus.write8(0x00A0_4001, 0x0F);
+
+    var writes: [4]Z80.YmWriteEvent = undefined;
+    const count = bus.z80.takeYmWrites(writes[0..]);
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqual(@as(u32, 5000), writes[0].master_offset);
+}
+
 test "z80 audio window latches YM2612 and PSG writes" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
@@ -918,6 +947,25 @@ test "psg latch/data writes decode tone and volume registers" {
     // Noise register write.
     bus.write8(0x00A0_7F11, 0xE0 | 0x03);
     try testing.expectEqual(@as(u8, 0x03), bus.z80.getPsgNoise());
+}
+
+test "m68k psg writes through vdp port reach the psg shadow registers" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    // Byte write to VDP PSG port (0xC00011).
+    bus.write8(0x00C0_0011, 0x80 | 0x05); // ch0 tone low=5
+    bus.write8(0x00C0_0011, 0x12); // high 6 bits
+    try testing.expectEqual(@as(u16, 0x125), bus.z80.getPsgTone(0));
+
+    // Word write to VDP PSG port (0xC00010, low byte reaches PSG).
+    bus.write16(0x00C0_0010, 0x00D0 | 0x07); // ch2 volume=7
+    try testing.expectEqual(@as(u8, 0x07), bus.z80.getPsgVolume(2));
+
+    // Events are timestamped and drainable.
+    var cmds: [4]Z80.PsgCommandEvent = undefined;
+    const count = bus.z80.takePsgCommands(cmds[0..]);
+    try testing.expectEqual(@as(usize, 3), count);
 }
 
 test "ym key-on register updates channel key mask" {

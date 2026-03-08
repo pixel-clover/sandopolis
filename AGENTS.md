@@ -36,7 +36,7 @@ Quick examples:
 - `src/bus/`: cartridge loading/persistence, memory map, open-bus behavior, Z80 arbitration, and VDP/audio timing coordination.
 - `src/scheduler/`: frame/master-clock scheduling.
 - `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
-- `src/audio/`: audio output, PSG helpers, and audio timing.
+- `src/audio/`: YM2612 FM synthesizer, SN76489 PSG emulation, rate conversion, DC-blocking filters, and the output mixing pipeline.
 - `src/input/`: controller I/O and configurable input mapping.
 - `src/video/`: VDP and video timing/rendering logic.
 - `src/`: remaining core emulator modules (`machine.zig`, etc.).
@@ -44,6 +44,7 @@ Quick examples:
   - `integration_tests.zig`
   - `regression_tests.zig`
   - `property_tests.zig`
+- `tests/testroms/`: public-domain and community test ROMs for hardware verification; see `tests/testroms/README.md`.
 - `roms/`: local ROMs for manual testing; not part of the distributable build.
 - `tmp/`: scratch/reference repos; do not treat them as a Sandopolis source.
 
@@ -52,6 +53,7 @@ Quick examples:
 - Unit tests belong in the Zig module they exercise.
 - Integration, regression, and property-based tests belong in `tests/`.
 - ROM-dependent tests belong in `tests/regression_tests.zig`.
+- `tests/testroms/` contains community test ROMs for hardware verification. Use these for targeted regression tests against known hardware behavior. `roms/` is for local game ROMs used in manual testing only.
 - If you move code across modules, move or rewrite the unit tests with it.
 
 ## Architecture Constraints
@@ -63,6 +65,9 @@ Quick examples:
   - `scheduler/frame_scheduler.runMasterSlice()`
   - `Cpu.stepInstruction()`
   - `Vdp.progressTransfers()`
+  - `AudioTiming.consumeMaster()` and `Z80.setAudioMasterOffset()` (audio event timestamps)
+- The jgz80 C bridge (`src/cpu/jgz80_bridge.c`) owns the YM/PSG event ring buffers and register shadows. Audio event flow crosses a Zig/C boundary — changes to audio event capture or draining must account for both sides.
+- The PSG is reachable from both the Z80 (address `0x7F11`) and the M68K (VDP port `0xC00011`). Both paths must push timestamped events through the Z80 bridge.
 - Keep frontend concerns separate from emulation concerns.
 - Preserve MIT-license boundaries. Treat external emulator repos and AGPL code as references unless licensing has been reviewed explicitly.
 

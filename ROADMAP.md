@@ -40,10 +40,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Z80 CPU core: jgz80 integrated via C bridge.
 - [x] Audio timing: Master-clock accumulation into FM/PSG frame counts.
 - [x] Mixer: Audio output integration via SDL3.
-- [x] Basic FM/PSG output: Synthesized output from latched YM/PSG register state.
-- [x] SN76489 (PSG): Chip-accurate emulation (ported from clownmdemu-core).
-- [ ] YM2612 (FM): 6-channel FM synthesis with all 8 algorithms, ADSR envelopes with key scaling, SSG-EG envelope modes, LFO AM/FM, channel 3 special mode, and DAC; remaining chip-accurate phase/rate/timer behavior is incomplete.
-- [ ] Audio fidelity: Hardware-faithful mixing/filter/timing behavior.
+- [x] FM/PSG output: Chunked rendering pipeline with per-event timestamped write application, rate conversion, and stereo mixing via SDL3.
+- [x] SN76489 (PSG): Chip-accurate emulation (ported from clownmdemu-core). Reachable from both Z80 (`0x7F11`) and M68K (VDP port `0xC00011`).
+- [x] YM2612 (FM): 6-channel FM synthesis with all 8 algorithms, ADSR envelopes with key scaling, SSG-EG envelope modes, LFO AM/FM, channel 3 special mode, DAC, timer A/B with CSM mode, die-accurate logsin/exp ROM tables, and full 24-slot internal clock cycle model.
+- [ ] YM2612 accuracy: Remaining chip-accurate edge-case phase/rate/timer behavior is incomplete.
+- [x] Audio filtering: 2nd-order biquad low-pass filter (~8.5 kHz) on YM2612 output and DC-blocking high-pass filters (~20 Hz) on the final mix.
+- [ ] Audio fidelity: Remaining hardware-faithful mixing/filter/timing behavior (e.g., per-channel panning differences, analog output stage modeling).
 
 ### Input and interaction
 
@@ -63,6 +65,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
     - [x] Disassembler.
     - [ ] Memory editor.
     - [ ] VDP viewer (Tile/Sprite debugger).
+- [x] Test ROM collection: Community/public-domain hardware verification ROMs in `tests/testroms/`.
 - [ ] Compatibility test suite: Pass broad external test ROM suites (e.g., acid tests).
 
 ### Future goals

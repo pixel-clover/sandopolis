@@ -270,7 +270,7 @@ pub const AudioOutput = struct {
                         samples_to_generate += 1;
                     }
                 }
-                psg_sample = @as(f32, @floatFromInt(@divTrunc(sum, @as(i32, @intCast(samples_to_generate))))) / 32768.0;
+                psg_sample = @as(f32, @floatFromInt(sum)) / @as(f32, @floatFromInt(samples_to_generate)) / 32768.0;
             } else {
                 psg_sample = @as(f32, @floatFromInt(last_psg_sample)) / 32768.0;
             }
@@ -370,6 +370,8 @@ pub const AudioOutput = struct {
         setConverterRate(&self.fm_converter, master_clock);
         setConverterRate(&self.psg_converter, master_clock);
         self.ym_synth.setTimingMode(is_pal);
+        self.dc_left = .{};
+        self.dc_right = .{};
     }
 
     pub fn canAcceptPending(self: *AudioOutput) bool {
