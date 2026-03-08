@@ -444,7 +444,7 @@ pub fn main() !void {
     defer zsdl3.quit();
 
     const window = try zsdl3.Window.create(
-        "Sandopolis Emulator (v"  ++ build_options.version ++ ")",
+        "Sandopolis Emulator (v" ++ build_options.version ++ ")",
         800,
         600,
         .{ .opengl = true },

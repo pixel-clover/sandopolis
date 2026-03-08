@@ -57,9 +57,9 @@ fn vCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) VCounterS
         const threshold: u16 = if (!self.pal_mode)
             0x00EA
         else if ((self.regs[1] & 0x08) != 0)
-                0x010A
-            else
-                0x0102;
+            0x010A
+        else
+            0x0102;
         const scanlines_per_frame: u16 = if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
         const counter_u16: u16 = if (effective_scanline <= threshold)
             effective_scanline
@@ -75,9 +75,9 @@ fn vCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) VCounterS
     const threshold: u16 = if (!self.pal_mode)
         0x00EA
     else if ((self.regs[1] & 0x08) != 0)
-            0x0109
-        else
-            0x0101;
+        0x0109
+    else
+        0x0101;
     const scanlines_per_frame = totalLinesForCurrentFrame(self);
     const internal_counter: u16 = if (effective_scanline <= threshold)
         effective_scanline

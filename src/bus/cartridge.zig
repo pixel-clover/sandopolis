@@ -91,12 +91,12 @@ const Ram = struct {
         if (rom.len > 2 * 1024 * 1024 and
             rom.len >= 0x18B and
             std.mem.eql(u8, rom[0x180..0x18B], sonic_and_knuckles_serial))
-            {
-                const lock_on_rom = rom[2 * 1024 * 1024 ..];
-                if (lock_on_rom.len >= 0x1BC) {
-                    header_rom = lock_on_rom;
-                }
+        {
+            const lock_on_rom = rom[2 * 1024 * 1024 ..];
+            if (lock_on_rom.len >= 0x1BC) {
+                header_rom = lock_on_rom;
             }
+        }
 
         if (header_rom.len < 0x1BC) return initEmpty();
 

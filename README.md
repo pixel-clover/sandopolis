@@ -54,12 +54,6 @@ cd sandopolis
 #### 2. Build the Sandopolis binary
 
 ```bash
-BUILD_TYPE=ReleaseFast make build
-```
-
-Or
-
-```bash
 zig build -Doptimize=ReleaseFast
 ```
 
@@ -70,29 +64,15 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/sandopolis <path-to-rom>
 ```
 
-Or
-
-```bash
-zig build run -Doptimize=ReleaseFast -- <path-to-rom>
-```
-
-Or
-
-```bash
-BUILD_TYPE=ReleaseFast make run ARGS=<path-to-rom>
-```
-
 > [!NOTE]
 > To build from source, you mainly need to have Zig, Git, and GNU Make installed.
-
-> [!NOTE]
-> Current version of the emulator is developed and tested using Zig 0.15.2.
+> Additionally, current version of the emulator is developed and tested using Zig 0.15.2.
 
 ---
 
 ### Documentation
 
-To be added. 
+To be added.
 
 ---
 

@@ -552,10 +552,10 @@ const Opn2Core = struct {
         self.eg_timer &= ~(@as(u16, self.mode_test_21[5]) << @intCast(self.eg_cycle));
         if (self.eg_cycle_stop and
             ((((self.eg_timer >> @intCast(self.eg_cycle)) | (self.pin_test_in & self.eg_custom_timer)) & 0x01) != 0))
-            {
-                self.eg_shift = self.eg_cycle;
-                self.eg_cycle_stop = false;
-            }
+        {
+            self.eg_shift = self.eg_cycle;
+            self.eg_cycle_stop = false;
+        }
 
         self.doTimerA();
         self.doTimerB();
@@ -796,9 +796,9 @@ const Opn2Core = struct {
 
             if (self.eg_kon_latch[slot] != 0 and
                 (((self.ssg_eg[slot] & 0x07) == 0x05) or ((self.ssg_eg[slot] & 0x07) == 0x03)))
-                {
-                    self.eg_ssg_hold_up_latch[slot] = 1;
-                }
+            {
+                self.eg_ssg_hold_up_latch[slot] = 1;
+            }
 
             direction &= self.eg_kon[slot];
         } else {
@@ -917,9 +917,9 @@ const Opn2Core = struct {
         var rate_sel: EgState = @enumFromInt(self.eg_state[slot]);
         if ((self.eg_kon[slot] != 0 and self.eg_ssg_repeat_latch[slot] != 0) or
             (self.eg_kon[slot] == 0 and self.eg_kon_latch[slot] != 0))
-            {
-                rate_sel = .attack;
-            }
+        {
+            rate_sel = .attack;
+        }
 
         self.eg_rate = switch (rate_sel) {
             .attack => self.ar[slot],

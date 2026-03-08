@@ -606,9 +606,9 @@ fn vdpFifoStatusProperty(input: VdpFifoCase) !void {
     const expected: u16 = if (vdp.fifoLen() == 0)
         0x0200
     else if (vdp.fifoLen() == 4)
-            0x0100
-        else
-            0x0000;
+        0x0100
+    else
+        0x0000;
 
     try testing.expect(vdp.fifoLen() <= 4);
     try testing.expectEqual(expected, status);
