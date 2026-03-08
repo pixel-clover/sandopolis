@@ -114,6 +114,7 @@ fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardIn
         .comma => .comma,
         .period => .period,
         .slash => .slash,
+        .f11 => .f11,
         else => null,
     };
 }
@@ -448,7 +449,7 @@ pub fn main() !void {
         "Sandopolis Emulator (v" ++ build_options.version ++ ")",
         800,
         600,
-        .{ .opengl = true },
+        .{ .opengl = true, .resizable = true },
     );
     defer window.destroy();
 
@@ -899,6 +900,10 @@ pub fn main() !void {
                                         std.debug.print("GIF recording started\n", .{});
                                     }
                                 },
+                                .toggle_fullscreen => {
+                                    const flags = SDL_GetWindowFlags(window);
+                                    _ = SDL_SetWindowFullscreen(window, flags & 1 == 0);
+                                },
                                 .quit => break :mainLoop,
                             }
                         }
@@ -1128,3 +1133,5 @@ extern fn SDL_OpenAudioDeviceStream(
 ) ?*zsdl3.AudioStream;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
 extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;
+extern fn SDL_SetWindowFullscreen(window: *zsdl3.Window, fullscreen: bool) bool;
+extern fn SDL_GetWindowFlags(window: *zsdl3.Window) u64;

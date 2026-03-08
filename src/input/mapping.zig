@@ -28,6 +28,7 @@ pub const HotkeyAction = enum(u8) {
     step,
     registers,
     record_gif,
+    toggle_fullscreen,
     quit,
 };
 
@@ -70,6 +71,7 @@ pub const KeyboardInput = enum(u8) {
     comma,
     period,
     slash,
+    f11,
 };
 
 pub const GamepadInput = enum(u8) {
@@ -108,7 +110,7 @@ const actions = [_]Action{
     .start,
 };
 
-const hotkey_actions = [_]HotkeyAction{ .step, .registers, .record_gif, .quit };
+const hotkey_actions = [_]HotkeyAction{ .step, .registers, .record_gif, .toggle_fullscreen, .quit };
 
 pub const Bindings = struct {
     keyboard: [player_count][actions.len]?KeyboardInput,
@@ -174,6 +176,7 @@ pub const Bindings = struct {
         bindings.setHotkey(.step, .space);
         bindings.setHotkey(.registers, .backspace);
         bindings.setHotkey(.record_gif, .r);
+        bindings.setHotkey(.toggle_fullscreen, .f11);
         bindings.setHotkey(.quit, .escape);
 
         return bindings;
