@@ -2,123 +2,194 @@ const std = @import("std");
 
 /// GIF89a encoder for Genesis framebuffer capture.
 /// Writes frames as a GIF animation with LZW compression.
+/// Uses buffered I/O and hash-based LZW for real-time performance.
 pub const GifRecorder = struct {
     file: std.fs.File,
     frame_count: u32,
-    prev_palette: [64]u32,
-    delay_cs: u16, // Frame delay in centiseconds
+    delay_cs: u16,
+    /// Output buffer to batch syscalls.
+    out_buf: [out_buf_size]u8 = undefined,
+    out_len: usize = 0,
 
     const width = 320;
     const height = 224;
+    const pixel_count = width * height;
     const max_colors: u16 = 256;
     const color_depth: u3 = 7; // 2^(7+1) = 256 colors
-    const min_code_size: u8 = 8; // For 256-color palette
+    const min_code_size: u8 = 8;
+    const out_buf_size = 64 * 1024;
 
     pub fn start(path: []const u8, fps: u16) !GifRecorder {
         const file = try std.fs.cwd().createFile(path, .{});
         errdefer file.close();
 
-        // GIF89a header
-        try file.writeAll("GIF89a");
-
-        // Logical screen descriptor
-        try writeU16(file, @intCast(width));
-        try writeU16(file, @intCast(height));
-        // Global color table: yes, color_depth bits, not sorted, 256 entries
-        try file.writeAll(&.{0x80 | (@as(u8, color_depth) << 4) | color_depth});
-        try file.writeAll(&.{0}); // Background color index
-        try file.writeAll(&.{0}); // Pixel aspect ratio
-
-        // Write a placeholder global color table (256 * 3 bytes, all black)
-        const zeros = [_]u8{0} ** 768;
-        try file.writeAll(&zeros);
-
-        // Netscape looping extension (loop forever)
-        try file.writeAll(&.{ 0x21, 0xFF, 0x0B }); // Application extension
-        try file.writeAll("NETSCAPE2.0");
-        try file.writeAll(&.{ 0x03, 0x01, 0x00, 0x00, 0x00 }); // Loop count = 0 (infinite)
-
-        // Compute delay: centiseconds per frame
         const delay_cs: u16 = if (fps > 0) @intCast(@min(65535, (100 + fps / 2) / fps)) else 2;
 
-        return .{
+        var self = GifRecorder{
             .file = file,
             .frame_count = 0,
-            .prev_palette = [_]u32{0} ** 64,
             .delay_cs = delay_cs,
         };
+
+        // GIF89a header
+        self.bufWrite("GIF89a");
+
+        // Logical screen descriptor
+        self.bufWriteU16(@intCast(width));
+        self.bufWriteU16(@intCast(height));
+        self.bufWriteByte(0x80 | (@as(u8, color_depth) << 4) | color_depth);
+        self.bufWriteByte(0); // Background color index
+        self.bufWriteByte(0); // Pixel aspect ratio
+
+        // Placeholder global color table (256 * 3 bytes, all black)
+        self.bufWriteZeros(max_colors * 3);
+
+        // Netscape looping extension (loop forever)
+        self.bufWrite(&.{ 0x21, 0xFF, 0x0B });
+        self.bufWrite("NETSCAPE2.0");
+        self.bufWrite(&.{ 0x03, 0x01, 0x00, 0x00, 0x00 });
+
+        try self.flushBuf();
+        return self;
     }
 
-    pub fn addFrame(self: *GifRecorder, framebuffer: *const [width * height]u32) !void {
-        const file = self.file;
+    pub fn addFrame(self: *GifRecorder, framebuffer: *const [pixel_count]u32) !void {
+        // If not the first frame, seek back over the trailing 0x3B we wrote for crash safety
+        if (self.frame_count > 0) {
+            const pos = self.file.getPos() catch 0;
+            if (pos > 0) self.file.seekTo(pos - 1) catch {};
+        }
 
-        // Build local palette from unique colors in this frame
+        // Build local palette from unique colors
         var palette: [max_colors]u32 = [_]u32{0} ** max_colors;
         var palette_size: u16 = 0;
+        // Hash table for fast color lookup: maps color -> palette index
+        var color_map: [4096]ColorEntry = [_]ColorEntry{.{ .color = 0, .index = 0, .used = false }} ** 4096;
 
-        // Index buffer for this frame
-        var indices: [width * height]u8 = undefined;
+        var indices: [pixel_count]u8 = undefined;
 
         for (framebuffer, 0..) |pixel, i| {
-            const color = pixel & 0x00FFFFFF; // Strip alpha
-            const idx = findOrAdd(&palette, &palette_size, color);
-            indices[i] = idx;
+            const color = pixel & 0x00FFFFFF;
+            indices[i] = findOrAddColor(&palette, &palette_size, &color_map, color);
         }
 
-        // Graphic control extension (for frame delay and disposal)
-        try file.writeAll(&.{ 0x21, 0xF9, 0x04 });
-        try file.writeAll(&.{0x00}); // Disposal: none, no transparency
-        try writeU16(file, self.delay_cs);
-        try file.writeAll(&.{0}); // Transparent color index (unused)
-        try file.writeAll(&.{0}); // Block terminator
+        // Graphic control extension
+        self.bufWrite(&.{ 0x21, 0xF9, 0x04, 0x00 });
+        self.bufWriteU16(self.delay_cs);
+        self.bufWriteByte(0); // Transparent color index
+        self.bufWriteByte(0); // Block terminator
 
         // Image descriptor
-        try file.writeAll(&.{0x2C}); // Image separator
-        try writeU16(file, 0); // Left
-        try writeU16(file, 0); // Top
-        try writeU16(file, @intCast(width));
-        try writeU16(file, @intCast(height));
-        // Local color table, 256 entries
-        try file.writeAll(&.{0x80 | @as(u8, color_depth)});
+        self.bufWriteByte(0x2C);
+        self.bufWriteU16(0); // Left
+        self.bufWriteU16(0); // Top
+        self.bufWriteU16(@intCast(width));
+        self.bufWriteU16(@intCast(height));
+        self.bufWriteByte(0x80 | @as(u8, color_depth)); // Local color table
 
         // Write local color table
-        var color_table: [max_colors * 3]u8 = undefined;
         for (0..max_colors) |ci| {
             const c = palette[ci];
-            color_table[ci * 3 + 0] = @intCast((c >> 16) & 0xFF); // R
-            color_table[ci * 3 + 1] = @intCast((c >> 8) & 0xFF); // G
-            color_table[ci * 3 + 2] = @intCast(c & 0xFF); // B
+            self.bufWriteByte(@intCast((c >> 16) & 0xFF));
+            self.bufWriteByte(@intCast((c >> 8) & 0xFF));
+            self.bufWriteByte(@intCast(c & 0xFF));
         }
-        try file.writeAll(&color_table);
 
         // LZW-compressed image data
-        try file.writeAll(&.{min_code_size});
-        try lzwCompress(file, &indices);
-        try file.writeAll(&.{0x00}); // Block terminator
+        self.bufWriteByte(min_code_size);
+        try self.flushBuf();
+        try lzwCompress(self, &indices);
+        self.bufWriteByte(0x00); // Block terminator
+
+        // Write GIF trailer for crash safety — file is always a valid GIF
+        self.bufWriteByte(0x3B);
+        try self.flushBuf();
 
         self.frame_count += 1;
     }
 
     pub fn finish(self: *GifRecorder) void {
-        self.file.writeAll(&.{0x3B}) catch {}; // GIF trailer
+        if (self.frame_count == 0) {
+            // No frames recorded — write trailer and close
+            self.bufWriteByte(0x3B);
+            self.flushBuf() catch {};
+        }
+        // Trailer already written by last addFrame, nothing more needed
         self.file.close();
     }
 
-    fn writeU16(file: std.fs.File, value: u16) !void {
-        const bytes = [2]u8{ @truncate(value), @truncate(value >> 8) };
-        try file.writeAll(&bytes);
+    // --- Buffered output helpers ---
+
+    fn bufWriteByte(self: *GifRecorder, byte: u8) void {
+        self.out_buf[self.out_len] = byte;
+        self.out_len += 1;
     }
 
-    fn findOrAdd(palette: *[max_colors]u32, size: *u16, color: u32) u8 {
-        for (0..size.*) |i| {
-            if (palette[i] == color) return @intCast(i);
+    fn bufWriteU16(self: *GifRecorder, value: u16) void {
+        self.out_buf[self.out_len] = @truncate(value);
+        self.out_buf[self.out_len + 1] = @truncate(value >> 8);
+        self.out_len += 2;
+    }
+
+    fn bufWrite(self: *GifRecorder, data: []const u8) void {
+        @memcpy(self.out_buf[self.out_len..][0..data.len], data);
+        self.out_len += data.len;
+    }
+
+    fn bufWriteZeros(self: *GifRecorder, count: usize) void {
+        @memset(self.out_buf[self.out_len..][0..count], 0);
+        self.out_len += count;
+    }
+
+    fn flushBuf(self: *GifRecorder) !void {
+        if (self.out_len > 0) {
+            try self.file.writeAll(self.out_buf[0..self.out_len]);
+            self.out_len = 0;
         }
-        if (size.* < max_colors) {
-            palette[size.*] = color;
-            size.* += 1;
-            return @intCast(size.* - 1);
+    }
+
+    // --- Color palette helpers ---
+
+    const ColorEntry = struct { color: u32, index: u8, used: bool };
+
+    fn colorHash(color: u32) u12 {
+        // Simple hash for 24-bit color -> 12-bit index
+        const r = (color >> 16) & 0xFF;
+        const g = (color >> 8) & 0xFF;
+        const b = color & 0xFF;
+        return @truncate(r *% 7 +% g *% 13 +% b *% 23);
+    }
+
+    fn findOrAddColor(
+        palette: *[max_colors]u32,
+        size: *u16,
+        color_map: *[4096]ColorEntry,
+        color: u32,
+    ) u8 {
+        var h: usize = colorHash(color);
+        // Open-addressing linear probe
+        var probes: usize = 0;
+        while (probes < 4096) : ({
+            h = (h + 1) & 0xFFF;
+            probes += 1;
+        }) {
+            if (!color_map[h].used) {
+                // Empty slot — color not in map
+                if (size.* < max_colors) {
+                    const idx: u8 = @intCast(size.*);
+                    palette[idx] = color;
+                    size.* += 1;
+                    color_map[h] = .{ .color = color, .index = idx, .used = true };
+                    return idx;
+                }
+                // Palette full — find nearest
+                return findNearest(palette, color);
+            }
+            if (color_map[h].color == color) {
+                return color_map[h].index;
+            }
         }
-        // Palette full — find nearest color
+        // Shouldn't happen with 4096 slots and 256 colors
         return findNearest(palette, color);
     }
 
@@ -145,59 +216,73 @@ pub const GifRecorder = struct {
     }
 };
 
-/// LZW compression for GIF image data.
-/// Uses variable-width codes with sub-block output (max 255 bytes per sub-block).
-fn lzwCompress(file: std.fs.File, data: *const [320 * 224]u8) !void {
+// --- LZW Compression with hash table ---
+
+/// Hash table entry for LZW: maps (prefix, suffix) -> code.
+const LzwHashEntry = struct {
+    prefix: u16 = 0,
+    suffix: u8 = 0,
+    code: u16 = 0,
+    used: bool = false,
+};
+
+const lzw_hash_size = 8192; // Must be power of 2, > 4096
+
+fn lzwHash(prefix: u16, suffix: u8) u13 {
+    return @truncate((@as(u32, prefix) << 8 ^ @as(u32, suffix)) *% 2654435761);
+}
+
+fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
     const clear_code: u16 = 256;
     const eoi_code: u16 = 257;
     const first_code: u16 = 258;
     const max_code_value: u16 = 4095;
 
-    // LZW table: for each code, store (prefix_code, suffix_byte).
-    const TableEntry = struct { prefix: u16, suffix: u8 };
-    var table: [4096]TableEntry = undefined;
+    var hash_table: [lzw_hash_size]LzwHashEntry = [_]LzwHashEntry{.{}} ** lzw_hash_size;
     var table_size: u16 = first_code;
-    var code_size: u4 = 9; // Start with 9-bit codes (min_code_size + 1)
+    var code_size: u4 = 9;
 
-    // Bit packing buffer
+    // Bit packing state
     var bit_buf: u32 = 0;
     var bit_count: u5 = 0;
+    // GIF sub-block buffer (max 255 data bytes per sub-block)
     var block_buf: [255]u8 = undefined;
     var block_len: u8 = 0;
 
     // Emit clear code
-    try emitCode(file, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+    emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
     var prefix: u16 = data[0];
     for (data[1..]) |byte| {
-        // Search table for (prefix, byte)
+        // Look up (prefix, byte) in hash table
+        var h: usize = lzwHash(prefix, byte);
         const found = blk: {
-            for (first_code..table_size) |i| {
-                if (table[i].prefix == prefix and table[i].suffix == byte) {
-                    break :blk @as(u16, @intCast(i));
-                }
+            var probes: usize = 0;
+            while (probes < lzw_hash_size) : ({
+                h = (h + 1) & (lzw_hash_size - 1);
+                probes += 1;
+            }) {
+                if (!hash_table[h].used) break :blk false;
+                if (hash_table[h].prefix == prefix and hash_table[h].suffix == byte) break :blk true;
             }
-            break :blk null;
+            break :blk false;
         };
 
-        if (found) |code| {
-            prefix = code;
+        if (found) {
+            prefix = hash_table[h].code;
         } else {
-            // Output prefix code
-            try emitCode(file, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+            emitCode(rec, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
-            // Add new entry if table not full
             if (table_size <= max_code_value) {
-                table[table_size] = .{ .prefix = prefix, .suffix = byte };
+                hash_table[h] = .{ .prefix = prefix, .suffix = byte, .code = table_size, .used = true };
                 table_size += 1;
-
-                // Increase code size when needed
                 if (table_size > (@as(u16, 1) << code_size) and code_size < 12) {
                     code_size += 1;
                 }
             } else {
                 // Table full — emit clear and reset
-                try emitCode(file, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+                emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+                hash_table = [_]LzwHashEntry{.{}} ** lzw_hash_size;
                 table_size = first_code;
                 code_size = 9;
             }
@@ -206,10 +291,8 @@ fn lzwCompress(file: std.fs.File, data: *const [320 * 224]u8) !void {
         }
     }
 
-    // Output final prefix
-    try emitCode(file, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
-    // End of information
-    try emitCode(file, eoi_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+    emitCode(rec, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+    emitCode(rec, eoi_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
     // Flush remaining bits
     if (bit_count > 0) {
@@ -217,28 +300,29 @@ fn lzwCompress(file: std.fs.File, data: *const [320 * 224]u8) !void {
         block_len += 1;
     }
     if (block_len > 0) {
-        try file.writeAll(&.{block_len});
-        try file.writeAll(block_buf[0..block_len]);
+        rec.bufWriteByte(block_len);
+        rec.bufWrite(block_buf[0..block_len]);
     }
+    try rec.flushBuf();
 }
 
 fn emitCode(
-    file: std.fs.File,
+    rec: *GifRecorder,
     code: u16,
     cs: u4,
     bb: *u32,
     bc: *u5,
     blk: *[255]u8,
     bl: *u8,
-) !void {
+) void {
     bb.* |= @as(u32, code) << bc.*;
     bc.* +%= cs;
     while (bc.* >= 8) {
         blk[bl.*] = @truncate(bb.*);
         bl.* += 1;
         if (bl.* == 255) {
-            try file.writeAll(&.{255});
-            try file.writeAll(blk);
+            rec.bufWriteByte(255);
+            rec.bufWrite(blk);
             bl.* = 0;
         }
         bb.* >>= 8;
@@ -248,7 +332,6 @@ fn emitCode(
 
 test "GIF recorder creates valid single-frame GIF" {
     var framebuffer: [320 * 224]u32 = undefined;
-    // Fill with a simple gradient pattern
     for (0..224) |y| {
         for (0..320) |x| {
             const r: u32 = @intCast(x * 255 / 319);
@@ -269,6 +352,31 @@ test "GIF recorder creates valid single-frame GIF" {
     _ = try file.readAll(&header);
     try std.testing.expectEqualStrings("GIF89a", &header);
 
-    // Clean up
+    // Verify non-trivial file size (header + color table + frame data)
+    const stat = try file.stat();
+    try std.testing.expect(stat.size > 1000);
+
+    try std.fs.cwd().deleteFile(tmp_path);
+}
+
+test "GIF recorder handles multiple frames" {
+    const tmp_path = "test_multi.gif";
+    var recorder = try GifRecorder.start(tmp_path, 30);
+
+    var fb: [320 * 224]u32 = undefined;
+    for (0..3) |frame| {
+        const shade: u32 = @intCast(frame * 80);
+        @memset(&fb, 0xFF000000 | (shade << 16) | (shade << 8) | shade);
+        try recorder.addFrame(&fb);
+    }
+    recorder.finish();
+
+    try std.testing.expectEqual(@as(u32, 3), recorder.frame_count);
+
+    const file = try std.fs.cwd().openFile(tmp_path, .{});
+    defer file.close();
+    const stat = try file.stat();
+    try std.testing.expect(stat.size > 2000);
+
     try std.fs.cwd().deleteFile(tmp_path);
 }

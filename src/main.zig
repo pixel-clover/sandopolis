@@ -888,16 +888,19 @@ pub fn main() !void {
                                 .registers => machine.debugDump(),
                                 .record_gif => {
                                     if (gif_recorder) |*rec| {
+                                        const frames = rec.frame_count;
                                         rec.finish();
                                         gif_recorder = null;
-                                        std.debug.print("GIF recording stopped ({d} frames)\n", .{rec.frame_count});
+                                        std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
                                     } else {
-                                        const fps: u16 = if (bus.vdp.pal_mode) 50 else 60;
-                                        gif_recorder = GifRecorder.start("sandopolis_recording.gif", fps) catch |err| {
+                                        const fps: u16 = if (bus.vdp.pal_mode) 25 else 30;
+                                        const path = gifOutputPath();
+                                        const path_str = std.mem.sliceTo(&path, 0);
+                                        gif_recorder = GifRecorder.start(path_str, fps) catch |err| {
                                             std.debug.print("Failed to start GIF recording: {}\n", .{err});
                                             continue;
                                         };
-                                        std.debug.print("GIF recording started\n", .{});
+                                        std.debug.print("GIF recording started: {s}\n", .{path_str});
                                     }
                                 },
                                 .toggle_fullscreen => {
@@ -963,13 +966,17 @@ pub fn main() !void {
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
 
-        // Capture frame for GIF recording
+        // Capture frame for GIF recording (every other frame for smaller file size)
         if (gif_recorder) |*rec| {
-            rec.addFrame(&bus.vdp.framebuffer) catch |err| {
-                std.debug.print("GIF frame capture failed: {}\n", .{err});
-                rec.finish();
-                gif_recorder = null;
-            };
+            if (frame_counter % 2 == 0) {
+                rec.addFrame(&bus.vdp.framebuffer) catch |err| {
+                    std.debug.print("GIF frame capture failed: {}\n", .{err});
+                    const frames = rec.frame_count;
+                    rec.finish();
+                    gif_recorder = null;
+                    std.debug.print("GIF recording aborted after {d} frames\n", .{frames});
+                };
+            }
         }
 
         if ((frame_counter % 300) == 0) {
@@ -1118,6 +1125,21 @@ test "frame duration uses console master clock" {
 test "audio-enabled runs do not use uncapped boot frames" {
     try std.testing.expectEqual(@as(u32, 0), uncappedBootFrames(true));
     try std.testing.expectEqual(@as(u32, 240), uncappedBootFrames(false));
+}
+
+/// Generate a unique GIF filename: sandopolis_001.gif, sandopolis_002.gif, ...
+fn gifOutputPath() [48]u8 {
+    var buf: [48]u8 = [_]u8{0} ** 48;
+    var i: u32 = 1;
+    while (i <= 999) : (i += 1) {
+        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch break;
+        buf[name.len] = 0;
+        std.fs.cwd().access(name, .{}) catch {
+            return buf; // File doesn't exist, use this name
+        };
+    }
+    // All 999 slots used — overwrite the last one
+    return buf;
 }
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
