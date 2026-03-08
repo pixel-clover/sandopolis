@@ -6,6 +6,7 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 const Machine = @import("machine.zig").Machine;
+const GifRecorder = @import("recording/gif.zig").GifRecorder;
 
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
@@ -803,6 +804,7 @@ pub fn main() !void {
     machine.debugDump();
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
+    var gif_recorder: ?GifRecorder = null;
 
     mainLoop: while (true) {
         const frame_start = std.time.nanoTimestamp();
@@ -883,6 +885,20 @@ pub fn main() !void {
                                     machine.debugDump();
                                 },
                                 .registers => machine.debugDump(),
+                                .record_gif => {
+                                    if (gif_recorder) |*rec| {
+                                        rec.finish();
+                                        gif_recorder = null;
+                                        std.debug.print("GIF recording stopped ({d} frames)\n", .{rec.frame_count});
+                                    } else {
+                                        const fps: u16 = if (bus.vdp.pal_mode) 50 else 60;
+                                        gif_recorder = GifRecorder.start("sandopolis_recording.gif", fps) catch |err| {
+                                            std.debug.print("Failed to start GIF recording: {}\n", .{err});
+                                            continue;
+                                        };
+                                        std.debug.print("GIF recording started\n", .{});
+                                    }
+                                },
                                 .quit => break :mainLoop,
                             }
                         }
@@ -941,6 +957,16 @@ pub fn main() !void {
             }
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
+
+        // Capture frame for GIF recording
+        if (gif_recorder) |*rec| {
+            rec.addFrame(&bus.vdp.framebuffer) catch |err| {
+                std.debug.print("GIF frame capture failed: {}\n", .{err});
+                rec.finish();
+                gif_recorder = null;
+            };
+        }
+
         if ((frame_counter % 300) == 0) {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, cpu.core.pc });
         }
@@ -972,6 +998,12 @@ pub fn main() !void {
                 std.Thread.sleep(target_frame_ns - frame_elapsed);
             }
         }
+    }
+
+    // Finalize any in-progress GIF recording
+    if (gif_recorder) |*rec| {
+        std.debug.print("GIF recording stopped on exit ({d} frames)\n", .{rec.frame_count});
+        rec.finish();
     }
 }
 

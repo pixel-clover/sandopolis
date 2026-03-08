@@ -27,6 +27,7 @@ pub const Action = enum(u8) {
 pub const HotkeyAction = enum(u8) {
     step,
     registers,
+    record_gif,
     quit,
 };
 
@@ -107,7 +108,7 @@ const actions = [_]Action{
     .start,
 };
 
-const hotkey_actions = [_]HotkeyAction{ .step, .registers, .quit };
+const hotkey_actions = [_]HotkeyAction{ .step, .registers, .record_gif, .quit };
 
 pub const Bindings = struct {
     keyboard: [player_count][actions.len]?KeyboardInput,
@@ -172,6 +173,7 @@ pub const Bindings = struct {
 
         bindings.setHotkey(.step, .space);
         bindings.setHotkey(.registers, .backspace);
+        bindings.setHotkey(.record_gif, .r);
         bindings.setHotkey(.quit, .escape);
 
         return bindings;
