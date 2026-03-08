@@ -3,6 +3,8 @@ name: Publish Documentation
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -17,7 +19,7 @@ jobs:
   deploy-docs:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Zig
@@ -25,12 +27,12 @@ jobs:
         with:
           version: '0.15.2'
 
-      - name: Install System Dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y make
 
-      - name: Generate Documentation
+      - name: Generate documentation
         run: make docs
 
       - name: Deploy to GitHub Pages

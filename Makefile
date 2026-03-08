@@ -83,7 +83,7 @@ docs: ## Generate API documentation
 install-deps: ## Install system dependencies (for Debian-based systems)
 	@echo "Installing system dependencies..."
 	sudo apt-get update
-	sudo apt-get install -y make cmake pkg-config clang llvm snapd
+	sudo apt-get install -y make snapd
 	sudo snap install zig  --beta --classic # Use `--edge --classic` to install the latest version
 
 setup-hooks: ## Install Git hooks (pre-commit and pre-push)

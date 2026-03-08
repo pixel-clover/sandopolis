@@ -14,7 +14,7 @@ jobs:
     uses: ./.github/workflows/tests.yml
 
   create-release:
-    name: Create Release
+    name: Create release
     runs-on: ubuntu-latest
 
     # Try to publish only if the tests pass
@@ -40,7 +40,7 @@ jobs:
           git tag $TAG_NAME
           git push origin $TAG_NAME
 
-      - name: Set release tag name
+      - name: Set release tag
         run: |
           # Prefer an existing tag if this run was for a tag. If we created a DRAFT_TAG (on push), use it.
           # For manual runs (workflow_dispatch) we intentionally do NOT create a git tag; instead use
@@ -53,7 +53,7 @@ jobs:
             echo "RELEASE_TAG=manual-${{ github.run_id }}" >> $GITHUB_ENV
           fi
 
-      - name: Create Release
+      - name: Create release
         id: create_release
         uses: actions/create-release@v1
         env:
@@ -65,7 +65,7 @@ jobs:
           prerelease: true
 
   build-and-upload:
-    name: Build and Upload
+    name: Build and upload
     needs: create-release
     runs-on: ${{ matrix.os }}
     permissions:
@@ -77,25 +77,17 @@ jobs:
             target: x86_64-linux-gnu
             artifact_name: sandopolis-linux-x86_64.zip
             asset_content_type: application/zip
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-linux-gnu
             artifact_name: sandopolis-linux-aarch64.zip
             asset_content_type: application/zip
           - os: macos-latest
-            target: aarch64-macos # Apple Silicon (ARM64)
+            target: ""
             artifact_name: sandopolis-macos-aarch64.zip
             asset_content_type: application/zip
-          - os: macos-latest
-            target: x86_64-macos # Intel
-            artifact_name: sandopolis-macos-x86_64.zip
-            asset_content_type: application/zip
           - os: windows-latest
-            target: x86_64-windows-msvc
+            target: x86_64-windows-gnu
             artifact_name: sandopolis-windows-x86_64.zip
-            asset_content_type: application/zip
-          - os: windows-latest
-            target: aarch64-windows-msvc
-            artifact_name: sandopolis-windows-aarch64.zip
             asset_content_type: application/zip
 
     steps:
@@ -109,57 +101,55 @@ jobs:
         with:
           version: "0.15.2"
 
-      - name: Build the binary
+      - name: Build the binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
+          else
+            zig build -Doptimize=ReleaseSmall
+          fi
+
+      - name: Build the binary (Windows)
+        if: runner.os == 'Windows'
         run: zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
 
       - name: Verify built binary exists (Unix)
         if: runner.os != 'Windows'
         run: |
-          if [ ! -f zig-out/bin/zigformer-cli ]; then
-            echo "ERROR: built binary zig-out/bin/zigformer-cli not found"
-            ls -l zig-out/bin || true
-            exit 1
-          fi
-          if [ ! -f zig-out/bin/zigformer-gui ]; then
-            echo "ERROR: built binary zig-out/bin/zigformer-gui not found"
-            ls -l zig-out/bin || true
+          if [ ! -f zig-out/bin/sandopolis ]; then
+            echo "ERROR: built binary zig-out/bin/sandopolis not found"
+            ls -lR zig-out/ || true
             exit 1
           fi
 
       - name: Verify built binary exists (Windows)
         if: runner.os == 'Windows'
         run: |
-          if (!(Test-Path "zig-out\\bin\\zigformer-cli.exe")) {
-            Write-Host 'ERROR: built binary zig-out\\bin\\zigformer-cli.exe not found'
-            dir zig-out\\bin
-            exit 1
-          }
-          if (!(Test-Path "zig-out\\bin\\zigformer-gui.exe")) {
-            Write-Host 'ERROR: built binary zig-out\\bin\\zigformer-gui.exe not found'
+          if (!(Test-Path "zig-out\\bin\\sandopolis.exe")) {
+            Write-Host 'ERROR: built binary zig-out\\bin\\sandopolis.exe not found'
             dir zig-out\\bin
             exit 1
           }
 
-      - name: Prepare artifact for Linux/macOS
+      - name: Prepare artifact (Unix)
         if: runner.os != 'Windows'
         run: |
           RELEASE_DIR="release-${{ matrix.target }}-${{ github.run_id }}"
           mkdir -p "$RELEASE_DIR"
-          mv zig-out/bin/zigformer-cli "$RELEASE_DIR"/
-          mv zig-out/bin/zigformer-gui "$RELEASE_DIR"/
-          # Create a zip of the release contents (avoid nesting an extra top-level directory)
+          cp -a zig-out/bin/sandopolis "$RELEASE_DIR"/
           (cd "$RELEASE_DIR" && zip -r "../${{ matrix.artifact_name }}" .)
 
-      - name: Prepare artifact for Windows
+      - name: Prepare artifact (Windows)
         if: runner.os == 'Windows'
         run: |
           $env:RELEASE_DIR = "release-${{ matrix.target }}-${{ github.run_id }}"
           New-Item -ItemType Directory -Path $env:RELEASE_DIR -Force | Out-Null
-          Move-Item zig-out\bin\zigformer-cli.exe $env:RELEASE_DIR\
-          Move-Item zig-out\bin\zigformer-gui.exe $env:RELEASE_DIR\
+          Copy-Item zig-out\bin\sandopolis.exe $env:RELEASE_DIR\
+          Copy-Item zig-out\bin\SDL3.dll $env:RELEASE_DIR\ -ErrorAction SilentlyContinue
           Compress-Archive -Path "$env:RELEASE_DIR\*" -DestinationPath ${{ matrix.artifact_name }}
 
-      - name: Upload Release Asset
+      - name: Upload release asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

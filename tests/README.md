@@ -36,13 +36,3 @@ zig build test-property
 ### Test ROMs
 
 The [testroms](testroms) directory contains public-domain and community test ROMs for hardware verification and testing.
-Check [testroms/README.md](testroms/README.md) for more details.
-
-### Suite Roles
-
-- `integration_tests.zig`: stable multi-module and public-API wiring tests using synthetic data, temporary files, or deterministic checked-in assets.
-- `regression_tests.zig`: bug reproductions, timing-sensitive regressions, and ROM-backed hardware checks, especially with `tests/testroms/`.
-- `property_tests.zig`: invariant and randomized coverage.
-
-All non-unit suites import the public API from `src/api.zig`.
-When they need more control than the normal `Machine` facade exposes, they should use the explicit `sandopolis.testing` API rather than importing raw core modules or structs.

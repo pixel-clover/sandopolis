@@ -20,5 +20,5 @@ This directory includes a collection of useful test ROMs for examining or testin
 **The ROMs are from here: <https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms>**
 
 > [!IMPORTANT]
-> Note that I don't own any of these ROMs, and they are provided for educational and testing purposes only.
+> I don't own any of these ROMs, and they are provided for educational and testing purposes only.
 > Please respect the intellectual property rights of the original creators these ROMs.

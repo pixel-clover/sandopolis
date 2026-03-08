@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
 const AudioOutput = @import("audio/output.zig").AudioOutput;
@@ -443,7 +444,7 @@ pub fn main() !void {
     defer zsdl3.quit();
 
     const window = try zsdl3.Window.create(
-        "Sandopolis - Sega Genesis Emulator",
+        "Sandopolis Emulator (v"  ++ build_options.version ++ ")",
         800,
         600,
         .{ .opengl = true },

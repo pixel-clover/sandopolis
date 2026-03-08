@@ -20,7 +20,7 @@ Priorities, in order:
 - Keep emulator state instance-bound inside the existing structs (`Bus`, `Vdp`, `Io`, `Z80`, `Cpu`, and `AudioOutput`).
 - Avoid introducing a new global mutable state.
 - Keep SDL/frontend logic in `src/main.zig`; keep core emulation logic in `src/`.
-- Keep SDL3 portable in the build graph: prefer the official SDL source dependency plus `zsdl` bindings, and do not hard-code platform binary artifacts such as `lib/libSDL3.so` in `build.zig`.
+- Keep SDL3 portable in the build graph: use the Zig-native SDL3 build (`castholm/SDL`) plus `zsdl` bindings, and do not hard-code platform binary artifacts such as `lib/libSDL3.so` in `build.zig`.
 - Add comments only when they clarify non-obvious hardware behavior or timing.
 
 Quick examples:
