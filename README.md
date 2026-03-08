@@ -12,15 +12,13 @@
 [![Zig Version](https://img.shields.io/badge/Zig-0.15.2-orange?logo=zig&labelColor=282c34)](https://ziglang.org/download/)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 
-A Sega Genesis/Mega Drive emulator written in Zig
+A Sega Genesis/Mega Drive emulator written in Zig and C
 
 </div>
 
 ---
 
-Sandopolis is a Sega Genesis/Mega Drive emulator writen in Zig (and C).
-It includes the main Genesis subsystems, including the Motorola 68000 CPU as the main CPU, VDP (Video Display Processor),
-Z80 as helper CPU for sound processing, and controller/I/O path.
+Sandopolis is a Sega Genesis/Mega Drive emulator writen in Zig and C11.
 
 ### Features
 
@@ -141,5 +139,5 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
-    * [SDL3](https://www.libsdl.org/) for the rendering and input, built from the official SDL source release and accessed from Zig via [zsdl](https://github.com/zig-gamedev/zsdl)
+    * [SDL3](https://www.libsdl.org/) for the rendering and input (via [zsdl](https://github.com/zig-gamedev/zsdl))
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)
