@@ -5,9 +5,12 @@ const PendingAudioFrames = @import("timing.zig").PendingAudioFrames;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const YmWriteEvent = Z80.YmWriteEvent;
 const YmDacSampleEvent = Z80.YmDacSampleEvent;
+const YmResetEvent = Z80.YmResetEvent;
 const PsgCommandEvent = Z80.PsgCommandEvent;
 const Psg = @import("psg.zig").Psg;
-const Ym2612Synth = @import("ym2612.zig").Ym2612Synth;
+const ym2612 = @import("ym2612.zig");
+const Ym2612Synth = ym2612.Ym2612Synth;
+const YmStereoSample = ym2612.StereoSample;
 
 /// DC-blocking high-pass filter (models AC coupling on Genesis audio output).
 /// Single-pole HPF at ~20 Hz removes DC offset from DAC-heavy output.
@@ -46,7 +49,11 @@ pub const AudioOutput = struct {
     pub const max_queued_bytes: usize = (output_rate * max_queued_ms / 1000) * channels * @sizeOf(i16);
     const max_ym_writes_per_push: usize = 32768;
     const max_ym_dac_samples_per_push: usize = 4096;
+    const max_ym_reset_events_per_push: usize = 64;
     const max_psg_commands_per_push: usize = 8192;
+    const max_ym_native_samples_per_chunk: usize = 4096;
+    const ym_internal_master_cycles: u16 = clock.m68k_divider * 6;
+    const ym_internal_clocks_per_sample: u8 = @intCast(clock.fm_master_cycles_per_sample / ym_internal_master_cycles);
 
     stream: *zsdl3.AudioStream,
     fm_converter: RateConverter = .{
@@ -61,11 +68,17 @@ pub const AudioOutput = struct {
     sample_chunk: [4096]i16 = [_]i16{0} ** 4096,
     ym_write_buffer: [max_ym_writes_per_push]YmWriteEvent = undefined,
     ym_dac_buffer: [max_ym_dac_samples_per_push]YmDacSampleEvent = undefined,
+    ym_reset_buffer: [max_ym_reset_events_per_push]YmResetEvent = undefined,
     psg_command_buffer: [max_psg_commands_per_push]PsgCommandEvent = undefined,
+    ym_native_buffer: [max_ym_native_samples_per_chunk]YmStereoSample = undefined,
     ym_synth: Ym2612Synth = .{},
     psg: Psg = Psg{},
     dc_left: DcBlocker = .{},
     dc_right: DcBlocker = .{},
+    ym_internal_master_remainder: u16 = 0,
+    ym_partial_sum_left: i32 = 0,
+    ym_partial_sum_right: i32 = 0,
+    ym_partial_internal_clocks: u8 = 0,
     last_ym_left: f32 = 0.0,
     last_ym_right: f32 = 0.0,
     last_psg_sample: i16 = 0,
@@ -144,23 +157,95 @@ pub const AudioOutput = struct {
         return base_hz * @as(f32, @floatFromInt(@as(u32, 1) << @intCast(block)));
     }
 
-    fn applyYmWritesAtFrame(self: *AudioOutput, pending: PendingAudioFrames, ym_writes: []const YmWriteEvent, ym_write_cursor: *usize, frame: u32) void {
-        while (ym_write_cursor.* < ym_writes.len and fmFramesBeforeMaster(pending, ym_writes[ym_write_cursor.*].master_offset) <= frame) : (ym_write_cursor.* += 1) {
-            const event = ym_writes[ym_write_cursor.*];
-            if (!isYmDacDataWrite(event)) self.applyYmWriteEvent(event);
+    fn resetYmRenderState(self: *AudioOutput) void {
+        self.ym_synth.resetChipState();
+        self.ym_synth.setTimingMode(self.timing_is_pal);
+    }
+
+    fn clockYmInternal(self: *AudioOutput, produced_count: *usize) void {
+        const pins = self.ym_synth.clockOneInternal();
+        self.ym_partial_sum_left += pins[0];
+        self.ym_partial_sum_right += pins[1];
+        self.ym_partial_internal_clocks += 1;
+
+        if (self.ym_partial_internal_clocks == ym_internal_clocks_per_sample) {
+            std.debug.assert(produced_count.* < self.ym_native_buffer.len);
+            self.ym_native_buffer[produced_count.*] = self.ym_synth.finishAccumulatedSample(
+                self.ym_partial_sum_left,
+                self.ym_partial_sum_right,
+            );
+            produced_count.* += 1;
+            self.ym_partial_sum_left = 0;
+            self.ym_partial_sum_right = 0;
+            self.ym_partial_internal_clocks = 0;
         }
     }
 
-    fn applyYmDacSamplesAtFrame(
-        self: *AudioOutput,
-        pending: PendingAudioFrames,
-        ym_dac_samples: []const YmDacSampleEvent,
-        ym_dac_cursor: *usize,
-        frame: u32,
-    ) void {
-        while (ym_dac_cursor.* < ym_dac_samples.len and fmFramesBeforeMaster(pending, ym_dac_samples[ym_dac_cursor.*].master_offset) <= frame) : (ym_dac_cursor.* += 1) {
-            self.applyYmDacSampleEvent(ym_dac_samples[ym_dac_cursor.*]);
+    fn advanceYmMaster(self: *AudioOutput, master_cycles: u32, produced_count: *usize) void {
+        var remaining = master_cycles;
+        while (remaining != 0) {
+            const until_boundary: u32 = if (self.ym_internal_master_remainder == 0)
+                ym_internal_master_cycles
+            else
+                ym_internal_master_cycles - self.ym_internal_master_remainder;
+
+            if (remaining < until_boundary) {
+                self.ym_internal_master_remainder = @intCast(@as(u32, self.ym_internal_master_remainder) + remaining);
+                return;
+            }
+
+            remaining -= until_boundary;
+            self.ym_internal_master_remainder = 0;
+            self.clockYmInternal(produced_count);
         }
+    }
+
+    fn generateYmNativeSamples(
+        self: *AudioOutput,
+        master_start: u32,
+        master_cycles: u32,
+        ym_writes: []const YmWriteEvent,
+        ym_dac_samples: []const YmDacSampleEvent,
+        ym_reset_events: []const YmResetEvent,
+    ) usize {
+        const master_end = master_start + master_cycles;
+        var produced_count: usize = 0;
+        var master_cursor = master_start;
+        var ym_write_cursor: usize = 0;
+        var ym_dac_cursor: usize = 0;
+        var ym_reset_cursor: usize = 0;
+
+        while (master_cursor < master_end) {
+            while (ym_reset_cursor < ym_reset_events.len and ym_reset_events[ym_reset_cursor].master_offset == master_cursor) : (ym_reset_cursor += 1) {
+                self.resetYmRenderState();
+            }
+            while (ym_write_cursor < ym_writes.len and ym_writes[ym_write_cursor].master_offset == master_cursor) : (ym_write_cursor += 1) {
+                const event = ym_writes[ym_write_cursor];
+                if (!isYmDacDataWrite(event)) self.applyYmWriteEvent(event);
+            }
+            while (ym_dac_cursor < ym_dac_samples.len and ym_dac_samples[ym_dac_cursor].master_offset == master_cursor) : (ym_dac_cursor += 1) {
+                self.applyYmDacSampleEvent(ym_dac_samples[ym_dac_cursor]);
+            }
+
+            const next_ym_write_master = if (ym_write_cursor < ym_writes.len)
+                @min(master_end, ym_writes[ym_write_cursor].master_offset)
+            else
+                master_end;
+            const next_ym_dac_master = if (ym_dac_cursor < ym_dac_samples.len)
+                @min(master_end, ym_dac_samples[ym_dac_cursor].master_offset)
+            else
+                master_end;
+            const next_ym_reset_master = if (ym_reset_cursor < ym_reset_events.len)
+                @min(master_end, ym_reset_events[ym_reset_cursor].master_offset)
+            else
+                master_end;
+            const next_ym_master = @min(next_ym_write_master, @min(next_ym_dac_master, next_ym_reset_master));
+
+            self.advanceYmMaster(next_ym_master - master_cursor, &produced_count);
+            master_cursor = next_ym_master;
+        }
+
+        return produced_count;
     }
 
     fn applyPsgCommandsAtFrame(self: *AudioOutput, pending: PendingAudioFrames, psg_commands: []const PsgCommandEvent, psg_cmd_cursor: *usize, frame: u32) void {
@@ -177,68 +262,51 @@ pub const AudioOutput = struct {
         frames: usize,
         ym_writes: []const YmWriteEvent,
         ym_dac_samples: []const YmDacSampleEvent,
+        ym_reset_events: []const YmResetEvent,
         psg_commands: []const PsgCommandEvent,
     ) []const i16 {
         const master_end = @min(pending.master_cycles, master_start + master_cycles);
-        const ym_native_start = fmFramesBeforeMaster(pending, master_start);
-        const ym_native_end = fmFramesBeforeMaster(pending, master_end);
         const psg_native_start = psgFramesBeforeMaster(pending, master_start);
         const psg_native_end = psgFramesBeforeMaster(pending, master_end);
-        const ym_native_frames = ym_native_end - ym_native_start;
         const psg_native_frames = psg_native_end - psg_native_start;
+        const expected_ym_native_frames = fmFramesBeforeMaster(pending, master_end) - fmFramesBeforeMaster(pending, master_start);
+        const ym_native_frames = self.generateYmNativeSamples(
+            master_start,
+            master_end - master_start,
+            ym_writes,
+            ym_dac_samples,
+            ym_reset_events,
+        );
+
+        std.debug.assert(ym_native_frames == expected_ym_native_frames);
 
         var psg_native_cursor: u32 = psg_native_start;
         var last_psg_sample = self.last_psg_sample;
-        var ym_native_cursor: u32 = ym_native_start;
+        var ym_native_cursor: usize = 0;
         var last_ym_left = self.last_ym_left;
         var last_ym_right = self.last_ym_right;
-        var ym_write_cursor: usize = 0;
-        var ym_dac_cursor: usize = 0;
         var psg_cmd_cursor: usize = 0;
         var i: usize = 0;
         while (i < frames) : (i += 1) {
-            const target_ym_native = ym_native_start + @as(u32, @intCast((@as(u64, i + 1) * ym_native_frames) / frames));
-            self.applyYmWritesAtFrame(pending, ym_writes, &ym_write_cursor, ym_native_cursor);
-            self.applyYmDacSamplesAtFrame(pending, ym_dac_samples, &ym_dac_cursor, ym_native_cursor);
-
+            const target_ym_native: usize = @intCast((@as(u64, i + 1) * ym_native_frames) / frames);
             var l: f32 = 0.0;
             var r: f32 = 0.0;
 
-            var ym_samples_to_generate: u32 = 0;
-            var ym_sum_left: f32 = 0.0;
-            var ym_sum_right: f32 = 0.0;
-            while (ym_native_cursor < target_ym_native) {
-                const next_ym_write_frame = if (ym_write_cursor < ym_writes.len)
-                    @min(target_ym_native, fmFramesBeforeMaster(pending, ym_writes[ym_write_cursor].master_offset))
-                else
-                    target_ym_native;
-                const next_ym_dac_frame = if (ym_dac_cursor < ym_dac_samples.len)
-                    @min(target_ym_native, fmFramesBeforeMaster(pending, ym_dac_samples[ym_dac_cursor].master_offset))
-                else
-                    target_ym_native;
-                const next_ym_event_frame = @min(next_ym_write_frame, next_ym_dac_frame);
-
-                if (next_ym_event_frame == ym_native_cursor) {
-                    self.applyYmWritesAtFrame(pending, ym_writes, &ym_write_cursor, ym_native_cursor);
-                    self.applyYmDacSamplesAtFrame(pending, ym_dac_samples, &ym_dac_cursor, ym_native_cursor);
-                    continue;
-                }
-
-                var generated = next_ym_event_frame - ym_native_cursor;
-                while (generated != 0) : (generated -= 1) {
-                    const ym_sample = self.ym_synth.tick();
+            if (ym_native_cursor < target_ym_native) {
+                const ym_start = ym_native_cursor;
+                var ym_sum_left: f32 = 0.0;
+                var ym_sum_right: f32 = 0.0;
+                while (ym_native_cursor < target_ym_native) : (ym_native_cursor += 1) {
+                    const ym_sample = self.ym_native_buffer[ym_native_cursor];
                     last_ym_left = ym_sample.left;
                     last_ym_right = ym_sample.right;
                     ym_sum_left += ym_sample.left;
                     ym_sum_right += ym_sample.right;
-                    ym_native_cursor += 1;
-                    ym_samples_to_generate += 1;
                 }
-            }
 
-            if (ym_samples_to_generate != 0) {
-                l += ym_sum_left / @as(f32, @floatFromInt(ym_samples_to_generate));
-                r += ym_sum_right / @as(f32, @floatFromInt(ym_samples_to_generate));
+                const ym_samples_to_mix = target_ym_native - ym_start;
+                l += ym_sum_left / @as(f32, @floatFromInt(ym_samples_to_mix));
+                r += ym_sum_right / @as(f32, @floatFromInt(ym_samples_to_mix));
             } else {
                 l += last_ym_left;
                 r += last_ym_right;
@@ -285,8 +353,6 @@ pub const AudioOutput = struct {
             self.sample_chunk[i * channels + 1] = @as(i16, @intFromFloat(r * 32767.0));
         }
 
-        self.applyYmWritesAtFrame(pending, ym_writes, &ym_write_cursor, std.math.maxInt(u32));
-        self.applyYmDacSamplesAtFrame(pending, ym_dac_samples, &ym_dac_cursor, std.math.maxInt(u32));
         self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, std.math.maxInt(u32));
 
         self.last_ym_left = last_ym_left;
@@ -301,39 +367,21 @@ pub const AudioOutput = struct {
         pending: PendingAudioFrames,
         ym_writes: []const YmWriteEvent,
         ym_dac_samples: []const YmDacSampleEvent,
+        ym_reset_events: []const YmResetEvent,
         psg_commands: []const PsgCommandEvent,
     ) void {
-        var ym_write_cursor: usize = 0;
-        var ym_dac_cursor: usize = 0;
-        var ym_native_cursor: u32 = 0;
-        while (ym_native_cursor < pending.fm_frames) {
-            self.applyYmWritesAtFrame(pending, ym_writes, &ym_write_cursor, ym_native_cursor);
-            self.applyYmDacSamplesAtFrame(pending, ym_dac_samples, &ym_dac_cursor, ym_native_cursor);
-
-            const next_ym_write_frame = if (ym_write_cursor < ym_writes.len)
-                @min(pending.fm_frames, fmFramesBeforeMaster(pending, ym_writes[ym_write_cursor].master_offset))
-            else
-                pending.fm_frames;
-            const next_ym_dac_frame = if (ym_dac_cursor < ym_dac_samples.len)
-                @min(pending.fm_frames, fmFramesBeforeMaster(pending, ym_dac_samples[ym_dac_cursor].master_offset))
-            else
-                pending.fm_frames;
-            const next_ym_event_frame = @min(next_ym_write_frame, next_ym_dac_frame);
-
-            if (next_ym_event_frame == ym_native_cursor) {
-                self.applyYmWritesAtFrame(pending, ym_writes, &ym_write_cursor, ym_native_cursor);
-                self.applyYmDacSamplesAtFrame(pending, ym_dac_samples, &ym_dac_cursor, ym_native_cursor);
-                continue;
-            }
-
-            while (ym_native_cursor < next_ym_event_frame) : (ym_native_cursor += 1) {
-                const ym_sample = self.ym_synth.tick();
-                self.last_ym_left = ym_sample.left;
-                self.last_ym_right = ym_sample.right;
-            }
+        const ym_native_frames = self.generateYmNativeSamples(
+            0,
+            pending.master_cycles,
+            ym_writes,
+            ym_dac_samples,
+            ym_reset_events,
+        );
+        if (ym_native_frames != 0) {
+            const last = self.ym_native_buffer[ym_native_frames - 1];
+            self.last_ym_left = last.left;
+            self.last_ym_right = last.right;
         }
-        self.applyYmWritesAtFrame(pending, ym_writes, &ym_write_cursor, std.math.maxInt(u32));
-        self.applyYmDacSamplesAtFrame(pending, ym_dac_samples, &ym_dac_cursor, std.math.maxInt(u32));
 
         var psg_cmd_cursor: usize = 0;
         var psg_native_cursor: u32 = 0;
@@ -379,7 +427,7 @@ pub const AudioOutput = struct {
         return queued_bytes < max_queued_bytes;
     }
 
-    pub fn pushPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
+    fn processPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool, queue_output: bool) !void {
         self.setTimingMode(is_pal);
 
         const fm_frames = self.fm_converter.toOutputFrames(pending.fm_frames, output_rate);
@@ -387,12 +435,14 @@ pub const AudioOutput = struct {
         const out_frames: u32 = @max(fm_frames, psg_frames);
         const ym_write_count = z80.takeYmWrites(self.ym_write_buffer[0..]);
         const ym_dac_count = z80.takeYmDacSamples(self.ym_dac_buffer[0..]);
+        const ym_reset_count = z80.takeYmResets(self.ym_reset_buffer[0..]);
         const psg_command_count = z80.takePsgCommands(self.psg_command_buffer[0..]);
         if (out_frames == 0) {
             self.advanceWindowWithoutOutput(
                 pending,
                 self.ym_write_buffer[0..ym_write_count],
                 self.ym_dac_buffer[0..ym_dac_count],
+                self.ym_reset_buffer[0..ym_reset_count],
                 self.psg_command_buffer[0..psg_command_count],
             );
             return;
@@ -403,6 +453,7 @@ pub const AudioOutput = struct {
         var out_frame_offset: u32 = 0;
         var ym_write_offset: usize = 0;
         var ym_dac_offset: usize = 0;
+        var ym_reset_offset: usize = 0;
         var psg_cmd_offset: usize = 0;
         while (out_frame_offset < total_out_frames) {
             const remaining_out_frames = total_out_frames - out_frame_offset;
@@ -417,6 +468,9 @@ pub const AudioOutput = struct {
             var ym_dac_end = ym_dac_offset;
             while (ym_dac_end < ym_dac_count and self.ym_dac_buffer[ym_dac_end].master_offset < chunk_master_end) : (ym_dac_end += 1) {}
 
+            var ym_reset_end = ym_reset_offset;
+            while (ym_reset_end < ym_reset_count and self.ym_reset_buffer[ym_reset_end].master_offset < chunk_master_end) : (ym_reset_end += 1) {}
+
             var psg_cmd_end = psg_cmd_offset;
             while (psg_cmd_end < psg_command_count and self.psg_command_buffer[psg_cmd_end].master_offset < chunk_master_end) : (psg_cmd_end += 1) {}
             const samples = self.renderChunk(
@@ -426,15 +480,22 @@ pub const AudioOutput = struct {
                 chunk_frames,
                 self.ym_write_buffer[ym_write_offset..ym_write_end],
                 self.ym_dac_buffer[ym_dac_offset..ym_dac_end],
+                self.ym_reset_buffer[ym_reset_offset..ym_reset_end],
                 self.psg_command_buffer[psg_cmd_offset..psg_cmd_end],
             );
-            try zsdl3.putAudioStreamData(i16, self.stream, samples);
+            if (queue_output) {
+                try zsdl3.putAudioStreamData(i16, self.stream, samples);
+            }
             out_frame_offset = chunk_out_end;
             ym_write_offset = ym_write_end;
             ym_dac_offset = ym_dac_end;
+            ym_reset_offset = ym_reset_end;
             psg_cmd_offset = psg_cmd_end;
         }
 
+        while (ym_reset_offset < ym_reset_count) : (ym_reset_offset += 1) {
+            self.resetYmRenderState();
+        }
         while (ym_write_offset < ym_write_count) : (ym_write_offset += 1) {
             self.applyYmWriteEvent(self.ym_write_buffer[ym_write_offset]);
         }
@@ -444,6 +505,14 @@ pub const AudioOutput = struct {
         while (psg_cmd_offset < psg_command_count) : (psg_cmd_offset += 1) {
             self.psg.doCommand(self.psg_command_buffer[psg_cmd_offset].value);
         }
+    }
+
+    pub fn pushPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
+        try self.processPending(pending, z80, is_pal, true);
+    }
+
+    pub fn discardPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
+        try self.processPending(pending, z80, is_pal, false);
     }
 };
 
@@ -474,12 +543,14 @@ fn renderChunkedForTest(
     chunk_frames: []const u32,
     ym_writes: []const YmWriteEvent,
     ym_dac_samples: []const YmDacSampleEvent,
+    ym_reset_events: []const YmResetEvent,
     psg_commands: []const PsgCommandEvent,
     dest: []i16,
 ) void {
     var out_frame_offset: u32 = 0;
     var ym_write_offset: usize = 0;
     var ym_dac_offset: usize = 0;
+    var ym_reset_offset: usize = 0;
     var psg_cmd_offset: usize = 0;
 
     for (chunk_frames) |chunk_frame_count| {
@@ -493,6 +564,9 @@ fn renderChunkedForTest(
         var ym_dac_end = ym_dac_offset;
         while (ym_dac_end < ym_dac_samples.len and ym_dac_samples[ym_dac_end].master_offset < chunk_master_end) : (ym_dac_end += 1) {}
 
+        var ym_reset_end = ym_reset_offset;
+        while (ym_reset_end < ym_reset_events.len and ym_reset_events[ym_reset_end].master_offset < chunk_master_end) : (ym_reset_end += 1) {}
+
         var psg_cmd_end = psg_cmd_offset;
         while (psg_cmd_end < psg_commands.len and psg_commands[psg_cmd_end].master_offset < chunk_master_end) : (psg_cmd_end += 1) {}
 
@@ -503,6 +577,7 @@ fn renderChunkedForTest(
             chunk_frame_count,
             ym_writes[ym_write_offset..ym_write_end],
             ym_dac_samples[ym_dac_offset..ym_dac_end],
+            ym_reset_events[ym_reset_offset..ym_reset_end],
             psg_commands[psg_cmd_offset..psg_cmd_end],
         );
         const sample_offset = @as(usize, @intCast(out_frame_offset)) * AudioOutput.channels;
@@ -511,6 +586,7 @@ fn renderChunkedForTest(
         out_frame_offset = chunk_out_end;
         ym_write_offset = ym_write_end;
         ym_dac_offset = ym_dac_end;
+        ym_reset_offset = ym_reset_end;
         psg_cmd_offset = psg_cmd_end;
     }
 }
@@ -563,7 +639,16 @@ test "psg native-rate rendering stays audible after downsampling" {
     output.psg.doCommand(0x85); // ch0 tone low = 5
     output.psg.doCommand(0x00); // ch0 tone high = 0
 
-    const samples = output.renderChunk(pendingWindow(256 * clock.psg_master_cycles_per_sample), 0, 256 * clock.psg_master_cycles_per_sample, 64, &.{}, &.{}, &.{});
+    const samples = output.renderChunk(
+        pendingWindow(256 * clock.psg_master_cycles_per_sample),
+        0,
+        256 * clock.psg_master_cycles_per_sample,
+        64,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+    );
 
     var nonzero: usize = 0;
     for (samples) |sample| {
@@ -610,6 +695,7 @@ test "ym dac state uses port 0 and queued writes stay audible" {
         output.ym_write_buffer[0..ym_write_count],
         output.ym_dac_buffer[0..ym_dac_count],
         &.{},
+        &.{},
     );
 
     var nonzero: usize = 0;
@@ -652,6 +738,7 @@ test "chunked ym dac rendering matches single chunk output" {
         ym_writes[0..],
         ym_dac_samples[0..],
         &.{},
+        &.{},
     );
 
     var chunked = AudioOutput{ .stream = @ptrFromInt(1) };
@@ -664,10 +751,87 @@ test "chunked ym dac rendering matches single chunk output" {
         ym_writes[0..],
         ym_dac_samples[0..],
         &.{},
+        &.{},
         chunked_samples[0..],
     );
 
     try std.testing.expectEqualSlices(i16, single_samples, chunked_samples[0..]);
+}
+
+test "mid-sample ym dac updates do not apply at the start of the sample" {
+    const pending = pendingWindow(clock.fm_master_cycles_per_sample);
+    const ym_writes = [_]YmWriteEvent{
+        .{ .master_offset = 0, .port = 0, .reg = 0x2B, .value = 0x80 },
+        .{ .master_offset = 0, .port = 1, .reg = 0xB6, .value = 0xC0 },
+    };
+    const full_high_dac = [_]YmDacSampleEvent{
+        .{ .master_offset = 0, .value = 0xFF },
+    };
+    const half_high_dac = [_]YmDacSampleEvent{
+        .{ .master_offset = 0, .value = 0x80 },
+        .{ .master_offset = clock.fm_master_cycles_per_sample / 2, .value = 0xFF },
+    };
+
+    var full = AudioOutput{ .stream = @ptrFromInt(1) };
+    const full_samples = full.renderChunk(
+        pending,
+        0,
+        pending.master_cycles,
+        1,
+        ym_writes[0..],
+        full_high_dac[0..],
+        &.{},
+        &.{},
+    );
+
+    var half = AudioOutput{ .stream = @ptrFromInt(1) };
+    const half_samples = half.renderChunk(
+        pending,
+        0,
+        pending.master_cycles,
+        1,
+        ym_writes[0..],
+        half_high_dac[0..],
+        &.{},
+        &.{},
+    );
+
+    const full_left = @abs(full_samples[0]);
+    const half_left = @abs(half_samples[0]);
+    try std.testing.expect(full_left > 0);
+    try std.testing.expect(half_left > full_left / 4);
+    try std.testing.expect(half_left < (full_left * 3) / 4);
+}
+
+test "ym reset event clears render-side ym state for later samples" {
+    const pending = pendingWindow(2 * clock.fm_master_cycles_per_sample);
+    const ym_writes = [_]YmWriteEvent{
+        .{ .master_offset = 0, .port = 0, .reg = 0x2B, .value = 0x80 },
+        .{ .master_offset = 0, .port = 1, .reg = 0xB6, .value = 0xC0 },
+    };
+    const ym_dac_samples = [_]YmDacSampleEvent{
+        .{ .master_offset = 0, .value = 0xFF },
+    };
+    const ym_resets = [_]YmResetEvent{
+        .{ .master_offset = clock.fm_master_cycles_per_sample },
+    };
+
+    var output = AudioOutput{ .stream = @ptrFromInt(1) };
+    const samples = output.renderChunk(
+        pending,
+        0,
+        pending.master_cycles,
+        2,
+        ym_writes[0..],
+        ym_dac_samples[0..],
+        ym_resets[0..],
+        &.{},
+    );
+
+    const first_left = @abs(samples[0]);
+    const second_left = @abs(samples[AudioOutput.channels]);
+    try std.testing.expect(first_left > 0);
+    try std.testing.expect(second_left < first_left / 8);
 }
 
 test "fm high bank frequency uses port 1 a0 and a4" {
@@ -691,7 +855,16 @@ test "psg commands are applied before chunk rendering" {
     output.psg_command_buffer[1] = .{ .master_offset = 0, .value = 0x85 };
     output.psg_command_buffer[2] = .{ .master_offset = 0, .value = 0x00 };
 
-    const samples = output.renderChunk(pendingWindow(256 * clock.psg_master_cycles_per_sample), 0, 256 * clock.psg_master_cycles_per_sample, 64, &.{}, &.{}, output.psg_command_buffer[0..3]);
+    const samples = output.renderChunk(
+        pendingWindow(256 * clock.psg_master_cycles_per_sample),
+        0,
+        256 * clock.psg_master_cycles_per_sample,
+        64,
+        &.{},
+        &.{},
+        &.{},
+        output.psg_command_buffer[0..3],
+    );
 
     var nonzero: usize = 0;
     for (samples) |sample| {
@@ -712,7 +885,16 @@ test "psg command timestamps keep late mute out of early samples" {
         .{ .master_offset = 512 * clock.psg_master_cycles_per_sample, .value = 0x9F },
     };
 
-    const samples = output.renderChunk(pendingWindow(1024 * clock.psg_master_cycles_per_sample), 0, 1024 * clock.psg_master_cycles_per_sample, 128, &.{}, &.{}, commands[0..]);
+    const samples = output.renderChunk(
+        pendingWindow(1024 * clock.psg_master_cycles_per_sample),
+        0,
+        1024 * clock.psg_master_cycles_per_sample,
+        128,
+        &.{},
+        &.{},
+        &.{},
+        commands[0..],
+    );
 
     var early_energy: u64 = 0;
     var late_energy: u64 = 0;
@@ -757,6 +939,7 @@ test "chunked psg rendering matches single chunk output with start remainders" {
         137,
         &.{},
         &.{},
+        &.{},
         commands[0..],
     );
 
@@ -767,6 +950,7 @@ test "chunked psg rendering matches single chunk output with start remainders" {
         pending,
         137,
         chunk_frames[0..],
+        &.{},
         &.{},
         &.{},
         commands[0..],
@@ -806,6 +990,39 @@ test "zero-output windows still advance chip state and drain queued events" {
     try std.testing.expectEqual(@as(usize, 0), z80.takeYmDacSamples(ym_dac_samples[0..]));
     try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_commands[0..]));
 
+    try std.testing.expect(output.last_ym_left != 0.0 or output.last_ym_right != 0.0);
+    try std.testing.expect(output.last_psg_sample != 0);
+}
+
+test "discard pending drains a nonzero-output audio window without leaving queued events behind" {
+    var output = AudioOutput{
+        .stream = @ptrFromInt(1),
+    };
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(0);
+    z80.writeByte(0x4000, 0x2B);
+    z80.writeByte(0x4001, 0x80);
+    z80.writeByte(0x4002, 0xB6);
+    z80.writeByte(0x4003, 0xC0);
+    z80.writeByte(0x4000, 0x2A);
+    z80.writeByte(0x4001, 0xE0);
+
+    z80.writeByte(0x7F11, 0x90);
+    z80.writeByte(0x7F11, 0x81);
+    z80.writeByte(0x7F11, 0x00);
+
+    try output.discardPending(pendingWindow(96 * clock.fm_master_cycles_per_sample), &z80, false);
+
+    var ym_writes: [1]YmWriteEvent = undefined;
+    var ym_dac_samples: [1]YmDacSampleEvent = undefined;
+    var ym_resets: [1]YmResetEvent = undefined;
+    var psg_commands: [1]PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 0), z80.takeYmWrites(ym_writes[0..]));
+    try std.testing.expectEqual(@as(usize, 0), z80.takeYmDacSamples(ym_dac_samples[0..]));
+    try std.testing.expectEqual(@as(usize, 0), z80.takeYmResets(ym_resets[0..]));
+    try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_commands[0..]));
     try std.testing.expect(output.last_ym_left != 0.0 or output.last_ym_right != 0.0);
     try std.testing.expect(output.last_psg_sample != 0);
 }
@@ -862,6 +1079,7 @@ test "sonic boot synthesized audio chunk is nonzero" {
 
         const ym_write_count = bus.z80.takeYmWrites(output.ym_write_buffer[0..]);
         const ym_dac_count = bus.z80.takeYmDacSamples(output.ym_dac_buffer[0..]);
+        const ym_reset_count = bus.z80.takeYmResets(output.ym_reset_buffer[0..]);
         const psg_command_count = bus.z80.takePsgCommands(output.psg_command_buffer[0..]);
         const sample_frames: usize = @min(@as(usize, @intCast(out_frames)), output.sample_chunk.len / AudioOutput.channels);
         const samples = output.renderChunk(
@@ -871,6 +1089,7 @@ test "sonic boot synthesized audio chunk is nonzero" {
             sample_frames,
             output.ym_write_buffer[0..ym_write_count],
             output.ym_dac_buffer[0..ym_dac_count],
+            output.ym_reset_buffer[0..ym_reset_count],
             output.psg_command_buffer[0..psg_command_count],
         );
         for (samples) |sample| {

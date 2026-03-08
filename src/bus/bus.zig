@@ -304,6 +304,7 @@ pub const Bus = struct {
         } else if (addr == 0xA11101) {
             return;
         } else if (addr == 0xA11200) {
+            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             self.z80.writeReset(@as(u16, value) << 8);
             return;
         } else if (addr == 0xA11201) {
@@ -363,6 +364,7 @@ pub const Bus = struct {
             self.z80.writeBusReq(value);
             return;
         } else if (addr == 0xA11200) { // Z80 Reset
+            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             self.z80.writeReset(value);
             return;
         }
@@ -1029,6 +1031,18 @@ test "z80 reset clears ym2612 register shadow state" {
     try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmRegister(0, 0x22));
     try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmRegister(0, 0x28));
     try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmKeyMask());
+}
+
+test "z80 reset writes carry the current audio master offset into ym reset events" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.audio_timing.consumeMaster(4321);
+    bus.write16(0x00A1_1200, 0x0000);
+
+    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
+    try testing.expectEqual(@as(usize, 1), bus.z80.takeYmResets(ym_reset_events[0..]));
+    try testing.expectEqual(@as(u32, 4321), ym_reset_events[0].master_offset);
 }
 
 test "z80 reset preserves uploaded z80 ram" {

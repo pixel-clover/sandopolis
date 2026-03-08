@@ -26,6 +26,10 @@ typedef struct Jgz80YmDacSampleEvent {
     uint8_t value;
 } Jgz80YmDacSampleEvent;
 
+typedef struct Jgz80YmResetEvent {
+    uint32_t master_offset;
+} Jgz80YmResetEvent;
+
 typedef struct Jgz80RegisterDump {
     uint16_t pc;
     uint16_t sp;
@@ -82,6 +86,8 @@ uint8_t jgz80_get_ym_key_mask(Jgz80Handle *handle);
 uint16_t jgz80_take_ym_writes(Jgz80Handle *handle, Jgz80YmWriteEvent *dest, uint16_t max_events);
 
 uint16_t jgz80_take_ym_dac_samples(Jgz80Handle *handle, Jgz80YmDacSampleEvent *dest, uint16_t max_samples);
+
+uint16_t jgz80_take_ym_resets(Jgz80Handle *handle, Jgz80YmResetEvent *dest, uint16_t max_events);
 
 uint16_t jgz80_take_psg_commands(Jgz80Handle *handle, Jgz80PsgCommandEvent *dest, uint16_t max_commands);
 

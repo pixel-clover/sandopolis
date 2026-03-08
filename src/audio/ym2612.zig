@@ -1056,6 +1056,13 @@ pub const Ym2612Synth = struct {
         self.* = .{};
     }
 
+    pub fn resetChipState(self: *Ym2612Synth) void {
+        self.core.reset();
+        self.pending_write_read = 0;
+        self.pending_write_write = 0;
+        self.pending_write_count = 0;
+    }
+
     pub fn applyWrite(self: *Ym2612Synth, event: YmWriteEvent) void {
         self.enqueueWrite(.{
             .port = @intCast(event.port & 0x01),
@@ -1068,11 +1075,19 @@ pub const Ym2612Synth = struct {
         var sum_left: i32 = 0;
         var sum_right: i32 = 0;
         for (0..internal_clocks_per_sample) |_| {
-            const pins = self.clockInternal();
+            const pins = self.clockOneInternal();
             sum_left += pins[0];
             sum_right += pins[1];
         }
 
+        return self.finishAccumulatedSample(sum_left, sum_right);
+    }
+
+    pub fn clockOneInternal(self: *Ym2612Synth) [2]i16 {
+        return self.clockInternal();
+    }
+
+    pub fn finishAccumulatedSample(self: *Ym2612Synth, sum_left: i32, sum_right: i32) StereoSample {
         const inv_cycles = 1.0 / @as(f32, @floatFromInt(internal_clocks_per_sample));
         const left = @as(f32, @floatFromInt(sum_left)) * inv_cycles * ym_output_scale;
         const right = @as(f32, @floatFromInt(sum_right)) * inv_cycles * ym_output_scale;

@@ -21,4 +21,4 @@ This directory includes a collection of useful test ROMs for examining or testin
 
 > [!IMPORTANT]
 > Note that I don't own any of these ROMs, and they are provided for educational and testing purposes only.
-> Please respect the intellectual property rights of the original creators and distributors of these ROMs.
+> Please respect the intellectual property rights of the original creators these ROMs.

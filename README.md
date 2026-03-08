@@ -128,8 +128,9 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
 ### Acknowledgements
 
 * The logo is from [SVG Repo](https://www.svgrepo.com/svg/519365/sonic-runners) with some modifications.
-* This project uses the following projects:
+* This project uses material from the following projects and resources:
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
-    * [SDL3](https://www.libsdl.org/) for the rendering and input
+    * [SDL3](https://www.libsdl.org/) for the rendering and input (via [zsdl](https://github.com/zig-gamedev/zsdl))
+    * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)

@@ -9,6 +9,7 @@
 enum {
     YM_DAC_BUFFER_CAPACITY = 4096,
     YM_WRITE_BUFFER_CAPACITY = 32768,
+    YM_RESET_BUFFER_CAPACITY = 64,
     PSG_COMMAND_BUFFER_CAPACITY = 8192,
 };
 
@@ -28,6 +29,10 @@ struct Jgz80Handle {
     uint16_t ym_dac_write_index;
     uint16_t ym_dac_read_index;
     uint16_t ym_dac_count;
+    Jgz80YmResetEvent ym_reset_events[YM_RESET_BUFFER_CAPACITY];
+    uint16_t ym_reset_write_index;
+    uint16_t ym_reset_read_index;
+    uint16_t ym_reset_count;
     Jgz80PsgCommandEvent psg_commands[PSG_COMMAND_BUFFER_CAPACITY];
     uint16_t psg_command_write_index;
     uint16_t psg_command_read_index;
@@ -47,16 +52,27 @@ struct Jgz80Handle {
     uint32_t m68k_bus_access_count;
 };
 
-static void reset_ym2612_state(Jgz80Handle *h) {
+static void clear_ym2612_shadow_state(Jgz80Handle *h) {
     memset(h->ym_addr, 0, sizeof(h->ym_addr));
     memset(h->ym_regs, 0, sizeof(h->ym_regs));
     h->ym_key_mask = 0;
+}
+
+static void clear_ym2612_event_queues(Jgz80Handle *h) {
     h->ym_write_write_index = 0;
     h->ym_write_read_index = 0;
     h->ym_write_count = 0;
     h->ym_dac_write_index = 0;
     h->ym_dac_read_index = 0;
     h->ym_dac_count = 0;
+    h->ym_reset_write_index = 0;
+    h->ym_reset_read_index = 0;
+    h->ym_reset_count = 0;
+}
+
+static void reset_ym2612_state(Jgz80Handle *h) {
+    clear_ym2612_shadow_state(h);
+    clear_ym2612_event_queues(h);
 }
 
 static void push_ym_write_event(Jgz80Handle *h, uint8_t port, uint8_t reg, uint8_t value) {
@@ -95,6 +111,17 @@ static void push_ym_dac_sample(Jgz80Handle *h, uint8_t value) {
     h->ym_dac_samples[h->ym_dac_write_index].value = value;
     h->ym_dac_write_index = (uint16_t)((h->ym_dac_write_index + 1u) % YM_DAC_BUFFER_CAPACITY);
     ++h->ym_dac_count;
+}
+
+static void push_ym_reset_event(Jgz80Handle *h) {
+    if (h->ym_reset_count == YM_RESET_BUFFER_CAPACITY) {
+        h->ym_reset_read_index = (uint16_t)((h->ym_reset_read_index + 1u) % YM_RESET_BUFFER_CAPACITY);
+        --h->ym_reset_count;
+    }
+
+    h->ym_reset_events[h->ym_reset_write_index].master_offset = h->audio_master_offset;
+    h->ym_reset_write_index = (uint16_t)((h->ym_reset_write_index + 1u) % YM_RESET_BUFFER_CAPACITY);
+    ++h->ym_reset_count;
 }
 
 static uint8_t mapped_read_byte(Jgz80Handle *h, uint16_t addr) {
@@ -404,6 +431,21 @@ uint16_t jgz80_take_ym_dac_samples(Jgz80Handle *handle, Jgz80YmDacSampleEvent *d
     return copied;
 }
 
+uint16_t jgz80_take_ym_resets(Jgz80Handle *handle, Jgz80YmResetEvent *dest, uint16_t max_events) {
+    uint16_t copied = 0u;
+
+    if (!handle || !dest || max_events == 0u) return 0u;
+
+    while (copied < max_events && handle->ym_reset_count != 0u) {
+        dest[copied] = handle->ym_reset_events[handle->ym_reset_read_index];
+        ++copied;
+        handle->ym_reset_read_index = (uint16_t)((handle->ym_reset_read_index + 1u) % YM_RESET_BUFFER_CAPACITY);
+        --handle->ym_reset_count;
+    }
+
+    return copied;
+}
+
 uint16_t jgz80_take_psg_commands(Jgz80Handle *handle, Jgz80PsgCommandEvent *dest, uint16_t max_commands) {
     uint16_t copied = 0u;
 
@@ -483,7 +525,8 @@ void jgz80_write_reset(Jgz80Handle *handle, uint16_t val) {
     bind_callbacks(handle);
     if (val == 0u) {
         if (!handle->reset_line) {
-            reset_ym2612_state(handle);
+            clear_ym2612_shadow_state(handle);
+            push_ym_reset_event(handle);
         }
         handle->reset_line = true;
         handle->bus_ack = false;

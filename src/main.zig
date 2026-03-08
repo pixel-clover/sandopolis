@@ -967,9 +967,11 @@ pub fn main() !void {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, cpu.core.pc });
         }
         if (audio) |*a| {
+            const audio_frames = bus.audio_timing.takePending();
             if (a.output.canAcceptPending()) {
-                const audio_frames = bus.audio_timing.takePending();
                 try a.output.pushPending(audio_frames, &bus.z80, bus.vdp.pal_mode);
+            } else {
+                try a.output.discardPending(audio_frames, &bus.z80, bus.vdp.pal_mode);
             }
         } else {
             _ = bus.audio_timing.takePending();

@@ -9,6 +9,7 @@ pub const Z80 = struct {
 
     pub const YmWriteEvent = c.Jgz80YmWriteEvent;
     pub const YmDacSampleEvent = c.Jgz80YmDacSampleEvent;
+    pub const YmResetEvent = c.Jgz80YmResetEvent;
     pub const PsgCommandEvent = c.Jgz80PsgCommandEvent;
     pub const RegisterDump = c.Jgz80RegisterDump;
 
@@ -139,6 +140,12 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn takeYmResets(self: *Z80, dest: []YmResetEvent) usize {
+        if (dest.len == 0) return 0;
+        if (self.handle) |h| return c.jgz80_take_ym_resets(h, dest.ptr, @intCast(dest.len));
+        return 0;
+    }
+
     pub fn takePsgCommands(self: *Z80, dest: []PsgCommandEvent) usize {
         if (dest.len == 0) return 0;
         if (self.handle) |h| return c.jgz80_take_psg_commands(h, dest.ptr, @intCast(dest.len));
@@ -233,4 +240,30 @@ test "z80 audio events retain scheduler master offsets" {
     try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
     try std.testing.expectEqual(@as(u32, 12), psg_events[0].master_offset);
     try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
+}
+
+test "z80 reset emits a timed ym reset event without dropping earlier ym audio events" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(9);
+    z80.writeByte(0x4000, 0x2A);
+    z80.writeByte(0x4001, 0x44);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x33);
+
+    z80.setAudioMasterOffset(27);
+    z80.writeReset(0);
+
+    var ym_events: [1]Z80.YmWriteEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
+    try std.testing.expectEqual(@as(u32, 9), ym_events[0].master_offset);
+
+    var ym_dac_events: [1]Z80.YmDacSampleEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmDacSamples(ym_dac_events[0..]));
+    try std.testing.expectEqual(@as(u32, 9), ym_dac_events[0].master_offset);
+
+    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
+    try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
 }

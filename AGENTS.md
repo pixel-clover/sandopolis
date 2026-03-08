@@ -44,9 +44,9 @@ Quick examples:
   - `integration_tests.zig`
   - `regression_tests.zig`
   - `property_tests.zig`
-- `tests/testroms/`: public-domain and community test ROMs for hardware verification; see `tests/testroms/README.md`.
-- `roms/`: local ROMs for manual testing; not part of the distributable build.
-- `tmp/`: scratch/reference repos; do not treat them as a Sandopolis source.
+- `tests/testroms/`: public-domain and community test ROMs for hardware verification and testing; see `tests/testroms/README.md`.
+- `roms/`: local ROMs for manual testing; not part of the distributable build. This directory can be missing or empty.
+- `tmp/`: scratch/reference repos; do not treat them as a Sandopolis source. This directory can be missing or empty.
 
 ## Testing Layout Rules
 
