@@ -1,7 +1,6 @@
-# Test ROMs
+## Test ROMs
 
-A collection of test ROMs for the Mega Drive which are noteworthy, interesting, or otherwise useful for examining or testing hardware behaviour.
-This list does not attempt to be exhaustive, but it aims to include the most useful ROMs for verifying correct emulator behaviour.
+This directory includes a collection of useful test ROMs for examining or testing emulation correctness and accuracy.
 
 | File                                                   | Name                          | Author            | Description                                                                                                                                                         |
 |--------------------------------------------------------|-------------------------------|-------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -18,7 +17,7 @@ This list does not attempt to be exhaustive, but it aims to include the most use
 | `TiTAN - Overdrive (Rev1.1-106-Final) (Hardware).bin`  | Overdrive                     | Titan             | Demo release that pushes the hardware to the limits, exploiting corner cases and undocumented features.                                                             |
 | `titan-overdrive2.bin`                                 | Overdrive 2                   | Titan             | Follow-up to Overdrive. Requires many obscure features and timing edge-cases to be implemented correctly.                                                           |
 
-**Source: <https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms>**
+**The ROMs are from here: <https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms>**
 
 > [!IMPORTANT]
 > Note that I don't own any of these ROMs, and they are provided for educational and testing purposes only.
