@@ -100,3 +100,5 @@ roms/
 core.*
 .claude
 NOTES.md
+.zig-cache-unit/
+.zig-global-cache/

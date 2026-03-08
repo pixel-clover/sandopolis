@@ -5,6 +5,13 @@ const CpuDeps = struct {
     jgz80: *std.Build.Dependency,
 };
 
+const VendoredSdl3 = struct {
+    install_step: *std.Build.Step.Run,
+    lib_dir: []const u8,
+    runtime_dir: []const u8,
+    runtime_install_subdir: []const u8,
+};
+
 fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
     addCpuIncludePaths(step, b, deps);
 
@@ -46,17 +53,106 @@ fn addCpuIncludePaths(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDep
     step.root_module.addIncludePath(b.path("src/cpu"));
 }
 
+fn cmakeBuildType(optimize: std.builtin.OptimizeMode) []const u8 {
+    return switch (optimize) {
+        .Debug => "Debug",
+        .ReleaseSafe => "RelWithDebInfo",
+        .ReleaseFast => "Release",
+        .ReleaseSmall => "MinSizeRel",
+    };
+}
+
+fn sdlRunEnvVar(os_tag: std.Target.Os.Tag) []const u8 {
+    return switch (os_tag) {
+        .windows => "PATH",
+        .macos => "DYLD_LIBRARY_PATH",
+        else => "LD_LIBRARY_PATH",
+    };
+}
+
+fn addVendoredSdl3(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) VendoredSdl3 {
+    const sdl3 = b.dependency("sdl3", .{});
+    const triple = target.result.zigTriple(b.allocator) catch @panic("OOM");
+    const build_root = b.fmt(".zig-cache/vendored-sdl3/v1/{s}-{s}", .{ triple, @tagName(optimize) });
+    const build_dir = b.fmt("{s}/build", .{build_root});
+    const install_dir = b.fmt("{s}/install", .{build_root});
+    const build_type = cmakeBuildType(optimize);
+
+    const configure = b.addSystemCommand(&.{"cmake"});
+    configure.setName("Configure vendored SDL3");
+    configure.addArgs(&.{"-S"});
+    configure.addDirectoryArg(sdl3.path("."));
+    configure.addArgs(&.{
+        "-B",
+        build_dir,
+        b.fmt("-DCMAKE_BUILD_TYPE={s}", .{build_type}),
+        b.fmt("-DCMAKE_INSTALL_PREFIX={s}", .{install_dir}),
+        "-DSDL_SHARED=ON",
+        "-DSDL_STATIC=OFF",
+        "-DSDL_TEST_LIBRARY=OFF",
+        "-DSDL_TESTS=OFF",
+        "-DSDL_INSTALL_TESTS=OFF",
+        "-DSDL_EXAMPLES=OFF",
+        "-DSDL_INSTALL_DOCS=OFF",
+        "-DSDL_INSTALL=ON",
+        "-DSDL_FRAMEWORK=OFF",
+    });
+
+    const build_sdl = b.addSystemCommand(&.{
+        "cmake",
+        "--build",
+        build_dir,
+        "--config",
+        build_type,
+    });
+    build_sdl.setName("Build vendored SDL3");
+    build_sdl.step.dependOn(&configure.step);
+
+    const install = b.addSystemCommand(&.{
+        "cmake",
+        "--install",
+        build_dir,
+        "--config",
+        build_type,
+        "--prefix",
+        install_dir,
+    });
+    install.setName("Install vendored SDL3");
+    install.step.dependOn(&build_sdl.step);
+
+    return .{
+        .install_step = install,
+        .lib_dir = b.fmt("{s}/lib", .{install_dir}),
+        .runtime_dir = switch (target.result.os.tag) {
+            .windows => b.fmt("{s}/bin", .{install_dir}),
+            else => b.fmt("{s}/lib", .{install_dir}),
+        },
+        .runtime_install_subdir = switch (target.result.os.tag) {
+            .windows => "bin",
+            else => "lib",
+        },
+    };
+}
+
+fn linkVendoredSdl3(step: *std.Build.Step.Compile, sdl: VendoredSdl3) void {
+    step.step.dependOn(&sdl.install_step.step);
+    step.addLibraryPath(.{ .cwd_relative = sdl.lib_dir });
+    step.linkSystemLibrary("SDL3");
+    step.linkLibC();
+}
+
+fn setVendoredSdl3Runtime(run: *std.Build.Step.Run, sdl: VendoredSdl3, target: std.Build.ResolvedTarget) void {
+    run.step.dependOn(&sdl.install_step.step);
+    run.setEnvironmentVariable(sdlRunEnvVar(target.result.os.tag), sdl.runtime_dir);
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const zsdl = b.dependency("zsdl", .{});
     const minish = b.dependency("minish", .{});
-    const linux_sdl3 = if (target.result.os.tag == .linux) b.dependency("sdl3_linux", .{}) else null;
-    const frontend_test_sdl_install = if (target.result.os.tag == .linux)
-        b.addInstallFile(linux_sdl3.?.path("lib/libSDL3.so"), ".zig-test-libs/libSDL3.so.0")
-    else
-        null;
+    const vendored_sdl3 = addVendoredSdl3(b, target, optimize);
     const cpu_deps: CpuDeps = .{
         .rocket68 = b.dependency("rocket68", .{}),
         .jgz80 = b.dependency("jgz80", .{}),
@@ -84,36 +180,26 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(exe, b, cpu_deps);
-
-    // Link SDL3
-    if (target.result.os.tag == .linux) {
-        // Use prebuilt SDL3
-        const sdl3_dep = linux_sdl3.?;
-        exe.addLibraryPath(sdl3_dep.path("lib"));
-        // Install the shared library to the bin directory so it can be found at runtime
-        const install_sdl3 = b.addInstallFile(sdl3_dep.path("lib/libSDL3.so"), "bin/libSDL3.so.0");
-        b.getInstallStep().dependOn(&install_sdl3.step);
-
-        // Also symlink or install simply implies it's there.
-        // We link against it.
-        exe.linkSystemLibrary("SDL3");
-        exe.linkLibC();
-
-        // Add rpath so it finds the lib in the same dir
-        exe.root_module.addRPathSpecial("$ORIGIN");
-    } else {
-        // Fallback for other systems (assuming installed)
-        exe.linkSystemLibrary("SDL3");
-        if (target.result.os.tag == .macos) {
-            // macOS specifics if needed
-        }
+    linkVendoredSdl3(exe, vendored_sdl3);
+    switch (target.result.os.tag) {
+        .linux => exe.root_module.addRPathSpecial("$ORIGIN/../lib"),
+        .macos => exe.root_module.addRPathSpecial("@loader_path/../lib"),
+        else => {},
     }
 
     b.installArtifact(exe);
+    const install_sdl3_runtime = b.addInstallDirectory(.{
+        .source_dir = .{ .cwd_relative = vendored_sdl3.runtime_dir },
+        .install_dir = .prefix,
+        .install_subdir = vendored_sdl3.runtime_install_subdir,
+    });
+    install_sdl3_runtime.step.dependOn(&vendored_sdl3.install_step.step);
+    b.getInstallStep().dependOn(&install_sdl3_runtime.step);
 
     // Run step
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
+    setVendoredSdl3Runtime(run_cmd, vendored_sdl3, target);
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
@@ -134,23 +220,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(exe_check, b, cpu_deps);
-
-    if (target.result.os.tag == .linux) {
-        const sdl3_dep = linux_sdl3.?;
-        exe_check.addLibraryPath(sdl3_dep.path("lib"));
-        exe_check.addIncludePath(sdl3_dep.path("include"));
-        exe_check.linkSystemLibrary("SDL3");
-        exe_check.linkLibC();
-    } else {
-        exe_check.linkSystemLibrary("SDL3");
-    }
+    linkVendoredSdl3(exe_check, vendored_sdl3);
 
     const check = b.step("check", "Check if sandopolis compiles");
     check.dependOn(&exe_check.step);
 
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/api.zig"),
+            .root_source_file = b.path("src/unit_test_root.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -159,8 +236,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(unit_tests, b, cpu_deps);
+    linkVendoredSdl3(unit_tests, vendored_sdl3);
 
     const unit_run = b.addRunArtifact(unit_tests);
+    setVendoredSdl3Runtime(unit_run, vendored_sdl3, target);
     const unit_step = b.step("test-unit", "Run unit tests");
     unit_step.dependOn(&unit_run.step);
 
@@ -175,21 +254,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(frontend_tests, b, cpu_deps);
-    if (target.result.os.tag == .linux) {
-        const sdl3_dep = linux_sdl3.?;
-        frontend_tests.addLibraryPath(sdl3_dep.path("lib"));
-        frontend_tests.addIncludePath(sdl3_dep.path("include"));
-        frontend_tests.addRPath(sdl3_dep.path("lib"));
-        frontend_tests.linkSystemLibrary("SDL3");
-        frontend_tests.linkLibC();
-    } else {
-        frontend_tests.linkSystemLibrary("SDL3");
-    }
+    linkVendoredSdl3(frontend_tests, vendored_sdl3);
     const frontend_run = b.addRunArtifact(frontend_tests);
-    if (target.result.os.tag == .linux) {
-        frontend_run.step.dependOn(&frontend_test_sdl_install.?.step);
-        frontend_run.setEnvironmentVariable("LD_LIBRARY_PATH", b.getInstallPath(.prefix, ".zig-test-libs"));
-    }
+    setVendoredSdl3Runtime(frontend_run, vendored_sdl3, target);
     const frontend_step = b.step("test-frontend", "Run frontend helper tests");
     frontend_step.dependOn(&frontend_run.step);
 

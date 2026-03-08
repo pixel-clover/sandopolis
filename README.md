@@ -24,7 +24,7 @@ Z80 as helper CPU for sound processing, and controller/I/O path.
 
 ### Features
 
-- Implemented in Zig and C and fully portable to any platform, including WASM builds
+- Implemented in Zig and C with a portable core and SDL3 frontend
 - Accurate Sega Genesis/Mega Drive emulation with good compatibility
 - Very configurable input and rendering settings
 - Debugging features including single stepping and register dumps
@@ -46,6 +46,15 @@ See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 BUILD_TYPE=ReleaseFast make build
 ```
 
+Build prerequisites:
+
+- Zig 0.15.2
+- CMake
+- A working C toolchain
+
+The build vendors SDL3 from the official SDL source release declared in [`build.zig.zon`](build.zig.zon). `zsdl` is used only for Zig bindings; Sandopolis does not rely on checked-in platform SDL binaries such as `libSDL3.so`.
+`make build` and `make run` default to `ReleaseSafe`; use `BUILD_TYPE=Debug` when you specifically need an unoptimized debug build.
+
 #### Running
 
 ```bash
@@ -56,7 +65,7 @@ BUILD_TYPE=ReleaseFast make build
 ./zig-out/bin/sandopolis <path-to-rom>
 
 # Or use the convenience target
-BUILD_TYPE=ReleaseFast make run ARGS="<path-to-rom>"
+make run ARGS="<path-to-rom>"
 ```
 
 #### Controls
@@ -132,5 +141,5 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
-    * [SDL3](https://www.libsdl.org/) for the rendering and input (via [zsdl](https://github.com/zig-gamedev/zsdl))
+    * [SDL3](https://www.libsdl.org/) for the rendering and input, built from the official SDL source release and accessed from Zig via [zsdl](https://github.com/zig-gamedev/zsdl)
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)

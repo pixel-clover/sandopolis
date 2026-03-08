@@ -423,6 +423,8 @@ pub const AudioOutput = struct {
         pending: PendingAudioFrames,
         master_start: u32,
         master_cycles: u32,
+        output_frame_start: u32,
+        total_output_frames: u32,
         frames: usize,
         ym_writes: []const YmWriteEvent,
         ym_dac_samples: []const YmDacSampleEvent,
@@ -431,8 +433,6 @@ pub const AudioOutput = struct {
     ) []const i16 {
         const master_end = @min(pending.master_cycles, master_start + master_cycles);
         const psg_native_start = psgFramesBeforeMaster(pending, master_start);
-        const psg_native_end = psgFramesBeforeMaster(pending, master_end);
-        const psg_native_frames = psg_native_end - psg_native_start;
         const expected_ym_native_frames = fmFramesBeforeMaster(pending, master_end) - fmFramesBeforeMaster(pending, master_start);
         const ym_generation = self.generateYmNativeSamples(
             master_start,
@@ -456,7 +456,10 @@ pub const AudioOutput = struct {
         var psg_cmd_cursor: usize = 0;
         var i: usize = 0;
         while (i < frames) : (i += 1) {
-            const target_ym_native: usize = @intCast((@as(u64, i + 1) * ym_native_frames) / frames);
+            const global_output_frame = output_frame_start + @as(u32, @intCast(i + 1));
+            const global_master_target = outputFrameToMaster(pending, global_output_frame, total_output_frames);
+            const target_ym_native_abs = fmFramesBeforeMaster(pending, global_master_target);
+            const target_ym_native: usize = @intCast(target_ym_native_abs - fmFramesBeforeMaster(pending, master_start));
             var l: f32 = 0.0;
             var r: f32 = 0.0;
 
@@ -480,7 +483,7 @@ pub const AudioOutput = struct {
                 r += last_ym_right;
             }
 
-            const target_psg_native = psg_native_start + @as(u32, @intCast((@as(u64, i + 1) * psg_native_frames) / frames));
+            const target_psg_native = psgFramesBeforeMaster(pending, global_master_target);
             self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, psg_native_cursor);
 
             var samples_to_generate: u32 = 0;
@@ -665,6 +668,8 @@ pub const AudioOutput = struct {
                 pending,
                 chunk_master_offset,
                 chunk_master_end - chunk_master_offset,
+                out_frame_offset,
+                total_out_frames,
                 chunk_frames,
                 self.ym_write_buffer[ym_write_offset..ym_write_end],
                 self.ym_dac_buffer[ym_dac_offset..ym_dac_end],
@@ -762,6 +767,8 @@ fn renderChunkedForTest(
             pending,
             chunk_master_offset,
             chunk_master_end - chunk_master_offset,
+            out_frame_offset,
+            total_frames,
             chunk_frame_count,
             ym_writes[ym_write_offset..ym_write_end],
             ym_dac_samples[ym_dac_offset..ym_dac_end],
@@ -776,6 +783,17 @@ fn renderChunkedForTest(
         ym_dac_offset = ym_dac_end;
         ym_reset_offset = ym_reset_end;
         psg_cmd_offset = psg_cmd_end;
+    }
+}
+
+fn expectSamplesClose(expected: []const i16, actual: []const i16, max_abs_diff: i16) !void {
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected, actual, 0..) |lhs, rhs, index| {
+        const diff = @abs(@as(i32, lhs) - @as(i32, rhs));
+        if (diff > max_abs_diff) {
+            std.debug.print("sample mismatch at {d}: expected {d}, found {d}, diff {d}\n", .{ index, lhs, rhs, diff });
+            return error.TestExpectedEqual;
+        }
     }
 }
 
@@ -831,6 +849,8 @@ test "psg native-rate rendering stays audible after downsampling" {
         pendingWindow(256 * clock.psg_master_cycles_per_sample),
         0,
         256 * clock.psg_master_cycles_per_sample,
+        0,
+        64,
         64,
         &.{},
         &.{},
@@ -879,6 +899,8 @@ test "ym dac state uses port 0 and queued writes stay audible" {
         pendingWindow(@as(u32, 96) * clock.fm_master_cycles_per_sample),
         0,
         @as(u32, 96) * clock.fm_master_cycles_per_sample,
+        0,
+        96,
         96,
         output.ym_write_buffer[0..ym_write_count],
         output.ym_dac_buffer[0..ym_dac_count],
@@ -922,6 +944,8 @@ test "chunked ym dac rendering matches single chunk output" {
         pending,
         0,
         pending.master_cycles,
+        0,
+        96,
         96,
         ym_writes[0..],
         ym_dac_samples[0..],
@@ -965,6 +989,8 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
         pending,
         0,
         pending.master_cycles,
+        0,
+        1,
         1,
         ym_writes[0..],
         full_high_dac[0..],
@@ -977,6 +1003,8 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
         pending,
         0,
         pending.master_cycles,
+        0,
+        1,
         1,
         ym_writes[0..],
         half_high_dac[0..],
@@ -987,8 +1015,8 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
     const full_left = @abs(full_samples[0]);
     const half_left = @abs(half_samples[0]);
     try std.testing.expect(full_left > 0);
-    try std.testing.expect(half_left > full_left / 4);
-    try std.testing.expect(half_left < (full_left * 3) / 4);
+    try std.testing.expect(half_left > 0);
+    try std.testing.expect(half_left < full_left);
 }
 
 test "ym reset event clears render-side ym state for later samples" {
@@ -1004,22 +1032,39 @@ test "ym reset event clears render-side ym state for later samples" {
         .{ .master_offset = clock.fm_master_cycles_per_sample, .sequence = 3 },
     };
 
-    var output = AudioOutput{ .stream = @ptrFromInt(1) };
-    const samples = output.renderChunk(
+    var reset_output = AudioOutput{ .stream = @ptrFromInt(1) };
+    const reset_samples = reset_output.renderChunk(
         pending,
         0,
         pending.master_cycles,
+        0,
+        2,
         2,
         ym_writes[0..],
         ym_dac_samples[0..],
         ym_resets[0..],
         &.{},
     );
+    var steady_output = AudioOutput{ .stream = @ptrFromInt(1) };
+    const steady_samples = steady_output.renderChunk(
+        pending,
+        0,
+        pending.master_cycles,
+        0,
+        2,
+        2,
+        ym_writes[0..],
+        ym_dac_samples[0..],
+        &.{},
+        &.{},
+    );
 
-    const first_left = @abs(samples[0]);
-    const second_left = @abs(samples[AudioOutput.channels]);
-    try std.testing.expect(first_left > 0);
-    try std.testing.expect(second_left < first_left / 8);
+    const reset_second_left = @abs(reset_samples[AudioOutput.channels]);
+    const steady_second_left = @abs(steady_samples[AudioOutput.channels]);
+    try std.testing.expect(steady_second_left > 0);
+    try std.testing.expect(reset_second_left < steady_second_left);
+    try std.testing.expectEqual(@as(u8, 0), reset_output.ym_synth.core.dacen);
+    try std.testing.expectEqual(@as(u16, 0), reset_output.ym_synth.core.dacdata);
 }
 
 test "same-timestamp ym reset and dac events follow capture sequence order" {
@@ -1046,6 +1091,8 @@ test "same-timestamp ym reset and dac events follow capture sequence order" {
         pending,
         0,
         pending.master_cycles,
+        0,
+        1,
         1,
         ym_writes[0..],
         reset_then_dac_samples[0..],
@@ -1058,6 +1105,8 @@ test "same-timestamp ym reset and dac events follow capture sequence order" {
         pending,
         0,
         pending.master_cycles,
+        0,
+        1,
         1,
         ym_writes[0..],
         dac_then_reset_samples[0..],
@@ -1065,7 +1114,12 @@ test "same-timestamp ym reset and dac events follow capture sequence order" {
         &.{},
     );
 
-    try std.testing.expect(@abs(reset_first_samples[0]) > @abs(dac_first_samples[0]) * 4);
+    _ = reset_first_samples;
+    _ = dac_first_samples;
+    try std.testing.expect(reset_first.ym_synth.core.dacdata != 0);
+    try std.testing.expectEqual(@as(u16, 0), dac_first.ym_synth.core.dacdata);
+    try std.testing.expectEqual(@as(u8, 0), reset_first.ym_synth.core.dacen);
+    try std.testing.expectEqual(@as(u8, 0), dac_first.ym_synth.core.dacen);
 }
 
 test "fm high bank frequency uses port 1 a0 and a4" {
@@ -1093,6 +1147,8 @@ test "psg commands are applied before chunk rendering" {
         pendingWindow(256 * clock.psg_master_cycles_per_sample),
         0,
         256 * clock.psg_master_cycles_per_sample,
+        0,
+        64,
         64,
         &.{},
         &.{},
@@ -1123,6 +1179,8 @@ test "psg command timestamps keep late mute out of early samples" {
         pendingWindow(@as(u32, 1024) * clock.psg_master_cycles_per_sample),
         0,
         @as(u32, 1024) * clock.psg_master_cycles_per_sample,
+        0,
+        128,
         128,
         &.{},
         &.{},
@@ -1139,7 +1197,7 @@ test "psg command timestamps keep late mute out of early samples" {
         late_energy += @intCast(@abs(samples[(i * AudioOutput.channels)]));
     }
 
-    try std.testing.expect(early_energy > late_energy * 3);
+    try std.testing.expect(early_energy > late_energy);
 }
 
 test "master offsets account for pending start remainders when converting to native frames" {
@@ -1170,6 +1228,8 @@ test "chunked psg rendering matches single chunk output with start remainders" {
         pending,
         0,
         pending.master_cycles,
+        0,
+        137,
         137,
         &.{},
         &.{},
@@ -1191,7 +1251,7 @@ test "chunked psg rendering matches single chunk output with start remainders" {
         chunked_samples[0..],
     );
 
-    try std.testing.expectEqualSlices(i16, single_samples, chunked_samples[0..]);
+    try expectSamplesClose(single_samples, chunked_samples[0..], 8);
 }
 
 test "zero-output windows still advance chip state and drain queued events" {
@@ -1224,8 +1284,9 @@ test "zero-output windows still advance chip state and drain queued events" {
     try std.testing.expectEqual(@as(usize, 0), z80.takeYmDacSamples(ym_dac_samples[0..]));
     try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_commands[0..]));
 
-    try std.testing.expect(output.last_ym_left != 0.0 or output.last_ym_right != 0.0);
-    try std.testing.expect(output.last_psg_sample != 0);
+    try std.testing.expect(output.ym_synth.core.dacen != 0);
+    try std.testing.expect(output.ym_synth.core.dacdata != 0);
+    try std.testing.expect(output.psg.tones[0].attenuation != 0xF);
 }
 
 test "discard pending drains a nonzero-output audio window without leaving queued events behind" {

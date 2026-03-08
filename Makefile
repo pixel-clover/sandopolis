@@ -1,9 +1,9 @@
 ################################################################################
 # Configuration and Variables
 ################################################################################
-ZIG           ?= zig
+ZIG           ?= $(shell which zig || echo ~/.local/share/zig/0.15.2/zig)
 ZIG_VERSION   := $(shell $(ZIG) version)
-BUILD_TYPE    ?= Debug
+BUILD_TYPE    ?= ReleaseSafe
 BUILD_OPTS      = -Doptimize=$(BUILD_TYPE)
 JOBS          ?= $(shell nproc || echo 2)
 SRC_DIR       := src
@@ -15,6 +15,7 @@ BINARY_NAME   := sandopolis
 BINARY_PATH   := $(BUILD_DIR)/bin/$(BINARY_NAME)
 PREFIX        ?= /usr/local
 RELEASE_MODE := ReleaseSmall
+TMP_DIRS	  := .zig-cache .zig-cache-unit .zig-global-cache
 ARGS          ?=
 
 SHELL         := /usr/bin/env bash
@@ -24,7 +25,8 @@ SHELL         := /usr/bin/env bash
 # Targets
 ################################################################################
 
-.PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs clean install-deps release help setup-hooks test-hooks
+.PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs clean \
+ install-deps release help setup-hooks test-hooks
 .DEFAULT_GOAL := help
 
 help: ## Show the help messages for all targets
@@ -32,7 +34,7 @@ help: ## Show the help messages for all targets
 
 all: build test lint docs  ## build, test, lint, and doc
 
-build: ## Build project (Mode=$(BUILD_TYPE) like `Debug` or `ReleaseFast`)
+build: ## Build project (default Mode=$(BUILD_TYPE); override with e.g. `BUILD_TYPE=Debug`)
 	@echo "Building project in $(BUILD_TYPE) mode with $(JOBS) concurrent jobs..."
 	$(ZIG) build $(BUILD_OPTS) -j$(JOBS)
 
@@ -64,7 +66,7 @@ release: ## Build in Release mode
 
 clean: ## Remove docs, build artifacts, and cache directories
 	@echo "Removing build artifacts, cache, and generated docs..."
-	rm -rf $(BUILD_DIR) $(CACHE_DIR) $(DOC_OUT)
+	rm -rf $(BUILD_DIR) $(CACHE_DIR) $(DOC_OUT) $(TMP_DIRS)
 
 lint: ## Check code style and formatting of Zig files
 	@echo "Running code style checks..."
@@ -81,7 +83,7 @@ docs: ## Generate API documentation
 install-deps: ## Install system dependencies (for Debian-based systems)
 	@echo "Installing system dependencies..."
 	sudo apt-get update
-	sudo apt-get install -y make llvm snapd
+	sudo apt-get install -y make cmake pkg-config clang llvm snapd
 	sudo snap install zig  --beta --classic # Use `--edge --classic` to install the latest version
 
 setup-hooks: ## Install Git hooks (pre-commit and pre-push)

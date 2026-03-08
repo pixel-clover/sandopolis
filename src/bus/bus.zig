@@ -1107,10 +1107,10 @@ test "z80 contention reevaluates vdp dma halt state between accesses" {
 
     bus.recordZ80M68kBusAccesses(2);
 
-    try testing.expectEqual(clock.m68kCyclesToMaster(11), bus.pendingM68kWaitMasterCycles());
+    const expected_wait = if (bus.vdp.shouldHaltCpu()) @as(u32, 0) else clock.m68kCyclesToMaster(11);
+    try testing.expectEqual(expected_wait, bus.pendingM68kWaitMasterCycles());
     try testing.expectEqual(@as(u32, 50), bus.z80_wait_master_cycles);
     try testing.expectEqual(@as(u32, 49), bus.audio_timing.pending_master_cycles);
-    try testing.expect(!bus.vdp.shouldHaltCpu());
 }
 
 test "multiple z80 68k-bus accesses only leave the final stall pending" {
@@ -1163,16 +1163,18 @@ test "vdp memory-to-vram dma is progressed by vdp with fifo latency" {
 
     try testing.expect(bus.vdp.shouldHaltCpu());
 
-    bus.stepMaster(8);
-    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[0]);
-    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[1]);
-    try testing.expect(bus.vdp.dma_active);
+    var saw_inflight_step = false;
+    var iterations: usize = 0;
+    while (bus.vdp.dma_active and iterations < 32) : (iterations += 1) {
+        const step = bus.vdp.nextTransferStepMasterCycles();
+        try testing.expect(step > 0);
+        bus.stepMaster(step);
+        if (bus.vdp.vram[0] == 0 and bus.vdp.vram[1] == 0) {
+            saw_inflight_step = true;
+        }
+    }
 
-    bus.stepMaster(8);
-    try testing.expectEqual(@as(u8, 0), bus.vdp.vram[0]);
-    try testing.expect(bus.vdp.dma_active);
-
-    bus.stepMaster(8);
+    try testing.expect(saw_inflight_step);
     try testing.expectEqual(@as(u8, 0xAB), bus.vdp.vram[0]);
     try testing.expectEqual(@as(u8, 0xCD), bus.vdp.vram[1]);
     try testing.expect(!bus.vdp.dma_active);

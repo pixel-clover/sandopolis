@@ -31,6 +31,8 @@ zig build test-regression
 zig build test-property
 ```
 
+`zig build test-unit` runs module-local unit tests collected through the internal `src/unit_test_root.zig` build root.
+
 ### Test ROMs
 
 The [testroms](testroms) directory contains public-domain and community test ROMs for hardware verification and testing.

@@ -50,6 +50,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 ### Compatibility and tooling
 
+- [x] Seperate test targets for unit, frontend, integration, regression, and property suites
 - [x] Regression test coverage for CPU, bus, VDP, DMA/FIFO, SRAM, and audio paths
 - [x] Boot smoke test with ROM startup progression check
 - [x] Test ROM collection in `tests/testroms/`

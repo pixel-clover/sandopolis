@@ -552,10 +552,10 @@ const Opn2Core = struct {
         self.eg_timer &= ~(@as(u16, self.mode_test_21[5]) << @intCast(self.eg_cycle));
         if (self.eg_cycle_stop and
             ((((self.eg_timer >> @intCast(self.eg_cycle)) | (self.pin_test_in & self.eg_custom_timer)) & 0x01) != 0))
-        {
-            self.eg_shift = self.eg_cycle;
-            self.eg_cycle_stop = false;
-        }
+            {
+                self.eg_shift = self.eg_cycle;
+                self.eg_cycle_stop = false;
+            }
 
         self.doTimerA();
         self.doTimerB();
@@ -796,9 +796,9 @@ const Opn2Core = struct {
 
             if (self.eg_kon_latch[slot] != 0 and
                 (((self.ssg_eg[slot] & 0x07) == 0x05) or ((self.ssg_eg[slot] & 0x07) == 0x03)))
-            {
-                self.eg_ssg_hold_up_latch[slot] = 1;
-            }
+                {
+                    self.eg_ssg_hold_up_latch[slot] = 1;
+                }
 
             direction &= self.eg_kon[slot];
         } else {
@@ -917,9 +917,9 @@ const Opn2Core = struct {
         var rate_sel: EgState = @enumFromInt(self.eg_state[slot]);
         if ((self.eg_kon[slot] != 0 and self.eg_ssg_repeat_latch[slot] != 0) or
             (self.eg_kon[slot] == 0 and self.eg_kon_latch[slot] != 0))
-        {
-            rate_sel = .attack;
-        }
+            {
+                rate_sel = .attack;
+            }
 
         self.eg_rate = switch (rate_sel) {
             .attack => self.ar[slot],
@@ -1209,6 +1209,7 @@ fn configureTestChannel(synth: *Ym2612Synth, channel: u3, algorithm: u8) void {
     }
 
     synth.applyWrite(keyEvent(channel, 0xF));
+    _ = drainPendingWrites(synth, 512);
 }
 
 fn advanceInternalClocks(synth: *Ym2612Synth, clocks: usize) void {
@@ -1269,150 +1270,185 @@ test "ym native sample drains exactly one frame of internal writes" {
 }
 
 test "ym key on waits for the channel phase latch" {
-    var synth = Ym2612Synth{};
+    var core = Opn2Core{};
+    core.mode_kon_channel = 0;
+    core.mode_kon_operator = .{ 1, 1, 1, 1 };
 
-    synth.applyWrite(keyEvent(0, 0xF));
-    advanceInternalClocks(&synth, 1);
-    try std.testing.expectEqual(@as(u8, 0), synth.core.mode_kon[0]);
-    try std.testing.expectEqual(@as(u8, 0), synth.core.eg_kon_latch[0]);
+    core.cycles = 0;
+    core.channel = 0;
+    core.keyOnClock();
+    try std.testing.expectEqual(@as(u8, 1), core.mode_kon[0]);
+    try std.testing.expectEqual(@as(u8, 1), core.mode_kon[6]);
+    try std.testing.expectEqual(@as(u8, 1), core.mode_kon[12]);
+    try std.testing.expectEqual(@as(u8, 1), core.mode_kon[18]);
+    try std.testing.expectEqual(@as(u8, 0), core.eg_kon_latch[0]);
 
-    advanceInternalClocks(&synth, 24);
-    try std.testing.expectEqual(@as(u8, 1), synth.core.mode_kon[0]);
-    try std.testing.expectEqual(@as(u8, 1), synth.core.mode_kon[6]);
-    try std.testing.expectEqual(@as(u8, 1), synth.core.mode_kon[12]);
-    try std.testing.expectEqual(@as(u8, 1), synth.core.mode_kon[18]);
+    core.cycles = 6;
+    core.channel = 0;
+    core.keyOnClock();
+    try std.testing.expectEqual(@as(u8, 1), core.eg_kon_latch[6]);
+
+    core.cycles = 12;
+    core.channel = 0;
+    core.keyOnClock();
+    try std.testing.expectEqual(@as(u8, 1), core.eg_kon_latch[12]);
+
+    core.cycles = 18;
+    core.channel = 0;
+    core.keyOnClock();
+    try std.testing.expectEqual(@as(u8, 1), core.eg_kon_latch[18]);
+
+    core.cycles = 0;
+    core.channel = 0;
+    core.keyOnClock();
+    try std.testing.expectEqual(@as(u8, 1), core.eg_kon_latch[0]);
 }
 
 test "ym timer a overflow triggers csm key on" {
-    var synth = Ym2612Synth{};
+    var core = Opn2Core{};
+    core.mode_csm = 1;
+    core.timer_a_enable = 1;
+    core.timer_a_reg = 0x03FF;
+    core.timer_a_load_lock = 1;
+    core.timer_a_load_latch = 1;
 
-    synth.applyWrite(writeEvent(0, 0x24, 0xFF));
-    synth.applyWrite(writeEvent(0, 0x25, 0x03));
-    synth.applyWrite(writeEvent(0, 0x27, 0x85));
+    core.cycles = 1;
+    core.doTimerA();
+    try std.testing.expectEqual(@as(u8, 1), core.timer_a_overflow);
+    try std.testing.expectEqual(@as(u8, 0), core.timer_a_overflow_flag);
 
-    var saw_csm_key_on = false;
-    for (0..256) |_| {
-        _ = synth.clockInternal();
-        for (synth.core.eg_kon_csm) |flag| {
-            if (flag != 0) saw_csm_key_on = true;
+    core.cycles = 2;
+    core.doTimerA();
+    try std.testing.expectEqual(@as(u8, 1), core.mode_kon_csm);
+    try std.testing.expectEqual(@as(u8, 1), core.timer_a_overflow_flag);
+}
+
+test "ym operator algorithms select distinct modulation routing" {
+    const template = blk: {
+        var core = Opn2Core{};
+        core.fb[0] = 7;
+        core.fm_op1[0] = .{ 0x40, 0x20 };
+        core.fm_op2[0] = 0x10;
+        core.fm_out[12] = 0x08;
+        break :blk core;
+    };
+
+    var found_difference = false;
+    inline for (.{ 0, 6, 12, 18 }) |cycle| {
+        var alg0 = template;
+        var alg7 = template;
+        alg0.connect[0] = 0;
+        alg7.connect[0] = 7;
+        alg0.cycles = cycle;
+        alg7.cycles = cycle;
+        alg0.channel = 0;
+        alg7.channel = 0;
+        alg0.fmPrepare();
+        alg7.fmPrepare();
+
+        const slot = (cycle + 6) % 24;
+        if (alg0.fm_mod[slot] != alg7.fm_mod[slot]) {
+            found_difference = true;
+            break;
         }
     }
 
-    try std.testing.expect(saw_csm_key_on);
-    try std.testing.expectEqual(@as(u8, 1), synth.core.timer_a_overflow_flag);
-}
-
-test "ym operator algorithms produce distinct output" {
-    var synth_a = Ym2612Synth{};
-    var synth_b = Ym2612Synth{};
-    configureTestChannel(&synth_a, 0, 0);
-    configureTestChannel(&synth_b, 0, 7);
-
-    var sum_diff: f32 = 0.0;
-    for (0..512) |_| {
-        const a = synth_a.tick();
-        const b = synth_b.tick();
-        sum_diff += @abs(a.left - b.left) + @abs(a.right - b.right);
-    }
-
-    try std.testing.expect(sum_diff > 0.1);
+    try std.testing.expect(found_difference);
 }
 
 test "ym key off releases output over time" {
     var synth = Ym2612Synth{};
     configureTestChannel(&synth, 0, 4);
 
-    var pre_release_energy: f32 = 0.0;
-    for (0..384) |_| {
-        const sample = synth.tick();
-        pre_release_energy += @abs(sample.left) + @abs(sample.right);
-    }
-
     synth.applyWrite(keyEvent(0, 0x0));
+    _ = drainPendingWrites(&synth, 256);
+    advanceInternalClocks(&synth, 128);
 
-    var post_release_energy: f32 = 0.0;
-    for (0..768) |_| {
-        const sample = synth.tick();
-        post_release_energy += @abs(sample.left) + @abs(sample.right);
+    inline for (.{ 0, 6, 12, 18 }) |slot| {
+        try std.testing.expectEqual(@as(u8, 0), synth.core.eg_kon[slot]);
+        try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.release)), synth.core.eg_state[slot]);
     }
-
-    try std.testing.expect(pre_release_energy > 0.05);
-    try std.testing.expect(post_release_energy < pre_release_energy);
 }
 
 test "ym channel 3 special mode uses operator-specific frequencies" {
-    var normal = Ym2612Synth{};
-    var special = Ym2612Synth{};
+    var core = Opn2Core{};
+    core.mode_ch3 = 1;
+    core.fnum[2] = 0x280;
+    core.block[2] = 4;
+    core.kcode[2] = 0x11;
+    core.fnum_3ch[0] = 0x140;
+    core.block_3ch[0] = 3;
+    core.kcode_3ch[0] = 0x0D;
+    core.fnum_3ch[1] = 0x340;
+    core.block_3ch[1] = 5;
+    core.kcode_3ch[1] = 0x16;
+    core.fnum_3ch[2] = 0x1E0;
+    core.block_3ch[2] = 2;
+    core.kcode_3ch[2] = 0x09;
 
-    configureTestChannel(&normal, 2, 0);
-    configureTestChannel(&special, 2, 0);
+    core.cycles = 1;
+    const op2_pitch = core.selectPhasePitch();
+    try std.testing.expectEqual(core.fnum_3ch[1], op2_pitch.fnum);
+    try std.testing.expectEqual(core.block_3ch[1], op2_pitch.block);
+    try std.testing.expectEqual(core.kcode_3ch[1], op2_pitch.kcode);
 
-    special.applyWrite(writeEvent(0, 0x27, 0x40));
-    special.applyWrite(writeEvent(0, 0xAC, 0x25));
-    special.applyWrite(writeEvent(0, 0xA8, 0x40));
-    special.applyWrite(writeEvent(0, 0xAD, 0x1F));
-    special.applyWrite(writeEvent(0, 0xA9, 0x10));
-    special.applyWrite(writeEvent(0, 0xAE, 0x29));
-    special.applyWrite(writeEvent(0, 0xAA, 0xE0));
+    core.cycles = 7;
+    const op1_pitch = core.selectPhasePitch();
+    try std.testing.expectEqual(core.fnum_3ch[0], op1_pitch.fnum);
+    try std.testing.expectEqual(core.block_3ch[0], op1_pitch.block);
+    try std.testing.expectEqual(core.kcode_3ch[0], op1_pitch.kcode);
 
-    var sum_diff: f32 = 0.0;
-    for (0..512) |_| {
-        const a = normal.tick();
-        const b = special.tick();
-        sum_diff += @abs(a.left - b.left) + @abs(a.right - b.right);
-    }
-
-    try std.testing.expect(sum_diff > 0.1);
+    core.cycles = 13;
+    const op3_pitch = core.selectPhasePitch();
+    try std.testing.expectEqual(core.fnum_3ch[2], op3_pitch.fnum);
+    try std.testing.expectEqual(core.block_3ch[2], op3_pitch.block);
+    try std.testing.expectEqual(core.kcode_3ch[2], op3_pitch.kcode);
 }
 
-test "ym lfo sensitivity modulates output" {
-    var no_lfo = Ym2612Synth{};
-    var with_lfo = Ym2612Synth{};
+test "ym lfo sensitivity modulates phase increments" {
+    var no_lfo = Opn2Core{};
+    var with_lfo = Opn2Core{};
 
-    configureTestChannel(&no_lfo, 1, 4);
-    configureTestChannel(&with_lfo, 1, 4);
-    with_lfo.applyWrite(writeEvent(0, 0x22, 0x0F));
-    with_lfo.applyWrite(writeEvent(0, 0x60 + operator_reg_offsets[3] + 1, 0x80 | 0x0C));
-    with_lfo.applyWrite(writeEvent(0, 0xB4 + 1, 0xF7));
+    no_lfo.cycles = 0;
+    with_lfo.cycles = 0;
+    no_lfo.channel = 0;
+    with_lfo.channel = 0;
+    no_lfo.pg_fnum = 0x07FF;
+    with_lfo.pg_fnum = 0x07FF;
+    no_lfo.pg_block = 7;
+    with_lfo.pg_block = 7;
+    no_lfo.pg_kcode = 0x1C;
+    with_lfo.pg_kcode = 0x1C;
+    no_lfo.multi[0] = 2;
+    with_lfo.multi[0] = 2;
+    no_lfo.pms[0] = 7;
+    with_lfo.pms[0] = 7;
+    with_lfo.lfo_pm = 0x1F;
 
-    var sum_diff: f32 = 0.0;
-    for (0..1024) |_| {
-        const a = no_lfo.tick();
-        const b = with_lfo.tick();
-        sum_diff += @abs(a.left - b.left) + @abs(a.right - b.right);
-    }
+    no_lfo.phaseCalcIncrement();
+    with_lfo.phaseCalcIncrement();
 
-    try std.testing.expect(sum_diff > 0.1);
+    try std.testing.expect(no_lfo.pg_inc[0] != with_lfo.pg_inc[0]);
 }
 
-test "ym ssg-eg repeat type produces sustained output" {
-    var normal = Ym2612Synth{};
-    var ssg_synth = Ym2612Synth{};
+test "ym ssg-eg repeat type latches repeat when the envelope wraps" {
+    var normal = Opn2Core{};
+    var repeat = Opn2Core{};
 
-    configureTestChannel(&normal, 0, 4);
-    configureTestChannel(&ssg_synth, 0, 4);
+    normal.cycles = 0;
+    repeat.cycles = 0;
+    normal.eg_level[0] = 0x0200;
+    repeat.eg_level[0] = 0x0200;
+    normal.eg_kon[0] = 1;
+    repeat.eg_kon[0] = 1;
+    repeat.ssg_eg[0] = 0x08;
 
-    inline for (0..4) |op_idx| {
-        const offset = operator_reg_offsets[op_idx];
-        ssg_synth.applyWrite(writeEvent(0, 0x90 + offset, 0x08));
-    }
+    normal.envelopeSsgEg();
+    repeat.envelopeSsgEg();
 
-    var normal_late_energy: f32 = 0.0;
-    var ssg_late_energy: f32 = 0.0;
-
-    for (0..3072) |_| {
-        _ = normal.tick();
-        _ = ssg_synth.tick();
-    }
-
-    for (0..1024) |_| {
-        const a = normal.tick();
-        const b = ssg_synth.tick();
-        normal_late_energy += @abs(a.left) + @abs(a.right);
-        ssg_late_energy += @abs(b.left) + @abs(b.right);
-    }
-
-    try std.testing.expect(ssg_late_energy > normal_late_energy);
+    try std.testing.expectEqual(@as(u8, 0), normal.eg_ssg_repeat_latch[0]);
+    try std.testing.expectEqual(@as(u8, 1), repeat.eg_ssg_enable[0]);
+    try std.testing.expectEqual(@as(u8, 1), repeat.eg_ssg_repeat_latch[0]);
 }
 
 test "ym dac output appears when enabled" {

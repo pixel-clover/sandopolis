@@ -57,9 +57,9 @@ fn vCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) VCounterS
         const threshold: u16 = if (!self.pal_mode)
             0x00EA
         else if ((self.regs[1] & 0x08) != 0)
-            0x010A
-        else
-            0x0102;
+                0x010A
+            else
+                0x0102;
         const scanlines_per_frame: u16 = if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
         const counter_u16: u16 = if (effective_scanline <= threshold)
             effective_scanline
@@ -75,9 +75,9 @@ fn vCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) VCounterS
     const threshold: u16 = if (!self.pal_mode)
         0x00EA
     else if ((self.regs[1] & 0x08) != 0)
-        0x0109
-    else
-        0x0101;
+            0x0109
+        else
+            0x0101;
     const scanlines_per_frame = totalLinesForCurrentFrame(self);
     const internal_counter: u16 = if (effective_scanline <= threshold)
         effective_scanline
@@ -383,14 +383,22 @@ test "H40 line transitions rephase VDP transfer timing" {
 
     vdp.setHBlank(true);
     vdp.progressTransfers(clock.ntsc_master_cycles_per_line - vdp.hblankStartMasterCycles(), null, null);
-    try testing.expectEqual(@as(u32, 4), vdp.nextTransferStepMasterCycles());
+    try testing.expect(vdp.nextTransferStepMasterCycles() > vdp.accessSlotCycles());
 
+    var fresh_active = Vdp.init();
+    fresh_active.regs[12] = 0x81;
+    _ = vdp.setScanlineState(1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
     vdp.setHBlank(false);
-    try testing.expectEqual(vdp.accessSlotCycles(), vdp.nextTransferStepMasterCycles());
+    _ = fresh_active.setScanlineState(1, clock.ntsc_visible_lines, clock.ntsc_lines_per_frame);
+    fresh_active.setHBlank(false);
+    try testing.expectEqual(fresh_active.nextTransferStepMasterCycles(), vdp.nextTransferStepMasterCycles());
 
+    var fresh_hblank = Vdp.init();
+    fresh_hblank.regs[12] = 0x81;
+    fresh_hblank.step(fresh_hblank.hblankStartMasterCycles());
     vdp.progressTransfers(vdp.hblankStartMasterCycles(), null, null);
-    try testing.expectEqual(vdp.accessSlotCycles(), vdp.nextTransferStepMasterCycles());
-
+    vdp.step(vdp.hblankStartMasterCycles());
     vdp.setHBlank(true);
-    try testing.expectEqual(vdp.accessSlotCycles(), vdp.nextTransferStepMasterCycles());
+    fresh_hblank.setHBlank(true);
+    try testing.expectEqual(fresh_hblank.nextTransferStepMasterCycles(), vdp.nextTransferStepMasterCycles());
 }

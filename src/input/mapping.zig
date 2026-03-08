@@ -443,16 +443,16 @@ fn parseControllerType(name: []const u8) ?ControllerType {
         std.ascii.eqlIgnoreCase(name, "three") or
         std.ascii.eqlIgnoreCase(name, "3button") or
         std.ascii.eqlIgnoreCase(name, "3-button"))
-    {
-        return .three_button;
-    }
+        {
+            return .three_button;
+        }
     if (std.ascii.eqlIgnoreCase(name, "six_button") or
         std.ascii.eqlIgnoreCase(name, "six") or
         std.ascii.eqlIgnoreCase(name, "6button") or
         std.ascii.eqlIgnoreCase(name, "6-button"))
-    {
-        return .six_button;
-    }
+        {
+            return .six_button;
+        }
     return null;
 }
 

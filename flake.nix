@@ -37,6 +37,7 @@
               [
                 zig
                 gnumake
+                cmake
                 git
                 pre-commit
                 pkg-config

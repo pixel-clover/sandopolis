@@ -20,6 +20,7 @@ Priorities, in order:
 - Keep emulator state instance-bound inside the existing structs (`Bus`, `Vdp`, `Io`, `Z80`, `Cpu`, and `AudioOutput`).
 - Avoid introducing a new global mutable state.
 - Keep SDL/frontend logic in `src/main.zig`; keep core emulation logic in `src/`.
+- Keep SDL3 portable in the build graph: prefer the official SDL source dependency plus `zsdl` bindings, and do not hard-code platform binary artifacts such as `lib/libSDL3.so` in `build.zig`.
 - Add comments only when they clarify non-obvious hardware behavior or timing.
 
 Quick examples:
@@ -33,22 +34,29 @@ Quick examples:
 
 - `src/main.zig`: SDL frontend, event loop, rendering, audio device setup.
 - `src/api.zig`: API/doc entrypoint used for generated documentation.
+- `src/public/`: deliberate public API facade types exposed from `src/api.zig`.
+- `src/testing/`: explicit testing facade used by non-unit suites that need lower-level control than `Machine` alone exposes.
 - `src/bus/`: cartridge loading/persistence, memory map, open-bus behavior, Z80 arbitration, and VDP/audio timing coordination.
 - `src/scheduler/`: frame/master-clock scheduling.
 - `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
 - `src/audio/`: YM2612 FM synthesizer, SN76489 PSG emulation, rate conversion, DC-blocking filters, and the output mixing pipeline.
 - `src/input/`: controller I/O and configurable input mapping.
 - `src/video/`: VDP and video timing/rendering logic.
+- `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
 - `src/`: remaining core emulator modules (`machine.zig`, etc.).
 - `tests/`: non-unit suites only:
   - `integration_tests.zig`
   - `regression_tests.zig`
   - `property_tests.zig`
 - `tests/testroms/`: local (public-domain and community) ROMs for testing and hardware verification; see `tests/testroms/README.md`.
+- `roms/`: local ROMs for manual testing only; this directory may be absent.
+- `tmp/`: scratch/reference material only; do not treat it as Sandopolis source, and it may be absent.
+- `build.zig.zon`: source dependencies only. Avoid adding checked-in platform binary packages when an upstream source dependency is available.
 
 ## Testing Layout Rules
 
 - Unit tests belong in the Zig module they exercise.
+- `zig build test-unit` collects module-local unit tests through `src/unit_test_root.zig`.
 - Integration, regression, and property-based tests belong in `tests/`.
 - Non-unit tests should use the public API from `src/api.zig`. If they need lower-level control than `Machine` exposes, add or extend the explicit `sandopolis.testing` facade instead of re-exporting raw core structs.
 - `tests/integration_tests.zig` is for stable public-API and cross-module wiring coverage that is not tied to a specific bug history.
@@ -82,10 +90,11 @@ Run these checks for any non-trivial change:
 
 Also run these when relevant:
 
-1. `zig build docs --prefix .` for docs/API/build-doc changes
-2. `make test` when touching the Makefile or contributor workflow
-3. `make docs` when touching docs generation paths
-4. `zig build run -- <path-to-rom>` or `make run ARGS="<path-to-rom>"` for frontend/manual runtime checks
+1. `zig build test-unit` when touching module-local tests, unit-test build wiring, or test-only module behavior during iteration
+2. `zig build docs --prefix .` for docs/API/build-doc changes
+3. `make test` when touching the Makefile or contributor workflow
+4. `make docs` when touching docs generation paths
+5. `zig build run -- <path-to-rom>` or `make run ARGS="<path-to-rom>"` for frontend/manual runtime checks
 
 ## First Contribution Flow
 
@@ -96,9 +105,10 @@ Use this sequence for a new change:
 3. Add or update tests in the correct location:
    - module-local `test` blocks for unit behavior
    - `tests/` for integration/regression/property coverage
-4. Run `zig build test`.
-5. Run `zig build check`.
-6. Update docs (`README.md`, `ROADMAP.md`, `src/api.zig` exports) if behavior or workflow changed.
+4. Run the narrowest relevant test target while iterating (`zig build test-unit`, `zig build test-integration`, etc.).
+5. Run `zig build test`.
+6. Run `zig build check`.
+7. Update docs (`README.md`, `ROADMAP.md`, and `src/api.zig` exports) if behavior or workflow changed.
 
 ## Testing Expectations
 
