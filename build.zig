@@ -5,6 +5,24 @@ const CpuDeps = struct {
     jgz80: *std.Build.Dependency,
 };
 
+fn createTestingApiModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    deps: CpuDeps,
+) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/testing_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addIncludePath(deps.rocket68.path("include"));
+    module.addIncludePath(deps.rocket68.path("src/m68k"));
+    module.addIncludePath(deps.jgz80.path("."));
+    module.addIncludePath(b.path("src/cpu"));
+    return module;
+}
+
 fn createSandopolisApiModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -64,6 +82,11 @@ fn addCpuIncludePaths(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDep
     step.root_module.addIncludePath(b.path("src/cpu"));
 }
 
+fn pathExists(relative_path: []const u8) bool {
+    std.fs.cwd().access(relative_path, .{}) catch return false;
+    return true;
+}
+
 fn linkSdl3(step: *std.Build.Step.Compile, sdl3_lib: *std.Build.Step.Compile) void {
     step.linkLibrary(sdl3_lib);
     step.linkLibC();
@@ -89,6 +112,8 @@ pub fn build(b: *std.Build) void {
     };
     const sandopolis_api = createSandopolisApiModule(b, target, optimize, cpu_deps);
     const regression_api = createSandopolisApiModule(b, target, regression_optimize, cpu_deps);
+    const testing_api = createTestingApiModule(b, target, optimize, cpu_deps);
+    const compare_ym_available = pathExists("external/Nuked-OPN2/ym3438.c");
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
@@ -221,6 +246,38 @@ pub fn build(b: *std.Build) void {
     const property_run = b.addRunArtifact(property_tests);
     const property_step = b.step("test-property", "Run property-based tests");
     property_step.dependOn(&property_run.step);
+
+    const compare_ym = b.addExecutable(.{
+        .name = "compare-ym",
+        .root_module = b.createModule(.{
+            .root_source_file = if (compare_ym_available)
+                b.path("tools/compare_ym.zig")
+            else
+                b.path("tools/compare_ym_unavailable.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(compare_ym, b, cpu_deps);
+    if (compare_ym_available) {
+        compare_ym.addIncludePath(b.path("external/Nuked-OPN2"));
+        compare_ym.root_module.addIncludePath(b.path("external/Nuked-OPN2"));
+        compare_ym.addCSourceFiles(.{
+            .root = b.path("external/Nuked-OPN2"),
+            .files = &.{"ym3438.c"},
+            .flags = &.{"-std=c11"},
+        });
+        compare_ym.linkLibC();
+    }
+    const compare_ym_run = b.addRunArtifact(compare_ym);
+    if (b.args) |args| {
+        compare_ym_run.addArgs(args);
+    }
+    const compare_ym_step = b.step("compare-ym", "Compare raw YM output against external/Nuked-OPN2");
+    compare_ym_step.dependOn(&compare_ym_run.step);
 
     const docs_module = b.createModule(.{
         .root_source_file = b.path("src/api.zig"),

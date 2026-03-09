@@ -76,6 +76,14 @@ To be added.
 
 ---
 
+### Developer References
+
+`external/Nuked-OPN2` is an optional developer-reference submodule for future comparison tooling. It is licensed separately under LGPL-2.1-or-later and is not part of the default Sandopolis build or test flow.
+
+When the submodule is present, `zig build compare-ym -- [scenario]` compares Sandopolis raw YM2612 internal-clock pin output against Nuked-OPN2 for a few deterministic decoded register-write scenarios. The comparison executable is developer-only and is the only project target that links the external LGPL code.
+
+---
+
 ### Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution.

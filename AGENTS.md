@@ -36,6 +36,7 @@ Quick examples:
 - `src/api.zig`: API/doc entrypoint used for generated documentation.
 - `src/public/`: deliberate public API facade types exposed from `src/api.zig`.
 - `src/testing/`: explicit testing facade used by non-unit suites that need lower-level control than `Machine` alone exposes.
+- `src/testing_root.zig`: root module used for internal testing facades that need broader access than `src/testing/` alone.
 - `src/bus/`: cartridge loading/persistence, memory map, open-bus behavior, Z80 arbitration, and VDP/audio timing coordination.
 - `src/scheduler/`: frame/master-clock scheduling.
 - `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
@@ -51,6 +52,8 @@ Quick examples:
   - `property_tests.zig`
 - `tests/testroms/`: local (public-domain and community) ROMs for testing and hardware verification; see `tests/testroms/README.md`.
 - `roms/`: local ROMs for manual testing only; this directory may be absent.
+- `tools/`: developer-only utilities that are not part of the shipped emulator runtime.
+- `external/`: optional checked-out third-party source trees used for developer tooling or reference comparison, not default runtime dependencies.
 - `tmp/`: scratch/reference material only; do not treat it as Sandopolis source, and it may be absent.
 - `build.zig.zon`: source dependencies only. Avoid adding checked-in platform binary packages when an upstream source dependency is available.
 
@@ -81,6 +84,7 @@ Quick examples:
 - The PSG is reachable from both the Z80 (address `0x7F11`) and the M68K (VDP port `0xC00011`). Both paths must push timestamped events through the Z80 bridge.
 - Keep frontend concerns separate from emulation concerns.
 - Preserve MIT-license boundaries. Treat external emulator repos and AGPL code as references unless licensing has been reviewed explicitly.
+- `external/Nuked-OPN2` is an optional LGPL developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the default `sandopolis`, `check`, `test`, or release build paths.
 
 ## Required Validation
 
@@ -96,6 +100,7 @@ Also run these when relevant:
 3. `make test` when touching the Makefile or contributor workflow
 4. `make docs` when touching docs generation paths
 5. `zig build run -- <path-to-rom>` or `make run ARGS="<path-to-rom>"` for frontend/manual runtime checks
+6. `zig build compare-ym -- [scenario]` when touching raw YM2612 synthesis behavior, the compare harness, or the Nuked reference integration and the submodule is available
 
 ## First Contribution Flow
 
@@ -171,3 +176,4 @@ Do not include style-only feedback or broad praise.
 - Prefer adapting the current scheduler/timing model over introducing parallel experimental paths.
 - If you detect stale docs or workflow targets while changing related code, fix them in the same patch if the scope stays coherent.
 - When uncertain about emulator correctness, add or refine tests first.
+- Use `sandopolis.testing` and the `compare-ym` tool for developer-only reference validation rather than wiring external reference cores into the main emulator path.
