@@ -1,4 +1,4 @@
-## Project roadmap
+## Project Roadmap
 
 This document outlines the features implemented in Sandopolis emulator and the future goals for the project.
 

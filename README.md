@@ -26,12 +26,12 @@ Demos of Sandopolis running a few games:
 
 <table>
   <tr>
-    <td align="center"><img alt="SK demo" src="docs/assets/gif/003_sk_optimized.gif" height="250"><br>Sonic &amp; Knuckles</td>
-    <td align="center"><img alt="ROS demo" src="docs/assets/gif/002_ros_optimized.gif" height="250"><br>The Revenge of Shinobi</td>
+    <td align="center"><img alt="SK demo" src="docs/assets/gif/003_sk_optimized.gif" height="300"><br>Sonic &amp; Knuckles</td>
+    <td align="center"><img alt="ROS demo" src="docs/assets/gif/002_ros_optimized.gif" height="300"><br>The Revenge of Shinobi</td>
   </tr>
   <tr>
-    <td align="center"><img alt="GA2 demo" src="docs/assets/gif/001_ga2_optimized.gif" height="250"><br>Golden Axe II</td>
-    <td align="center"><img alt="SOR demo" src="docs/assets/gif/004_sor_optimized.gif" height="250"><br>Streets of Rage</td>
+    <td align="center"><img alt="GA2 demo" src="docs/assets/gif/001_ga2_optimized.gif" height="300"><br>Golden Axe II</td>
+    <td align="center"><img alt="SOR demo" src="docs/assets/gif/004_sor_optimized.gif" height="300"><br>Streets of Rage</td>
   </tr>
 </table>
 
