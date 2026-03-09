@@ -20,24 +20,30 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 
 Sandopolis is a Sega Genesis/Mega Drive emulator written in Zig and C11.
 
+Demos of the emulator running on a few games:
+
 <div align="center">
 
-|                                                                               |                                                                               |
-|-------------------------------------------------------------------------------|-------------------------------------------------------------------------------|
-| <img alt="GA2 demo" src="docs/assets/gif/001_ga2_optimized.gif" height="200"> | <img alt="ROS demo" src="docs/assets/gif/002_ros_optimized.gif" height="200"> |
-| Golden Axe II                                                                 | Revenge of Shinobi                                                            |
-| <img alt="SK demo" src="docs/assets/gif/003_sk_optimized.gif" height="200">   | <img alt="SOR demo" src="docs/assets/gif/004_sor_optimized.gif" height="200"> |
-| Sonic & Knuckles                                                              | Streets of Rage                                                               |
+<table>
+  <tr>
+    <td align="center"><img alt="SK demo" src="docs/assets/gif/003_sk_optimized.gif" height="250"><br>Sonic &amp; Knuckles</td>
+    <td align="center"><img alt="ROS demo" src="docs/assets/gif/002_ros_optimized.gif" height="250"><br>The Revenge of Shinobi</td>
+  </tr>
+  <tr>
+    <td align="center"><img alt="GA2 demo" src="docs/assets/gif/001_ga2_optimized.gif" height="250"><br>Golden Axe II</td>
+    <td align="center"><img alt="SOR demo" src="docs/assets/gif/004_sor_optimized.gif" height="250"><br>Streets of Rage</td>
+  </tr>
+</table>
 
 </div>
 
 ### Features
 
-- Implemented in Zig and C with a portable core and SDL3 frontend
-- Accurate Sega Genesis/Mega Drive emulation with good compatibility
+- Accurate Sega Genesis/Mega Drive console emulation
+- Very portable; can be built and run on any platform that Zig supports
 - Very configurable input and rendering settings
-- Debugging features including single stepping and register dumps
 - Has a permissive license that allows commercial use
+- Debugging features including single stepping and register dumps
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
@@ -53,37 +59,29 @@ See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
 You can download the latest pre-build binaries from the project's [releases page](https://github.com/pixel-clover/sandopolis/releases).
 
+#### Build Sandopolis from source
+
 Alternatively, you can build the emulator from source by following the steps below.
 
-#### 1. Clone the repository
+##### 1. Clone the repository
 
 ```bash
 git clone --recursive --depth=1 https://github.com/pixel-clover/sandopolis.git
 cd sandopolis
 ```
 
-#### 2. Build the Sandopolis binary
+##### 2. Build the Sandopolis binary
 
 ```bash
 zig build -Doptimize=ReleaseFast
 ```
 
-#### 3. Run the emulator with a ROM
+##### 3. Run the emulator with a ROM
 
 ```bash
 # Start the emulator with a ROM
 ./zig-out/bin/sandopolis <path-to-rom>
 ```
-
-For audio debugging, you can isolate or bypass parts of the mixer at startup:
-
-```bash
-./zig-out/bin/sandopolis <path-to-rom> --audio-mode=ym-only
-./zig-out/bin/sandopolis <path-to-rom> --audio-mode=psg-only
-./zig-out/bin/sandopolis <path-to-rom> --audio-mode=unfiltered-mix
-```
-
-The default remains `--audio-mode=normal`.
 
 > [!NOTE]
 > To build from source, you mainly need to have Zig, Git, and GNU Make installed.
@@ -115,7 +113,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution
 
 > [!IMPORTANT]
 > Nuked-OPN2 is mainly used for testing the output of the Zig YM2612 implementation.
-> The code is not directly included in the project because its license (LGPL 2.1) is incompatible with the MIT license used by Sandopolis.
+> The code is not directly included in the project because its license (LGPL 2.1) is incompatible with project's license.
 
 ### License
 
