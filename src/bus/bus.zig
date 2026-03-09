@@ -256,7 +256,7 @@ pub const Bus = struct {
             return self.readZ80ResetRegister();
         } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
             return self.latchOpenBus(self.open_bus & 0xFF00);
-        } else if (addr >= 0xA10000 and addr < 0xA10020) {
+        } else if (addr >= 0xA10000 and addr < 0xA10100) {
             return self.latchOpenBus(io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr));
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             return vdp_ports.readWord(&self.vdp, &self.open_bus, addr);

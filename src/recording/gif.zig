@@ -224,7 +224,7 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
     var block_buf: [255]u8 = undefined;
     var block_len: u8 = 0;
 
-    emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+    try emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
     var prefix: u16 = data[0];
     for (data[1..]) |byte| {
@@ -244,7 +244,7 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
         if (found) {
             prefix = hash_table[h].code;
         } else {
-            emitCode(rec, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+            try emitCode(rec, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
             if (table_size <= max_code_value) {
                 hash_table[h] = .{ .prefix = prefix, .suffix = byte, .code = table_size, .used = true };
@@ -253,7 +253,7 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
                     code_size += 1;
                 }
             } else {
-                emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+                try emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
                 hash_table = [_]LzwHashEntry{.{}} ** lzw_hash_size;
                 table_size = first_code;
                 code_size = 9;
@@ -263,8 +263,8 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
         }
     }
 
-    emitCode(rec, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
-    emitCode(rec, eoi_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+    try emitCode(rec, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
+    try emitCode(rec, eoi_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
     if (bit_count > 0) {
         block_buf[block_len] = @truncate(bit_buf);
@@ -285,13 +285,14 @@ fn emitCode(
     bc: *u5,
     blk: *[255]u8,
     bl: *u8,
-) void {
+) !void {
     bb.* |= @as(u32, code) << bc.*;
     bc.* +%= cs;
     while (bc.* >= 8) {
         blk[bl.*] = @truncate(bb.*);
         bl.* += 1;
         if (bl.* == 255) {
+            if (rec.out_len + 256 > GifRecorder.out_buf_size) try rec.flushBuf();
             rec.bufWriteByte(255);
             rec.bufWrite(blk);
             bl.* = 0;
@@ -346,6 +347,26 @@ test "GIF recorder handles multiple frames" {
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 2000);
+
+    try std.fs.cwd().deleteFile(tmp_path);
+}
+
+test "GIF recorder handles noisy framebuffer without overflow" {
+    const tmp_path = "test_noisy.gif";
+    var recorder = try GifRecorder.start(tmp_path, 60);
+
+    var fb: [320 * 224]u32 = undefined;
+    for (0..fb.len) |i| {
+        const v: u32 = @truncate(i *% 2654435761);
+        fb[i] = 0xFF000000 | (v & 0x00FFFFFF);
+    }
+    try recorder.addFrame(&fb);
+    recorder.finish();
+
+    const file = try std.fs.cwd().openFile(tmp_path, .{});
+    defer file.close();
+    const stat = try file.stat();
+    try std.testing.expect(stat.size > 1000);
 
     try std.fs.cwd().deleteFile(tmp_path);
 }

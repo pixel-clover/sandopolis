@@ -204,6 +204,21 @@ test "frame scheduler interleaves z80 contention within a master slice" {
     try testing.expect(contended.z80ProgramCounter() != 0);
 }
 
+test "read16 routes full io window range through io handler" {
+    const rom = try seedResetNopsRom(testing.allocator, 1);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    const base = emulator.read16(0xA10000);
+    try testing.expect(base != 0);
+
+    const mirrored = emulator.read16(0xA10020);
+    try testing.expectEqual(base, mirrored);
+}
+
 test "frame scheduler carries instruction overshoot between slices" {
     const rom = try seedResetNopsRom(testing.allocator, 2);
     defer testing.allocator.free(rom);
