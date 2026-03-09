@@ -90,10 +90,6 @@ To be added.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution.
 
-### License
-
-This project is licensed under the MIT License (see [LICENSE](LICENSE)).
-
 ### Acknowledgements
 
 * The logo is from [SVG Repo](https://www.svgrepo.com/svg/519365/sonic-runners) with some modifications.
@@ -109,3 +105,7 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
 > [!IMPORTANT]
 > Nuked-OPN2 is mainly used for testing the output of the Zig YM2612 implementation.
 > The code is not directly included in the project because its license (LGPL 2.1) is incompatible with the MIT license used by Sandopolis.
+
+### License
+
+This project is licensed under the MIT License (see [LICENSE](LICENSE)).
