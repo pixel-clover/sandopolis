@@ -34,8 +34,6 @@ const TransferPhaseBoundaryEvent = struct {
     wait_master_cycles: u32,
 };
 
-// -- FIFO queue operations --
-
 pub fn fifoIsEmpty(self: *const Vdp) bool {
     return self.fifo_len == 0;
 }
@@ -129,8 +127,6 @@ fn popPendingPortWrite(self: *Vdp) ?Vdp.PendingPortWrite {
     self.pending_port_write_len -= 1;
     return write;
 }
-
-// -- Transfer timing --
 
 fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
     self.transfer_line_master_cycle +%= @intCast(master_cycles);
@@ -533,8 +529,6 @@ fn fifoTickLatency(self: *Vdp) void {
     }
 }
 
-// -- Drain analysis --
-
 fn fifoWaitUntilNextOpen(self: *const Vdp) u32 {
     var fifo_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 4;
     var pending_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 16;
@@ -599,8 +593,6 @@ fn fifoWaitUntilDrained(self: *const Vdp) u32 {
 
     return wait_master_cycles;
 }
-
-// -- Data port read --
 
 fn dataPortReadTargetFor(code: u8, addr: u16) ?Vdp.DataPortReadTarget {
     switch (code & 0xF) {
@@ -700,8 +692,6 @@ fn currentDataPortReadWordWithQueuedWrites(self: *const Vdp, code: u8, addr: u16
     return (@as(u16, high) << 8) | low;
 }
 
-// -- Data port I/O --
-
 pub fn readData(self: *Vdp) u16 {
     self.pending_command = false;
     const result = self.read_buffer;
@@ -797,8 +787,6 @@ pub fn advanceAddr(self: *Vdp) void {
     const auto_inc = self.regs[15];
     self.addr = self.addr +% auto_inc;
 }
-
-// -- DMA operations --
 
 fn finishDmaIfIdle(self: *Vdp) void {
     if (self.dma_remaining != 0 or !fifoIsEmpty(self)) return;
@@ -944,8 +932,6 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
     finishDmaIfIdle(self);
 }
 
-// -- Wait queries --
-
 pub fn dataPortWriteWaitMasterCycles(self: *const Vdp) u32 {
     if (self.dma_active and self.dma_fill) return 0;
 
@@ -976,8 +962,6 @@ pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
     if (self.dma_active and !self.dma_fill and !self.dma_copy) return 0;
     return self.pending_port_write_delay_master_cycles;
 }
-
-// -- Control port write --
 
 pub fn writeControl(self: *Vdp, value: u16) void {
     if (shouldBufferPortWrite(self)) {
@@ -1018,7 +1002,6 @@ pub fn writeControl(self: *Vdp, value: u16) void {
         const a14_15 = (lo & 0x3);
         self.addr = @intCast((a14_15 << 14) | a0_13);
 
-        // DMA
         if ((self.code & 0x20) != 0 and (self.regs[1] & 0x10) != 0) {
             const dma_mode = (self.regs[23] >> 6) & 0x3;
 

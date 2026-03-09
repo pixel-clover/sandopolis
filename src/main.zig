@@ -508,7 +508,6 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
 }
 
 pub fn main() !void {
-    // -- Emulator Initialization --
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
@@ -555,7 +554,6 @@ pub fn main() !void {
     }
     defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
-    // Open up to two gamepads and assign them to players by SDL device ID.
     var gamepads = [_]?GamepadSlot{null} ** InputBindings.player_count;
     var gamepad_sticks = [_]DirectionState{.{}} ** InputBindings.player_count;
     var gamepad_triggers = [_]TriggerState{.{}} ** InputBindings.player_count;
@@ -586,7 +584,6 @@ pub fn main() !void {
         }
     }
 
-    // Create VDP Texture (320x224)
     const vdp_texture = try zsdl3.createTexture(renderer, zsdl3.PixelFormatEnum.argb8888, zsdl3.TextureAccess.streaming, 320, 224);
     defer vdp_texture.destroy();
 
@@ -618,19 +615,12 @@ pub fn main() !void {
 
     const cpu = &machine.cpu;
 
-    // -- Setup Test Environment (Dummy ROM for Tile Rendering) --
     if (rom_path == null) {
-        // Vectors
-        std.mem.writeInt(u32, bus.rom[0..4], 0x00FF0000, .big); // SSP
-        std.mem.writeInt(u32, bus.rom[4..8], 0x00000200, .big); // PC
+        std.mem.writeInt(u32, bus.rom[0..4], 0x00FF0000, .big);
+        std.mem.writeInt(u32, bus.rom[4..8], 0x00000200, .big);
 
-        // Opcode at 0x200: VDP Tile Test
-
-        // 1. Setup VDP Registers
         var pc: u32 = 0x200;
 
-        // Reg 2 (Plane A) -> 0x38 (0xE000)
-        // MOVE.w #0x8238, 0xC00004
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -644,8 +634,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Reg 15 (Auto Inc) -> 2
-        // MOVE.w #0x8F02, 0xC00004
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -659,9 +647,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // 2. Write Palette (Red / Green)
-        // CRAM Write @ 0 (Color 0) -> 0xC0000000
-        // MOVE.w #0xC000, 0xC00004
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -674,7 +659,7 @@ pub fn main() !void {
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0x04;
         pc += 2;
-        // MOVE.w #0x0000, 0xC00004
+
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -688,9 +673,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Color 1: Red (0000 000 000 111 -> 0x00E) in Grp 0, Idx 1
-        // Auto-inc is 2. So we are at Color 1.
-        // MOVE.w #0x000E, 0xC00000 (Data Port)
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -704,8 +686,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // Color 2: Green (0000 000 111 000 -> 0x0E0)
-        // MOVE.w #0x00E0, 0xC00000
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -719,9 +699,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // -- Input Test ROM --
-        // 1. Set TH = 1 (Port A)
-        // MOVE.w #0x40, 0xA10002 -> Writes 0x40 to 0xA10003
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -735,12 +712,8 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x02;
         pc += 2;
 
-        const loop_start = pc; // Mark loop start
+        const loop_start = pc;
 
-        // 2. Read Port A (0xA10003) -> D0 (Byte)
-        // MOVE.b 0xA10003, D0
-        // Opcode: 1039 00xx ...
-        // 0001 0000 0011 1001 -> 1039
         bus.rom[pc] = 0x10;
         bus.rom[pc + 1] = 0x39;
         pc += 2;
@@ -751,8 +724,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x03;
         pc += 2;
 
-        // 3. Test Button B (Bit 4)
-        // ANDI.b #0x10, D0
         bus.rom[pc] = 0x02;
         bus.rom[pc + 1] = 0x00;
         pc += 2;
@@ -760,33 +731,27 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x10;
         pc += 2;
 
-        // 4. Branch if Zero (Pressed) -> BEQ Pressed
-        // Offset: Forward X bytes.
-        // BEQ opcode: 67xx (xx = 8-bit offset)
-        // Needs target label.
         const branch_loc = pc;
-        pc += 2; // fill later
+        pc += 2;
 
-        // Released (Red)
-        // Set CRAM Addr 0
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
-        pc += 2; // MOVE.w #...
+        pc += 2;
         bus.rom[pc] = 0xC0;
         bus.rom[pc + 1] = 0x00;
-        pc += 2; // Data
+        pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0xC0;
-        pc += 2; // Addr Hi
+        pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0x04;
-        pc += 2; // Addr Lo
+        pc += 2;
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0x00;
-        pc += 2; // Data
+        pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0xC0;
         pc += 2;
@@ -794,7 +759,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Write Red (0x000E)
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -808,23 +772,17 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // BRA Loop
-        // Opcode 60xx
-        // Target: loop_start. Current pc is at start of BRA.
         const back_jump = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
         bus.rom[pc] = 0x60;
         bus.rom[pc + 1] = @as(u8, @intCast(back_jump & 0xFF));
         pc += 2;
 
-        // Pressed Label Target
         const pressed_target = pc;
-        // Fix up branch offset
+
         const fwd_jump = @as(i32, @intCast(pressed_target)) - @as(i32, @intCast(branch_loc + 2));
         bus.rom[branch_loc] = 0x67;
         bus.rom[branch_loc + 1] = @as(u8, @intCast(fwd_jump & 0xFF));
 
-        // Pressed (Green)
-        // Set CRAM Addr 0
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -850,7 +808,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Write Green (0x00E0)
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -864,21 +821,18 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // BRA Loop
         const back_jump2 = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
         bus.rom[pc] = 0x60;
         bus.rom[pc + 1] = @as(u8, @intCast(back_jump2 & 0xFF));
         pc += 2;
 
-        // 5. Halt loop
         bus.rom[pc] = 0x60;
         bus.rom[pc + 1] = 0xFE;
         pc += 2;
     } else {
-        // Parse ROM Header (Basic)
         if (bus.rom.len >= 0x200) {
             const console = bus.rom[0x100..0x110];
-            const title = bus.rom[0x150..0x180]; // Domestic Name
+            const title = bus.rom[0x150..0x180];
             std.debug.print("Console: {s}\n", .{console});
             std.debug.print("Title:   {s}\n", .{title});
         }
@@ -1003,7 +957,6 @@ pub fn main() !void {
             }
         }
 
-        // Frame scheduler (NTSC-like): active display + HBlank per line, then VBlank lines.
         const visible_lines: u16 = if (bus.vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
         const total_lines: u16 = if (bus.vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
         bus.vdp.beginFrame();
@@ -1011,7 +964,7 @@ pub fn main() !void {
             const line: u16 = @intCast(line_idx);
             const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
             if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
-                cpu.requestInterrupt(6); // V-BLANK interrupt at vblank entry
+                cpu.requestInterrupt(6);
             }
             if (entering_vblank) {
                 bus.z80.assertIrq(0xFF);
@@ -1053,7 +1006,6 @@ pub fn main() !void {
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
 
-        // Capture frame for GIF recording (every other frame for smaller file size)
         if (gif_recorder) |*rec| {
             if (frame_counter % 2 == 0) {
                 rec.addFrame(&bus.vdp.framebuffer) catch |err| {
@@ -1080,10 +1032,8 @@ pub fn main() !void {
             _ = bus.audio_timing.takePending();
         }
 
-        // Update texture from framebuffer
         _ = SDL_UpdateTexture(vdp_texture, null, @ptrCast(&bus.vdp.framebuffer), 320 * 4);
 
-        // Render
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
         try zsdl3.renderTexture(renderer, vdp_texture, null, null);
@@ -1099,7 +1049,6 @@ pub fn main() !void {
         }
     }
 
-    // Finalize any in-progress GIF recording
     if (gif_recorder) |*rec| {
         std.debug.print("GIF recording stopped on exit ({d} frames)\n", .{rec.frame_count});
         rec.finish();
@@ -1262,7 +1211,6 @@ test "cli parser rejects invalid audio mode values" {
     try std.testing.expectError(error.InvalidAudioMode, parseCliArgs(&args));
 }
 
-/// Generate a unique GIF filename: sandopolis_001.gif, sandopolis_002.gif, ...
 fn gifOutputPath() [48]u8 {
     var buf: [48]u8 = [_]u8{0} ** 48;
     var i: u32 = 1;
@@ -1270,10 +1218,10 @@ fn gifOutputPath() [48]u8 {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch break;
         buf[name.len] = 0;
         std.fs.cwd().access(name, .{}) catch {
-            return buf; // File doesn't exist, use this name
+            return buf;
         };
     }
-    // All 999 slots used — overwrite the last one
+
     return buf;
 }
 

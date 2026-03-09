@@ -13,17 +13,12 @@ pub const pal_visible_lines: u16 = 240;
 pub const pal_master_cycles_per_line: u16 = 3420;
 pub const pal_master_cycles_per_frame: u32 = @as(u32, pal_lines_per_frame) * @as(u32, pal_master_cycles_per_line);
 
-// Coarse phase split used by current scheduler.
-// 2590 + 830 = 3420 master cycles per line.
 pub const ntsc_active_master_cycles: u16 = 2590;
 pub const ntsc_hblank_master_cycles: u16 = 830;
 
-// FM: 68k-domain sample divider used by reference cores.
-// master/sample = m68k_divider * 6(prescaler) * 6(channels) * 4(operators).
-pub const fm_master_cycles_per_sample: u16 = @as(u16, m68k_divider) * 6 * 6 * 4; // 1008
+pub const fm_master_cycles_per_sample: u16 = @as(u16, m68k_divider) * 6 * 6 * 4;
 
-// PSG: one sample every 16 Z80 cycles.
-pub const psg_master_cycles_per_sample: u16 = @as(u16, z80_divider) * 16; // 240
+pub const psg_master_cycles_per_sample: u16 = @as(u16, z80_divider) * 16;
 
 pub inline fn m68kCyclesToMaster(cycles: u32) u32 {
     return cycles * m68k_divider;

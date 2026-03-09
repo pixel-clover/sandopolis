@@ -1,9 +1,7 @@
 const Vdp = @import("vdp.zig").Vdp;
 
-// 3-bit Genesis color to 8-bit lookup: 0->0, 1->36, 2->73, 3->109, 4->146, 5->182, 6->219, 7->255
 const color_lut = [8]u8{ 0, 36, 73, 109, 146, 182, 219, 255 };
 
-// Shadow/highlight pixel tags stored in bits of a temporary line buffer.
 const SH_NORMAL: u8 = 0;
 const SH_SHADOW: u8 = 1;
 const SH_HIGHLIGHT: u8 = 2;
@@ -24,8 +22,6 @@ fn layerOrder(source_id: u8, high_pri: bool) u8 {
         else => LAYER_BACKDROP,
     };
 }
-
-// -- Color conversion --
 
 pub fn getPaletteColor(self: *const Vdp, index: u8) u32 {
     const offset = @as(usize, index & 0x3F) * 2;
@@ -60,8 +56,6 @@ pub fn getPaletteColorHighlight(self: *const Vdp, index: u8) u32 {
     return 0xFF000000 | (r << 16) | (g << 8) | b;
 }
 
-// -- Scroll reading --
-
 pub fn readHScroll(self: *const Vdp, table_base: u16, line: u16, plane_a: bool) i32 {
     const hmode = self.regs[11] & 0x3;
     var offset: u16 = if (plane_a) @as(u16, 0) else @as(u16, 2);
@@ -87,8 +81,6 @@ pub fn readVScroll(self: *const Vdp, plane_a: bool) i32 {
     const raw = (@as(u16, hi) << 8) | lo;
     return @as(i16, @bitCast(raw & 0x07FF));
 }
-
-// -- Rendering --
 
 pub fn renderScanline(self: *Vdp, line: u16) void {
     const screen_w = self.screenWidth();
@@ -140,7 +132,6 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         @memset(&sh_buf, SH_NORMAL);
     }
 
-    // Window plane determination.
     const win_h_pos = self.regs[17];
     const win_v_pos = self.regs[18];
     const win_right = (win_h_pos & 0x80) != 0;
@@ -151,10 +142,8 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
     const win_left_px: u16 = if (win_right) @min(win_h_cell * 8, screen_w) else 0;
     const win_right_px: u16 = if (win_right) screen_w else @min(win_h_cell * 8, screen_w);
 
-    // Render Plane B.
     renderPlaneToBuffer(self, line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 1, 0, screen_w);
 
-    // Render Plane A / Window.
     if (line_in_win_v and win_left_px < win_right_px) {
         if (win_left_px > 0) {
             renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, 0, win_left_px);
@@ -167,10 +156,8 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, 0, screen_w);
     }
 
-    // Render sprites.
     renderSpritesToBuffer(self, line, tile_h, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode);
 
-    // Final compositing to framebuffer.
     for (0..@as(usize, screen_w)) |x| {
         const pal_idx = pixel_buf[x];
         if (sh_mode) {

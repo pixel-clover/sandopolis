@@ -98,10 +98,6 @@ const fm_algorithm = [4][6][8]u8{
     },
 };
 
-// Exact logsin/exp ROM values from the YM2612 die.
-// The comptime-computed versions are off-by-one on ~50% of entries due to
-// floor() vs the chip's internal rounding, which compounds through FM
-// operator feedback chains and produces audibly wrong timbres.
 const logsin_rom = [256]u16{
     0x859, 0x6c3, 0x607, 0x58b, 0x52e, 0x4e4, 0x4a6, 0x471,
     0x443, 0x41a, 0x3f5, 0x3d3, 0x3b5, 0x398, 0x37e, 0x365,
@@ -710,8 +706,6 @@ const Opn2Core = struct {
         self.mol = 0;
         self.mor = 0;
 
-        // YM2612 output is multiplexed: the latched channel sample only reaches the
-        // pins on one phase, while muted phases leak the sign bit instead.
         const out_enabled = test_dac or ((slot & 0x03) == 0x03);
         var sign = out >> 8;
         if (out >= 0) {
@@ -1081,8 +1075,6 @@ const Opn2Core = struct {
     }
 };
 
-/// 2nd-order biquad low-pass filter (transposed direct form II).
-/// Matches the ~-12 dB/oct rolloff of the YM2612 analog output stage.
 const BiquadLpf = struct {
     b0: f32 = 0,
     b1: f32 = 0,
@@ -1104,7 +1096,7 @@ fn buildBiquadLpf(sample_rate: f32, cutoff_hz: f32) BiquadLpf {
     const w0 = std.math.tau * cutoff_hz / sample_rate;
     const cos_w0 = @cos(w0);
     const sin_w0 = @sin(w0);
-    // Q = 0.707 (Butterworth) for maximally flat passband.
+
     const alpha = sin_w0 / (2.0 * 0.7071067811865476);
 
     const a0_inv = 1.0 / (1.0 + alpha);

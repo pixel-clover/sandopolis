@@ -30,12 +30,10 @@ const YmGenerationResult = struct {
     ym_reset_cursor: usize,
 };
 
-/// DC-blocking high-pass filter (models AC coupling on Genesis audio output).
-/// Single-pole HPF at ~20 Hz removes DC offset from DAC-heavy output.
 const DcBlocker = struct {
     x_prev: f32 = 0.0,
     y_prev: f32 = 0.0,
-    // alpha ≈ 1 - (2π × 20 / 48000) ≈ 0.9974
+
     const alpha: f32 = 0.9974;
 
     fn process(self: *DcBlocker, x: f32) f32 {
@@ -46,11 +44,6 @@ const DcBlocker = struct {
     }
 };
 
-/// First-order RC low-pass filter for the PSG analog output path.
-/// On the Genesis board, the SN76489 output passes through an RC network
-/// before the mixing amplifier. This attenuates high harmonics of the
-/// square waves, giving the PSG a softer, more "muffled" character
-/// compared to raw digital output.
 const PsgOutputLpf = struct {
     prev: f32 = 0.0,
     alpha: f32,
@@ -67,18 +60,10 @@ const PsgOutputLpf = struct {
     }
 };
 
-// PSG output RC filter cutoff (Hz). Genesis boards typically have an RC
-// network on the PSG output path with a cutoff around 3.2–4.7 kHz depending
-// on board revision. We use 4.2 kHz as a reasonable compromise.
 const psg_cutoff_hz: f32 = 4200.0;
-// PSG-to-FM mix ratio commonly modeled as roughly -7 dB.
+
 const psg_mix_gain: f32 = 0.4466836;
 
-/// First-order stereo low-pass filter modeling the Genesis board output stage.
-/// The mixed audio passes through the output amplifier (typically µPC4570 on
-/// Model 1) with an RC network that creates a gentle roll-off around 15 kHz.
-/// This gives the overall audio a slightly warmer character compared to raw
-/// digital output.
 const BoardOutputLpf = struct {
     prev_l: f32 = 0.0,
     prev_r: f32 = 0.0,
@@ -101,9 +86,6 @@ const BoardOutputLpf = struct {
     }
 };
 
-// Board output stage cutoff (Hz). The Genesis output amplifier RC network
-// provides a gentle roll-off that reduces aliasing artifacts and harshness
-// from the combined YM2612 + PSG signal.
 const board_output_cutoff_hz: f32 = 15000.0;
 const resample_scaling_factor: u64 = 1_000_000_000;
 const resample_buffer_len: usize = 6;
@@ -1033,10 +1015,6 @@ pub const AudioOutput = struct {
     }
 };
 
-/// Final mixer clamp.
-/// Keeps the post-filter mix inside the signed 16-bit output range without
-/// introducing an extra nonlinear stage beyond what the chip/filter model
-/// already produces.
 fn clampMix(x: f32) f32 {
     return std.math.clamp(x, -1.0, 1.0);
 }
@@ -1181,9 +1159,9 @@ test "psg native-rate rendering stays audible after downsampling" {
     var output = AudioOutput{
         .stream = @ptrFromInt(1),
     };
-    output.psg.doCommand(0x90); // ch0 volume = 0
-    output.psg.doCommand(0x85); // ch0 tone low = 5
-    output.psg.doCommand(0x00); // ch0 tone high = 0
+    output.psg.doCommand(0x90);
+    output.psg.doCommand(0x85);
+    output.psg.doCommand(0x00);
 
     const samples = output.renderChunk(
         pendingWindow(256 * clock.psg_master_cycles_per_sample),
@@ -1818,24 +1796,19 @@ test "discard pending drains a nonzero-output audio window without leaving queue
 test "psg output lpf attenuates high-frequency content" {
     var lpf = PsgOutputLpf.init(psg_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
 
-    // Feed a ~12 kHz square wave (well above the 4.2 kHz cutoff) through the filter.
-    // At 48 kHz output rate, 12 kHz = period of 4 samples (2 high, 2 low).
     var peak: f32 = 0.0;
     for (0..200) |i| {
         const input: f32 = if (i % 4 < 2) 1.0 else -1.0;
         const output_sample = lpf.process(input);
         if (i > 100) peak = @max(peak, @abs(output_sample));
     }
-    // After settling, the peak amplitude should be significantly attenuated
-    // (well below the input amplitude of 1.0).
+
     try std.testing.expect(peak < 0.5);
 }
 
 test "psg output lpf passes low-frequency content" {
     var lpf = PsgOutputLpf.init(psg_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
 
-    // Feed a ~200 Hz signal (well below the 4.2 kHz cutoff).
-    // At 48 kHz, 200 Hz = period of 240 samples.
     var peak: f32 = 0.0;
     for (0..960) |i| {
         const phase = @as(f32, @floatFromInt(i)) * std.math.tau / 240.0;
@@ -1843,29 +1816,26 @@ test "psg output lpf passes low-frequency content" {
         const output_sample = lpf.process(input);
         if (i > 480) peak = @max(peak, @abs(output_sample));
     }
-    // Low-frequency content should pass through with minimal attenuation.
+
     try std.testing.expect(peak > 0.85);
 }
 
 test "board output lpf provides gentle high-frequency roll-off" {
     var lpf = BoardOutputLpf.init(board_output_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
 
-    // Feed a ~20 kHz signal (above the 15 kHz cutoff).
-    // At 48 kHz, 20 kHz ≈ period of 2.4 samples.
     var peak: f32 = 0.0;
     for (0..500) |i| {
         const phase = @as(f32, @floatFromInt(i)) * std.math.tau * 20000.0 / 48000.0;
         const out = lpf.processL(@sin(phase));
         if (i > 250) peak = @max(peak, @abs(out));
     }
-    // 20 kHz should be noticeably attenuated by the 15 kHz filter.
+
     try std.testing.expect(peak < 0.75);
 }
 
 test "board output lpf passes audible content with minimal loss" {
     var lpf = BoardOutputLpf.init(board_output_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
 
-    // Feed a 1 kHz sine (well below cutoff).
     var peak: f32 = 0.0;
     for (0..960) |i| {
         const phase = @as(f32, @floatFromInt(i)) * std.math.tau * 1000.0 / 48000.0;

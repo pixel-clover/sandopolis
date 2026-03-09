@@ -5,21 +5,18 @@ const timing_mod = @import("timing.zig");
 
 pub const Vdp = struct {
     vram: [64 * 1024]u8,
-    cram: [128]u8, // 64 colors * 2 bytes (9-bit color stored as word)
-    vsram: [80]u8, // 40 entries * 2 bytes
-    regs: [32]u8, // 24 defined, safe to have 32
+    cram: [128]u8,
+    vsram: [80]u8,
+    regs: [32]u8,
 
-    // Output Buffer (320x224 ARGB8888)
     framebuffer: [320 * 224]u32,
 
-    // Internal State
-    code: u8, // Command Code (CD0-CD5)
-    addr: u16, // Address Register (16-bit enough for VRAM 64k)
-    pending_command: bool, // Second half of command word pending
+    code: u8,
+    addr: u16,
+    pending_command: bool,
     command_word: u32,
-    read_buffer: u16, // Prefetch buffer for VRAM reads
+    read_buffer: u16,
 
-    // Status Flags
     vblank: bool,
     hblank: bool,
     odd_frame: bool,
@@ -30,7 +27,6 @@ pub const Vdp = struct {
 
     dma_active: bool,
 
-    // DMA State
     dma_fill: bool,
     dma_copy: bool,
     dma_source_addr: u32,
@@ -50,14 +46,12 @@ pub const Vdp = struct {
     transfer_line_master_cycle: u16,
     projected_data_port_write_wait: ProjectedDataPortWriteWait,
 
-    // Timing for V-BLANK
-    scanline: u16, // Current scanline (0-261 for NTSC)
-    line_master_cycle: u16, // 0..(cycles_per_line-1)
+    scanline: u16,
+    line_master_cycle: u16,
     hint_counter: i16,
     hv_latched: u16,
     hv_latched_valid: bool,
 
-    // Sprite dot overflow tracking (persists across scanlines)
     sprite_dot_overflow: bool,
 
     dbg_vram_writes: u64,
@@ -67,7 +61,6 @@ pub const Vdp = struct {
 
     pub const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
 
-    // Access slot timing varies by display mode and blanking state.
     const active_access_slot_cycles_h40: u32 = 16;
     const active_access_slot_cycles_h32: u32 = 20;
     const blanking_access_slot_cycles_h40: u32 = 8;
@@ -168,8 +161,6 @@ pub const Vdp = struct {
         };
     }
 
-    // -- Mode queries --
-
     pub fn isH40(self: *const Vdp) bool {
         return (self.regs[12] & 0x81) != 0;
     }
@@ -226,8 +217,6 @@ pub const Vdp = struct {
         return if (self.isInterlaceMode2()) 64 else 32;
     }
 
-    // -- Access slot timing --
-
     pub fn accessSlotCycles(self: *const Vdp) u32 {
         const in_blanking = self.vblank or self.hblank;
         if (self.isH40()) {
@@ -236,8 +225,6 @@ pub const Vdp = struct {
             return if (in_blanking) blanking_access_slot_cycles_h32 else active_access_slot_cycles_h32;
         }
     }
-
-    // -- VRAM access --
 
     pub fn vramReadByte(self: *const Vdp, address: u16) u8 {
         return self.vram[address & 0xFFFF];
@@ -253,14 +240,10 @@ pub const Vdp = struct {
         self.vram[addr + 1] = @intCast(value & 0xFF);
     }
 
-    // -- Rendering (delegated to render.zig) --
-
     pub const renderScanline = render.renderScanline;
     pub const getPaletteColor = render.getPaletteColor;
     pub const getPaletteColorShadow = render.getPaletteColorShadow;
     pub const getPaletteColorHighlight = render.getPaletteColorHighlight;
-
-    // -- FIFO / DMA / Data port (delegated to fifo.zig) --
 
     pub const fifoIsEmpty = fifo_mod.fifoIsEmpty;
     pub const fifoIsFull = fifo_mod.fifoIsFull;
@@ -277,8 +260,6 @@ pub const Vdp = struct {
     pub const dataPortReadWaitMasterCycles = fifo_mod.dataPortReadWaitMasterCycles;
     pub const shouldHaltCpu = fifo_mod.shouldHaltCpu;
     pub const controlPortWriteWaitMasterCycles = fifo_mod.controlPortWriteWaitMasterCycles;
-
-    // -- Timing / HV counter / Status (delegated to timing.zig) --
 
     pub const readControl = timing_mod.readControl;
     pub const readControlAdjusted = timing_mod.readControlAdjusted;

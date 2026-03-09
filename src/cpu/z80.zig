@@ -177,12 +177,10 @@ pub const Z80 = struct {
         return 0;
     }
 
-    // Bus Request (0xA11100)
     pub fn writeBusReq(self: *Z80, val: u16) void {
         if (self.handle) |h| c.jgz80_write_bus_req(h, val);
     }
 
-    // Reads the 68k-visible BUSACK register state at $A11100.
     pub fn readBusReq(self: *const Z80) u16 {
         if (self.handle) |h| return c.jgz80_read_bus_req(@constCast(h));
         return 0x0100;
@@ -192,7 +190,6 @@ pub const Z80 = struct {
         return self.readBusReq() != 0x0000 and self.readReset() != 0x0000;
     }
 
-    // Bus Reset (0xA11200)
     pub fn writeReset(self: *Z80, val: u16) void {
         if (self.handle) |h| c.jgz80_write_reset(h, val);
     }
@@ -207,7 +204,7 @@ test "z80 register dump reflects stepped state" {
     var z80 = Z80.init();
     defer z80.deinit();
 
-    z80.writeByte(0x0000, 0x00); // NOP
+    z80.writeByte(0x0000, 0x00);
     try std.testing.expectEqual(@as(u32, 4), z80.stepInstruction());
 
     const dump = z80.getRegisterDump();

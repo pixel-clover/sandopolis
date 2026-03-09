@@ -230,8 +230,6 @@ fn statusReadAdjustmentMasterCycles(opcode: u16) u32 {
     return clock.m68kCyclesToMaster(8);
 }
 
-// -- Control port read --
-
 pub fn readControl(self: *Vdp) u16 {
     const current = adjustedLineState(self, 0);
     const status = statusWordForAdjustedState(self, current);
@@ -255,8 +253,6 @@ pub fn readControlAdjusted(self: *Vdp, opcode: u16) u16 {
 
     return status;
 }
-
-// -- HV counter --
 
 fn computeLiveHVCounter(self: *const Vdp) u16 {
     return computeLiveHVCounterAt(self, self.scanline, self.line_master_cycle);
@@ -282,8 +278,6 @@ pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
     const adjusted = adjustedLineState(self, statusReadAdjustmentMasterCycles(opcode));
     return computeLiveHVCounterAt(self, adjusted.scanline, adjusted.line_master_cycle);
 }
-
-// -- Timing state --
 
 pub fn step(self: *Vdp, cycles: u32) void {
     const total = @as(u32, self.line_master_cycle) + cycles;

@@ -1,13 +1,10 @@
 const std = @import("std");
 
-/// GIF89a encoder for Genesis framebuffer capture.
-/// Writes frames as a GIF animation with LZW compression.
-/// Uses buffered I/O and hash-based LZW for real-time performance.
 pub const GifRecorder = struct {
     file: std.fs.File,
     frame_count: u32,
     delay_cs: u16,
-    /// Output buffer to batch syscalls.
+
     out_buf: [out_buf_size]u8 = undefined,
     out_len: usize = 0,
 
@@ -15,7 +12,7 @@ pub const GifRecorder = struct {
     const height = 224;
     const pixel_count = width * height;
     const max_colors: u16 = 256;
-    const color_depth: u3 = 7; // 2^(7+1) = 256 colors
+    const color_depth: u3 = 7;
     const min_code_size: u8 = 8;
     const out_buf_size = 64 * 1024;
 
@@ -31,20 +28,16 @@ pub const GifRecorder = struct {
             .delay_cs = delay_cs,
         };
 
-        // GIF89a header
         self.bufWrite("GIF89a");
 
-        // Logical screen descriptor
         self.bufWriteU16(@intCast(width));
         self.bufWriteU16(@intCast(height));
         self.bufWriteByte(0x80 | (@as(u8, color_depth) << 4) | color_depth);
-        self.bufWriteByte(0); // Background color index
-        self.bufWriteByte(0); // Pixel aspect ratio
+        self.bufWriteByte(0);
+        self.bufWriteByte(0);
 
-        // Placeholder global color table (256 * 3 bytes, all black)
         self.bufWriteZeros(max_colors * 3);
 
-        // Netscape looping extension (loop forever)
         self.bufWrite(&.{ 0x21, 0xFF, 0x0B });
         self.bufWrite("NETSCAPE2.0");
         self.bufWrite(&.{ 0x03, 0x01, 0x00, 0x00, 0x00 });
@@ -54,16 +47,14 @@ pub const GifRecorder = struct {
     }
 
     pub fn addFrame(self: *GifRecorder, framebuffer: *const [pixel_count]u32) !void {
-        // If not the first frame, seek back over the trailing 0x3B we wrote for crash safety
         if (self.frame_count > 0) {
             const pos = self.file.getPos() catch 0;
             if (pos > 0) self.file.seekTo(pos - 1) catch {};
         }
 
-        // Build local palette from unique colors
         var palette: [max_colors]u32 = [_]u32{0} ** max_colors;
         var palette_size: u16 = 0;
-        // Hash table for fast color lookup: maps color -> palette index
+
         var color_map: [4096]ColorEntry = [_]ColorEntry{.{ .color = 0, .index = 0, .used = false }} ** 4096;
 
         var indices: [pixel_count]u8 = undefined;
@@ -73,21 +64,18 @@ pub const GifRecorder = struct {
             indices[i] = findOrAddColor(&palette, &palette_size, &color_map, color);
         }
 
-        // Graphic control extension
         self.bufWrite(&.{ 0x21, 0xF9, 0x04, 0x00 });
         self.bufWriteU16(self.delay_cs);
-        self.bufWriteByte(0); // Transparent color index
-        self.bufWriteByte(0); // Block terminator
+        self.bufWriteByte(0);
+        self.bufWriteByte(0);
 
-        // Image descriptor
         self.bufWriteByte(0x2C);
-        self.bufWriteU16(0); // Left
-        self.bufWriteU16(0); // Top
+        self.bufWriteU16(0);
+        self.bufWriteU16(0);
         self.bufWriteU16(@intCast(width));
         self.bufWriteU16(@intCast(height));
-        self.bufWriteByte(0x80 | @as(u8, color_depth)); // Local color table
+        self.bufWriteByte(0x80 | @as(u8, color_depth));
 
-        // Write local color table
         for (0..max_colors) |ci| {
             const c = palette[ci];
             self.bufWriteByte(@intCast((c >> 16) & 0xFF));
@@ -95,13 +83,11 @@ pub const GifRecorder = struct {
             self.bufWriteByte(@intCast(c & 0xFF));
         }
 
-        // LZW-compressed image data
         self.bufWriteByte(min_code_size);
         try self.flushBuf();
         try lzwCompress(self, &indices);
-        self.bufWriteByte(0x00); // Block terminator
+        self.bufWriteByte(0x00);
 
-        // Write GIF trailer for crash safety — file is always a valid GIF
         self.bufWriteByte(0x3B);
         try self.flushBuf();
 
@@ -110,15 +96,12 @@ pub const GifRecorder = struct {
 
     pub fn finish(self: *GifRecorder) void {
         if (self.frame_count == 0) {
-            // No frames recorded — write trailer and close
             self.bufWriteByte(0x3B);
             self.flushBuf() catch {};
         }
-        // Trailer already written by last addFrame, nothing more needed
+
         self.file.close();
     }
-
-    // --- Buffered output helpers ---
 
     fn bufWriteByte(self: *GifRecorder, byte: u8) void {
         self.out_buf[self.out_len] = byte;
@@ -148,12 +131,9 @@ pub const GifRecorder = struct {
         }
     }
 
-    // --- Color palette helpers ---
-
     const ColorEntry = struct { color: u32, index: u8, used: bool };
 
     fn colorHash(color: u32) u12 {
-        // Simple hash for 24-bit color -> 12-bit index
         const r = (color >> 16) & 0xFF;
         const g = (color >> 8) & 0xFF;
         const b = color & 0xFF;
@@ -167,14 +147,13 @@ pub const GifRecorder = struct {
         color: u32,
     ) u8 {
         var h: usize = colorHash(color);
-        // Open-addressing linear probe
+
         var probes: usize = 0;
         while (probes < 4096) : ({
             h = (h + 1) & 0xFFF;
             probes += 1;
         }) {
             if (!color_map[h].used) {
-                // Empty slot — color not in map
                 if (size.* < max_colors) {
                     const idx: u8 = @intCast(size.*);
                     palette[idx] = color;
@@ -182,14 +161,14 @@ pub const GifRecorder = struct {
                     color_map[h] = .{ .color = color, .index = idx, .used = true };
                     return idx;
                 }
-                // Palette full — find nearest
+
                 return findNearest(palette, color);
             }
             if (color_map[h].color == color) {
                 return color_map[h].index;
             }
         }
-        // Shouldn't happen with 4096 slots and 256 colors
+
         return findNearest(palette, color);
     }
 
@@ -216,9 +195,6 @@ pub const GifRecorder = struct {
     }
 };
 
-// --- LZW Compression with hash table ---
-
-/// Hash table entry for LZW: maps (prefix, suffix) -> code.
 const LzwHashEntry = struct {
     prefix: u16 = 0,
     suffix: u8 = 0,
@@ -226,7 +202,7 @@ const LzwHashEntry = struct {
     used: bool = false,
 };
 
-const lzw_hash_size = 8192; // Must be power of 2, > 4096
+const lzw_hash_size = 8192;
 
 fn lzwHash(prefix: u16, suffix: u8) u13 {
     return @truncate((@as(u32, prefix) << 8 ^ @as(u32, suffix)) *% 2654435761);
@@ -242,19 +218,16 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
     var table_size: u16 = first_code;
     var code_size: u4 = 9;
 
-    // Bit packing state
     var bit_buf: u32 = 0;
     var bit_count: u5 = 0;
-    // GIF sub-block buffer (max 255 data bytes per sub-block)
+
     var block_buf: [255]u8 = undefined;
     var block_len: u8 = 0;
 
-    // Emit clear code
     emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
     var prefix: u16 = data[0];
     for (data[1..]) |byte| {
-        // Look up (prefix, byte) in hash table
         var h: usize = lzwHash(prefix, byte);
         const found = blk: {
             var probes: usize = 0;
@@ -280,7 +253,6 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
                     code_size += 1;
                 }
             } else {
-                // Table full — emit clear and reset
                 emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
                 hash_table = [_]LzwHashEntry{.{}} ** lzw_hash_size;
                 table_size = first_code;
@@ -294,7 +266,6 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
     emitCode(rec, prefix, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
     emitCode(rec, eoi_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
-    // Flush remaining bits
     if (bit_count > 0) {
         block_buf[block_len] = @truncate(bit_buf);
         block_len += 1;
@@ -345,14 +316,12 @@ test "GIF recorder creates valid single-frame GIF" {
     try recorder.addFrame(&framebuffer);
     recorder.finish();
 
-    // Verify file starts with GIF89a
     const file = try std.fs.cwd().openFile(tmp_path, .{});
     defer file.close();
     var header: [6]u8 = undefined;
     _ = try file.readAll(&header);
     try std.testing.expectEqualStrings("GIF89a", &header);
 
-    // Verify non-trivial file size (header + color table + frame data)
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);
 
