@@ -24,8 +24,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Sprite limits with per-line count/dot overflow and x=0 masking
 - [x] H32/H40 mode, interlace mode 2, display enable blanking, and VRAM read buffer
 - [x] Status register with VInt, sprite overflow/collision, and FIFO flags
-- [ ] DMA timing
-- [ ] FIFO emulation
+- [x] DMA timing
+- [x] FIFO emulation
 - [ ] VDP accuracy
 
 ### Audio subsystem
@@ -63,4 +63,4 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 - [ ] Sega CD / 32X support
 - [ ] WebAssembly build target
-- [ ] Libretro core
+- [ ] Libretro core integration
