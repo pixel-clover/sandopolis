@@ -89,7 +89,17 @@ zig build -Doptimize=ReleaseFast
 
 ### Documentation
 
-To be added.
+Project documentation is published at <https://pixel-clover.github.io/sandopolis/>.
+
+To build it locally:
+
+```bash
+make docs
+make docs-serve
+```
+
+These commands expect `uv` to be available for the MkDocs Python environment.
+`make docs` regenerates the Zig API HTML under `docs/api/` and builds the MkDocs site into `site/`.
 
 ---
 

@@ -1,38 +1,44 @@
-# Rocket 68
+# Sandopolis
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/habedi/rocket68/main/logo.svg" alt="Project Logo" width="200" />
-</p>
+Sandopolis is a Sega Genesis/Mega Drive emulator written in Zig and C.
+The project prioritizes correctness and subsystem timing first, then maintainable boundaries between the frontend and core emulation code, and only then raw performance.
 
-Rocket 68 is a Motorola 68000 (or m68k) CPU emulator written in pure C11.
-It supports all the instructions and addressing modes of the m68k, plus system control features like supervisor mode, interrupts, and exceptions.
-It tracks timing with baseline cycle accounting and optional wait states, so you get predictable scheduling and more realistic memory/bus timing.
+## Current scope
 
-## Why Rocket 68?
+- M68000 execution through the `rocket68` core and Z80 execution through the `jgz80` bridge.
+- VDP rendering with scrolling planes, sprites, DMA, FIFO timing, shadow and highlight, H32 and H40 modes, and interlace mode 2.
+- YM2612 and SN76489 audio routed through timestamped event capture and a shared output pipeline.
+- Keyboard and gamepad input for two players, configurable bindings, fullscreen toggle, GIF recording, and SRAM persistence.
+- Unit, frontend, integration, regression, and property-based tests.
 
-Rocket 68 is built to provide a clean, correct, and easy-to-embed Motorola 68000 core for projects that need to run m68k code.
-A lot of existing 68k emulators are originally designed as full system emulators rather than reusable libraries, which can make it
-hard to integrate them into other projects.
-Rocket 68 focuses on correctness first: instruction behavior, exception handling, and cycle timing closely follow real hardware so projects
-can rely on predictable and accurate CPU behavior.
+## Read this site by task
 
-Rocket 68 is designed to be used a portable library.
-All state lives inside a single `M68kCpu` instance, with no shared global state.
-This makes it relatively straightforward to run multiple CPUs or integrate the core into larger systems.
-Additionally, the codebase uses modern C11 with a small and explicit API that makes the project easy to use and extend.
+- [Getting Started](getting-started.md) covers building, running ROMs, default controls, and input configuration.
+- [Development](development.md) covers repository layout, timing-sensitive architecture, tests, and tooling.
+- [Public API](api-reference.md) summarizes the exported Zig facade and points to generated API HTML.
+- [Compatibility](compatibility.md) tracks what works well today and what still needs accuracy work.
 
-## Features
+## Quickstart
 
-- Have a simple API and easy to integrate into other projects
-- Supports all Motorola 68000 instructions and different addressing modes
-- Baseline cycle accounting with an optional wait-state callback for bus timing
-- Full hardware interrupt support (with auto-vectoring, address error traps, trace mode, and halted states)
-- Built-in instruction disassembler and support for loading binary and S-record programs
+```bash
+git clone https://github.com/pixel-clover/sandopolis.git
+cd sandopolis
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/sandopolis <path-to-rom>
+```
 
-## Documentation
+Sandopolis accepts `.bin`, `.md`, and `.smd` ROM images.
+The SDL3 runtime is built from source through Zig dependencies, so you do not need to install a separate system SDL3 package just to build the emulator.
 
-- [Getting Started](getting-started.md)
-- [Examples](examples.md)
-- [API Reference](api-reference.md)
-- [Compatibility Notes](compatibility.md)
-- [Doxygen API Documentation](https://habedi.github.io/rocket68/doxygen/index.html)
+## Project status
+
+Sandopolis is still under active development.
+Compatibility is improving, but timing accuracy, VDP edge cases, and YM2612 fidelity are still active work areas.
+For a checklist-style view of implemented and planned work, see [ROADMAP.md](https://github.com/pixel-clover/sandopolis/blob/main/ROADMAP.md).
+
+## Documentation outputs
+
+There are two documentation outputs in this repository:
+
+- This MkDocs site for contributor and user-facing guidance.
+- Generated Zig API HTML under [`docs/api/`](api/index.html), built from [`src/api.zig`](https://github.com/pixel-clover/sandopolis/blob/main/src/api.zig).

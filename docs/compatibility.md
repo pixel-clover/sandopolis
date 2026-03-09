@@ -1,51 +1,43 @@
-# Compatibility Notes
+# Compatibility
 
-This page lists current compatibility notes and scope limits based on the current codebase.
+Sandopolis already boots and runs a growing set of games and test ROMs, but it is still an in-progress emulator.
+This page summarizes the practical state of the codebase rather than promising full hardware parity.
 
-## CPU Model Scope
+## Implemented well enough to build on
 
-- The core exposes one execution profile through `M68kCpu`.
-- There is no public API to select CPU model variants (for example 68010/68020 mode switches).
-- Some later-family instructions exist (`MOVEC`, `MOVES`, `RTD`, `BKPT`), but model behavior is not fully parameterized.
+- ROM loading with `.bin`, `.md`, and `.smd` deinterleaving.
+- M68000 and Z80 execution with shared-bus coordination.
+- Frame scheduling around HBlank, HINT, VBlank, and Z80 interaction.
+- VDP background and sprite rendering, DMA modes, FIFO timing, sprite overflow and collision flags, display blanking, H32 and H40 modes, and interlace mode 2.
+- YM2612 synthesis, SN76489 PSG, timestamped audio event capture, and final audio mixing.
+- Controller I/O with three-button and six-button protocols, keyboard and gamepad mapping, SRAM persistence, fullscreen, and GIF capture.
 
-## Address Space and Memory Model
+## Areas still under active accuracy work
 
-- All memory accesses are against one flat memory buffer (`cpu->memory`, `cpu->memory_size`).
-- Addresses are masked to 24-bit (`address & 0x00FFFFFF`) before bounds checks.
-- There is no per-access memory read/write callback API for custom bus mapping; integration is currently done by sharing a memory buffer plus optional timing callbacks.
+- Per-access 68K and Z80 bus arbitration accuracy.
+- VDP edge cases and cycle-exact behavior.
+- YM2612 fidelity and broader audio validation.
+- Input edge cases and wider controller compatibility.
+- Broad game compatibility beyond the current targeted regression set.
 
-## Callback Behavior Notes
+## Test coverage today
 
-- `fc_callback` is emitted for memory reads/writes and instruction fetches.
-- `M68K_FC_INT_ACK` is defined, but the current interrupt acknowledge path does not emit FC callback events with this code.
-- `pc_changed_callback` is triggered when PC is changed through `m68k_set_pc`.
-- Direct PC writes (for example in `m68k_reset`, `m68k_fetch`, and S-record entry-point load) do not call `pc_changed_callback`.
-- `reset_callback` is tied to execution of the `RESET` instruction, not to `m68k_reset()`.
-- `illg_callback` can be installed, but the current decode/exception path does not call it.
+The project includes:
 
-## Control Registers and Exception Base
+- Module-local unit tests collected by `zig build test-unit`
+- Frontend helper tests in `zig build test-frontend`
+- Public API and cross-module integration coverage in `zig build test-integration`
+- Regression coverage for scheduler, DMA, FIFO, SRAM, audio, VDP, and ROM-backed startup cases in `zig build test-regression`
+- Property-based coverage in `zig build test-property`
 
-- `VBR`, `SFC`, and `DFC` fields exist and are accessible through `MOVEC`.
-- Exception vector fetch currently uses `vector * 4` from base address zero.
-- `VBR` is not currently applied as an exception vector base in `m68k_exception`.
-- `SFC`/`DFC` values are stored but not used to drive bus access behavior.
+Several regression tests use public-domain and community ROMs from [`tests/testroms/`](https://github.com/pixel-clover/sandopolis/tree/main/tests/testroms).
 
-## Context Save/Restore Format
+## Scope limits
 
-- `m68k_get_context` / `m68k_set_context` copy raw `M68kCpu` struct bytes.
-- The blob format should be treated as build-dependent (compiler/ABI/version sensitive), not a stable cross-version interchange format.
-- `m68k_set_context` preserves destination instance memory binding and installed callbacks.
+- Sandopolis is a Genesis and Mega Drive emulator only. Sega CD and 32X support are future goals, not current features.
+- `external/Nuked-OPN2` is only used by the optional `compare-ym` developer tool and is not part of the default runtime or release build.
+- The public API intentionally exposes a small facade. Internal coordination types like `Bus`, `Cpu`, `Vdp`, and `Z80` stay internal unless a stable facade is added first.
 
-## Loader and Disassembler Notes
+## Tracking progress
 
-- `m68k_load_srec` and `m68k_load_bin` return `false` only when file open fails.
-- `m68k_load_srec` reports malformed lines and continues parsing.
-- S-record checksum validity is not explicitly validated.
-- S-record entry records (`S7/S8/S9`) set `cpu->pc` directly.
-- `m68k_disasm` returns instruction bytes consumed; unsupported decode cases may still produce `???` output text.
-
-## JSON Compatibility Harness
-
-- The JSON compatibility runner (`tests/test_json.c`) has a relaxed default for exception-path state checks.
-- Strict exception-path checking is available with `ROCKET68_JSON_STRICT=1`.
-- This behavior is test-harness policy, not a runtime core API toggle.
+For the current checklist of implemented and planned work, see [ROADMAP.md](https://github.com/pixel-clover/sandopolis/blob/main/ROADMAP.md).
