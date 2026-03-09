@@ -977,9 +977,6 @@ pub const AudioOutput = struct {
     fn processPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool, queue_output: bool) !void {
         self.setTimingMode(is_pal);
 
-        const fm_frames = self.fm_converter.toOutputFrames(pending.fm_frames, output_rate);
-        const psg_frames = self.psg_converter.toOutputFrames(pending.psg_frames, output_rate);
-        const out_frames: u32 = @max(fm_frames, psg_frames);
         const ym_write_count = z80.takeYmWrites(self.ym_write_buffer[0..]);
         const ym_dac_count = z80.takeYmDacSamples(self.ym_dac_buffer[0..]);
         const ym_reset_count = z80.takeYmResets(self.ym_reset_buffer[0..]);
@@ -991,6 +988,7 @@ pub const AudioOutput = struct {
             self.ym_reset_buffer[0..ym_reset_count],
             self.psg_command_buffer[0..psg_command_count],
         );
+        const out_frames: u32 = @intCast(@min(self.ym_resampler.outputBufferLen(), self.psg_resampler.outputBufferLen()));
         if (out_frames == 0) return;
 
         const max_frames_per_push = self.sample_chunk.len / channels;

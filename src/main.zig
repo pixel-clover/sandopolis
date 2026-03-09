@@ -848,8 +848,9 @@ pub fn main() !void {
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
 
+    var frame_timer = std.time.Instant.now() catch unreachable;
     mainLoop: while (true) {
-        const frame_start = std.time.nanoTimestamp();
+        frame_timer = std.time.Instant.now() catch frame_timer;
         var event: zsdl3.Event = undefined;
         while (zsdl3.pollEvent(&event)) {
             switch (event.type) {
@@ -968,6 +969,8 @@ pub fn main() !void {
             }
             if (entering_vblank) {
                 bus.z80.assertIrq(0xFF);
+            } else if (!bus.vdp.vint_pending) {
+                bus.z80.clearIrq();
             }
             bus.vdp.setHBlank(false);
 
@@ -996,9 +999,6 @@ pub fn main() !void {
 
             machine.runMasterSlice(clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
-            if (entering_vblank) {
-                bus.z80.clearIrq();
-            }
 
             if (line < visible_lines) {
                 bus.vdp.renderScanline(line);
@@ -1042,7 +1042,8 @@ pub fn main() !void {
         frame_counter += 1;
         if (frame_counter > uncapped_boot_frames) {
             const target_frame_ns = frameDurationNs(bus.vdp.pal_mode);
-            const frame_elapsed: u64 = @intCast(std.time.nanoTimestamp() - frame_start);
+            const now = std.time.Instant.now() catch frame_timer;
+            const frame_elapsed = now.since(frame_timer);
             if (frame_elapsed < target_frame_ns) {
                 std.Thread.sleep(target_frame_ns - frame_elapsed);
             }

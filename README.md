@@ -47,7 +47,7 @@ Alternatively, you can build the emulator from source by following the steps bel
 #### 1. Clone the repository
 
 ```bash
-git clone https://github.com/pixel-clover/sandopolis.git
+git clone --recursive --depth=1 https://github.com/pixel-clover/sandopolis.git
 cd sandopolis
 ```
 

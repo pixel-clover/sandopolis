@@ -35,7 +35,7 @@ const NoiseState = struct {
     real_output_bit: u1 = 0,
     frequency_mode: u2 = 0,
     noise_type: NoiseType = .periodic,
-    shift_register: u16 = 0,
+    shift_register: u16 = 1,
 };
 
 const LatchedCommand = struct {
@@ -182,10 +182,10 @@ test "psg noise produces output" {
     try std.testing.expect(nonzero > 0);
 }
 
-test "psg default noise state matches clownmdemu reset" {
+test "psg default noise state reset" {
     const psg = Psg{};
 
-    try std.testing.expectEqual(@as(u16, 0), psg.noise.shift_register);
+    try std.testing.expectEqual(@as(u16, 1), psg.noise.shift_register);
     try std.testing.expectEqual(@as(u1, 0), psg.noise.fake_output_bit);
     try std.testing.expectEqual(@as(u1, 0), psg.noise.real_output_bit);
 }

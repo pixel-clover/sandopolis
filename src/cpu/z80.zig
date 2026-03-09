@@ -283,9 +283,8 @@ test "z80 ym status read exposes busy on data writes" {
     try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4001) & 0x80);
 
     z80.setAudioMasterOffset(65 * ym_internal_master_cycles);
-    try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4001) & 0x80);
-    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
 }
 
 test "z80 ym status read reports and clears timer a overflow" {

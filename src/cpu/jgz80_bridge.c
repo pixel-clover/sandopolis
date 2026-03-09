@@ -329,10 +329,8 @@ static uint8_t mapped_read_byte(Jgz80Handle *h, uint16_t addr) {
     }
 
     if (zaddr >= 0x4000u && zaddr < 0x6000u) {
-        if ((zaddr & 0x03u) == 0u) {
-            advance_ym_to_current_offset(h);
-            h->ym_last_status_read = ym_status(h);
-        }
+        advance_ym_to_current_offset(h);
+        h->ym_last_status_read = ym_status(h);
         return h->ym_last_status_read;
     }
 

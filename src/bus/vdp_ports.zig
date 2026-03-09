@@ -50,10 +50,7 @@ pub fn readWord(vdp: *Vdp, open_bus: *u16, address: u32) u16 {
 
 pub fn writeByte(vdp: *Vdp, address: u32, value: u8) void {
     const port = address & 0x1F;
-    const word: u16 = if ((address & 1) == 0)
-        (@as(u16, value) << 8)
-    else
-        @as(u16, value);
+    const word: u16 = (@as(u16, value) << 8) | value;
 
     if (port < 0x04) {
         vdp.writeData(word);

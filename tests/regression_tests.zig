@@ -219,6 +219,54 @@ test "read16 routes full io window range through io handler" {
     try testing.expectEqual(base, mirrored);
 }
 
+test "window plane uses tile height shift for interlace mode 2 tile row" {
+    const rom = try seedResetNopsRom(testing.allocator, 1);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.setVdpRegister(1, 0x40);
+    emulator.setVdpRegister(3, 0x04);
+    emulator.setVdpRegister(12, 0x06);
+    emulator.setVdpRegister(17, 0x80);
+    emulator.setVdpRegister(18, 0x80);
+
+    emulator.configureVdpDataPort(0x03, 0x0002, 2);
+    emulator.writeVdpData(0x000E);
+    emulator.writeVdpData(0x00E0);
+
+    emulator.configureVdpDataPort(0x01, 0x0020, 2);
+    emulator.writeVdpData(0x1111);
+    emulator.writeVdpData(0x1111);
+
+    emulator.configureVdpDataPort(0x01, 0x0040, 2);
+    emulator.writeVdpData(0x2222);
+    emulator.writeVdpData(0x2222);
+
+    emulator.configureVdpDataPort(0x01, 0x0060, 2);
+    emulator.writeVdpData(0x2222);
+    emulator.writeVdpData(0x2222);
+
+    emulator.configureVdpDataPort(0x01, 0x1000, 2);
+    emulator.writeVdpData(0x0000);
+
+    emulator.configureVdpDataPort(0x01, 0x1040, 2);
+    emulator.writeVdpData(0x0001);
+
+    emulator.runFrame();
+
+    const fb = emulator.framebuffer();
+    const red: u32 = 0xFFFF0000;
+    const green: u32 = 0xFF00FF00;
+
+    try testing.expectEqual(red, fb[8 * 320]);
+    try testing.expect(fb[8 * 320] != green);
+
+    try testing.expectEqual(green, fb[16 * 320]);
+}
+
 test "frame scheduler carries instruction overshoot between slices" {
     const rom = try seedResetNopsRom(testing.allocator, 2);
     defer testing.allocator.free(rom);

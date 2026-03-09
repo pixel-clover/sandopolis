@@ -151,7 +151,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         if (win_right_px < screen_w) {
             renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, win_right_px, screen_w);
         }
-        renderWindowToBuffer(self, line, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, win_left_px, win_right_px);
+        renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, win_left_px, win_right_px);
     } else {
         renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, 0, screen_w);
     }
@@ -270,6 +270,7 @@ fn renderPlaneToBuffer(
 fn renderWindowToBuffer(
     self: *Vdp,
     line: u16,
+    tile_h_shift: u4,
     tile_h_mask: u8,
     tile_sz: u32,
     pixel_buf: *[320]u8,
@@ -283,7 +284,7 @@ fn renderWindowToBuffer(
     else
         @as(u32, self.regs[3] & 0x3F) << 10;
     const win_width: u32 = if (self.isH40()) 64 else 32;
-    const tile_row: u32 = @as(u32, line) / 8;
+    const tile_row: u32 = @as(u32, line) >> tile_h_shift;
     const fine_y: u8 = @intCast(@as(u32, line) & tile_h_mask);
 
     var x: u16 = start_x;
