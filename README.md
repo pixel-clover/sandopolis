@@ -43,7 +43,6 @@ Demos of Sandopolis running a few games:
 - Very portable; can be built and run on any platform that Zig supports
 - Very configurable input and rendering settings
 - Has a permissive license that allows commercial use
-- Debugging features including single stepping and register dumps
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
@@ -113,7 +112,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution
 
 > [!IMPORTANT]
 > Nuked-OPN2 is mainly used for testing the output of the Zig YM2612 implementation.
-> The code is not directly included in the project because its license (LGPL 2.1) is incompatible with project's license.
+> The code is not directly included in the project because its license (LGPL 2.1) is incompatible with the project's license.
 
 ### License
 
