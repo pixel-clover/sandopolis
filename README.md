@@ -18,8 +18,6 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 
 ---
 
-Sandopolis is a Sega Genesis/Mega Drive emulator written in Zig and C11.
-
 Demos of Sandopolis running a few games:
 
 <div align="center">
@@ -37,9 +35,9 @@ Demos of Sandopolis running a few games:
 
 </div>
 
-### Features
+### Key Features
 
-- Accurate Sega Genesis/Mega Drive console emulation
+- Accurate Sega Genesis/Mega Drive emulation
 - Very portable; can be built and run on any platform that Zig supports
 - Very configurable input and rendering settings
 - Has a permissive license that allows commercial use
@@ -47,7 +45,8 @@ Demos of Sandopolis running a few games:
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
 > [!IMPORTANT]
-> This project is still in early development, so bugs and breaking changes are expected.
+> This project is still in early development, so compatibility is not perfect.
+> Bugs and breaking changes are also expected.
 > Please use the [issues page](https://github.com/pixel-clover/sandopolis/issues) to report bugs or request features.
 
 ---
@@ -83,8 +82,8 @@ zig build -Doptimize=ReleaseFast
 ```
 
 > [!NOTE]
-> To build from source, you mainly need to have Zig, Git, and GNU Make installed.
-> Additionally, the current version of the emulator is developed and tested using Zig 0.15.2.
+> To build from source, you mainly need to have Zig and Git installed.
+> The current version of the emulator is developed and tested using Zig 0.15.2.
 
 ---
 
