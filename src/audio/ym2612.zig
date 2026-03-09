@@ -1206,16 +1206,19 @@ pub const Ym2612Synth = struct {
         if (self.pending_write_count != 0) {
             for (0..self.pending_write_count) |idx| {
                 const candidate = self.pending_writes[idx];
-                if (mode_write == null and self.core.isImmediateModeWrite(candidate)) {
-                    mode_write = candidate;
-                    mode_index = idx;
-                }
-                if (deferred_write == null and
-                    !self.core.isImmediateModeWrite(candidate) and
-                    self.core.canConsumeWrite(candidate))
-                {
-                    deferred_write = candidate;
-                    deferred_index = idx;
+                if (self.core.isImmediateModeWrite(candidate)) {
+                    if (mode_write == null) {
+                        mode_write = candidate;
+                        mode_index = idx;
+                    }
+                } else {
+                    if (deferred_write == null) {
+                        if (self.core.canConsumeWrite(candidate)) {
+                            deferred_write = candidate;
+                            deferred_index = idx;
+                        }
+                        break;
+                    }
                 }
                 if (mode_write != null and deferred_write != null) break;
             }

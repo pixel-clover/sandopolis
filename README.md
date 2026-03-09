@@ -20,6 +20,17 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 
 Sandopolis is a Sega Genesis/Mega Drive emulator written in Zig and C11.
 
+<div align="center">
+
+|                                                                               |                                                                               |
+|-------------------------------------------------------------------------------|-------------------------------------------------------------------------------|
+| <img alt="GA2 demo" src="docs/assets/gif/001_ga2_optimized.gif" height="200"> | <img alt="ROS demo" src="docs/assets/gif/002_ros_optimized.gif" height="200"> |
+| Golden Axe II                                                                 | Revenge of Shinobi                                                            |
+| <img alt="SK demo" src="docs/assets/gif/003_sk_optimized.gif" height="200">   | <img alt="SOR demo" src="docs/assets/gif/004_sor_optimized.gif" height="200"> |
+| Sonic & Knuckles                                                              | Streets of Rage                                                               |
+
+</div>
+
 ### Features
 
 - Implemented in Zig and C with a portable core and SDL3 frontend
