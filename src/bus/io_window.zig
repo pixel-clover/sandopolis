@@ -2,7 +2,7 @@ const Io = @import("../input/io.zig").Io;
 
 pub fn readVersionRegister(io: *const Io, pal_mode: bool) u8 {
     _ = io;
-    var value: u8 = 0x20 | 0x80; // No Mega-CD, overseas region
+    var value: u8 = 0x20 | 0x80;
     if (pal_mode) value |= 0x40;
     return value;
 }

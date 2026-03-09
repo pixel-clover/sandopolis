@@ -96,6 +96,8 @@ pub const Emulator = struct {
             }
             if (entering_vblank) {
                 bus.z80.assertIrq(0xFF);
+            } else if (!bus.vdp.vint_pending) {
+                bus.z80.clearIrq();
             }
             bus.vdp.setHBlank(false);
 
@@ -124,9 +126,6 @@ pub const Emulator = struct {
 
             scheduler.runMasterSlice(bus.schedulerRuntime(), cpu.schedulerRuntime(), m68k_sync, clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
-            if (entering_vblank) {
-                bus.z80.clearIrq();
-            }
 
             if (line < visible_lines) {
                 bus.vdp.renderScanline(line);

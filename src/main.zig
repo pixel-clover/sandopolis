@@ -6,6 +6,7 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 const Machine = @import("machine.zig").Machine;
+const GifRecorder = @import("recording/gif.zig").GifRecorder;
 
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
@@ -63,6 +64,79 @@ fn uncappedBootFrames(audio_enabled: bool) u32 {
     return if (audio_enabled) 0 else 240;
 }
 
+const CliOptions = struct {
+    rom_path: ?[]const u8 = null,
+    audio_mode: AudioOutput.RenderMode = .normal,
+    show_help: bool = false,
+};
+
+const ParseCliError = error{
+    InvalidAudioMode,
+    MissingAudioModeValue,
+    MultipleRomPaths,
+    UnknownOption,
+};
+
+fn audioRenderModeName(mode: AudioOutput.RenderMode) []const u8 {
+    return switch (mode) {
+        .normal => "normal",
+        .ym_only => "ym-only",
+        .psg_only => "psg-only",
+        .unfiltered_mix => "unfiltered-mix",
+    };
+}
+
+fn parseAudioRenderMode(value: []const u8) ParseCliError!AudioOutput.RenderMode {
+    if (std.mem.eql(u8, value, "normal")) return .normal;
+    if (std.mem.eql(u8, value, "ym-only") or std.mem.eql(u8, value, "ym_only")) return .ym_only;
+    if (std.mem.eql(u8, value, "psg-only") or std.mem.eql(u8, value, "psg_only")) return .psg_only;
+    if (std.mem.eql(u8, value, "unfiltered-mix") or std.mem.eql(u8, value, "unfiltered_mix")) return .unfiltered_mix;
+    return error.InvalidAudioMode;
+}
+
+fn cliErrorMessage(err: ParseCliError) []const u8 {
+    return switch (err) {
+        error.InvalidAudioMode => "invalid --audio-mode value",
+        error.MissingAudioModeValue => "--audio-mode requires a value",
+        error.MultipleRomPaths => "only one ROM path may be provided",
+        error.UnknownOption => "unknown option",
+    };
+}
+
+fn printUsage() void {
+    std.debug.print("Usage: sandopolis [options] [rom_file]\n", .{});
+    std.debug.print("Options:\n", .{});
+    std.debug.print("  --audio-mode <mode>   Audio render mode: normal, ym-only, psg-only, unfiltered-mix\n", .{});
+    std.debug.print("  --audio-mode=<mode>   Same as above\n", .{});
+    std.debug.print("  -h, --help            Show this help text\n", .{});
+}
+
+fn parseCliArgs(args: []const []const u8) ParseCliError!CliOptions {
+    var options = CliOptions{};
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            options.show_help = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--audio-mode")) {
+            index += 1;
+            if (index >= args.len) return error.MissingAudioModeValue;
+            options.audio_mode = try parseAudioRenderMode(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--audio-mode=")) {
+            options.audio_mode = try parseAudioRenderMode(arg["--audio-mode=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+        if (options.rom_path != null) return error.MultipleRomPaths;
+        options.rom_path = arg;
+    }
+    return options;
+}
+
 fn formatName(format: zsdl3.AudioFormat) []const u8 {
     return switch (format) {
         .S16LE => "S16LE",
@@ -113,6 +187,7 @@ fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardIn
         .comma => .comma,
         .period => .period,
         .slash => .slash,
+        .f11 => .f11,
         else => null,
     };
 }
@@ -433,10 +508,23 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
 }
 
 pub fn main() !void {
-    // -- Emulator Initialization --
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    const cli = parseCliArgs(args) catch |err| {
+        printUsage();
+        std.debug.print("Argument error: {s}\n", .{cliErrorMessage(err)});
+        return err;
+    };
+    if (cli.show_help) {
+        printUsage();
+        return;
+    }
+    const rom_path = cli.rom_path;
 
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
 
@@ -447,7 +535,7 @@ pub fn main() !void {
         "Sandopolis Emulator (v" ++ build_options.version ++ ")",
         800,
         600,
-        .{ .opengl = true },
+        .{ .opengl = true, .resizable = true },
     );
     defer window.destroy();
 
@@ -458,10 +546,14 @@ pub fn main() !void {
     var audio: ?AudioInit = tryInitAudio(&audio_userdata);
     if (audio == null) {
         std.debug.print("Audio disabled: no compatible stream format\n", .{});
+    } else {
+        audio.?.output.setRenderMode(cli.audio_mode);
+    }
+    if (cli.audio_mode != .normal) {
+        std.debug.print("Audio render mode: {s}\n", .{audioRenderModeName(cli.audio_mode)});
     }
     defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
-    // Open up to two gamepads and assign them to players by SDL device ID.
     var gamepads = [_]?GamepadSlot{null} ** InputBindings.player_count;
     var gamepad_sticks = [_]DirectionState{.{}} ** InputBindings.player_count;
     var gamepad_triggers = [_]TriggerState{.{}} ** InputBindings.player_count;
@@ -492,19 +584,13 @@ pub fn main() !void {
         }
     }
 
-    // Create VDP Texture (320x224)
     const vdp_texture = try zsdl3.createTexture(renderer, zsdl3.PixelFormatEnum.argb8888, zsdl3.TextureAccess.streaming, 320, 224);
     defer vdp_texture.destroy();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var rom_path: ?[]const u8 = null;
-    if (args.len > 1) {
-        rom_path = args[1];
+    if (rom_path) |_| {
         std.debug.print("Loading ROM: {s}\n", .{rom_path.?});
     } else {
-        std.debug.print("No ROM file specified. Usage: sandopolis <rom_file>\n", .{});
+        std.debug.print("No ROM file specified. Usage: sandopolis [options] [rom_file]\n", .{});
         std.debug.print("Loading dummy test ROM...\n", .{});
     }
 
@@ -529,19 +615,12 @@ pub fn main() !void {
 
     const cpu = &machine.cpu;
 
-    // -- Setup Test Environment (Dummy ROM for Tile Rendering) --
     if (rom_path == null) {
-        // Vectors
-        std.mem.writeInt(u32, bus.rom[0..4], 0x00FF0000, .big); // SSP
-        std.mem.writeInt(u32, bus.rom[4..8], 0x00000200, .big); // PC
+        std.mem.writeInt(u32, bus.rom[0..4], 0x00FF0000, .big);
+        std.mem.writeInt(u32, bus.rom[4..8], 0x00000200, .big);
 
-        // Opcode at 0x200: VDP Tile Test
-
-        // 1. Setup VDP Registers
         var pc: u32 = 0x200;
 
-        // Reg 2 (Plane A) -> 0x38 (0xE000)
-        // MOVE.w #0x8238, 0xC00004
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -555,8 +634,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Reg 15 (Auto Inc) -> 2
-        // MOVE.w #0x8F02, 0xC00004
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -570,9 +647,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // 2. Write Palette (Red / Green)
-        // CRAM Write @ 0 (Color 0) -> 0xC0000000
-        // MOVE.w #0xC000, 0xC00004
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -585,7 +659,7 @@ pub fn main() !void {
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0x04;
         pc += 2;
-        // MOVE.w #0x0000, 0xC00004
+
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -599,9 +673,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Color 1: Red (0000 000 000 111 -> 0x00E) in Grp 0, Idx 1
-        // Auto-inc is 2. So we are at Color 1.
-        // MOVE.w #0x000E, 0xC00000 (Data Port)
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -615,8 +686,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // Color 2: Green (0000 000 111 000 -> 0x0E0)
-        // MOVE.w #0x00E0, 0xC00000
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -630,9 +699,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // -- Input Test ROM --
-        // 1. Set TH = 1 (Port A)
-        // MOVE.w #0x40, 0xA10002 -> Writes 0x40 to 0xA10003
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -646,12 +712,8 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x02;
         pc += 2;
 
-        const loop_start = pc; // Mark loop start
+        const loop_start = pc;
 
-        // 2. Read Port A (0xA10003) -> D0 (Byte)
-        // MOVE.b 0xA10003, D0
-        // Opcode: 1039 00xx ...
-        // 0001 0000 0011 1001 -> 1039
         bus.rom[pc] = 0x10;
         bus.rom[pc + 1] = 0x39;
         pc += 2;
@@ -662,8 +724,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x03;
         pc += 2;
 
-        // 3. Test Button B (Bit 4)
-        // ANDI.b #0x10, D0
         bus.rom[pc] = 0x02;
         bus.rom[pc + 1] = 0x00;
         pc += 2;
@@ -671,33 +731,27 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x10;
         pc += 2;
 
-        // 4. Branch if Zero (Pressed) -> BEQ Pressed
-        // Offset: Forward X bytes.
-        // BEQ opcode: 67xx (xx = 8-bit offset)
-        // Needs target label.
         const branch_loc = pc;
-        pc += 2; // fill later
+        pc += 2;
 
-        // Released (Red)
-        // Set CRAM Addr 0
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
-        pc += 2; // MOVE.w #...
+        pc += 2;
         bus.rom[pc] = 0xC0;
         bus.rom[pc + 1] = 0x00;
-        pc += 2; // Data
+        pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0xC0;
-        pc += 2; // Addr Hi
+        pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0x04;
-        pc += 2; // Addr Lo
+        pc += 2;
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0x00;
-        pc += 2; // Data
+        pc += 2;
         bus.rom[pc] = 0x00;
         bus.rom[pc + 1] = 0xC0;
         pc += 2;
@@ -705,7 +759,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Write Red (0x000E)
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -719,23 +772,17 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // BRA Loop
-        // Opcode 60xx
-        // Target: loop_start. Current pc is at start of BRA.
         const back_jump = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
         bus.rom[pc] = 0x60;
         bus.rom[pc + 1] = @as(u8, @intCast(back_jump & 0xFF));
         pc += 2;
 
-        // Pressed Label Target
         const pressed_target = pc;
-        // Fix up branch offset
+
         const fwd_jump = @as(i32, @intCast(pressed_target)) - @as(i32, @intCast(branch_loc + 2));
         bus.rom[branch_loc] = 0x67;
         bus.rom[branch_loc + 1] = @as(u8, @intCast(fwd_jump & 0xFF));
 
-        // Pressed (Green)
-        // Set CRAM Addr 0
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -761,7 +808,6 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x04;
         pc += 2;
 
-        // Write Green (0x00E0)
         bus.rom[pc] = 0x33;
         bus.rom[pc + 1] = 0xFC;
         pc += 2;
@@ -775,21 +821,18 @@ pub fn main() !void {
         bus.rom[pc + 1] = 0x00;
         pc += 2;
 
-        // BRA Loop
         const back_jump2 = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
         bus.rom[pc] = 0x60;
         bus.rom[pc + 1] = @as(u8, @intCast(back_jump2 & 0xFF));
         pc += 2;
 
-        // 5. Halt loop
         bus.rom[pc] = 0x60;
         bus.rom[pc + 1] = 0xFE;
         pc += 2;
     } else {
-        // Parse ROM Header (Basic)
         if (bus.rom.len >= 0x200) {
             const console = bus.rom[0x100..0x110];
-            const title = bus.rom[0x150..0x180]; // Domestic Name
+            const title = bus.rom[0x150..0x180];
             std.debug.print("Console: {s}\n", .{console});
             std.debug.print("Title:   {s}\n", .{title});
         }
@@ -803,9 +846,11 @@ pub fn main() !void {
     machine.debugDump();
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
+    var gif_recorder: ?GifRecorder = null;
 
+    var frame_timer = std.time.Instant.now() catch unreachable;
     mainLoop: while (true) {
-        const frame_start = std.time.nanoTimestamp();
+        frame_timer = std.time.Instant.now() catch frame_timer;
         var event: zsdl3.Event = undefined;
         while (zsdl3.pollEvent(&event)) {
             switch (event.type) {
@@ -883,6 +928,27 @@ pub fn main() !void {
                                     machine.debugDump();
                                 },
                                 .registers => machine.debugDump(),
+                                .record_gif => {
+                                    if (gif_recorder) |*rec| {
+                                        const frames = rec.frame_count;
+                                        rec.finish();
+                                        gif_recorder = null;
+                                        std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
+                                    } else {
+                                        const fps: u16 = if (bus.vdp.pal_mode) 25 else 30;
+                                        const path = gifOutputPath();
+                                        const path_str = std.mem.sliceTo(&path, 0);
+                                        gif_recorder = GifRecorder.start(path_str, fps) catch |err| {
+                                            std.debug.print("Failed to start GIF recording: {}\n", .{err});
+                                            continue;
+                                        };
+                                        std.debug.print("GIF recording started: {s}\n", .{path_str});
+                                    }
+                                },
+                                .toggle_fullscreen => {
+                                    const flags = SDL_GetWindowFlags(window);
+                                    _ = SDL_SetWindowFullscreen(window, flags & 1 == 0);
+                                },
                                 .quit => break :mainLoop,
                             }
                         }
@@ -892,7 +958,6 @@ pub fn main() !void {
             }
         }
 
-        // Frame scheduler (NTSC-like): active display + HBlank per line, then VBlank lines.
         const visible_lines: u16 = if (bus.vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
         const total_lines: u16 = if (bus.vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
         bus.vdp.beginFrame();
@@ -900,10 +965,12 @@ pub fn main() !void {
             const line: u16 = @intCast(line_idx);
             const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
             if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
-                cpu.requestInterrupt(6); // V-BLANK interrupt at vblank entry
+                cpu.requestInterrupt(6);
             }
             if (entering_vblank) {
                 bus.z80.assertIrq(0xFF);
+            } else if (!bus.vdp.vint_pending) {
+                bus.z80.clearIrq();
             }
             bus.vdp.setHBlank(false);
 
@@ -932,15 +999,25 @@ pub fn main() !void {
 
             machine.runMasterSlice(clock.ntsc_master_cycles_per_line - second_event_master_cycles);
             bus.vdp.setHBlank(false);
-            if (entering_vblank) {
-                bus.z80.clearIrq();
-            }
 
             if (line < visible_lines) {
                 bus.vdp.renderScanline(line);
             }
         }
         bus.vdp.odd_frame = !bus.vdp.odd_frame;
+
+        if (gif_recorder) |*rec| {
+            if (frame_counter % 2 == 0) {
+                rec.addFrame(&bus.vdp.framebuffer) catch |err| {
+                    std.debug.print("GIF frame capture failed: {}\n", .{err});
+                    const frames = rec.frame_count;
+                    rec.finish();
+                    gif_recorder = null;
+                    std.debug.print("GIF recording aborted after {d} frames\n", .{frames});
+                };
+            }
+        }
+
         if ((frame_counter % 300) == 0) {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, cpu.core.pc });
         }
@@ -955,10 +1032,8 @@ pub fn main() !void {
             _ = bus.audio_timing.takePending();
         }
 
-        // Update texture from framebuffer
         _ = SDL_UpdateTexture(vdp_texture, null, @ptrCast(&bus.vdp.framebuffer), 320 * 4);
 
-        // Render
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
         try zsdl3.renderTexture(renderer, vdp_texture, null, null);
@@ -967,11 +1042,17 @@ pub fn main() !void {
         frame_counter += 1;
         if (frame_counter > uncapped_boot_frames) {
             const target_frame_ns = frameDurationNs(bus.vdp.pal_mode);
-            const frame_elapsed: u64 = @intCast(std.time.nanoTimestamp() - frame_start);
+            const now = std.time.Instant.now() catch frame_timer;
+            const frame_elapsed = now.since(frame_timer);
             if (frame_elapsed < target_frame_ns) {
                 std.Thread.sleep(target_frame_ns - frame_elapsed);
             }
         }
+    }
+
+    if (gif_recorder) |*rec| {
+        std.debug.print("GIF recording stopped on exit ({d} frames)\n", .{rec.frame_count});
+        rec.finish();
     }
 }
 
@@ -1083,6 +1164,68 @@ test "audio-enabled runs do not use uncapped boot frames" {
     try std.testing.expectEqual(@as(u32, 240), uncappedBootFrames(false));
 }
 
+test "cli parser accepts audio mode before rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--audio-mode=psg-only",
+        "roms/test.bin",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, options.audio_mode);
+    try std.testing.expect(!options.show_help);
+}
+
+test "cli parser accepts spaced audio mode after rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "roms/test.bin",
+        "--audio-mode",
+        "unfiltered-mix",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, options.audio_mode);
+}
+
+test "cli parser handles help without a rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--help",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expect(options.show_help);
+    try std.testing.expect(options.rom_path == null);
+    try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
+}
+
+test "cli parser rejects invalid audio mode values" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--audio-mode",
+        "broken",
+    };
+
+    try std.testing.expectError(error.InvalidAudioMode, parseCliArgs(&args));
+}
+
+fn gifOutputPath() [48]u8 {
+    var buf: [48]u8 = [_]u8{0} ** 48;
+    var i: u32 = 1;
+    while (i <= 999) : (i += 1) {
+        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch break;
+        buf[name.len] = 0;
+        std.fs.cwd().access(name, .{}) catch {
+            return buf;
+        };
+    }
+
+    return buf;
+}
+
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
 extern fn SDL_GetJoysticks(count: *c_int) ?[*]zsdl3.Joystick.Id;
 extern fn SDL_IsGamepad(id: zsdl3.Joystick.Id) bool;
@@ -1096,3 +1239,5 @@ extern fn SDL_OpenAudioDeviceStream(
 ) ?*zsdl3.AudioStream;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
 extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;
+extern fn SDL_SetWindowFullscreen(window: *zsdl3.Window, fullscreen: bool) bool;
+extern fn SDL_GetWindowFlags(window: *zsdl3.Window) u64;

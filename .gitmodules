@@ -1,0 +1,3 @@
+[submodule "external/Nuked-OPN2"]
+	path = external/Nuked-OPN2
+	url = https://github.com/nukeykt/Nuked-OPN2

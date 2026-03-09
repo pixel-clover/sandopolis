@@ -3,6 +3,7 @@ const c = @cImport({
 });
 
 const std = @import("std");
+const clock = @import("../clock.zig");
 
 pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
@@ -176,12 +177,10 @@ pub const Z80 = struct {
         return 0;
     }
 
-    // Bus Request (0xA11100)
     pub fn writeBusReq(self: *Z80, val: u16) void {
         if (self.handle) |h| c.jgz80_write_bus_req(h, val);
     }
 
-    // Reads the 68k-visible BUSACK register state at $A11100.
     pub fn readBusReq(self: *const Z80) u16 {
         if (self.handle) |h| return c.jgz80_read_bus_req(@constCast(h));
         return 0x0100;
@@ -191,7 +190,6 @@ pub const Z80 = struct {
         return self.readBusReq() != 0x0000 and self.readReset() != 0x0000;
     }
 
-    // Bus Reset (0xA11200)
     pub fn writeReset(self: *Z80, val: u16) void {
         if (self.handle) |h| c.jgz80_write_reset(h, val);
     }
@@ -206,7 +204,7 @@ test "z80 register dump reflects stepped state" {
     var z80 = Z80.init();
     defer z80.deinit();
 
-    z80.writeByte(0x0000, 0x00); // NOP
+    z80.writeByte(0x0000, 0x00);
     try std.testing.expectEqual(@as(u32, 4), z80.stepInstruction());
 
     const dump = z80.getRegisterDump();
@@ -266,4 +264,48 @@ test "z80 reset emits a timed ym reset event without dropping earlier ym audio e
     var ym_reset_events: [1]Z80.YmResetEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
     try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
+}
+
+test "z80 ym status read exposes busy on data writes" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.setAudioMasterOffset(0);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x0F);
+
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
+    z80.setAudioMasterOffset(ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4000) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4001) & 0x80);
+
+    z80.setAudioMasterOffset(65 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
+}
+
+test "z80 ym status read reports and clears timer a overflow" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.setAudioMasterOffset(0);
+    z80.writeByte(0x4000, 0x24);
+    z80.writeByte(0x4001, 0xFF);
+    z80.writeByte(0x4000, 0x25);
+    z80.writeByte(0x4001, 0x03);
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x05);
+
+    z80.setAudioMasterOffset(48 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x01), z80.readByte(0x4000) & 0x01);
+
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x10);
+    z80.setAudioMasterOffset(49 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
 }

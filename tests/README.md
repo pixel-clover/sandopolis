@@ -11,6 +11,8 @@ The following commands will run all tests in this directory plus any unit tests 
 make test
 ```
 
+Or
+
 ```bash
 zig build test
 ```
@@ -24,14 +26,14 @@ make test-regression
 make test-property
 ```
 
+Or
+
 ```bash
 zig build test-unit
 zig build test-integration
 zig build test-regression
 zig build test-property
 ```
-
-`zig build test-unit` runs module-local unit tests collected through the internal `src/unit_test_root.zig` build root.
 
 ### Test ROMs
 

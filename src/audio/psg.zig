@@ -1,9 +1,5 @@
-/// Chip-accurate SN76489 PSG emulation.
-/// Ported from clownmdemu-core/psg.c — integer-only, no global state.
 const std = @import("std");
 
-/// Pre-computed 16-level volume table (2 dB attenuation steps).
-/// Each entry is {positive_phase, negative_phase}.
 const psg_volumes: [16][2]i16 = .{
     .{ 0x1FFF, -0x1FFF },
     .{ 0x196A, -0x196A },
@@ -28,7 +24,7 @@ const NoiseType = enum { periodic, white };
 const ToneState = struct {
     countdown: u16 = 0,
     countdown_master: u16 = 0,
-    attenuation: u4 = 0xF, // Silence on startup
+    attenuation: u4 = 0xF,
     output_bit: u1 = 0,
 };
 
@@ -39,7 +35,7 @@ const NoiseState = struct {
     real_output_bit: u1 = 0,
     frequency_mode: u2 = 0,
     noise_type: NoiseType = .periodic,
-    shift_register: u16 = 0x8000,
+    shift_register: u16 = 1,
 };
 
 const LatchedCommand = struct {
@@ -55,7 +51,6 @@ pub const Psg = struct {
     fn nextToneSample(tone: *ToneState) i16 {
         if (tone.countdown != 0) tone.countdown -= 1;
 
-        // Phase never changes if period is 0 (exploit for PCM playback).
         if (tone.countdown_master != 0 and tone.countdown == 0) {
             tone.countdown = tone.countdown_master;
             tone.output_bit = ~tone.output_bit;
@@ -68,9 +63,7 @@ pub const Psg = struct {
         if (noise.countdown != 0) noise.countdown -= 1;
 
         if (noise.countdown == 0) {
-            // Reset countdown.
             if (noise.frequency_mode == 3) {
-                // Use last tone channel's frequency.
                 noise.countdown = tone2_period;
             } else {
                 noise.countdown = @as(u16, 0x10) << noise.frequency_mode;
@@ -79,7 +72,6 @@ pub const Psg = struct {
             noise.fake_output_bit = ~noise.fake_output_bit;
 
             if (noise.fake_output_bit == 1) {
-                // Rotate shift register and produce output bit.
                 noise.real_output_bit = @intCast((noise.shift_register & 0x8000) >> 15);
 
                 noise.shift_register <<= 1;
@@ -103,7 +95,6 @@ pub const Psg = struct {
         }
 
         if (self.latched.channel < 3) {
-            // Tone channel.
             const ch = self.latched.channel;
             var tone = &self.tones[ch];
 
@@ -111,25 +102,19 @@ pub const Psg = struct {
                 tone.attenuation = @intCast(command & 0xF);
             } else {
                 if (is_latch) {
-                    // Low frequency bits.
                     tone.countdown_master = (tone.countdown_master & ~@as(u16, 0xF)) | (command & 0xF);
                 } else {
-                    // High frequency bits.
                     tone.countdown_master = (tone.countdown_master & 0xF) | (@as(u16, command & 0x3F) << 4);
                 }
             }
         } else {
-            // Noise channel.
             if (self.latched.is_volume) {
                 self.noise.attenuation = @intCast(command & 0xF);
             } else {
                 self.noise.noise_type = if ((command & 4) != 0) .white else .periodic;
                 self.noise.frequency_mode = @intCast(command & 3);
-                // A noise-mode write reloads the generator back to its startup seed.
-                self.noise.countdown = 0;
-                self.noise.fake_output_bit = 0;
-                self.noise.real_output_bit = 0;
-                self.noise.shift_register = 0x8000;
+
+                self.noise.shift_register = 1;
             }
         }
     }
@@ -145,8 +130,6 @@ pub const Psg = struct {
         return sample;
     }
 
-    /// Generate `total_frames` mono samples into `sample_buffer`.
-    /// Samples are additive (mixed into the buffer).
     pub fn update(self: *Psg, sample_buffer: []i16, total_frames: usize) void {
         for (0..total_frames) |j| {
             sample_buffer[j] +|= self.nextSample();
@@ -154,15 +137,13 @@ pub const Psg = struct {
     }
 };
 
-// ── Tests ──
-
 test "psg tone at max volume produces non-zero output" {
     var psg = Psg{};
-    // Set channel 0 volume to max (attenuation 0).
-    psg.doCommand(0x90); // Latch ch0 volume = 0
-    // Set channel 0 frequency to a small period.
-    psg.doCommand(0x85); // Latch ch0 tone low = 5
-    psg.doCommand(0x00); // Data high = 0 → period = 5
+
+    psg.doCommand(0x90);
+
+    psg.doCommand(0x85);
+    psg.doCommand(0x00);
 
     var buf: [64]i16 = [_]i16{0} ** 64;
     psg.update(&buf, 64);
@@ -176,7 +157,7 @@ test "psg tone at max volume produces non-zero output" {
 
 test "psg silence at max attenuation" {
     var psg = Psg{};
-    // All channels default to attenuation 0xF (silent).
+
     var buf: [64]i16 = [_]i16{0} ** 64;
     psg.update(&buf, 64);
 
@@ -187,9 +168,9 @@ test "psg silence at max attenuation" {
 
 test "psg noise produces output" {
     var psg = Psg{};
-    // Noise volume = 0 (max), white noise mode, freq mode 0.
-    psg.doCommand(0xF0); // Latch noise volume = 0
-    psg.doCommand(0xE4); // Latch noise: white noise, freq mode 0
+
+    psg.doCommand(0xF0);
+    psg.doCommand(0xE4);
 
     var buf: [128]i16 = [_]i16{0} ** 128;
     psg.update(&buf, 128);
@@ -201,18 +182,27 @@ test "psg noise produces output" {
     try std.testing.expect(nonzero > 0);
 }
 
-test "psg noise register write restores the startup sequence" {
-    var startup = Psg{};
-    var reset = Psg{};
+test "psg default noise state reset" {
+    const psg = Psg{};
 
-    startup.doCommand(0xF0);
-    reset.doCommand(0xF0);
-    reset.doCommand(0xE0); // Periodic noise, mode 0: same mode as startup.
+    try std.testing.expectEqual(@as(u16, 1), psg.noise.shift_register);
+    try std.testing.expectEqual(@as(u1, 0), psg.noise.fake_output_bit);
+    try std.testing.expectEqual(@as(u1, 0), psg.noise.real_output_bit);
+}
 
-    var startup_buf: [32]i16 = [_]i16{0} ** 32;
-    var reset_buf: [32]i16 = [_]i16{0} ** 32;
-    startup.update(&startup_buf, startup_buf.len);
-    reset.update(&reset_buf, reset_buf.len);
+test "psg noise mode write reseeds lfsr without resetting divider phase" {
+    var psg = Psg{};
+    psg.noise.countdown = 7;
+    psg.noise.fake_output_bit = 1;
+    psg.noise.real_output_bit = 1;
+    psg.noise.shift_register = 0xBEEF;
 
-    try std.testing.expectEqualSlices(i16, startup_buf[0..], reset_buf[0..]);
+    psg.doCommand(0xE0);
+
+    try std.testing.expectEqual(@as(u16, 7), psg.noise.countdown);
+    try std.testing.expectEqual(@as(u1, 1), psg.noise.fake_output_bit);
+    try std.testing.expectEqual(@as(u1, 1), psg.noise.real_output_bit);
+    try std.testing.expectEqual(@as(u16, 1), psg.noise.shift_register);
+    try std.testing.expectEqual(NoiseType.periodic, psg.noise.noise_type);
+    try std.testing.expectEqual(@as(u2, 0), psg.noise.frequency_mode);
 }

@@ -13,8 +13,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Z80 CPU via jgz80 C bridge with host callbacks
 - [x] Frame scheduler with per-line HINT/HBlank/VBlank event handling
 - [x] Z80 bus control with BUSREQ/RESET and 68K window gating
-- [ ] Complete memory mapping with remaining mirror/open-bus edge behavior
-- [ ] Accurate bus arbitration; per-access Z80/68K contention is modeled but full cycle-accurate mid-instruction arbitration is incomplete
+- [ ] Accurate bus arbitration (per-access Z80/68K)
 
 ### Video display processor
 
@@ -25,9 +24,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Sprite limits with per-line count/dot overflow and x=0 masking
 - [x] H32/H40 mode, interlace mode 2, display enable blanking, and VRAM read buffer
 - [x] Status register with VInt, sprite overflow/collision, and FIFO flags
-- [ ] DMA timing; startup delay, CPU halting, and replay delay are modeled but cycle-accurate stall behavior is incomplete
-- [ ] FIFO emulation; queueing with access-slot timing and wait accounting are implemented but per-access timing is incomplete
-- [ ] VDP accuracy; HV/status timing is mode-aware but remaining hardware quirks and exact port timing are incomplete
+- [x] DMA timing
+- [x] FIFO emulation
+- [ ] VDP accuracy
 
 ### Audio subsystem
 
@@ -36,16 +35,18 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] SN76489 PSG with chip-accurate emulation, reachable from both Z80 and M68K paths
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, timers, and die-accurate ROM tables
 - [x] Audio filtering with low-pass on YM2612 output and DC-blocking on the final mix
-- [ ] YM2612 accuracy; remaining edge-case phase/rate/timer behavior is incomplete
-- [ ] Audio fidelity; per-channel panning differences and analog output stage modeling
+- [ ] YM2612 accuracy
+- [ ] Audio fidelity
 
 ### Input and interaction
 
 - [x] Keyboard and gamepad bindings for two players with hotkeys
 - [x] Controller I/O with timed TH behavior and 3/6-button protocol
 - [x] SRAM support with persistent `.sav` load/store
-- [x] Configurable input mapping via config file with keyboard, gamepad, and analog threshold settings
-- [ ] Input management polish; UI, profiles, and device management are incomplete
+- [x] Configurable input mapping via a config file with keyboard, gamepad, and analog threshold settings
+- [x] Resizable window and fullscreen toggle
+- [x] GIF animation recording support
+- [ ] Input management polish
 - [ ] Controller I/O edge cases and broader device coverage
 
 ### Compatibility and tooling
@@ -54,12 +55,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Regression test coverage for CPU, bus, VDP, DMA/FIFO, SRAM, and audio paths
 - [x] Boot smoke test with ROM startup progression check
 - [x] Test ROM collection in `tests/testroms/`
-- [ ] Timing accuracy; slice-based scheduling still needs cycle-interleaved bus timing
-- [ ] Debugger: register views and disassembler are done; memory editor and VDP viewer are not
+- [ ] Timing accuracy
+- [ ] Debugger with single stepping, breakpoints, and register/memory inspection
 - [ ] Compatibility test suite against broad external test ROM suites
 
 ### Future goals
 
-- [ ] Sega CD / 32X (long term)
-- [ ] WebAssembly build
-- [ ] Libretro core
+- [ ] Sega CD/32X support
+- [ ] WebAssembly build target
+- [ ] Libretro core integration

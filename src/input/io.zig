@@ -11,8 +11,8 @@ pub const Io = struct {
         six_button,
     };
 
-    data: [3]u8, // 0=A, 1=B, 2=C
-    ctrl: [3]u8, // 0=A, 1=B, 2=C
+    data: [3]u8,
+    ctrl: [3]u8,
 
     pad: [2]u16,
     th_flip_count: [2]u2,
@@ -36,10 +36,10 @@ pub const Io = struct {
 
     pub fn read(self: *Io, address: u32) u8 {
         switch (address & 0xFF) {
-            0x01 => return 0xA0, // Version: bit7=Overseas, bit5=No Mega-CD, bit6=0(NTSC)
-            0x03 => return self.readData(0), // Port A data, low byte
-            0x05 => return self.readData(1), // Port B data, low byte
-            0x07 => return self.data[2], // Port C data, raw
+            0x01 => return 0xA0,
+            0x03 => return self.readData(0),
+            0x05 => return self.readData(1),
+            0x07 => return self.data[2],
             0x09 => return self.ctrl[0],
             0x0B => return self.ctrl[1],
             0x0D => return self.ctrl[2],
@@ -163,7 +163,6 @@ pub const Io = struct {
         return self.controller_types[port];
     }
 
-    // Button Constants
     pub const Button = struct {
         pub const Up: u16 = 1 << 0;
         pub const Down: u16 = 1 << 1;

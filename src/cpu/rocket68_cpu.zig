@@ -89,8 +89,6 @@ fn cpuDisasmRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
 }
 
 fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
-    // Rocket68 clears irq_level after computing the autovector and updating
-    // SR, so the interrupt fires once per assertion (edge-triggered model).
     return -1;
 }
 
@@ -153,8 +151,6 @@ pub const Cpu = struct {
         runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
         c.m68k_reset(&self.core);
 
-        // Some ROMs/test payloads leave vectors unset. Keep behavior deterministic by
-        // applying sane boot defaults that point into 68k-visible memory.
         if (self.core.a_regs[7].l == 0 or self.core.a_regs[7].l > 0x0100_0000) {
             c.m68k_set_ar(&self.core, 7, default_stack_pointer);
             self.core.ssp = default_stack_pointer;

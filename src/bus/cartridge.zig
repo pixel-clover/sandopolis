@@ -32,13 +32,13 @@ const RamType = enum {
 
 const sonic_and_knuckles_serial = "GM MK-1563 ";
 const force_8kb_sram_checksums = [_]u32{
-    0x8135702C, // NHL 96 (USA, Europe)
-    0xF509145F, // Might and Magic: Gates to Another World (USA, Europe)
-    0x6EF7104A, // Might and Magic III: Isles of Terra (USA) (Proto)
-    0x2491DF2F, // NBA Action '94 (USA) (Beta) (1994-01-04)
+    0x8135702C,
+    0xF509145F,
+    0x6EF7104A,
+    0x2491DF2F,
 };
 const force_32kb_sram_checksums = [_]u32{
-    0xA4F2F011, // Al Michaels Announces HardBall III (USA, Europe)
+    0xA4F2F011,
 };
 const forced_sram_start_address: u32 = 0x200001;
 

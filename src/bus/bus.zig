@@ -15,7 +15,7 @@ const SchedulerBus = @import("../scheduler/runtime.zig").SchedulerBus;
 pub const Bus = struct {
     rom: []u8,
     cartridge: Cartridge,
-    ram: [64 * 1024]u8, // 64KB Work RAM
+    ram: [64 * 1024]u8,
     vdp: Vdp,
     io: Io,
     z80: Z80,
@@ -73,8 +73,6 @@ pub const Bus = struct {
     }
 
     fn hasZ80BusFor68k(self: *Bus) bool {
-        // $A11100 reflects BUSACK on the 68k side. A pending request does not grant
-        // access while RESET is held.
         return self.z80.readBusReq() == 0x0000;
     }
 
@@ -82,7 +80,6 @@ pub const Bus = struct {
         if (!isZ80WindowAddress(address)) return 0;
         if (!self.hasZ80BusFor68k()) return 0;
 
-        // 68k accesses into the Z80/YM/PSG window cost one additional 68k cycle.
         return clock.m68kCyclesToMaster(1);
     }
 
@@ -217,12 +214,8 @@ pub const Bus = struct {
         };
     }
 
-    // ---------------------------------------------------------
-    // READ OPERATIONS
-    // ---------------------------------------------------------
-
     pub fn read8(self: *Bus, address: u32) u8 {
-        const addr = address & 0xFFFFFF; // 24-bit address bus
+        const addr = address & 0xFFFFFF;
 
         if (self.cartridge.readByte(addr)) |value| {
             return value;
@@ -234,26 +227,21 @@ pub const Bus = struct {
         if (addr == 0xA11201) return @truncate(self.readZ80ResetRegister() & 0xFF);
 
         if (addr < 0xA00000) {
-            // ROM (mirrored into the 4MB cartridge window for smaller images).
             return self.cartridge.readRomByte(addr);
         } else if (addr >= 0xE00000 and addr < 0x1000000) {
-            // RAM (Mirrored at 0xE00000 - 0xFFFFFF)
-            // Mask to 64KB (0xFFFF)
             return self.ram[addr & 0xFFFF];
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            // Z80 address-space window.
             if (!self.hasZ80BusFor68k()) return @truncate((self.open_bus >> 8) & 0xFF);
             self.ensureZ80HostWindow();
+            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             return vdp_ports.readByte(&self.vdp, &self.open_bus, addr);
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
-            // IO
             return io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr);
         }
 
-        // Unmapped / IO Stub
         return 0;
     }
 
@@ -262,20 +250,18 @@ pub const Bus = struct {
         if (self.cartridge.readWord(addr)) |value| {
             return self.latchOpenBus(value);
         }
-        if (addr == 0xA11100) { // Z80 Bus Request
+        if (addr == 0xA11100) {
             return self.readZ80BusAckRegister();
-        } else if (addr == 0xA11200) { // Z80 Reset
+        } else if (addr == 0xA11200) {
             return self.readZ80ResetRegister();
         } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
             return self.latchOpenBus(self.open_bus & 0xFF00);
-        } else if (addr >= 0xA10000 and addr < 0xA10020) {
+        } else if (addr >= 0xA10000 and addr < 0xA10100) {
             return self.latchOpenBus(io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr));
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             return vdp_ports.readWord(&self.vdp, &self.open_bus, addr);
         }
 
-        // M68k accesses are generally word-aligned, but we'll support unaligned for safety
-        // Real hardware might throw address error on unaligned word access
         const high = self.read8(address);
         const low = self.read8(address + 1);
         return self.latchOpenBus((@as(u16, high) << 8) | low);
@@ -286,10 +272,6 @@ pub const Bus = struct {
         const low = self.read16(address + 2);
         return (@as(u32, high) << 16) | low;
     }
-
-    // ---------------------------------------------------------
-    // WRITE OPERATIONS
-    // ---------------------------------------------------------
 
     pub fn write8(self: *Bus, address: u32, value: u8) void {
         const addr = address & 0xFFFFFF;
@@ -312,13 +294,10 @@ pub const Bus = struct {
         }
 
         if (addr < 0xA00000) {
-            // ROM is read-only
             return;
         } else if (addr >= 0xE00000 and addr < 0x1000000) {
-            // RAM
             self.ram[addr & 0xFFFF] = value;
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            // Z80 address-space window.
             if (!self.hasZ80BusFor68k()) return;
             self.ensureZ80HostWindow();
             self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
@@ -326,12 +305,10 @@ pub const Bus = struct {
             self.z80.writeByte(zaddr, value);
             return;
         } else if (addr >= 0xA10000 and addr < 0xA10100) {
-            // IO
             io_window.writeRegisterByte(&self.io, addr, value);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             const port = addr & 0x1F;
             if (port >= 0x11 and port < 0x18 and (port & 1) == 1) {
-                // PSG write via VDP port (0xC00011 and mirrors).
                 self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
                 self.z80.writeByte(0x7F11, value);
             } else {
@@ -351,7 +328,6 @@ pub const Bus = struct {
         if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             const port = addr & 0x1F;
             if (port >= 0x10 and port < 0x18 and (port & 1) == 0) {
-                // Word write to PSG range — low byte reaches PSG.
                 self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
                 self.z80.writeByte(0x7F11, @intCast(value & 0xFF));
             } else {
@@ -360,10 +336,10 @@ pub const Bus = struct {
             return;
         }
 
-        if (addr == 0xA11100) { // Z80 Bus Request
+        if (addr == 0xA11100) {
             self.z80.writeBusReq(value);
             return;
-        } else if (addr == 0xA11200) { // Z80 Reset
+        } else if (addr == 0xA11200) {
             self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             self.z80.writeReset(value);
             return;
@@ -374,7 +350,6 @@ pub const Bus = struct {
     }
 
     pub fn write32(self: *Bus, address: u32, value: u32) void {
-        // Route through write16 so VDP PSG port interception is applied.
         self.write16(address, @intCast((value >> 16) & 0xFFFF));
         self.write16(address + 2, @intCast(value & 0xFFFF));
     }
@@ -382,7 +357,6 @@ pub const Bus = struct {
     fn recordZ80M68kBusAccesses(self: *Bus, access_count: u32) void {
         if (access_count == 0) return;
 
-        // Apply contention per-access so VDP transfers can interleave.
         var remaining = access_count;
         while (remaining > 0) : (remaining -= 1) {
             const extra: u32 = if (self.z80_odd_access) 1 else 0;
@@ -390,7 +364,7 @@ pub const Bus = struct {
             if (!self.vdp.shouldHaltCpu()) {
                 self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(11);
             }
-            // Advance VDP/audio between contention events for finer interleaving.
+
             if (remaining > 1) {
                 self.advanceNonZ80Master(z80_wait);
             } else {
@@ -676,21 +650,19 @@ test "z80 bus mapped memory and busreq registers behave as expected" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    // Without BUSREQ, 68k should not see/modify Z80 window.
     bus.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
     try testing.expectEqual(@as(u16, 0x5A00), bus.read16(0x00A0_0010));
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
     try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1100));
 
     bus.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
 
-    bus.write16(0x00A1_1100, 0x0000); // Release Z80 bus
+    bus.write16(0x00A1_1100, 0x0000);
     try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
 
-    // Once released, 68k window should be blocked again.
     bus.write8(0x00A0_0010, 0xA5);
     try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A0_0010));
     try testing.expectEqual(@as(u16, 0xA500), bus.read16(0x00A0_0010));
@@ -700,15 +672,15 @@ test "z80 bus request does not grant bus while reset is held" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1200, 0x0000); // Assert reset
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1200, 0x0000);
+    bus.write16(0x00A1_1100, 0x0100);
 
     try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
     bus.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
     try testing.expectEqual(@as(u16, 0x5A00), bus.read16(0x00A0_0010));
 
-    bus.write16(0x00A1_1200, 0x0100); // Release reset
+    bus.write16(0x00A1_1200, 0x0100);
 
     try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1100));
     bus.write8(0x00A0_0010, 0x5A);
@@ -722,15 +694,15 @@ test "z80 busack and reset reads preserve open-bus bits" {
     bus.open_bus = 0xA400;
     try testing.expectEqual(@as(u16, 0xA500), bus.read16(0x00A1_1100));
 
-    bus.write16(0x00A1_1100, 0x0100); // Request/grant Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
     bus.open_bus = 0xA400;
     try testing.expectEqual(@as(u16, 0xA400), bus.read16(0x00A1_1100));
 
-    bus.write16(0x00A1_1200, 0x0000); // Assert reset
+    bus.write16(0x00A1_1200, 0x0000);
     bus.open_bus = 0xB600;
     try testing.expectEqual(@as(u16, 0xB600), bus.read16(0x00A1_1200));
 
-    bus.write16(0x00A1_1200, 0x0100); // Release reset
+    bus.write16(0x00A1_1200, 0x0100);
     bus.open_bus = 0xB600;
     try testing.expectEqual(@as(u16, 0xB700), bus.read16(0x00A1_1200));
 }
@@ -744,22 +716,22 @@ test "z80 control registers support byte reads and writes on even address" {
     try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1200));
     try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1201));
 
-    bus.write8(0x00A1_1100, 0x01); // Request Z80 bus via high byte
+    bus.write8(0x00A1_1100, 0x01);
     try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1100));
     try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1100));
 
-    bus.write8(0x00A1_1101, 0x01); // Low byte should not change BUSREQ
+    bus.write8(0x00A1_1101, 0x01);
     try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1100));
 
-    bus.write8(0x00A1_1200, 0x00); // Assert reset via high byte
+    bus.write8(0x00A1_1200, 0x00);
     try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1200));
     try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1200));
 
-    bus.write8(0x00A1_1201, 0x01); // Low byte should not release reset
+    bus.write8(0x00A1_1201, 0x01);
     try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1200));
 
-    bus.write8(0x00A1_1200, 0x01); // Release reset
-    bus.write8(0x00A1_1100, 0x00); // Release bus
+    bus.write8(0x00A1_1200, 0x01);
+    bus.write8(0x00A1_1100, 0x00);
     try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1200));
     try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
     try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1200));
@@ -857,12 +829,10 @@ test "m68k z80 window writes use current audio master offset" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
 
-    // Advance audio timing to create a non-zero offset.
     bus.audio_timing.consumeMaster(5000);
 
-    // YM write through Z80 window should pick up the current audio offset.
     bus.write8(0x00A0_4000, 0x22);
     bus.write8(0x00A0_4001, 0x0F);
 
@@ -876,39 +846,52 @@ test "z80 audio window latches YM2612 and PSG writes" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
 
-    // YM2612 port 0: addr then data
     bus.write8(0x00A0_4000, 0x22);
     bus.write8(0x00A0_4001, 0x0F);
     try testing.expectEqual(@as(u8, 0x0F), bus.z80.getYmRegister(0, 0x22));
 
-    // YM2612 port 1: addr then data
     bus.write8(0x00A0_4002, 0x2B);
     bus.write8(0x00A0_4003, 0x80);
     try testing.expectEqual(@as(u8, 0x80), bus.z80.getYmRegister(1, 0x2B));
 
-    // PSG latch/data byte
     bus.write8(0x00A0_7F11, 0x90);
     try testing.expectEqual(@as(u8, 0x90), bus.z80.getPsgLast());
+}
+
+test "m68k ym status reads advance busy timing through the z80 window" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    bus.write16(0x00A1_1100, 0x0100);
+
+    bus.write8(0x00A0_4000, 0x22);
+    bus.write8(0x00A0_4001, 0x0F);
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A0_4000) & 0x80);
+
+    bus.audio_timing.consumeMaster(ym_internal_master_cycles);
+    try testing.expectEqual(@as(u8, 0x80), bus.read8(0x00A0_4000) & 0x80);
+
+    bus.audio_timing.consumeMaster(64 * ym_internal_master_cycles);
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A0_4000) & 0x80);
 }
 
 test "psg latch/data writes decode tone and volume registers" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
 
-    // Tone channel 0: latch low nibble, then data high bits.
-    bus.write8(0x00A0_7F11, 0x80 | 0x0A); // ch0 tone low=0xA
-    bus.write8(0x00A0_7F11, 0x15); // high 6 bits
+    bus.write8(0x00A0_7F11, 0x80 | 0x0A);
+    bus.write8(0x00A0_7F11, 0x15);
     try testing.expectEqual(@as(u16, 0x15A), bus.z80.getPsgTone(0));
 
-    // Volume channel 2 attenuation.
-    bus.write8(0x00A0_7F11, 0xC0 | 0x10 | 0x07); // ch2 volume=7
+    bus.write8(0x00A0_7F11, 0xC0 | 0x10 | 0x07);
     try testing.expectEqual(@as(u8, 0x07), bus.z80.getPsgVolume(2));
 
-    // Noise register write.
     bus.write8(0x00A0_7F11, 0xE0 | 0x03);
     try testing.expectEqual(@as(u8, 0x03), bus.z80.getPsgNoise());
 }
@@ -917,16 +900,13 @@ test "m68k psg writes through vdp port reach the psg shadow registers" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    // Byte write to VDP PSG port (0xC00011).
-    bus.write8(0x00C0_0011, 0x80 | 0x05); // ch0 tone low=5
-    bus.write8(0x00C0_0011, 0x12); // high 6 bits
+    bus.write8(0x00C0_0011, 0x80 | 0x05);
+    bus.write8(0x00C0_0011, 0x12);
     try testing.expectEqual(@as(u16, 0x125), bus.z80.getPsgTone(0));
 
-    // Word write to VDP PSG port (0xC00010, low byte reaches PSG).
-    bus.write16(0x00C0_0010, 0x00D0 | 0x07); // ch2 volume=7
+    bus.write16(0x00C0_0010, 0x00D0 | 0x07);
     try testing.expectEqual(@as(u8, 0x07), bus.z80.getPsgVolume(2));
 
-    // Events are timestamped and drainable.
     var cmds: [4]Z80.PsgCommandEvent = undefined;
     const count = bus.z80.takePsgCommands(cmds[0..]);
     try testing.expectEqual(@as(usize, 3), count);
@@ -936,19 +916,16 @@ test "ym key-on register updates channel key mask" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
 
-    // Key on channel 0 (operators set in upper nibble).
     bus.write8(0x00A0_4000, 0x28);
     bus.write8(0x00A0_4001, 0xF0);
     try testing.expectEqual(@as(u8, 0x01), bus.z80.getYmKeyMask());
 
-    // Key on channel 4 (ch=1 with high-bank bit set).
     bus.write8(0x00A0_4000, 0x28);
     bus.write8(0x00A0_4001, 0xF5);
     try testing.expectEqual(@as(u8, 0x11), bus.z80.getYmKeyMask());
 
-    // Key off channel 0.
     bus.write8(0x00A0_4000, 0x28);
     bus.write8(0x00A0_4001, 0x00);
     try testing.expectEqual(@as(u8, 0x10), bus.z80.getYmKeyMask());
@@ -958,7 +935,7 @@ test "ym dac writes stay in the dedicated DAC queue for audio output" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
 
     bus.write8(0x00A0_4000, 0x2A);
     bus.write8(0x00A0_4001, 0x12);
@@ -978,7 +955,7 @@ test "z80 reset clears ym2612 register shadow state" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
+    bus.write16(0x00A1_1100, 0x0100);
 
     bus.write8(0x00A0_4000, 0x22);
     bus.write8(0x00A0_4001, 0x0F);
@@ -988,7 +965,7 @@ test "z80 reset clears ym2612 register shadow state" {
     try testing.expectEqual(@as(u8, 0x0F), bus.z80.getYmRegister(0, 0x22));
     try testing.expectEqual(@as(u8, 0x01), bus.z80.getYmKeyMask());
 
-    bus.write16(0x00A1_1200, 0x0000); // Assert reset
+    bus.write16(0x00A1_1200, 0x0000);
 
     try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmRegister(0, 0x22));
     try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmRegister(0, 0x28));
@@ -1011,14 +988,14 @@ test "z80 reset preserves uploaded z80 ram" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
-    bus.write16(0x00A1_1200, 0x0100); // Keep reset released while uploading
+    bus.write16(0x00A1_1100, 0x0100);
+    bus.write16(0x00A1_1200, 0x0100);
 
     bus.write8(0x00A0_0000, 0xAF);
     bus.write8(0x00A0_0001, 0x01);
     bus.write8(0x00A0_0002, 0xD9);
 
-    bus.write16(0x00A1_1200, 0x0000); // Pulse reset before starting the uploaded program
+    bus.write16(0x00A1_1200, 0x0000);
 
     try testing.expectEqual(@as(u8, 0xAF), bus.z80.readByte(0x0000));
     try testing.expectEqual(@as(u8, 0x01), bus.z80.readByte(0x0001));
@@ -1029,18 +1006,14 @@ test "z80 bank register selects 68k ROM window" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    // Populate distinct bytes in ROM bank 0 and bank 1.
     bus.rom[0x0000] = 0x12;
     bus.rom[0x8000] = 0x34;
 
-    bus.write16(0x00A1_1100, 0x0100); // Request Z80 bus
-    bus.stepMaster(0); // Ensure Z80 host callbacks are installed
+    bus.write16(0x00A1_1100, 0x0100);
+    bus.stepMaster(0);
 
-    // Default bank is 0, so Z80 0x8000 maps to 68k 0x000000.
     try testing.expectEqual(@as(u8, 0x12), bus.z80.readByte(0x8000));
 
-    // Bank register is 9-bit serial, shifted by writes to 0x6000..0x60FF.
-    // Program bank=1 by writing bit0=1 followed by zeros for remaining bits.
     bus.write8(0x00A0_6000, 1);
     for (0..8) |_| {
         bus.write8(0x00A0_6000, 0);
@@ -1054,7 +1027,6 @@ test "z80 68k-bus stall is applied before the next instruction" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    // Loop forever on: LD A,($8000) ; JR $0000
     bus.z80.reset();
     bus.z80.writeByte(0x0000, 0x3A);
     bus.z80.writeByte(0x0001, 0x00);
@@ -1064,15 +1036,11 @@ test "z80 68k-bus stall is applied before the next instruction" {
 
     bus.rom[0x0000] = 0x12;
 
-    // This is enough time for the first banked read and its reciprocal stall,
-    // but not enough to begin the following JR if the stall is applied inline.
     bus.stepMaster(258);
     try testing.expectEqual(@as(u16, 0x0003), bus.z80.getPc());
     try testing.expectEqual(@as(u32, 0), bus.z80_wait_master_cycles);
     try testing.expectEqual(clock.m68kCyclesToMaster(11), bus.pendingM68kWaitMasterCycles());
 
-    // The next master cycle starts the JR, and the remaining instruction cost is
-    // carried as debt instead of letting the following instruction run early.
     bus.stepMaster(1);
     try testing.expectEqual(@as(u16, 0x0000), bus.z80.getPc());
     try testing.expect(bus.z80_master_credit < 0);
@@ -1129,8 +1097,8 @@ test "z80 instruction overshoot carries between bus slices" {
     defer bus.deinit(testing.allocator);
 
     bus.z80.reset();
-    bus.z80.writeByte(0x0000, 0x00); // NOP
-    bus.z80.writeByte(0x0001, 0x00); // NOP
+    bus.z80.writeByte(0x0000, 0x00);
+    bus.z80.writeByte(0x0001, 0x00);
 
     bus.stepMaster(clock.z80_divider);
     try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
