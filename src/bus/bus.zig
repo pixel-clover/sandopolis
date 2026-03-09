@@ -904,6 +904,9 @@ test "m68k ym status reads advance busy timing through the z80 window" {
 
     bus.write8(0x00A0_4000, 0x22);
     bus.write8(0x00A0_4001, 0x0F);
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A0_4000) & 0x80);
+
+    bus.audio_timing.consumeMaster(ym_internal_master_cycles);
     try testing.expectEqual(@as(u8, 0x80), bus.read8(0x00A0_4000) & 0x80);
 
     bus.audio_timing.consumeMaster(64 * ym_internal_master_cycles);

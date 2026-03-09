@@ -14,6 +14,8 @@ const internal_clock_master_cycles: u16 = @as(u16, clock.m68k_divider) * 6;
 const internal_clocks_per_sample: usize = clock.fm_master_cycles_per_sample / internal_clock_master_cycles;
 const ym_output_scale: f32 = 1.0 / 256.0;
 const ym_cutoff_hz: f32 = 8500.0;
+const ym_busy_cycles: u8 = 32;
+const ym_status_latch_cycles: u32 = 300_000;
 
 const fn_note = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 3, 3, 3, 3, 3, 3 };
 const eg_stephi = [4][4]u8{
@@ -184,7 +186,8 @@ const PitchState = struct {
 
 const CoreClockResult = struct {
     pins: [2]i16,
-    consumed_write: bool,
+    consumed_deferred_write: bool,
+    consumed_mode_write: bool,
 };
 
 const Opn2Core = struct {
@@ -312,9 +315,81 @@ const Opn2Core = struct {
     ams: [6]u8 = [_]u8{0} ** 6,
     pms: [6]u8 = [_]u8{0} ** 6,
     pin_test_in: u8 = 0,
+    busy: bool = false,
+    busy_cycles_remaining: u8 = 0,
+    status: u8 = 0,
+    status_time: u32 = 0,
+    read_mode_enabled: bool = false,
 
     fn reset(self: *Opn2Core) void {
         self.* = .{};
+    }
+
+    fn setReadMode(self: *Opn2Core, enabled: bool) void {
+        self.read_mode_enabled = enabled;
+    }
+
+    fn readStatus(self: *Opn2Core, port: u2) u8 {
+        if (port == 0 or self.read_mode_enabled) {
+            self.status = if (self.mode_test_21[6] != 0) self.testStatusByte() else self.statusByte();
+            self.status_time = ym_status_latch_cycles;
+        }
+
+        return if (self.status_time != 0) self.status else 0;
+    }
+
+    fn readIrqPin(self: *const Opn2Core) u1 {
+        return @intFromBool((self.timer_a_overflow_flag | self.timer_b_overflow_flag) != 0);
+    }
+
+    fn readTestPin(self: *const Opn2Core) u1 {
+        if (self.mode_test_2c[7] == 0) return 0;
+        return @intFromBool(self.cycles == 23);
+    }
+
+    fn statusByte(self: *const Opn2Core) u8 {
+        return ((@as(u8, @intFromBool(self.busy)) << 7) |
+            ((self.timer_b_overflow_flag & 0x01) << 1) |
+            (self.timer_a_overflow_flag & 0x01));
+    }
+
+    fn testStatusByte(self: *const Opn2Core) u8 {
+        const slot = (self.cycles + 18) % 24;
+        var test_data: u16 =
+            (@as(u16, @intCast(self.pg_read & 0x01)) << 15) |
+            (@as(u16, @intCast(self.eg_read[self.mode_test_21[0]] & 0x01)) << 14);
+
+        if (self.mode_test_2c[4] != 0) {
+            test_data |= @as(u16, @bitCast(self.ch_read)) & 0x01FF;
+        } else {
+            test_data |= @as(u16, @bitCast(self.fm_out[slot])) & 0x3FFF;
+        }
+
+        return if (self.mode_test_21[7] != 0)
+            @truncate(test_data)
+        else
+            @intCast(test_data >> 8);
+    }
+
+    fn canConsumeWrite(self: *const Opn2Core, write: YmWriteEvent) bool {
+        const port: u1 = @intCast(write.port & 0x01);
+        const address: u16 = (@as(u16, port) << 8) | write.reg;
+        const slot = self.cycles % 12;
+        const channel = self.channel;
+
+        if (write.reg < 0x30) return true;
+        if (op_offsets[slot] == (address & 0x107)) return true;
+        if (channel_offsets[channel] == (address & 0x103)) return true;
+
+        if ((write.reg >= 0x30 and write.reg <= 0x9F) or (write.reg >= 0xA0 and write.reg <= 0xB6)) {
+            return (write.reg & 0x03) == 0x03;
+        }
+
+        return true;
+    }
+
+    fn isImmediateModeWrite(_: *const Opn2Core, write: YmWriteEvent) bool {
+        return write.reg < 0x30;
     }
 
     fn doRegWrite(self: *Opn2Core, write: YmWriteEvent) bool {
@@ -322,66 +397,6 @@ const Opn2Core = struct {
         const address: u16 = (@as(u16, port) << 8) | write.reg;
         const slot = self.cycles % 12;
         const channel = self.channel;
-
-        if (op_offsets[slot] == (address & 0x107)) {
-            var slot_index: usize = slot;
-            if ((address & 0x08) != 0) slot_index += 12;
-
-            switch (address & 0xF0) {
-                0x30 => {
-                    self.multi[slot_index] = write.value & 0x0F;
-                    if (self.multi[slot_index] == 0) self.multi[slot_index] = 1 else self.multi[slot_index] <<= 1;
-                    self.dt[slot_index] = (write.value >> 4) & 0x07;
-                },
-                0x40 => self.tl[slot_index] = write.value & 0x7F,
-                0x50 => {
-                    self.ar[slot_index] = write.value & 0x1F;
-                    self.ks[slot_index] = (write.value >> 6) & 0x03;
-                },
-                0x60 => {
-                    self.dr[slot_index] = write.value & 0x1F;
-                    self.am[slot_index] = (write.value >> 7) & 0x01;
-                },
-                0x70 => self.sr[slot_index] = write.value & 0x1F,
-                0x80 => {
-                    self.rr[slot_index] = write.value & 0x0F;
-                    self.sl[slot_index] = (write.value >> 4) & 0x0F;
-                    self.sl[slot_index] |= (self.sl[slot_index] + 1) & 0x10;
-                },
-                0x90 => self.ssg_eg[slot_index] = write.value & 0x0F,
-                else => {},
-            }
-            return true;
-        }
-
-        if (channel_offsets[channel] == (address & 0x103)) {
-            switch (address & 0xFC) {
-                0xA0 => {
-                    self.fnum[channel] = (@as(u16, self.reg_a4[channel] & 0x07) << 8) | write.value;
-                    self.block[channel] = (self.reg_a4[channel] >> 3) & 0x07;
-                    self.kcode[channel] = (self.block[channel] << 2) | fn_note[self.fnum[channel] >> 7];
-                },
-                0xA4 => self.reg_a4[channel] = write.value,
-                0xA8 => {
-                    self.fnum_3ch[channel] = (@as(u16, self.reg_ac[channel] & 0x07) << 8) | write.value;
-                    self.block_3ch[channel] = (self.reg_ac[channel] >> 3) & 0x07;
-                    self.kcode_3ch[channel] = (self.block_3ch[channel] << 2) | fn_note[self.fnum_3ch[channel] >> 7];
-                },
-                0xAC => self.reg_ac[channel] = write.value,
-                0xB0 => {
-                    self.connect[channel] = write.value & 0x07;
-                    self.fb[channel] = (write.value >> 3) & 0x07;
-                },
-                0xB4 => {
-                    self.pms[channel] = write.value & 0x07;
-                    self.ams[channel] = (write.value >> 4) & 0x03;
-                    self.pan_l[channel] = (write.value >> 7) & 0x01;
-                    self.pan_r[channel] = (write.value >> 6) & 0x01;
-                },
-                else => {},
-            }
-            return true;
-        }
 
         if (write.reg < 0x30) {
             if (port == 0) {
@@ -439,6 +454,66 @@ const Opn2Core = struct {
                     },
                     else => {},
                 }
+            }
+            return true;
+        }
+
+        if (op_offsets[slot] == (address & 0x107)) {
+            var slot_index: usize = slot;
+            if ((address & 0x08) != 0) slot_index += 12;
+
+            switch (address & 0xF0) {
+                0x30 => {
+                    self.multi[slot_index] = write.value & 0x0F;
+                    if (self.multi[slot_index] == 0) self.multi[slot_index] = 1 else self.multi[slot_index] <<= 1;
+                    self.dt[slot_index] = (write.value >> 4) & 0x07;
+                },
+                0x40 => self.tl[slot_index] = write.value & 0x7F,
+                0x50 => {
+                    self.ar[slot_index] = write.value & 0x1F;
+                    self.ks[slot_index] = (write.value >> 6) & 0x03;
+                },
+                0x60 => {
+                    self.dr[slot_index] = write.value & 0x1F;
+                    self.am[slot_index] = (write.value >> 7) & 0x01;
+                },
+                0x70 => self.sr[slot_index] = write.value & 0x1F,
+                0x80 => {
+                    self.rr[slot_index] = write.value & 0x0F;
+                    self.sl[slot_index] = (write.value >> 4) & 0x0F;
+                    self.sl[slot_index] |= (self.sl[slot_index] + 1) & 0x10;
+                },
+                0x90 => self.ssg_eg[slot_index] = write.value & 0x0F,
+                else => {},
+            }
+            return true;
+        }
+
+        if (channel_offsets[channel] == (address & 0x103)) {
+            switch (address & 0xFC) {
+                0xA0 => {
+                    self.fnum[channel] = (@as(u16, self.reg_a4[channel] & 0x07) << 8) | write.value;
+                    self.block[channel] = (self.reg_a4[channel] >> 3) & 0x07;
+                    self.kcode[channel] = (self.block[channel] << 2) | fn_note[self.fnum[channel] >> 7];
+                },
+                0xA4 => self.reg_a4[channel] = write.value,
+                0xA8 => {
+                    self.fnum_3ch[channel] = (@as(u16, self.reg_ac[channel] & 0x07) << 8) | write.value;
+                    self.block_3ch[channel] = (self.reg_ac[channel] >> 3) & 0x07;
+                    self.kcode_3ch[channel] = (self.block_3ch[channel] << 2) | fn_note[self.fnum_3ch[channel] >> 7];
+                },
+                0xAC => self.reg_ac[channel] = write.value,
+                0xB0 => {
+                    self.connect[channel] = write.value & 0x07;
+                    self.fb[channel] = (write.value >> 3) & 0x07;
+                },
+                0xB4 => {
+                    self.pms[channel] = write.value & 0x07;
+                    self.ams[channel] = (write.value >> 4) & 0x03;
+                    self.pan_l[channel] = (write.value >> 7) & 0x01;
+                    self.pan_r[channel] = (write.value >> 6) & 0x01;
+                },
+                else => {},
             }
             return true;
         }
@@ -503,8 +578,12 @@ const Opn2Core = struct {
         self.timer_b_cnt = time & 0x00FF;
     }
 
-    fn clockOne(self: *Opn2Core, write: ?YmWriteEvent) CoreClockResult {
+    fn clockOne(self: *Opn2Core, deferred_write: ?YmWriteEvent, mode_write: ?YmWriteEvent) CoreClockResult {
         const slot = self.cycles;
+
+        if (self.status_time != 0) self.status_time -= 1;
+        self.busy = self.busy_cycles_remaining != 0;
+        if (self.busy_cycles_remaining != 0) self.busy_cycles_remaining -= 1;
 
         self.lfo_inc = self.mode_test_21[1];
         self.pg_read >>= 1;
@@ -577,14 +656,17 @@ const Opn2Core = struct {
         self.pg_kcode = next_pitch.kcode;
 
         self.updateLfo();
-        const consumed_write = if (write) |event| self.doRegWrite(event) else false;
+        const consumed_deferred_write = if (deferred_write) |event| self.doRegWrite(event) else false;
+        const consumed_mode_write = if (mode_write) |event| self.doRegWrite(event) else false;
+        if (consumed_deferred_write or consumed_mode_write) self.busy_cycles_remaining = ym_busy_cycles;
 
         self.cycles = (slot + 1) % 24;
         self.channel = self.cycles % 6;
 
         return .{
             .pins = .{ self.mol, self.mor },
-            .consumed_write = consumed_write,
+            .consumed_deferred_write = consumed_deferred_write,
+            .consumed_mode_write = consumed_mode_write,
         };
     }
 
@@ -944,7 +1026,7 @@ const Opn2Core = struct {
     fn envelopeGenerate(self: *Opn2Core) void {
         const slot = (self.cycles + 23) % 24;
         var level = self.eg_level[slot];
-        if (self.eg_ssg_inv[slot] != 0) level = (512 - level) & 0x03FF;
+        if (self.eg_ssg_inv[slot] != 0) level = (@as(u16, 512) -% level) & 0x03FF;
         if (self.mode_test_21[5] != 0) level = 0;
 
         level +%= self.eg_lfo_am;
@@ -1042,8 +1124,6 @@ pub const Ym2612Synth = struct {
     lpf_left: BiquadLpf = buildBiquadLpf(ntscNativeSampleRate(), ym_cutoff_hz),
     lpf_right: BiquadLpf = buildBiquadLpf(ntscNativeSampleRate(), ym_cutoff_hz),
     pending_writes: [max_pending_writes]YmWriteEvent = undefined,
-    pending_write_read: usize = 0,
-    pending_write_write: usize = 0,
     pending_write_count: usize = 0,
 
     pub fn setTimingMode(self: *Ym2612Synth, is_pal: bool) void {
@@ -1060,9 +1140,11 @@ pub const Ym2612Synth = struct {
 
     pub fn resetChipState(self: *Ym2612Synth) void {
         self.core.reset();
-        self.pending_write_read = 0;
-        self.pending_write_write = 0;
         self.pending_write_count = 0;
+    }
+
+    pub fn setReadMode(self: *Ym2612Synth, enabled: bool) void {
+        self.core.setReadMode(enabled);
     }
 
     pub fn applyWrite(self: *Ym2612Synth, event: YmWriteEvent) void {
@@ -1091,6 +1173,18 @@ pub const Ym2612Synth = struct {
         return self.clockInternal();
     }
 
+    pub fn readStatus(self: *Ym2612Synth, port: u2) u8 {
+        return self.core.readStatus(port);
+    }
+
+    pub fn readIrqPin(self: *const Ym2612Synth) u1 {
+        return self.core.readIrqPin();
+    }
+
+    pub fn readTestPin(self: *const Ym2612Synth) u1 {
+        return self.core.readTestPin();
+    }
+
     pub fn finishAccumulatedSample(self: *Ym2612Synth, sum_left: i32, sum_right: i32) StereoSample {
         const inv_cycles = 1.0 / @as(f32, @floatFromInt(internal_clocks_per_sample));
         const left = @as(f32, @floatFromInt(sum_left)) * inv_cycles * ym_output_scale;
@@ -1104,29 +1198,84 @@ pub const Ym2612Synth = struct {
 
     fn enqueueWrite(self: *Ym2612Synth, event: YmWriteEvent) void {
         if (self.pending_write_count == self.pending_writes.len) {
-            self.pending_write_read = (self.pending_write_read + 1) % self.pending_writes.len;
+            std.mem.copyForwards(YmWriteEvent, self.pending_writes[0 .. self.pending_writes.len - 1], self.pending_writes[1..]);
             self.pending_write_count -= 1;
         }
 
-        self.pending_writes[self.pending_write_write] = event;
-        self.pending_write_write = (self.pending_write_write + 1) % self.pending_writes.len;
+        self.pending_writes[self.pending_write_count] = event;
         self.pending_write_count += 1;
     }
 
     fn clockInternal(self: *Ym2612Synth) [2]i16 {
-        const pending: ?YmWriteEvent = if (self.pending_write_count != 0)
-            self.pending_writes[self.pending_write_read]
-        else
-            null;
-        const result = self.core.clockOne(pending);
-        if (result.consumed_write) self.popPendingWrite();
+        var deferred_write: ?YmWriteEvent = null;
+        var deferred_index: ?usize = null;
+        var mode_write: ?YmWriteEvent = null;
+        var mode_index: ?usize = null;
+        if (self.pending_write_count != 0) {
+            for (0..self.pending_write_count) |idx| {
+                const candidate = self.pending_writes[idx];
+                if (mode_write == null and self.core.isImmediateModeWrite(candidate)) {
+                    mode_write = candidate;
+                    mode_index = idx;
+                }
+                if (deferred_write == null and
+                    !self.core.isImmediateModeWrite(candidate) and
+                    self.core.canConsumeWrite(candidate))
+                {
+                    deferred_write = candidate;
+                    deferred_index = idx;
+                }
+                if (mode_write != null and deferred_write != null) break;
+            }
+        }
+
+        const result = self.core.clockOne(deferred_write, mode_write);
+        if (result.consumed_deferred_write and result.consumed_mode_write) {
+            const deferred_distance = self.pendingWriteDistance(deferred_index.?);
+            const mode_distance = self.pendingWriteDistance(mode_index.?);
+            if (deferred_distance > mode_distance) {
+                self.removePendingWriteAt(deferred_index.?);
+                self.removePendingWriteAt(mode_index.?);
+            } else {
+                self.removePendingWriteAt(mode_index.?);
+                self.removePendingWriteAt(deferred_index.?);
+            }
+        } else if (result.consumed_deferred_write) {
+            self.removePendingWriteAt(deferred_index.?);
+        } else if (result.consumed_mode_write) {
+            self.removePendingWriteAt(mode_index.?);
+        }
         return result.pins;
     }
 
     fn popPendingWrite(self: *Ym2612Synth) void {
         if (self.pending_write_count == 0) return;
-        self.pending_write_read = (self.pending_write_read + 1) % self.pending_writes.len;
+        if (self.pending_write_count > 1) {
+            std.mem.copyForwards(YmWriteEvent, self.pending_writes[0 .. self.pending_write_count - 1], self.pending_writes[1..self.pending_write_count]);
+        }
         self.pending_write_count -= 1;
+    }
+
+    fn removePendingWriteAt(self: *Ym2612Synth, index: usize) void {
+        if (self.pending_write_count == 0) return;
+        if (index == 0) {
+            self.popPendingWrite();
+            return;
+        }
+
+        if (index + 1 < self.pending_write_count) {
+            std.mem.copyForwards(
+                YmWriteEvent,
+                self.pending_writes[index .. self.pending_write_count - 1],
+                self.pending_writes[index + 1 .. self.pending_write_count],
+            );
+        }
+        self.pending_write_count -= 1;
+    }
+
+    fn pendingWriteDistance(self: *const Ym2612Synth, index: usize) usize {
+        _ = self;
+        return index;
     }
 };
 
@@ -1323,6 +1472,95 @@ test "ym timer a overflow triggers csm key on" {
     core.doTimerA();
     try std.testing.expectEqual(@as(u8, 1), core.mode_kon_csm);
     try std.testing.expectEqual(@as(u8, 1), core.timer_a_overflow_flag);
+}
+
+test "ym status reads latch busy from decoded writes" {
+    var synth = Ym2612Synth{};
+
+    synth.applyWrite(writeEvent(0, 0x2B, 0x80));
+    _ = synth.clockOneInternal();
+    try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(0) & 0x80);
+
+    _ = synth.clockOneInternal();
+    const busy_status = synth.readStatus(0);
+    try std.testing.expectEqual(@as(u8, 0x80), busy_status & 0x80);
+    try std.testing.expectEqual(busy_status, synth.readStatus(2));
+
+    advanceInternalClocks(&synth, ym_busy_cycles);
+    try std.testing.expectEqual(busy_status, synth.readStatus(2));
+    try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(0) & 0x80);
+}
+
+test "ym read mode updates status on nonzero ports" {
+    var synth = Ym2612Synth{};
+    synth.setReadMode(true);
+
+    synth.applyWrite(writeEvent(0, 0x2B, 0x80));
+    _ = synth.clockOneInternal();
+    try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(2) & 0x80);
+
+    _ = synth.clockOneInternal();
+    try std.testing.expectEqual(@as(u8, 0x80), synth.readStatus(2) & 0x80);
+
+    advanceInternalClocks(&synth, ym_busy_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(2) & 0x80);
+}
+
+test "ym irq pin reflects timer overflow flags" {
+    var core = Opn2Core{};
+    try std.testing.expectEqual(@as(u1, 0), core.readIrqPin());
+
+    core.timer_a_enable = 1;
+    core.timer_a_reg = 0x03FF;
+    core.timer_a_load_lock = 1;
+    core.timer_a_load_latch = 1;
+
+    core.cycles = 1;
+    core.doTimerA();
+    core.cycles = 2;
+    core.doTimerA();
+
+    try std.testing.expectEqual(@as(u1, 1), core.readIrqPin());
+    try std.testing.expectEqual(@as(u8, 0x01), core.readStatus(0) & 0x01);
+}
+
+test "ym timer b overflow sets irq and status" {
+    var core = Opn2Core{};
+    try std.testing.expectEqual(@as(u1, 0), core.readIrqPin());
+
+    core.timer_b_enable = 1;
+    core.timer_b_reg = 0x00FF;
+    core.timer_b_load_lock = 1;
+    core.timer_b_load_latch = 1;
+    core.timer_b_subcnt = 0x0F;
+
+    core.cycles = 1;
+    core.doTimerB();
+    try std.testing.expectEqual(@as(u8, 1), core.timer_b_overflow);
+    try std.testing.expectEqual(@as(u8, 0), core.timer_b_overflow_flag);
+
+    core.cycles = 2;
+    core.doTimerB();
+    try std.testing.expectEqual(@as(u1, 1), core.readIrqPin());
+    try std.testing.expectEqual(@as(u8, 0x02), core.readStatus(0) & 0x02);
+}
+
+test "ym test pin and test-data status reads follow mode bits" {
+    var core = Opn2Core{};
+    core.cycles = 23;
+    try std.testing.expectEqual(@as(u1, 0), core.readTestPin());
+
+    core.mode_test_2c[7] = 1;
+    try std.testing.expectEqual(@as(u1, 1), core.readTestPin());
+
+    core.mode_test_21[6] = 1;
+    core.pg_read = 1;
+    core.eg_read[0] = 1;
+    core.fm_out[(core.cycles + 18) % 24] = @bitCast(@as(u16, 0x1234));
+    try std.testing.expectEqual(@as(u8, 0xD2), core.readStatus(0));
+
+    core.mode_test_21[7] = 1;
+    try std.testing.expectEqual(@as(u8, 0x34), core.readStatus(0));
 }
 
 test "ym operator algorithms select distinct modulation routing" {

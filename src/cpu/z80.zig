@@ -280,10 +280,12 @@ test "z80 ym status read exposes busy on data writes" {
     z80.writeByte(0x4001, 0x0F);
 
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
+    z80.setAudioMasterOffset(ym_internal_master_cycles);
     try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4000) & 0x80);
     try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4001) & 0x80);
 
-    z80.setAudioMasterOffset(64 * ym_internal_master_cycles);
+    z80.setAudioMasterOffset(65 * ym_internal_master_cycles);
     try std.testing.expectEqual(@as(u8, 0x80), z80.readByte(0x4001) & 0x80);
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);

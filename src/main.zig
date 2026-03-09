@@ -64,6 +64,79 @@ fn uncappedBootFrames(audio_enabled: bool) u32 {
     return if (audio_enabled) 0 else 240;
 }
 
+const CliOptions = struct {
+    rom_path: ?[]const u8 = null,
+    audio_mode: AudioOutput.RenderMode = .normal,
+    show_help: bool = false,
+};
+
+const ParseCliError = error{
+    InvalidAudioMode,
+    MissingAudioModeValue,
+    MultipleRomPaths,
+    UnknownOption,
+};
+
+fn audioRenderModeName(mode: AudioOutput.RenderMode) []const u8 {
+    return switch (mode) {
+        .normal => "normal",
+        .ym_only => "ym-only",
+        .psg_only => "psg-only",
+        .unfiltered_mix => "unfiltered-mix",
+    };
+}
+
+fn parseAudioRenderMode(value: []const u8) ParseCliError!AudioOutput.RenderMode {
+    if (std.mem.eql(u8, value, "normal")) return .normal;
+    if (std.mem.eql(u8, value, "ym-only") or std.mem.eql(u8, value, "ym_only")) return .ym_only;
+    if (std.mem.eql(u8, value, "psg-only") or std.mem.eql(u8, value, "psg_only")) return .psg_only;
+    if (std.mem.eql(u8, value, "unfiltered-mix") or std.mem.eql(u8, value, "unfiltered_mix")) return .unfiltered_mix;
+    return error.InvalidAudioMode;
+}
+
+fn cliErrorMessage(err: ParseCliError) []const u8 {
+    return switch (err) {
+        error.InvalidAudioMode => "invalid --audio-mode value",
+        error.MissingAudioModeValue => "--audio-mode requires a value",
+        error.MultipleRomPaths => "only one ROM path may be provided",
+        error.UnknownOption => "unknown option",
+    };
+}
+
+fn printUsage() void {
+    std.debug.print("Usage: sandopolis [options] [rom_file]\n", .{});
+    std.debug.print("Options:\n", .{});
+    std.debug.print("  --audio-mode <mode>   Audio render mode: normal, ym-only, psg-only, unfiltered-mix\n", .{});
+    std.debug.print("  --audio-mode=<mode>   Same as above\n", .{});
+    std.debug.print("  -h, --help            Show this help text\n", .{});
+}
+
+fn parseCliArgs(args: []const []const u8) ParseCliError!CliOptions {
+    var options = CliOptions{};
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            options.show_help = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--audio-mode")) {
+            index += 1;
+            if (index >= args.len) return error.MissingAudioModeValue;
+            options.audio_mode = try parseAudioRenderMode(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--audio-mode=")) {
+            options.audio_mode = try parseAudioRenderMode(arg["--audio-mode=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
+        if (options.rom_path != null) return error.MultipleRomPaths;
+        options.rom_path = arg;
+    }
+    return options;
+}
+
 fn formatName(format: zsdl3.AudioFormat) []const u8 {
     return switch (format) {
         .S16LE => "S16LE",
@@ -440,6 +513,20 @@ pub fn main() !void {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    const cli = parseCliArgs(args) catch |err| {
+        printUsage();
+        std.debug.print("Argument error: {s}\n", .{cliErrorMessage(err)});
+        return err;
+    };
+    if (cli.show_help) {
+        printUsage();
+        return;
+    }
+    const rom_path = cli.rom_path;
+
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
 
     try zsdl3.init(.{ .audio = true, .video = true, .joystick = true, .gamepad = true });
@@ -460,6 +547,11 @@ pub fn main() !void {
     var audio: ?AudioInit = tryInitAudio(&audio_userdata);
     if (audio == null) {
         std.debug.print("Audio disabled: no compatible stream format\n", .{});
+    } else {
+        audio.?.output.setRenderMode(cli.audio_mode);
+    }
+    if (cli.audio_mode != .normal) {
+        std.debug.print("Audio render mode: {s}\n", .{audioRenderModeName(cli.audio_mode)});
     }
     defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
@@ -498,15 +590,10 @@ pub fn main() !void {
     const vdp_texture = try zsdl3.createTexture(renderer, zsdl3.PixelFormatEnum.argb8888, zsdl3.TextureAccess.streaming, 320, 224);
     defer vdp_texture.destroy();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var rom_path: ?[]const u8 = null;
-    if (args.len > 1) {
-        rom_path = args[1];
+    if (rom_path) |_| {
         std.debug.print("Loading ROM: {s}\n", .{rom_path.?});
     } else {
-        std.debug.print("No ROM file specified. Usage: sandopolis <rom_file>\n", .{});
+        std.debug.print("No ROM file specified. Usage: sandopolis [options] [rom_file]\n", .{});
         std.debug.print("Loading dummy test ROM...\n", .{});
     }
 
@@ -1125,6 +1212,54 @@ test "frame duration uses console master clock" {
 test "audio-enabled runs do not use uncapped boot frames" {
     try std.testing.expectEqual(@as(u32, 0), uncappedBootFrames(true));
     try std.testing.expectEqual(@as(u32, 240), uncappedBootFrames(false));
+}
+
+test "cli parser accepts audio mode before rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--audio-mode=psg-only",
+        "roms/test.bin",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, options.audio_mode);
+    try std.testing.expect(!options.show_help);
+}
+
+test "cli parser accepts spaced audio mode after rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "roms/test.bin",
+        "--audio-mode",
+        "unfiltered-mix",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, options.audio_mode);
+}
+
+test "cli parser handles help without a rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--help",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expect(options.show_help);
+    try std.testing.expect(options.rom_path == null);
+    try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
+}
+
+test "cli parser rejects invalid audio mode values" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--audio-mode",
+        "broken",
+    };
+
+    try std.testing.expectError(error.InvalidAudioMode, parseCliArgs(&args));
 }
 
 /// Generate a unique GIF filename: sandopolis_001.gif, sandopolis_002.gif, ...

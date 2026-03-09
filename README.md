@@ -64,23 +64,25 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/sandopolis <path-to-rom>
 ```
 
+For audio debugging, you can isolate or bypass parts of the mixer at startup:
+
+```bash
+./zig-out/bin/sandopolis <path-to-rom> --audio-mode=ym-only
+./zig-out/bin/sandopolis <path-to-rom> --audio-mode=psg-only
+./zig-out/bin/sandopolis <path-to-rom> --audio-mode=unfiltered-mix
+```
+
+The default remains `--audio-mode=normal`.
+
 > [!NOTE]
 > To build from source, you mainly need to have Zig, Git, and GNU Make installed.
-> Additionally, current version of the emulator is developed and tested using Zig 0.15.2.
+> Additionally, the current version of the emulator is developed and tested using Zig 0.15.2.
 
 ---
 
 ### Documentation
 
 To be added.
-
----
-
-### Developer References
-
-`external/Nuked-OPN2` is an optional developer-reference submodule for future comparison tooling. It is licensed separately under LGPL-2.1-or-later and is not part of the default Sandopolis build or test flow.
-
-When the submodule is present, `zig build compare-ym -- [scenario]` compares Sandopolis raw YM2612 internal-clock pin output against Nuked-OPN2 for a few deterministic decoded register-write scenarios. The comparison executable is developer-only and is the only project target that links the external LGPL code.
 
 ---
 
@@ -99,5 +101,11 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
-    * [SDL3](https://www.libsdl.org/) for the rendering and input (via [zsdl](https://github.com/zig-gamedev/zsdl) and [SDL](https://github.com/castholm/SDL))
+    * [SDL3](https://www.libsdl.org/) for the rendering and input (via [zsdl](https://github.com/zig-gamedev/zsdl)
+      and [SDL](https://github.com/castholm/SDL))
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)
+    * [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
+
+> [!IMPORTANT]
+> Nuked-OPN2 is mainly used for testing the output of the Zig YM2612 implementation.
+> The code is not directly included in the project because its license (LGPL 2.1) is incompatible with the MIT license used by Sandopolis.

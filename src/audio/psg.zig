@@ -39,7 +39,7 @@ const NoiseState = struct {
     real_output_bit: u1 = 0,
     frequency_mode: u2 = 0,
     noise_type: NoiseType = .periodic,
-    shift_register: u16 = 0x8000,
+    shift_register: u16 = 0,
 };
 
 const LatchedCommand = struct {
@@ -125,11 +125,8 @@ pub const Psg = struct {
             } else {
                 self.noise.noise_type = if ((command & 4) != 0) .white else .periodic;
                 self.noise.frequency_mode = @intCast(command & 3);
-                // A noise-mode write reloads the generator back to its startup seed.
-                self.noise.countdown = 0;
-                self.noise.fake_output_bit = 0;
-                self.noise.real_output_bit = 0;
-                self.noise.shift_register = 0x8000;
+                // Writing the noise mode reseeds the LFSR without resetting the divider phase.
+                self.noise.shift_register = 1;
             }
         }
     }
@@ -201,18 +198,27 @@ test "psg noise produces output" {
     try std.testing.expect(nonzero > 0);
 }
 
-test "psg noise register write restores the startup sequence" {
-    var startup = Psg{};
-    var reset = Psg{};
+test "psg default noise state matches clownmdemu reset" {
+    const psg = Psg{};
 
-    startup.doCommand(0xF0);
-    reset.doCommand(0xF0);
-    reset.doCommand(0xE0); // Periodic noise, mode 0: same mode as startup.
+    try std.testing.expectEqual(@as(u16, 0), psg.noise.shift_register);
+    try std.testing.expectEqual(@as(u1, 0), psg.noise.fake_output_bit);
+    try std.testing.expectEqual(@as(u1, 0), psg.noise.real_output_bit);
+}
 
-    var startup_buf: [32]i16 = [_]i16{0} ** 32;
-    var reset_buf: [32]i16 = [_]i16{0} ** 32;
-    startup.update(&startup_buf, startup_buf.len);
-    reset.update(&reset_buf, reset_buf.len);
+test "psg noise mode write reseeds lfsr without resetting divider phase" {
+    var psg = Psg{};
+    psg.noise.countdown = 7;
+    psg.noise.fake_output_bit = 1;
+    psg.noise.real_output_bit = 1;
+    psg.noise.shift_register = 0xBEEF;
 
-    try std.testing.expectEqualSlices(i16, startup_buf[0..], reset_buf[0..]);
+    psg.doCommand(0xE0); // Periodic noise, mode 0.
+
+    try std.testing.expectEqual(@as(u16, 7), psg.noise.countdown);
+    try std.testing.expectEqual(@as(u1, 1), psg.noise.fake_output_bit);
+    try std.testing.expectEqual(@as(u1, 1), psg.noise.real_output_bit);
+    try std.testing.expectEqual(@as(u16, 1), psg.noise.shift_register);
+    try std.testing.expectEqual(NoiseType.periodic, psg.noise.noise_type);
+    try std.testing.expectEqual(@as(u2, 0), psg.noise.frequency_mode);
 }

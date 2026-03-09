@@ -26,6 +26,7 @@ struct Jgz80Handle {
     uint32_t ym_offset_cursor;
     uint16_t ym_internal_master_remainder;
     uint8_t ym_cycle;
+    uint8_t ym_busy;
     uint8_t ym_busy_cycles_remaining;
     uint8_t ym_last_status_read;
     uint16_t ym_timer_a_cnt;
@@ -89,6 +90,7 @@ static void clear_ym2612_runtime_state(Jgz80Handle *h) {
     h->ym_offset_cursor = h->audio_master_offset;
     h->ym_internal_master_remainder = 0;
     h->ym_cycle = 0;
+    h->ym_busy = 0;
     h->ym_busy_cycles_remaining = 0;
     h->ym_last_status_read = 0;
     h->ym_timer_a_cnt = 0;
@@ -243,6 +245,7 @@ static void ym_do_timer_b(Jgz80Handle *h) {
 }
 
 static void advance_ym_internal_cycle(Jgz80Handle *h) {
+    h->ym_busy = (uint8_t)(h->ym_busy_cycles_remaining != 0u);
     if (h->ym_busy_cycles_remaining != 0u) {
         --h->ym_busy_cycles_remaining;
     }
@@ -256,12 +259,12 @@ static void advance_ym_master(Jgz80Handle *h, uint32_t master_cycles) {
     uint32_t remaining = master_cycles;
     while (remaining != 0u) {
         const uint32_t until_boundary = h->ym_internal_master_remainder == 0u
-            ? YM_INTERNAL_MASTER_CYCLES
-            : (uint32_t)(YM_INTERNAL_MASTER_CYCLES - h->ym_internal_master_remainder);
+                                            ? YM_INTERNAL_MASTER_CYCLES
+                                            : (uint32_t)(YM_INTERNAL_MASTER_CYCLES - h->ym_internal_master_remainder);
 
         if (remaining < until_boundary) {
             h->ym_internal_master_remainder =
-                (uint16_t)(h->ym_internal_master_remainder + remaining);
+                    (uint16_t)(h->ym_internal_master_remainder + remaining);
             return;
         }
 
@@ -283,7 +286,7 @@ static void advance_ym_to_current_offset(Jgz80Handle *h) {
 
 static uint8_t ym_status(Jgz80Handle *h) {
     return (uint8_t)(
-        ((h->ym_busy_cycles_remaining != 0u) ? 0x80u : 0u) |
+        ((h->ym_busy != 0u) ? 0x80u : 0u) |
         ((h->ym_timer_b_overflow_flag & 0x01u) << 1) |
         (h->ym_timer_a_overflow_flag & 0x01u)
     );
