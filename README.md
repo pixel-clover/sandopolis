@@ -20,7 +20,7 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 
 Sandopolis is a Sega Genesis/Mega Drive emulator written in Zig and C11.
 
-Demos of the emulator running on a few games:
+Demos of Sandopolis running a few games:
 
 <div align="center">
 
