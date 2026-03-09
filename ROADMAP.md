@@ -61,6 +61,6 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 ### Future goals
 
-- [ ] Sega CD / 32X support
+- [ ] Sega CD/32X support
 - [ ] WebAssembly build target
 - [ ] Libretro core integration
