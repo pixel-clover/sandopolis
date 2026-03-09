@@ -66,6 +66,14 @@ Default hotkeys:
 - `F11`: toggle fullscreen
 - `Escape`: quit
 
+Fixed frontend keys:
+
+- `F1`: toggle the in-window help overlay
+- `F2`: pause or resume emulation
+- `F3`: open the host file dialog and load a different ROM at runtime
+
+The help overlay, pause mode, and open-ROM dialog freeze emulation until you close or resume them.
+
 ## Input configuration
 
 Sandopolis looks for controller bindings in this order:

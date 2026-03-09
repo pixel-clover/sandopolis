@@ -974,6 +974,17 @@ pub const AudioOutput = struct {
         self.render_mode = mode;
     }
 
+    pub fn reset(self: *AudioOutput) void {
+        const stream = self.stream;
+        const render_mode = self.render_mode;
+        const timing_is_pal = self.timing_is_pal;
+        self.* = .{ .stream = stream };
+        self.render_mode = render_mode;
+        if (timing_is_pal) {
+            self.setTimingMode(true);
+        }
+    }
+
     fn processPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool, queue_output: bool) !void {
         self.setTimingMode(is_pal);
 
@@ -1436,6 +1447,23 @@ test "same-timestamp ym reset and dac events follow capture sequence order" {
     try std.testing.expectEqual(@as(u16, 0), dac_first.ym_synth.core.dacdata);
     try std.testing.expectEqual(@as(u8, 0), reset_first.ym_synth.core.dacen);
     try std.testing.expectEqual(@as(u8, 0), dac_first.ym_synth.core.dacen);
+}
+
+test "audio output reset preserves mode and clears render-side state" {
+    var output = AudioOutput{ .stream = @ptrFromInt(1) };
+    output.render_mode = .psg_only;
+    output.timing_is_pal = true;
+    output.ym_synth.core.dacen = 1;
+    output.last_psg_sample = 99;
+    output.last_ym_resampled_left = 0.5;
+
+    output.reset();
+
+    try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, output.render_mode);
+    try std.testing.expect(output.timing_is_pal);
+    try std.testing.expectEqual(@as(u8, 0), output.ym_synth.core.dacen);
+    try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample);
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_ym_resampled_left);
 }
 
 test "fm high bank frequency uses port 1 a0 and a4" {

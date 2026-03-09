@@ -64,6 +64,132 @@ fn uncappedBootFrames(audio_enabled: bool) u32 {
     return if (audio_enabled) 0 else 240;
 }
 
+const FrontendUi = struct {
+    paused: bool = false,
+    show_help: bool = false,
+    dialog_active: bool = false,
+
+    fn emulationPaused(self: *const FrontendUi) bool {
+        return self.paused or self.show_help or self.dialog_active;
+    }
+};
+
+const FrontendShortcut = enum {
+    toggle_help,
+    toggle_pause,
+    open_rom,
+};
+
+const max_dialog_message_bytes: usize = 256;
+
+const DialogPathCopy = struct {
+    len: usize = 0,
+    bytes: [std.fs.max_path_bytes]u8 = [_]u8{0} ** std.fs.max_path_bytes,
+
+    fn slice(self: *const DialogPathCopy) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
+const DialogMessageCopy = struct {
+    len: usize = 0,
+    bytes: [max_dialog_message_bytes]u8 = [_]u8{0} ** max_dialog_message_bytes,
+
+    fn slice(self: *const DialogMessageCopy) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
+const FileDialogOutcome = union(enum) {
+    none,
+    selected: DialogPathCopy,
+    canceled,
+    failed: DialogMessageCopy,
+};
+
+const FileDialogState = struct {
+    mutex: std.Thread.Mutex = .{},
+    in_flight: bool = false,
+    selected_path: DialogPathCopy = .{},
+    failure_message: DialogMessageCopy = .{},
+    outcome: enum {
+        idle,
+        selected,
+        canceled,
+        failed,
+    } = .idle,
+
+    fn begin(self: *FileDialogState) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.in_flight) return false;
+        self.in_flight = true;
+        self.outcome = .idle;
+        self.selected_path = .{};
+        self.failure_message = .{};
+        return true;
+    }
+
+    fn finishSelected(self: *FileDialogState, path: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (path.len > self.selected_path.bytes.len) {
+            self.writeFailureLocked("SELECTED PATH TOO LONG");
+            return;
+        }
+        self.selected_path = .{};
+        @memcpy(self.selected_path.bytes[0..path.len], path);
+        self.selected_path.len = path.len;
+        self.outcome = .selected;
+        self.in_flight = false;
+    }
+
+    fn finishCanceled(self: *FileDialogState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.outcome = .canceled;
+        self.in_flight = false;
+    }
+
+    fn finishFailed(self: *FileDialogState, message: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.writeFailureLocked(message);
+    }
+
+    fn take(self: *FileDialogState) FileDialogOutcome {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const result: FileDialogOutcome = switch (self.outcome) {
+            .idle => .none,
+            .selected => .{ .selected = self.selected_path },
+            .canceled => .canceled,
+            .failed => .{ .failed = self.failure_message },
+        };
+        self.outcome = .idle;
+        return result;
+    }
+
+    fn writeFailureLocked(self: *FileDialogState, message: []const u8) void {
+        self.failure_message = .{};
+        const len = @min(message.len, self.failure_message.bytes.len);
+        @memcpy(self.failure_message.bytes[0..len], message[0..len]);
+        self.failure_message.len = len;
+        self.outcome = .failed;
+        self.in_flight = false;
+    }
+};
+
+const SdlDialogFileFilter = extern struct {
+    name: [*c]const u8,
+    pattern: [*c]const u8,
+};
+
+const rom_dialog_filters = [_]SdlDialogFileFilter{
+    .{ .name = "Genesis ROMs", .pattern = "bin;md;smd;gen" },
+    .{ .name = "All files", .pattern = "*" },
+};
+
 const CliOptions = struct {
     rom_path: ?[]const u8 = null,
     audio_mode: AudioOutput.RenderMode = .normal,
@@ -101,6 +227,128 @@ fn cliErrorMessage(err: ParseCliError) []const u8 {
         error.MultipleRomPaths => "only one ROM path may be provided",
         error.UnknownOption => "unknown option",
     };
+}
+
+fn frontendShortcutForKey(scancode: zsdl3.Scancode, pressed: bool) ?FrontendShortcut {
+    if (!pressed) return null;
+    return switch (scancode) {
+        .f1 => .toggle_help,
+        .f2 => .toggle_pause,
+        .f3 => .open_rom,
+        else => null,
+    };
+}
+
+fn applyFrontendShortcut(ui: *FrontendUi, scancode: zsdl3.Scancode, pressed: bool) bool {
+    const shortcut = frontendShortcutForKey(scancode, pressed) orelse return false;
+    switch (shortcut) {
+        .toggle_help => ui.show_help = !ui.show_help,
+        .toggle_pause => ui.paused = !ui.paused,
+        .open_rom => {},
+    }
+    return true;
+}
+
+fn openRomDialogCallback(
+    userdata: ?*anyopaque,
+    filelist: [*c]const [*c]const u8,
+    filter: c_int,
+) callconv(.c) void {
+    _ = filter;
+    const dialog_state: *FileDialogState = @ptrCast(@alignCast(userdata orelse return));
+    if (filelist == null) {
+        const message = if (zsdl3.getError()) |err| err else "FILE DIALOG ERROR";
+        dialog_state.finishFailed(message);
+        return;
+    }
+
+    const selected_list = filelist;
+    if (selected_list[0] == null) {
+        dialog_state.finishCanceled();
+        return;
+    }
+
+    const selected_path = selected_list[0];
+    dialog_state.finishSelected(std.mem.span(@as([*:0]const u8, @ptrCast(selected_path))));
+}
+
+fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: *zsdl3.Window) bool {
+    if (!dialog_state.begin()) return false;
+    ui.dialog_active = true;
+    ui.show_help = false;
+    SDL_ShowOpenFileDialog(
+        openRomDialogCallback,
+        dialog_state,
+        window,
+        &rom_dialog_filters,
+        @intCast(rom_dialog_filters.len),
+        null,
+        false,
+    );
+    return true;
+}
+
+fn resetAudioOutput(audio: *AudioInit) void {
+    zsdl3.clearAudioStream(audio.stream) catch |err| {
+        std.debug.print("Failed to clear queued audio on ROM load: {}\n", .{err});
+    };
+    audio.output.reset();
+}
+
+fn stopGifRecording(gif_recorder: *?GifRecorder, reason: []const u8) void {
+    if (gif_recorder.*) |*rec| {
+        const frames = rec.frame_count;
+        rec.finish();
+        gif_recorder.* = null;
+        std.debug.print("{s} ({d} frames)\n", .{ reason, frames });
+    }
+}
+
+fn logLoadedRomMetadata(machine: *Machine, rom_path: []const u8) void {
+    const bus = &machine.bus;
+    std.debug.print("Loading ROM: {s}\n", .{rom_path});
+    if (bus.rom.len >= 0x200) {
+        const console = bus.rom[0x100..0x110];
+        const title = bus.rom[0x150..0x180];
+        std.debug.print("Console: {s}\n", .{console});
+        std.debug.print("Title:   {s}\n", .{title});
+    }
+    const ssp = bus.read32(0x000000);
+    const pc = bus.read32(0x000004);
+    std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{ ssp, pc });
+}
+
+fn loadRomIntoMachine(
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    input_bindings: *const InputBindings.Bindings,
+    audio: ?*AudioInit,
+    gif_recorder: *?GifRecorder,
+    frame_counter: *u32,
+    rom_path: []const u8,
+) !void {
+    var next_machine = try Machine.init(allocator, rom_path);
+    errdefer next_machine.deinit(allocator);
+
+    logLoadedRomMetadata(&next_machine, rom_path);
+    next_machine.reset();
+    input_bindings.applyControllerTypes(&next_machine.bus.io);
+    std.debug.print("CPU Reset complete.\n", .{});
+    next_machine.debugDump();
+
+    stopGifRecording(gif_recorder, "GIF recording stopped for ROM switch");
+    if (audio) |a| {
+        resetAudioOutput(a);
+    }
+
+    machine.flushPersistentStorage() catch |err| {
+        std.debug.print("Failed to flush persistent SRAM before ROM load: {s}\n", .{@errorName(err)});
+    };
+
+    var old_machine = machine.*;
+    machine.* = next_machine;
+    old_machine.deinit(allocator);
+    frame_counter.* = 0;
 }
 
 fn printUsage() void {
@@ -507,6 +755,316 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
     return null;
 }
 
+fn overlayScale(viewport: zsdl3.Rect) f32 {
+    const min_dimension = @min(viewport.w, viewport.h);
+    if (min_dimension < 360) return 1.0;
+    if (min_dimension < 720) return 2.0;
+    return 3.0;
+}
+
+fn overlayGlyphRows(ch: u8) [7]u8 {
+    const glyph = std.ascii.toUpper(ch);
+    return switch (glyph) {
+        ' ' => .{ 0, 0, 0, 0, 0, 0, 0 },
+        'A' => .{ 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 },
+        'B' => .{ 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E },
+        'C' => .{ 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E },
+        'D' => .{ 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E },
+        'E' => .{ 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F },
+        'F' => .{ 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 },
+        'G' => .{ 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E },
+        'H' => .{ 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 },
+        'I' => .{ 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F },
+        'J' => .{ 0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C },
+        'K' => .{ 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 },
+        'L' => .{ 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F },
+        'M' => .{ 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 },
+        'N' => .{ 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 },
+        'O' => .{ 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E },
+        'P' => .{ 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 },
+        'Q' => .{ 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D },
+        'R' => .{ 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 },
+        'S' => .{ 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E },
+        'T' => .{ 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 },
+        'U' => .{ 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E },
+        'V' => .{ 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 },
+        'W' => .{ 0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11 },
+        'X' => .{ 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 },
+        'Y' => .{ 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 },
+        'Z' => .{ 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F },
+        '0' => .{ 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E },
+        '1' => .{ 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E },
+        '2' => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F },
+        '3' => .{ 0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E },
+        '4' => .{ 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 },
+        '5' => .{ 0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E },
+        '6' => .{ 0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E },
+        '7' => .{ 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10 },
+        '8' => .{ 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E },
+        '9' => .{ 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E },
+        ':' => .{ 0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00 },
+        '-' => .{ 0x00, 0x00, 0x00, 0x0E, 0x00, 0x00, 0x00 },
+        '.' => .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06 },
+        '/' => .{ 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 },
+        '+' => .{ 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 },
+        '_' => .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F },
+        '?' => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },
+        else => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },
+    };
+}
+
+fn overlayTextWidth(text: []const u8, scale: f32) f32 {
+    return @as(f32, @floatFromInt(text.len)) * 6.0 * scale;
+}
+
+fn drawOverlayGlyph(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, ch: u8) !void {
+    const rows = overlayGlyphRows(ch);
+    for (rows, 0..) |bits, row| {
+        for (0..5) |col| {
+            const shift: u3 = @intCast(4 - col);
+            if (((bits >> shift) & 1) == 0) continue;
+            try zsdl3.renderFillRect(renderer, .{
+                .x = x + @as(f32, @floatFromInt(col)) * scale,
+                .y = y + @as(f32, @floatFromInt(row)) * scale,
+                .w = scale,
+                .h = scale,
+            });
+        }
+    }
+}
+
+fn drawOverlayText(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color: zsdl3.Color, text: []const u8) !void {
+    try zsdl3.setRenderDrawColor(renderer, color);
+    var cursor = x;
+    for (text) |ch| {
+        try drawOverlayGlyph(renderer, cursor, y, scale, ch);
+        cursor += 6.0 * scale;
+    }
+}
+
+fn renderOverlayPanel(
+    renderer: *zsdl3.Renderer,
+    rect: zsdl3.FRect,
+    fill: zsdl3.Color,
+    border: zsdl3.Color,
+    shadow: zsdl3.Color,
+) !void {
+    try zsdl3.setRenderDrawColor(renderer, shadow);
+    try zsdl3.renderFillRect(renderer, .{
+        .x = rect.x + 6.0,
+        .y = rect.y + 6.0,
+        .w = rect.w,
+        .h = rect.h,
+    });
+    try zsdl3.setRenderDrawColor(renderer, fill);
+    try zsdl3.renderFillRect(renderer, rect);
+    try zsdl3.setRenderDrawColor(renderer, border);
+    try zsdl3.renderRect(renderer, rect);
+    try zsdl3.renderRect(renderer, .{
+        .x = rect.x + 3.0,
+        .y = rect.y + 3.0,
+        .w = rect.w - 6.0,
+        .h = rect.h - 6.0,
+    });
+}
+
+fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
+    const title = "PAUSED";
+    const lines = [_][]const u8{
+        "F2 RESUME",
+        "F3 OPEN ROM",
+        "F1 HELP",
+    };
+    const scale = overlayScale(viewport);
+    const padding = 10.0 * scale;
+    const line_height = 9.0 * scale;
+
+    var max_width = overlayTextWidth(title, scale);
+    for (lines) |line| {
+        max_width = @max(max_width, overlayTextWidth(line, scale));
+    }
+
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        .{ .r = 0x10, .g = 0x13, .b = 0x1A, .a = 0xD8 },
+        .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
+        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x80 },
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
+        title,
+    );
+
+    var y = panel.y + padding + 11.0 * scale;
+    for (lines) |line| {
+        try drawOverlayText(
+            renderer,
+            panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
+            y,
+            scale,
+            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+            line,
+        );
+        y += line_height;
+    }
+}
+
+fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
+    const title = "SANDOPOLIS HELP";
+    const lines = [_][]const u8{
+        "F1 CLOSE HELP",
+        "F2 PAUSE OR RESUME",
+        "F3 OPEN ROM DIALOG",
+        "",
+        "SPACE STEP CPU",
+        "BACKSPACE REGISTER DUMP",
+        "R START OR STOP GIF",
+        "F11 TOGGLE FULLSCREEN",
+        "ESC QUIT",
+        "",
+        "HELP AND PAUSE FREEZE EMULATION",
+    };
+    const scale = overlayScale(viewport);
+    const padding = 10.0 * scale;
+    const line_height = 9.0 * scale;
+
+    var max_width = overlayTextWidth(title, scale);
+    for (lines) |line| {
+        max_width = @max(max_width, overlayTextWidth(line, scale));
+    }
+
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        .{ .r = 0x0C, .g = 0x10, .b = 0x16, .a = 0xE4 },
+        .{ .r = 0x79, .g = 0xD2, .b = 0xB2, .a = 0xFF },
+        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x88 },
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        .{ .r = 0x79, .g = 0xD2, .b = 0xB2, .a = 0xFF },
+        title,
+    );
+
+    var y = panel.y + padding + 12.0 * scale;
+    for (lines) |line| {
+        const color: zsdl3.Color = if (line.len == 0)
+            .{ .r = 0, .g = 0, .b = 0, .a = 0 }
+        else if (std.mem.startsWith(u8, line, "F1") or std.mem.startsWith(u8, line, "F2") or std.mem.startsWith(u8, line, "F3"))
+            .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
+        else if (std.mem.startsWith(u8, line, "HELP"))
+            .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
+        else
+            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF };
+
+        if (line.len != 0) {
+            try drawOverlayText(
+                renderer,
+                panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
+                y,
+                scale,
+                color,
+                line,
+            );
+        }
+        y += line_height;
+    }
+}
+
+fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
+    const title = "OPEN ROM";
+    const lines = [_][]const u8{
+        "SYSTEM FILE DIALOG ACTIVE",
+        "",
+        "SELECT A ROM OR CANCEL",
+    };
+    const scale = overlayScale(viewport);
+    const padding = 10.0 * scale;
+    const line_height = 9.0 * scale;
+
+    var max_width = overlayTextWidth(title, scale);
+    for (lines) |line| {
+        max_width = @max(max_width, overlayTextWidth(line, scale));
+    }
+
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        .{ .r = 0x10, .g = 0x13, .b = 0x1A, .a = 0xE4 },
+        .{ .r = 0xE6, .g = 0x7E, .b = 0x22, .a = 0xFF },
+        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x88 },
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        .{ .r = 0xE6, .g = 0x7E, .b = 0x22, .a = 0xFF },
+        title,
+    );
+
+    var y = panel.y + padding + 11.0 * scale;
+    for (lines) |line| {
+        if (line.len != 0) {
+            try drawOverlayText(
+                renderer,
+                panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
+                y,
+                scale,
+                .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+                line,
+            );
+        }
+        y += line_height;
+    }
+}
+
+fn renderFrontendOverlay(renderer: *zsdl3.Renderer, ui: *const FrontendUi) !void {
+    if (!ui.paused and !ui.show_help and !ui.dialog_active) return;
+
+    const viewport = try zsdl3.getRenderViewport(renderer);
+    try zsdl3.setRenderDrawBlendMode(renderer, .blend);
+    if (ui.dialog_active) {
+        try renderDialogOverlay(renderer, viewport);
+    } else if (ui.show_help) {
+        try renderHelpOverlay(renderer, viewport);
+    } else {
+        try renderPauseOverlay(renderer, viewport);
+    }
+}
+
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa_state.deinit();
@@ -847,6 +1405,8 @@ pub fn main() !void {
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
+    var frontend_ui = FrontendUi{};
+    var file_dialog_state = FileDialogState{};
 
     var frame_timer = std.time.Instant.now() catch unreachable;
     mainLoop: while (true) {
@@ -918,17 +1478,29 @@ pub fn main() !void {
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
                     const pressed = (event.type == zsdl3.EventType.key_down);
                     const scancode = event.key.scancode;
+                    if (frontendShortcutForKey(scancode, pressed)) |shortcut| {
+                        _ = applyFrontendShortcut(&frontend_ui, scancode, pressed);
+                        if (shortcut == .open_rom) {
+                            _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window);
+                        }
+                        continue;
+                    }
                     if (keyboardInputFromScancode(scancode)) |mapped_key| {
                         _ = input_bindings.applyKeyboard(&bus.io, mapped_key, pressed);
 
                         if (pressed) {
                             switch (input_bindings.hotkeyForKeyboard(mapped_key) orelse continue) {
                                 .step => {
+                                    if (frontend_ui.show_help) continue;
                                     machine.runMasterSlice(clock.m68k_divider);
                                     machine.debugDump();
                                 },
-                                .registers => machine.debugDump(),
+                                .registers => {
+                                    if (frontend_ui.show_help) continue;
+                                    machine.debugDump();
+                                },
                                 .record_gif => {
+                                    if (frontend_ui.show_help) continue;
                                     if (gif_recorder) |*rec| {
                                         const frames = rec.frame_count;
                                         rec.finish();
@@ -958,67 +1530,96 @@ pub fn main() !void {
             }
         }
 
-        const visible_lines: u16 = if (bus.vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
-        const total_lines: u16 = if (bus.vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
-        bus.vdp.beginFrame();
-        for (0..total_lines) |line_idx| {
-            const line: u16 = @intCast(line_idx);
-            const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
-            if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
-                cpu.requestInterrupt(6);
-            }
-            if (entering_vblank) {
-                bus.z80.assertIrq(0xFF);
-            } else if (!bus.vdp.vint_pending) {
-                bus.z80.clearIrq();
-            }
-            bus.vdp.setHBlank(false);
-
-            const hint_master_cycles = bus.vdp.hInterruptMasterCycles();
-            const hblank_start_master_cycles = bus.vdp.hblankStartMasterCycles();
-            const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
-            const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
-
-            machine.runMasterSlice(first_event_master_cycles);
-
-            if (hblank_start_master_cycles == first_event_master_cycles) {
-                bus.vdp.setHBlank(true);
-            }
-            if (hint_master_cycles == first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
-                cpu.requestInterrupt(4);
-            }
-
-            machine.runMasterSlice(second_event_master_cycles - first_event_master_cycles);
-
-            if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) {
-                bus.vdp.setHBlank(true);
-            }
-            if (hint_master_cycles == second_event_master_cycles and hint_master_cycles != first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
-                cpu.requestInterrupt(4);
-            }
-
-            machine.runMasterSlice(clock.ntsc_master_cycles_per_line - second_event_master_cycles);
-            bus.vdp.setHBlank(false);
-
-            if (line < visible_lines) {
-                bus.vdp.renderScanline(line);
-            }
-        }
-        bus.vdp.odd_frame = !bus.vdp.odd_frame;
-
-        if (gif_recorder) |*rec| {
-            if (frame_counter % 2 == 0) {
-                rec.addFrame(&bus.vdp.framebuffer) catch |err| {
-                    std.debug.print("GIF frame capture failed: {}\n", .{err});
-                    const frames = rec.frame_count;
-                    rec.finish();
-                    gif_recorder = null;
-                    std.debug.print("GIF recording aborted after {d} frames\n", .{frames});
+        switch (file_dialog_state.take()) {
+            .none => {},
+            .canceled => frontend_ui.dialog_active = false,
+            .failed => |message| {
+                frontend_ui.dialog_active = false;
+                std.debug.print("Open ROM dialog failed: {s}\n", .{message.slice()});
+            },
+            .selected => |path| {
+                frontend_ui.dialog_active = false;
+                frontend_ui.show_help = false;
+                loadRomIntoMachine(
+                    allocator,
+                    &machine,
+                    &input_bindings,
+                    if (audio) |*a| a else null,
+                    &gif_recorder,
+                    &frame_counter,
+                    path.slice(),
+                ) catch |err| {
+                    std.debug.print("Failed to load ROM {s}: {}\n", .{ path.slice(), err });
                 };
+            },
+        }
+
+        const emulation_paused = frontend_ui.emulationPaused();
+        if (!emulation_paused) {
+            const visible_lines: u16 = if (bus.vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
+            const total_lines: u16 = if (bus.vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+            bus.vdp.beginFrame();
+            for (0..total_lines) |line_idx| {
+                const line: u16 = @intCast(line_idx);
+                const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
+                if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
+                    cpu.requestInterrupt(6);
+                }
+                if (entering_vblank) {
+                    bus.z80.assertIrq(0xFF);
+                } else if (!bus.vdp.vint_pending) {
+                    bus.z80.clearIrq();
+                }
+                bus.vdp.setHBlank(false);
+
+                const hint_master_cycles = bus.vdp.hInterruptMasterCycles();
+                const hblank_start_master_cycles = bus.vdp.hblankStartMasterCycles();
+                const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
+                const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
+
+                machine.runMasterSlice(first_event_master_cycles);
+
+                if (hblank_start_master_cycles == first_event_master_cycles) {
+                    bus.vdp.setHBlank(true);
+                }
+                if (hint_master_cycles == first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
+                    cpu.requestInterrupt(4);
+                }
+
+                machine.runMasterSlice(second_event_master_cycles - first_event_master_cycles);
+
+                if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) {
+                    bus.vdp.setHBlank(true);
+                }
+                if (hint_master_cycles == second_event_master_cycles and hint_master_cycles != first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
+                    cpu.requestInterrupt(4);
+                }
+
+                machine.runMasterSlice(clock.ntsc_master_cycles_per_line - second_event_master_cycles);
+                bus.vdp.setHBlank(false);
+
+                if (line < visible_lines) {
+                    bus.vdp.renderScanline(line);
+                }
+            }
+            bus.vdp.odd_frame = !bus.vdp.odd_frame;
+        }
+
+        if (!emulation_paused) {
+            if (gif_recorder) |*rec| {
+                if (frame_counter % 2 == 0) {
+                    rec.addFrame(&bus.vdp.framebuffer) catch |err| {
+                        std.debug.print("GIF frame capture failed: {}\n", .{err});
+                        const frames = rec.frame_count;
+                        rec.finish();
+                        gif_recorder = null;
+                        std.debug.print("GIF recording aborted after {d} frames\n", .{frames});
+                    };
+                }
             }
         }
 
-        if ((frame_counter % 300) == 0) {
+        if (!emulation_paused and (frame_counter % 300) == 0) {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, cpu.core.pc });
         }
         if (audio) |*a| {
@@ -1037,6 +1638,7 @@ pub fn main() !void {
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
         try zsdl3.renderTexture(renderer, vdp_texture, null, null);
+        try renderFrontendOverlay(renderer, &frontend_ui);
         zsdl3.renderPresent(renderer);
 
         frame_counter += 1;
@@ -1154,6 +1756,75 @@ test "joystick button fallback maps conventional start and face buttons" {
     try std.testing.expect(joystickInputFromButton(8) == null);
 }
 
+test "frontend shortcuts toggle help and pause only on key down" {
+    var ui = FrontendUi{};
+
+    try std.testing.expect(applyFrontendShortcut(&ui, .f1, true));
+    try std.testing.expect(ui.show_help);
+    try std.testing.expect(ui.emulationPaused());
+
+    try std.testing.expect(!applyFrontendShortcut(&ui, .f1, false));
+    try std.testing.expect(ui.show_help);
+
+    try std.testing.expect(applyFrontendShortcut(&ui, .f2, true));
+    try std.testing.expect(ui.paused);
+
+    try std.testing.expect(applyFrontendShortcut(&ui, .f1, true));
+    try std.testing.expect(!ui.show_help);
+    try std.testing.expect(ui.emulationPaused());
+
+    try std.testing.expect(applyFrontendShortcut(&ui, .f2, true));
+    try std.testing.expect(!ui.emulationPaused());
+}
+
+test "frontend shortcut helper ignores unrelated keys" {
+    var ui = FrontendUi{};
+    try std.testing.expect(!applyFrontendShortcut(&ui, .f11, true));
+    try std.testing.expect(!ui.emulationPaused());
+}
+
+test "frontend shortcut helper exposes open rom key" {
+    var ui = FrontendUi{};
+    try std.testing.expectEqual(FrontendShortcut.open_rom, frontendShortcutForKey(.f3, true).?);
+    try std.testing.expect(applyFrontendShortcut(&ui, .f3, true));
+    try std.testing.expect(!ui.emulationPaused());
+}
+
+test "file dialog state records selected paths and failures" {
+    var dialog = FileDialogState{};
+    try std.testing.expect(dialog.begin());
+    dialog.finishSelected("roms/test.bin");
+
+    const selected = dialog.take();
+    switch (selected) {
+        .selected => |path| try std.testing.expectEqualStrings("roms/test.bin", path.slice()),
+        else => try std.testing.expect(false),
+    }
+    switch (dialog.take()) {
+        .none => {},
+        else => try std.testing.expect(false),
+    }
+
+    try std.testing.expect(dialog.begin());
+    dialog.finishFailed("FAILED");
+    const failed = dialog.take();
+    switch (failed) {
+        .failed => |message| try std.testing.expectEqualStrings("FAILED", message.slice()),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "file dialog state records cancellations" {
+    var dialog = FileDialogState{};
+    try std.testing.expect(dialog.begin());
+    dialog.finishCanceled();
+    switch (dialog.take()) {
+        .canceled => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(dialog.begin());
+}
+
 test "frame duration uses console master clock" {
     try std.testing.expectEqual(@as(u64, 16_688_154), frameDurationNs(false));
     try std.testing.expectEqual(@as(u64, 20_120_133), frameDurationNs(true));
@@ -1237,6 +1908,15 @@ extern fn SDL_OpenAudioDeviceStream(
     callback: ?zsdl3.AudioStreamCallback,
     userdata: *anyopaque,
 ) ?*zsdl3.AudioStream;
+extern fn SDL_ShowOpenFileDialog(
+    callback: *const fn (?*anyopaque, [*c]const [*c]const u8, c_int) callconv(.c) void,
+    userdata: ?*anyopaque,
+    window: ?*zsdl3.Window,
+    filters: [*]const SdlDialogFileFilter,
+    nfilters: c_int,
+    default_location: ?[*:0]const u8,
+    allow_many: bool,
+) void;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
 extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;
 extern fn SDL_SetWindowFullscreen(window: *zsdl3.Window, fullscreen: bool) bool;
