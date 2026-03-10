@@ -36,14 +36,18 @@ pub const Machine = struct {
         try self.handle.machine.flushPersistentStorage();
     }
 
+    pub fn runFrame(self: *Machine) void {
+        self.handle.machine.runFrame();
+    }
+
     pub fn runMasterSlice(self: *Machine, total_master_cycles: u32) void {
         self.handle.machine.runMasterSlice(total_master_cycles);
     }
 
     pub fn cpuState(self: *const Machine) CpuState {
         return .{
-            .program_counter = @as(u32, self.handle.machine.cpu.core.pc),
-            .stack_pointer = @as(u32, self.handle.machine.cpu.core.a_regs[7].l),
+            .program_counter = self.handle.machine.programCounter(),
+            .stack_pointer = self.handle.machine.stackPointer(),
         };
     }
 

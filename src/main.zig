@@ -1638,8 +1638,6 @@ pub fn main() !void {
     const bus = &machine.bus;
     input_bindings.applyControllerTypes(&bus.io);
 
-    const cpu = &machine.cpu;
-
     if (rom_path == null) {
         std.mem.writeInt(u32, bus.rom[0..4], 0x00FF0000, .big);
         std.mem.writeInt(u32, bus.rom[4..8], 0x00000200, .big);
@@ -2063,59 +2061,14 @@ pub fn main() !void {
 
         const emulation_paused = frontend_ui.emulationPaused();
         if (!emulation_paused) {
-            const visible_lines: u16 = if (bus.vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
-            const total_lines: u16 = if (bus.vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
-            bus.vdp.beginFrame();
-            for (0..total_lines) |line_idx| {
-                const line: u16 = @intCast(line_idx);
-                const entering_vblank = bus.vdp.setScanlineState(line, visible_lines, total_lines);
-                if (entering_vblank and bus.vdp.isVBlankInterruptEnabled()) {
-                    cpu.requestInterrupt(6);
-                }
-                if (entering_vblank) {
-                    bus.z80.assertIrq(0xFF);
-                } else if (!bus.vdp.vint_pending) {
-                    bus.z80.clearIrq();
-                }
-                bus.vdp.setHBlank(false);
-
-                const hint_master_cycles = bus.vdp.hInterruptMasterCycles();
-                const hblank_start_master_cycles = bus.vdp.hblankStartMasterCycles();
-                const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
-                const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
-
-                machine.runMasterSlice(first_event_master_cycles);
-
-                if (hblank_start_master_cycles == first_event_master_cycles) {
-                    bus.vdp.setHBlank(true);
-                }
-                if (hint_master_cycles == first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
-                    cpu.requestInterrupt(4);
-                }
-
-                machine.runMasterSlice(second_event_master_cycles - first_event_master_cycles);
-
-                if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) {
-                    bus.vdp.setHBlank(true);
-                }
-                if (hint_master_cycles == second_event_master_cycles and hint_master_cycles != first_event_master_cycles and bus.vdp.consumeHintForLine(line, visible_lines)) {
-                    cpu.requestInterrupt(4);
-                }
-
-                machine.runMasterSlice(clock.ntsc_master_cycles_per_line - second_event_master_cycles);
-                bus.vdp.setHBlank(false);
-
-                if (line < visible_lines) {
-                    bus.vdp.renderScanline(line);
-                }
-            }
-            bus.vdp.odd_frame = !bus.vdp.odd_frame;
+            machine.runFrame();
         }
 
         if (!emulation_paused) {
+            const framebuffer = machine.framebuffer();
             if (gif_recorder) |*rec| {
                 if (frame_counter % 2 == 0) {
-                    rec.addFrame(&bus.vdp.framebuffer) catch |err| {
+                    rec.addFrame(framebuffer) catch |err| {
                         std.debug.print("GIF frame capture failed: {}\n", .{err});
                         const frames = rec.frame_count;
                         rec.finish();
@@ -2127,20 +2080,21 @@ pub fn main() !void {
         }
 
         if (!emulation_paused and (frame_counter % 300) == 0) {
-            std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, cpu.core.pc });
+            std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, machine.programCounter() });
         }
         if (audio) |*a| {
-            const audio_frames = bus.audio_timing.takePending();
+            const audio_frames = machine.takePendingAudio();
             if (a.output.canAcceptPending()) {
-                try a.output.pushPending(audio_frames, &bus.z80, bus.vdp.pal_mode);
+                try a.output.pushPending(audio_frames, &bus.z80, machine.palMode());
             } else {
-                try a.output.discardPending(audio_frames, &bus.z80, bus.vdp.pal_mode);
+                try a.output.discardPending(audio_frames, &bus.z80, machine.palMode());
             }
         } else {
-            _ = bus.audio_timing.takePending();
+            _ = machine.takePendingAudio();
         }
 
-        _ = SDL_UpdateTexture(vdp_texture, null, @ptrCast(&bus.vdp.framebuffer), 320 * 4);
+        const framebuffer = machine.framebuffer();
+        _ = SDL_UpdateTexture(vdp_texture, null, @ptrCast(framebuffer), 320 * 4);
 
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
@@ -2150,7 +2104,7 @@ pub fn main() !void {
 
         frame_counter += 1;
         if (frame_counter > uncapped_boot_frames) {
-            const target_frame_ns = frameDurationNs(bus.vdp.pal_mode);
+            const target_frame_ns = frameDurationNs(machine.palMode());
             const now = std.time.Instant.now() catch frame_timer;
             const frame_elapsed = now.since(frame_timer);
             if (frame_elapsed < target_frame_ns) {
