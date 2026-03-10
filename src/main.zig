@@ -2057,12 +2057,12 @@ test "binding editor opens releases inputs and rebinds selected action" {
     defer machine.deinit(allocator);
 
     _ = machine.applyKeyboardBindings(&bindings, .a, true);
-    try std.testing.expectEqual(@as(u16, 0), machine.bus.io.pad[0] & Io.Button.A);
+    try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
 
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f4, true));
     try std.testing.expect(ui.show_keyboard_editor);
     try std.testing.expect(ui.emulationPaused());
-    try std.testing.expect((machine.bus.io.pad[0] & Io.Button.A) != 0);
+    try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
 
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", true));
     try std.testing.expect(editor.capture_mode);
@@ -2102,14 +2102,14 @@ test "quick state helper saves and restores machine state" {
     var gif_recorder: ?GifRecorder = null;
     var frame_counter: u32 = 42;
 
-    machine.bus.ram[0x20] = 0x5A;
+    machine.writeWorkRamByte(0x20, 0x5A);
     try std.testing.expect(handleQuickStateKey(allocator, .f6, true, &machine, &quick_state, null, &gif_recorder, &frame_counter));
 
-    machine.bus.ram[0x20] = 0x00;
+    machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
     try std.testing.expect(handleQuickStateKey(allocator, .f7, true, &machine, &quick_state, null, &gif_recorder, &frame_counter));
 
-    try std.testing.expectEqual(@as(u8, 0x5A), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
@@ -2133,16 +2133,16 @@ test "persistent state helper saves and restores machine state" {
     const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, persistent_state_slot);
     defer allocator.free(slot1_state_path);
 
-    machine.bus.ram[0x20] = 0x5A;
+    machine.writeWorkRamByte(0x20, 0x5A);
     try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(state_path, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
-    machine.bus.ram[0x20] = 0x00;
+    machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
     try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
-    try std.testing.expectEqual(@as(u8, 0x5A), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
@@ -2164,19 +2164,19 @@ test "persistent state helper cycles slots and keeps files separate" {
     var frame_counter: u32 = 17;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
-    machine.bus.ram[0x20] = 0x11;
+    machine.writeWorkRamByte(0x20, 0x11);
     try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
     try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
-    machine.bus.ram[0x20] = 0x22;
+    machine.writeWorkRamByte(0x20, 0x22);
     try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
-    machine.bus.ram[0x20] = 0x00;
+    machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
     try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
-    try std.testing.expectEqual(@as(u8, 0x22), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
     try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
@@ -2184,10 +2184,10 @@ test "persistent state helper cycles slots and keeps files separate" {
     try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
-    machine.bus.ram[0x20] = 0x00;
+    machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
     try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
-    try std.testing.expectEqual(@as(u8, 0x11), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 

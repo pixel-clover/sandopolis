@@ -165,8 +165,19 @@ pub const Machine = struct {
         };
     }
 
-    pub fn controllerIo(self: *Machine) *Io {
-        return &self.bus.io;
+    pub fn controllerPadState(self: *const Machine, port: usize) u16 {
+        std.debug.assert(port < self.bus.io.pad.len);
+        return self.bus.io.pad[port];
+    }
+
+    pub fn readWorkRamByte(self: *const Machine, offset: usize) u8 {
+        std.debug.assert(offset < self.bus.ram.len);
+        return self.bus.ram[offset];
+    }
+
+    pub fn writeWorkRamByte(self: *Machine, offset: usize, value: u8) void {
+        std.debug.assert(offset < self.bus.ram.len);
+        self.bus.ram[offset] = value;
     }
 
     pub fn palMode(self: *const Machine) bool {
@@ -418,16 +429,16 @@ test "machine binding helpers update and release controller state" {
     machine.applyControllerTypes(&bindings);
 
     _ = machine.applyKeyboardBindings(&bindings, .a, true);
-    try std.testing.expectEqual(@as(u16, 0), machine.bus.io.pad[0] & Io.Button.A);
+    try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
 
     machine.releaseKeyboardBindings(&bindings);
-    try std.testing.expect((machine.bus.io.pad[0] & Io.Button.A) != 0);
+    try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
 
     _ = machine.applyGamepadBindings(&bindings, 0, .east, true);
-    try std.testing.expectEqual(@as(u16, 0), machine.bus.io.pad[0] & Io.Button.B);
+    try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.B);
 
     machine.releaseGamepadBindings(&bindings, 0);
-    try std.testing.expect((machine.bus.io.pad[0] & Io.Button.B) != 0);
+    try std.testing.expect((machine.controllerPadState(0) & Io.Button.B) != 0);
 }
 
 test "machine audio drain helper routes pending audio to sink policy" {
