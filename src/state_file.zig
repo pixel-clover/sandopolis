@@ -190,10 +190,6 @@ pub fn nextPersistentStateSlot(slot: u8) u8 {
 
 pub fn pathForSlot(allocator: std.mem.Allocator, path: []const u8, slot: u8) ![]u8 {
     const normalized = normalizePersistentStateSlot(slot);
-    if (normalized == default_persistent_state_slot) {
-        return allocator.dupe(u8, path);
-    }
-
     const current_extension = std.fs.path.extension(path);
     if (current_extension.len == 0) {
         return std.fmt.allocPrint(allocator, "{s}.slot{d}.state", .{ path, normalized });
@@ -238,9 +234,6 @@ pub fn defaultPathForMachine(allocator: std.mem.Allocator, machine: *const Machi
 pub fn pathForMachineSlot(allocator: std.mem.Allocator, machine: *const Machine, slot: u8) ![]u8 {
     const normalized = normalizePersistentStateSlot(slot);
     const default_path = try defaultPathForMachine(allocator, machine);
-    if (normalized == default_persistent_state_slot) {
-        return default_path;
-    }
     defer allocator.free(default_path);
     return pathForSlot(allocator, default_path, normalized);
 }
@@ -369,7 +362,7 @@ fn tempFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: [
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }
 
-test "default state path derives from ROM source path, slots, and fallback" {
+test "default state path derives from ROM source path, numbered slots, and fallback" {
     const allocator = testing.allocator;
     const rom = [_]u8{0} ** 0x400;
 
@@ -380,15 +373,23 @@ test "default state path derives from ROM source path, slots, and fallback" {
     defer allocator.free(fallback_path);
     try testing.expectEqualStrings(default_state_name, fallback_path);
 
-    const fallback_slot_path = try pathForMachineSlot(allocator, &machine, 2);
-    defer allocator.free(fallback_slot_path);
-    try testing.expectEqualStrings("sandopolis.slot2.state", fallback_slot_path);
+    const fallback_slot1_path = try pathForMachineSlot(allocator, &machine, 1);
+    defer allocator.free(fallback_slot1_path);
+    try testing.expectEqualStrings("sandopolis.slot1.state", fallback_slot1_path);
+
+    const fallback_slot2_path = try pathForMachineSlot(allocator, &machine, 2);
+    defer allocator.free(fallback_slot2_path);
+    try testing.expectEqualStrings("sandopolis.slot2.state", fallback_slot2_path);
 
     machine.bus.cartridge.source_path = try allocator.dupe(u8, "roms/test.bin");
 
     const derived_path = try defaultPathForMachine(allocator, &machine);
     defer allocator.free(derived_path);
     try testing.expectEqualStrings("roms/test.state", derived_path);
+
+    const derived_slot1_path = try pathForMachineSlot(allocator, &machine, 1);
+    defer allocator.free(derived_slot1_path);
+    try testing.expectEqualStrings("roms/test.slot1.state", derived_slot1_path);
 
     const derived_slot_path = try pathForMachineSlot(allocator, &machine, 3);
     defer allocator.free(derived_slot_path);

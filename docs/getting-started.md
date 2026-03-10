@@ -80,8 +80,8 @@ Fixed frontend keys:
 
 The help overlay, pause mode, open-ROM dialog, and keyboard editor freeze emulation until you close or resume them.
 The quick-state slot is session-local and restores the full saved machine snapshot, including the ROM that was active when you saved it.
-Persistent state slot 1 defaults to `<rom-name>.state` when the current ROM came from disk, and falls back to `sandopolis.state` otherwise.
-Slots 2 and 3 use the same basename with `.slot2.state` and `.slot3.state`.
+Persistent state slots use `<rom-name>.slot1.state`, `.slot2.state`, and `.slot3.state` when the current ROM came from disk.
+If no ROM path is available, they fall back to `sandopolis.slot1.state`, `sandopolis.slot2.state`, and `sandopolis.slot3.state`.
 
 Keyboard editor controls:
 

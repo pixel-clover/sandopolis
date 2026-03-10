@@ -2374,9 +2374,13 @@ test "persistent state helper saves and restores machine state" {
     var gif_recorder: ?GifRecorder = null;
     var frame_counter: u32 = 42;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+    const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, persistent_state_slot);
+    defer allocator.free(slot1_state_path);
 
     machine.bus.ram[0x20] = 0x5A;
     try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(state_path, .{}));
+    try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.bus.ram[0x20] = 0x00;
     frame_counter = 99;
