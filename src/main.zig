@@ -100,6 +100,14 @@ const FrontendUi = struct {
     }
 };
 
+const performance_spike_log_threshold_ns: u64 = 4 * std.time.ns_per_ms;
+const performance_spike_window_ns: u64 = std.time.ns_per_s;
+
+fn queuedAudioNsFromBytes(queued_bytes: usize) u64 {
+    return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
+        (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
+}
+
 const PerformanceHudState = struct {
     frame_count: u64 = 0,
     slow_frame_count: u64 = 0,
@@ -147,8 +155,7 @@ const PerformanceHudState = struct {
 
     fn queuedAudioNs(self: *const PerformanceHudState) ?u64 {
         const queued_bytes = self.last_audio_queued_bytes orelse return null;
-        return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
-            (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
+        return queuedAudioNsFromBytes(queued_bytes);
     }
 
     fn slowFramePercentTenths(self: *const PerformanceHudState) u64 {
@@ -156,6 +163,78 @@ const PerformanceHudState = struct {
         return @intCast((@as(u128, self.slow_frame_count) * 1000 + @as(u128, self.frame_count) / 2) / @as(u128, self.frame_count));
     }
 };
+
+const PerformanceSpikeWindowSummary = struct {
+    start_frame: u64,
+    end_frame: u64,
+    frame_count: u64,
+    slow_frame_count: u64,
+    average_overrun_ns: u64,
+    max_overrun_ns: u64,
+    audio_queued_bytes: ?usize,
+
+    fn audioQueuedNs(self: *const PerformanceSpikeWindowSummary) ?u64 {
+        const queued_bytes = self.audio_queued_bytes orelse return null;
+        return queuedAudioNsFromBytes(queued_bytes);
+    }
+};
+
+const PerformanceSpikeLogState = struct {
+    window_start_frame: u64 = 0,
+    window_frame_count: u64 = 0,
+    window_slow_frame_count: u64 = 0,
+    window_overrun_ns_total: u64 = 0,
+    window_max_overrun_ns: u64 = 0,
+    window_target_ns_total: u64 = 0,
+    window_last_audio_queued_bytes: ?usize = null,
+
+    fn reset(self: *PerformanceSpikeLogState) void {
+        self.* = .{};
+    }
+
+    fn noteFrame(
+        self: *PerformanceSpikeLogState,
+        frame_number: u64,
+        perf: *const PerformanceHudState,
+    ) ?PerformanceSpikeWindowSummary {
+        if (self.window_frame_count == 0) {
+            self.window_start_frame = frame_number;
+        }
+
+        self.window_frame_count += 1;
+        self.window_target_ns_total += perf.last_target_ns;
+        self.window_last_audio_queued_bytes = perf.last_audio_queued_bytes;
+
+        if (perf.last_overrun_ns != 0) {
+            self.window_slow_frame_count += 1;
+            self.window_overrun_ns_total += perf.last_overrun_ns;
+            self.window_max_overrun_ns = @max(self.window_max_overrun_ns, perf.last_overrun_ns);
+        }
+
+        if (self.window_target_ns_total < performance_spike_window_ns) return null;
+
+        const summary: ?PerformanceSpikeWindowSummary = if (self.window_slow_frame_count == 0)
+            null
+        else
+            .{
+                .start_frame = self.window_start_frame,
+                .end_frame = frame_number,
+                .frame_count = self.window_frame_count,
+                .slow_frame_count = self.window_slow_frame_count,
+                .average_overrun_ns = @intCast((@as(u128, self.window_overrun_ns_total) +
+                    @as(u128, self.window_slow_frame_count) / 2) / @as(u128, self.window_slow_frame_count)),
+                .max_overrun_ns = self.window_max_overrun_ns,
+                .audio_queued_bytes = self.window_last_audio_queued_bytes,
+            };
+
+        self.reset();
+        return summary;
+    }
+};
+
+fn shouldLogPerformanceSpike(perf: *const PerformanceHudState) bool {
+    return perf.last_overrun_ns >= performance_spike_log_threshold_ns;
+}
 
 const FrontendShortcut = enum {
     toggle_help,
@@ -1296,6 +1375,35 @@ fn formatPerformanceSpikeLine(buffer: []u8, frame_number: u32, perf: *const Perf
     });
 }
 
+fn formatPerformanceSpikeWindowLine(buffer: []u8, summary: *const PerformanceSpikeWindowSummary) ![]const u8 {
+    var metric_buffers: [3][16]u8 = undefined;
+    const max_overrun_text = try formatDurationMsTenths(metric_buffers[0][0..], summary.max_overrun_ns);
+    const avg_overrun_text = try formatDurationMsTenths(metric_buffers[1][0..], summary.average_overrun_ns);
+    const audio_text = if (summary.audioQueuedNs()) |queued_ns|
+        try formatDurationMsTenths(metric_buffers[2][0..], queued_ns)
+    else
+        "OFF";
+
+    if (summary.audio_queued_bytes == null) {
+        return std.fmt.bufPrint(buffer, "SPIKE WINDOW f={d}-{d} slow={d} max_over={s}ms avg_over={s}ms audio=OFF", .{
+            summary.start_frame,
+            summary.end_frame,
+            summary.slow_frame_count,
+            max_overrun_text,
+            avg_overrun_text,
+        });
+    }
+
+    return std.fmt.bufPrint(buffer, "SPIKE WINDOW f={d}-{d} slow={d} max_over={s}ms avg_over={s}ms audio={s}ms", .{
+        summary.start_frame,
+        summary.end_frame,
+        summary.slow_frame_count,
+        max_overrun_text,
+        avg_overrun_text,
+        audio_text,
+    });
+}
+
 fn renderOverlayPanel(
     renderer: *zsdl3.Renderer,
     rect: zsdl3.FRect,
@@ -1876,6 +1984,7 @@ pub fn main() !void {
     defer if (quick_state) |*state| state.deinit(allocator);
     var frontend_ui = FrontendUi{};
     var performance_hud = PerformanceHudState{};
+    var performance_spike_log = PerformanceSpikeLogState{};
     var file_dialog_state = FileDialogState{};
     var binding_editor = BindingEditorState{};
 
@@ -1989,9 +2098,11 @@ pub fn main() !void {
                         _ = applyFrontendShortcut(&frontend_ui, scancode, pressed);
                         if (shortcut == .toggle_performance_hud and frontend_ui.show_performance_hud) {
                             performance_hud.reset();
+                            performance_spike_log.reset();
                         }
                         if (shortcut == .reset_performance_hud) {
                             performance_hud.reset();
+                            performance_spike_log.reset();
                         }
                         if (shortcut == .open_rom) {
                             _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window);
@@ -2068,6 +2179,11 @@ pub fn main() !void {
             },
         }
 
+        if (frame_counter == 0 and (performance_hud.frame_count != 0 or performance_spike_log.window_frame_count != 0)) {
+            performance_hud.reset();
+            performance_spike_log.reset();
+        }
+
         const emulation_paused = frontend_ui.emulationPaused();
         var target_frame_ns: ?u64 = null;
         if (!emulation_paused) {
@@ -2136,11 +2252,17 @@ pub fn main() !void {
         if (!emulation_paused) {
             if (target_frame_ns) |frame_ns| {
                 performance_hud.noteFrame(work_elapsed, present_elapsed, frame_ns, queued_audio_bytes);
-                const frame_number = frame_counter + 1;
-                if (frontend_ui.show_performance_hud and frame_number > uncapped_boot_frames and performance_hud.last_overrun_ns != 0) {
-                    var spike_buffer: [96]u8 = undefined;
-                    const spike_line = formatPerformanceSpikeLine(spike_buffer[0..], frame_number, &performance_hud) catch "SLOW FRAME";
-                    std.debug.print("{s}\n", .{spike_line});
+                if (frontend_ui.show_performance_hud and frame_counter > uncapped_boot_frames) {
+                    if (shouldLogPerformanceSpike(&performance_hud)) {
+                        var spike_buffer: [96]u8 = undefined;
+                        const spike_line = formatPerformanceSpikeLine(spike_buffer[0..], frame_counter, &performance_hud) catch "SLOW FRAME";
+                        std.debug.print("{s}\n", .{spike_line});
+                    }
+                    if (performance_spike_log.noteFrame(frame_counter, &performance_hud)) |summary| {
+                        var window_buffer: [128]u8 = undefined;
+                        const window_line = formatPerformanceSpikeWindowLine(window_buffer[0..], &summary) catch "SPIKE WINDOW";
+                        std.debug.print("{s}\n", .{window_line});
+                    }
                 }
             }
         }
@@ -2318,6 +2440,60 @@ test "performance spike formatter includes frame timing and audio" {
         "SLOW FRAME f=43 work=17.5ms over=0.8ms audio=OFF",
         try formatPerformanceSpikeLine(buffer[0..], 43, &perf),
     );
+}
+
+test "performance spike threshold ignores tiny overruns" {
+    var perf = PerformanceHudState{};
+
+    perf.noteFrame(20_600_000, 20_600_000, 16_700_000, null);
+    try std.testing.expect(!shouldLogPerformanceSpike(&perf));
+
+    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null);
+    try std.testing.expect(shouldLogPerformanceSpike(&perf));
+}
+
+test "performance spike window formatter summarizes aggregate overruns" {
+    const summary = PerformanceSpikeWindowSummary{
+        .start_frame = 1200,
+        .end_frame = 1259,
+        .frame_count = 60,
+        .slow_frame_count = 9,
+        .average_overrun_ns = 4_800_000,
+        .max_overrun_ns = 12_600_000,
+        .audio_queued_bytes = 9_600,
+    };
+
+    var buffer: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "SPIKE WINDOW f=1200-1259 slow=9 max_over=12.6ms avg_over=4.8ms audio=50.0ms",
+        try formatPerformanceSpikeWindowLine(buffer[0..], &summary),
+    );
+}
+
+test "performance spike window emits one-second summaries and resets" {
+    var perf = PerformanceHudState{};
+    var spikes = PerformanceSpikeLogState{};
+
+    perf.noteFrame(260_000_000, 260_000_000, 250_000_000, 9_600);
+    try std.testing.expect(spikes.noteFrame(100, &perf) == null);
+
+    perf.noteFrame(200_000_000, 200_000_000, 250_000_000, 9_600);
+    try std.testing.expect(spikes.noteFrame(101, &perf) == null);
+
+    perf.noteFrame(280_000_000, 280_000_000, 250_000_000, 9_600);
+    try std.testing.expect(spikes.noteFrame(102, &perf) == null);
+
+    perf.noteFrame(240_000_000, 240_000_000, 250_000_000, 9_600);
+    const summary = spikes.noteFrame(103, &perf).?;
+    try std.testing.expectEqual(@as(u64, 100), summary.start_frame);
+    try std.testing.expectEqual(@as(u64, 103), summary.end_frame);
+    try std.testing.expectEqual(@as(u64, 4), summary.frame_count);
+    try std.testing.expectEqual(@as(u64, 2), summary.slow_frame_count);
+    try std.testing.expectEqual(@as(u64, 20_000_000), summary.average_overrun_ns);
+    try std.testing.expectEqual(@as(u64, 30_000_000), summary.max_overrun_ns);
+    try std.testing.expectEqual(@as(?usize, 9_600), summary.audio_queued_bytes);
+    try std.testing.expectEqual(@as(u64, 0), spikes.window_frame_count);
+    try std.testing.expectEqual(@as(u64, 0), spikes.window_slow_frame_count);
 }
 
 test "performance hud tracks slow frames and queued audio" {
