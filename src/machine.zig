@@ -6,6 +6,7 @@ const Cpu = @import("cpu/cpu.zig").Cpu;
 const InputBindings = @import("input/mapping.zig");
 const Io = @import("input/io.zig").Io;
 const scheduler = @import("scheduler/frame_scheduler.zig");
+const Vdp = @import("video/vdp.zig").Vdp;
 
 pub const Machine = struct {
     pub const Snapshot = struct {
@@ -85,6 +86,10 @@ pub const Machine = struct {
             self.machine.bus.vdp.regs[index] = value;
         }
 
+        pub fn setPalMode(self: *TestingView, pal_mode: bool) void {
+            self.machine.bus.vdp.pal_mode = pal_mode;
+        }
+
         pub fn setVdpCode(self: *TestingView, code: u8) void {
             self.machine.bus.vdp.code = code;
         }
@@ -150,6 +155,10 @@ pub const Machine = struct {
 
         pub fn vdpAddr(self: *const TestingConstView) u16 {
             return self.machine.bus.vdp.addr;
+        }
+
+        pub fn vdpScanline(self: *const TestingConstView) u16 {
+            return self.machine.bus.vdp.scanline;
         }
 
         pub fn vdpDataPortWriteWaitMasterCycles(self: *const TestingConstView) u32 {
@@ -262,8 +271,8 @@ pub const Machine = struct {
     }
 
     pub fn runFrame(self: *Machine) void {
-        const visible_lines: u16 = if (self.bus.vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
-        const total_lines: u16 = if (self.bus.vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
+        const visible_lines = self.bus.vdp.activeVisibleLines();
+        const total_lines = self.bus.vdp.totalLinesForCurrentFrame();
         const master_cycles_per_line: u16 = if (self.bus.vdp.pal_mode) clock.pal_master_cycles_per_line else clock.ntsc_master_cycles_per_line;
 
         self.bus.vdp.beginFrame();
@@ -326,8 +335,12 @@ pub const Machine = struct {
         self.bus.vdp.odd_frame = !self.bus.vdp.odd_frame;
     }
 
-    pub fn framebuffer(self: *const Machine) *const [320 * 224]u32 {
-        return &self.bus.vdp.framebuffer;
+    pub fn frameMasterCycles(self: *const Machine) u32 {
+        return self.bus.vdp.frameMasterCycles();
+    }
+
+    pub fn framebuffer(self: *const Machine) []const u32 {
+        return self.bus.vdp.framebuffer[0 .. Vdp.framebuffer_width * @as(usize, self.bus.vdp.activeVisibleLines())];
     }
 
     pub fn romMetadata(self: *const Machine) RomMetadata {

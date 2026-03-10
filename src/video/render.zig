@@ -84,11 +84,11 @@ pub fn readVScroll(self: *const Vdp, plane_a: bool) i32 {
 
 pub fn renderScanline(self: *Vdp, line: u16) void {
     const screen_w = self.screenWidth();
-    if (line >= 224) return;
+    if (line >= Vdp.max_framebuffer_height) return;
     if (!self.isDisplayEnabled()) {
-        const line_start = @as(usize, line) * 320;
+        const line_start = @as(usize, line) * Vdp.framebuffer_width;
         const backdrop = getPaletteColor(self, self.regs[7] & 0x3F);
-        for (0..320) |x| {
+        for (0..Vdp.framebuffer_width) |x| {
             self.framebuffer[line_start + x] = backdrop;
         }
         return;
@@ -120,12 +120,12 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
 
     const backdrop_idx = self.regs[7] & 0x3F;
     const hscroll_base = (@as(u16, self.regs[13]) & 0x3F) << 10;
-    const line_start = @as(usize, line) * 320;
+    const line_start = @as(usize, line) * Vdp.framebuffer_width;
 
-    var pixel_buf: [320]u8 = [_]u8{0} ** 320;
-    var layer_buf: [320]u8 = [_]u8{LAYER_BACKDROP} ** 320;
-    var source_buf: [320]u8 = [_]u8{0} ** 320;
-    var sh_buf: [320]u8 = undefined;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = undefined;
     if (sh_mode) {
         @memset(&sh_buf, SH_SHADOW);
     } else {
@@ -178,9 +178,9 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             }
         }
     }
-    if (screen_w < 320) {
+    if (screen_w < Vdp.framebuffer_width) {
         const backdrop = getPaletteColor(self, backdrop_idx);
-        for (@as(usize, screen_w)..320) |x| {
+        for (@as(usize, screen_w)..Vdp.framebuffer_width) |x| {
             self.framebuffer[line_start + x] = backdrop;
         }
     }
@@ -200,9 +200,9 @@ fn renderPlaneToBuffer(
     tile_h_shift: u4,
     tile_h_mask: u8,
     tile_sz: u32,
-    pixel_buf: *[320]u8,
-    layer_buf: *[320]u8,
-    source_buf: *[320]u8,
+    pixel_buf: *[Vdp.framebuffer_width]u8,
+    layer_buf: *[Vdp.framebuffer_width]u8,
+    source_buf: *[Vdp.framebuffer_width]u8,
     source_id: u8,
     start_x: u16,
     end_x: u16,
@@ -273,9 +273,9 @@ fn renderWindowToBuffer(
     tile_h_shift: u4,
     tile_h_mask: u8,
     tile_sz: u32,
-    pixel_buf: *[320]u8,
-    layer_buf: *[320]u8,
-    source_buf: *[320]u8,
+    pixel_buf: *[Vdp.framebuffer_width]u8,
+    layer_buf: *[Vdp.framebuffer_width]u8,
+    source_buf: *[Vdp.framebuffer_width]u8,
     start_x: u16,
     end_x: u16,
 ) void {
@@ -330,10 +330,10 @@ fn renderSpritesToBuffer(
     tile_h: u8,
     tile_h_mask: u8,
     tile_sz: u32,
-    pixel_buf: *[320]u8,
-    layer_buf: *[320]u8,
-    source_buf: *[320]u8,
-    sh_buf: *[320]u8,
+    pixel_buf: *[Vdp.framebuffer_width]u8,
+    layer_buf: *[Vdp.framebuffer_width]u8,
+    source_buf: *[Vdp.framebuffer_width]u8,
+    sh_buf: *[Vdp.framebuffer_width]u8,
     sh_mode: bool,
 ) void {
     const screen_w = self.screenWidth();

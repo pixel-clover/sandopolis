@@ -219,6 +219,48 @@ test "read16 routes full io window range through io handler" {
     try testing.expectEqual(base, mirrored);
 }
 
+test "pal 240-line mode exposes and renders the extra visible scanlines" {
+    const rom = try seedResetNopsRom(testing.allocator, 1);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.setPalMode(true);
+    emulator.setVdpRegister(1, 0x48);
+    emulator.configureVdpDataPort(0x03, 0x0000, 2);
+    emulator.writeVdpData(0x000E);
+
+    emulator.runFrame();
+
+    const fb = emulator.framebuffer();
+    const red: u32 = 0xFFFF0000;
+    const first_extended_line = @as(usize, clock.ntsc_visible_lines) * 320;
+    const last_visible_line = (@as(usize, clock.pal_visible_lines) - 1) * 320;
+
+    try testing.expectEqual(@as(usize, 320) * @as(usize, clock.pal_visible_lines), fb.len);
+    try testing.expectEqual(red, fb[first_extended_line]);
+    try testing.expectEqual(red, fb[last_visible_line]);
+}
+
+test "interlace mode 2 alternates field length by one scanline" {
+    const rom = try seedResetNopsRom(testing.allocator, 1);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.setVdpRegister(12, 0x06);
+
+    emulator.runFrame();
+    try testing.expectEqual(@as(u16, clock.ntsc_lines_per_frame - 1), emulator.vdpScanline());
+
+    emulator.runFrame();
+    try testing.expectEqual(@as(u16, clock.ntsc_lines_per_frame), emulator.vdpScanline());
+}
+
 test "window plane uses tile height shift for interlace mode 2 tile row" {
     const rom = try seedResetNopsRom(testing.allocator, 1);
     defer testing.allocator.free(rom);

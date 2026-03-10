@@ -16,12 +16,12 @@ const VCounterState = struct {
     vblank: bool,
 };
 
-fn activeVisibleLines(self: *const Vdp) u16 {
+pub fn activeVisibleLines(self: *const Vdp) u16 {
     if (!self.pal_mode) return clock.ntsc_visible_lines;
     return if ((self.regs[1] & 0x08) != 0) clock.pal_visible_lines else clock.ntsc_visible_lines;
 }
 
-fn totalLinesForCurrentFrame(self: *const Vdp) u16 {
+pub fn totalLinesForCurrentFrame(self: *const Vdp) u16 {
     if (!self.isInterlaceMode2()) {
         return if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
     }
@@ -31,6 +31,14 @@ fn totalLinesForCurrentFrame(self: *const Vdp) u16 {
     }
 
     return if (self.odd_frame) clock.ntsc_lines_per_frame + 1 else clock.ntsc_lines_per_frame;
+}
+
+pub fn frameMasterCycles(self: *const Vdp) u32 {
+    const master_cycles_per_line: u16 = if (self.pal_mode)
+        clock.pal_master_cycles_per_line
+    else
+        clock.ntsc_master_cycles_per_line;
+    return @as(u32, totalLinesForCurrentFrame(self)) * @as(u32, master_cycles_per_line);
 }
 
 pub fn hInterruptMasterCycles(self: *const Vdp) u16 {

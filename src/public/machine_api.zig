@@ -86,7 +86,7 @@ pub const Machine = struct {
     }
 
     pub fn framebuffer(self: *const Machine) []const u32 {
-        return self.handle.machine.framebuffer()[0..];
+        return self.handle.machine.framebuffer();
     }
 
     pub fn romMetadata(self: *const Machine) RomMetadata {

@@ -7,6 +7,7 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 const Machine = @import("machine.zig").Machine;
+const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
 const StateFile = @import("state_file.zig");
 
@@ -78,8 +79,7 @@ const joystick_hat_right: u8 = 0x02;
 const joystick_hat_down: u8 = 0x04;
 const joystick_hat_left: u8 = 0x08;
 
-fn frameDurationNs(is_pal: bool) u64 {
-    const master_cycles_per_frame: u32 = if (is_pal) clock.pal_master_cycles_per_frame else clock.ntsc_master_cycles_per_frame;
+fn frameDurationNs(is_pal: bool, master_cycles_per_frame: u32) u64 {
     const master_clock: u32 = if (is_pal) clock.master_clock_pal else clock.master_clock_ntsc;
     return @intCast((@as(u128, master_cycles_per_frame) * std.time.ns_per_s) / master_clock);
 }
@@ -1633,7 +1633,13 @@ pub fn main() !void {
         }
     }
 
-    const vdp_texture = try zsdl3.createTexture(renderer, zsdl3.PixelFormatEnum.argb8888, zsdl3.TextureAccess.streaming, 320, 224);
+    const vdp_texture = try zsdl3.createTexture(
+        renderer,
+        zsdl3.PixelFormatEnum.argb8888,
+        zsdl3.TextureAccess.streaming,
+        @intCast(Vdp.framebuffer_width),
+        @intCast(Vdp.max_framebuffer_height),
+    );
     defer vdp_texture.destroy();
 
     if (rom_path == null) {
@@ -1816,7 +1822,8 @@ pub fn main() !void {
                                         const fps: u16 = if (machine.palMode()) 25 else 30;
                                         const path = gifOutputPath();
                                         const path_str = std.mem.sliceTo(&path, 0);
-                                        gif_recorder = GifRecorder.start(path_str, fps) catch |err| {
+                                        const framebuffer_height: u16 = @intCast(machine.framebuffer().len / Vdp.framebuffer_width);
+                                        gif_recorder = GifRecorder.start(path_str, fps, framebuffer_height) catch |err| {
                                             std.debug.print("Failed to start GIF recording: {}\n", .{err});
                                             continue;
                                         };
@@ -1861,7 +1868,9 @@ pub fn main() !void {
         }
 
         const emulation_paused = frontend_ui.emulationPaused();
+        var target_frame_ns: ?u64 = null;
         if (!emulation_paused) {
+            target_frame_ns = frameDurationNs(machine.palMode(), machine.frameMasterCycles());
             machine.runFrame();
         }
 
@@ -1890,21 +1899,35 @@ pub fn main() !void {
         }
 
         const framebuffer = machine.framebuffer();
-        _ = SDL_UpdateTexture(vdp_texture, null, @ptrCast(framebuffer), 320 * 4);
+        const framebuffer_height: i32 = @intCast(framebuffer.len / Vdp.framebuffer_width);
+        const update_rect = zsdl3.Rect{
+            .x = 0,
+            .y = 0,
+            .w = @intCast(Vdp.framebuffer_width),
+            .h = framebuffer_height,
+        };
+        _ = SDL_UpdateTexture(vdp_texture, &update_rect, @ptrCast(framebuffer.ptr), @intCast(Vdp.framebuffer_width * @sizeOf(u32)));
 
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
-        try zsdl3.renderTexture(renderer, vdp_texture, null, null);
+        const source_rect = zsdl3.FRect{
+            .x = 0,
+            .y = 0,
+            .w = @floatFromInt(Vdp.framebuffer_width),
+            .h = @floatFromInt(framebuffer_height),
+        };
+        try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, null);
         try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings, persistent_state_slot);
         zsdl3.renderPresent(renderer);
 
         frame_counter += 1;
         if (frame_counter > uncapped_boot_frames) {
-            const target_frame_ns = frameDurationNs(machine.palMode());
-            const now = std.time.Instant.now() catch frame_timer;
-            const frame_elapsed = now.since(frame_timer);
-            if (frame_elapsed < target_frame_ns) {
-                std.Thread.sleep(target_frame_ns - frame_elapsed);
+            if (target_frame_ns) |frame_ns| {
+                const now = std.time.Instant.now() catch frame_timer;
+                const frame_elapsed = now.since(frame_timer);
+                if (frame_elapsed < frame_ns) {
+                    std.Thread.sleep(frame_ns - frame_elapsed);
+                }
             }
         }
     }
@@ -2227,8 +2250,13 @@ test "file dialog state records cancellations" {
 }
 
 test "frame duration uses console master clock" {
-    try std.testing.expectEqual(@as(u64, 16_688_154), frameDurationNs(false));
-    try std.testing.expectEqual(@as(u64, 20_120_133), frameDurationNs(true));
+    try std.testing.expectEqual(@as(u64, 16_688_154), frameDurationNs(false, clock.ntsc_master_cycles_per_frame));
+    try std.testing.expectEqual(@as(u64, 20_120_133), frameDurationNs(true, clock.pal_master_cycles_per_frame));
+}
+
+test "frame duration accepts interlace-sized fields" {
+    const interlace_ntsc_master_cycles = clock.ntsc_master_cycles_per_frame + clock.ntsc_master_cycles_per_line;
+    try std.testing.expectEqual(@as(u64, 16_751_849), frameDurationNs(false, interlace_ntsc_master_cycles));
 }
 
 test "audio-enabled runs do not use uncapped boot frames" {

@@ -4,12 +4,15 @@ const fifo_mod = @import("fifo.zig");
 const timing_mod = @import("timing.zig");
 
 pub const Vdp = struct {
+    pub const framebuffer_width: usize = 320;
+    pub const max_framebuffer_height: usize = 240;
+
     vram: [64 * 1024]u8,
     cram: [128]u8,
     vsram: [80]u8,
     regs: [32]u8,
 
-    framebuffer: [320 * 224]u32,
+    framebuffer: [framebuffer_width * max_framebuffer_height]u32,
 
     code: u8,
     addr: u16,
@@ -116,7 +119,7 @@ pub const Vdp = struct {
             .cram = [_]u8{0} ** 128,
             .vsram = [_]u8{0} ** 80,
             .regs = [_]u8{0} ** 32,
-            .framebuffer = [_]u32{0} ** (320 * 224),
+            .framebuffer = [_]u32{0} ** (framebuffer_width * max_framebuffer_height),
             .code = 0,
             .addr = 0,
             .pending_command = false,
@@ -266,6 +269,9 @@ pub const Vdp = struct {
     pub const readHVCounter = timing_mod.readHVCounter;
     pub const readHVCounterAdjusted = timing_mod.readHVCounterAdjusted;
     pub const step = timing_mod.step;
+    pub const activeVisibleLines = timing_mod.activeVisibleLines;
+    pub const totalLinesForCurrentFrame = timing_mod.totalLinesForCurrentFrame;
+    pub const frameMasterCycles = timing_mod.frameMasterCycles;
     pub const setScanlineState = timing_mod.setScanlineState;
     pub const setHBlank = timing_mod.setHBlank;
     pub const isVBlankInterruptEnabled = timing_mod.isVBlankInterruptEnabled;

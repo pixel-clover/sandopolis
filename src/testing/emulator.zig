@@ -165,6 +165,11 @@ pub const Emulator = struct {
         machine.setVdpRegister(index, value);
     }
 
+    pub fn setPalMode(self: *Emulator, pal_mode: bool) void {
+        var machine = self.handle.machine.testing();
+        machine.setPalMode(pal_mode);
+    }
+
     pub fn vdpRegister(self: *const Emulator, index: usize) u8 {
         const machine = self.handle.machine.testingConst();
         return machine.vdpRegister(index);
@@ -183,6 +188,11 @@ pub const Emulator = struct {
     pub fn vdpAddr(self: *const Emulator) u16 {
         const machine = self.handle.machine.testingConst();
         return machine.vdpAddr();
+    }
+
+    pub fn vdpScanline(self: *const Emulator) u16 {
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpScanline();
     }
 
     pub fn writeVdpData(self: *Emulator, value: u16) void {
@@ -216,7 +226,7 @@ pub const Emulator = struct {
     }
 
     pub fn framebuffer(self: *const Emulator) []const u32 {
-        return self.handle.machine.framebuffer()[0..];
+        return self.handle.machine.framebuffer();
     }
 
     pub fn takePendingAudio(self: *Emulator) PendingAudioFrames {
