@@ -402,17 +402,18 @@ fn stopGifRecording(gif_recorder: *?GifRecorder, reason: []const u8) void {
 }
 
 fn logLoadedRomMetadata(machine: *Machine, rom_path: []const u8) void {
-    const bus = &machine.bus;
+    const metadata = machine.romMetadata();
     std.debug.print("Loading ROM: {s}\n", .{rom_path});
-    if (bus.rom.len >= 0x200) {
-        const console = bus.rom[0x100..0x110];
-        const title = bus.rom[0x150..0x180];
+    if (metadata.console) |console| {
         std.debug.print("Console: {s}\n", .{console});
+    }
+    if (metadata.title) |title| {
         std.debug.print("Title:   {s}\n", .{title});
     }
-    const ssp = bus.read32(0x000000);
-    const pc = bus.read32(0x000004);
-    std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{ ssp, pc });
+    std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{
+        metadata.reset_stack_pointer,
+        metadata.reset_program_counter,
+    });
 }
 
 fn loadRomIntoMachine(
@@ -444,7 +445,7 @@ fn loadRomIntoMachine(
 
     var old_machine = machine.*;
     machine.* = next_machine;
-    machine.bus.rebindRuntimePointers();
+    machine.rebindRuntimePointers();
     old_machine.deinit(allocator);
     frame_counter.* = 0;
 }
@@ -751,7 +752,7 @@ fn handlePersistentStateKey(
 
             var old_machine = machine.*;
             machine.* = next_machine;
-            machine.bus.rebindRuntimePointers();
+            machine.rebindRuntimePointers();
             old_machine.deinit(allocator);
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
@@ -1612,9 +1613,7 @@ pub fn main() !void {
     const vdp_texture = try zsdl3.createTexture(renderer, zsdl3.PixelFormatEnum.argb8888, zsdl3.TextureAccess.streaming, 320, 224);
     defer vdp_texture.destroy();
 
-    if (rom_path) |_| {
-        std.debug.print("Loading ROM: {s}\n", .{rom_path.?});
-    } else {
+    if (rom_path == null) {
         std.debug.print("No ROM file specified. Usage: sandopolis [options] [rom_file]\n", .{});
         std.debug.print("Loading dummy test ROM...\n", .{});
     }
@@ -1635,233 +1634,12 @@ pub fn main() !void {
         };
         machine.deinit(allocator);
     }
-    const bus = &machine.bus;
     machine.applyControllerTypes(&input_bindings);
 
     if (rom_path == null) {
-        std.mem.writeInt(u32, bus.rom[0..4], 0x00FF0000, .big);
-        std.mem.writeInt(u32, bus.rom[4..8], 0x00000200, .big);
-
-        var pc: u32 = 0x200;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x82;
-        bus.rom[pc + 1] = 0x38;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x8F;
-        bus.rom[pc + 1] = 0x02;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0xC0;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x0E;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xE0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x40;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xA1;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x02;
-        pc += 2;
-
-        const loop_start = pc;
-
-        bus.rom[pc] = 0x10;
-        bus.rom[pc + 1] = 0x39;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xA1;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x03;
-        pc += 2;
-
-        bus.rom[pc] = 0x02;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x10;
-        pc += 2;
-
-        const branch_loc = pc;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0xC0;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x0E;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-
-        const back_jump = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
-        bus.rom[pc] = 0x60;
-        bus.rom[pc + 1] = @as(u8, @intCast(back_jump & 0xFF));
-        pc += 2;
-
-        const pressed_target = pc;
-
-        const fwd_jump = @as(i32, @intCast(pressed_target)) - @as(i32, @intCast(branch_loc + 2));
-        bus.rom[branch_loc] = 0x67;
-        bus.rom[branch_loc + 1] = @as(u8, @intCast(fwd_jump & 0xFF));
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0xC0;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x04;
-        pc += 2;
-
-        bus.rom[pc] = 0x33;
-        bus.rom[pc + 1] = 0xFC;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xE0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0xC0;
-        pc += 2;
-        bus.rom[pc] = 0x00;
-        bus.rom[pc + 1] = 0x00;
-        pc += 2;
-
-        const back_jump2 = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
-        bus.rom[pc] = 0x60;
-        bus.rom[pc + 1] = @as(u8, @intCast(back_jump2 & 0xFF));
-        pc += 2;
-
-        bus.rom[pc] = 0x60;
-        bus.rom[pc + 1] = 0xFE;
-        pc += 2;
+        machine.installDummyTestRom();
     } else {
-        if (bus.rom.len >= 0x200) {
-            const console = bus.rom[0x100..0x110];
-            const title = bus.rom[0x150..0x180];
-            std.debug.print("Console: {s}\n", .{console});
-            std.debug.print("Title:   {s}\n", .{title});
-        }
-        const ssp = bus.read32(0x000000);
-        const pc = bus.read32(0x000004);
-        std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{ ssp, pc });
+        logLoadedRomMetadata(&machine, rom_path.?);
     }
 
     machine.reset();

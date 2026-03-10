@@ -16,6 +16,13 @@ pub const Machine = struct {
         }
     };
 
+    pub const RomMetadata = struct {
+        console: ?[]const u8,
+        title: ?[]const u8,
+        reset_stack_pointer: u32,
+        reset_program_counter: u32,
+    };
+
     bus: Bus,
     cpu: Cpu,
     m68k_sync: clock.M68kSync,
@@ -68,8 +75,12 @@ pub const Machine = struct {
         const next_machine = try snapshot.machine.clone(allocator);
         var old_machine = self.*;
         self.* = next_machine;
-        self.bus.rebindRuntimePointers();
+        self.rebindRuntimePointers();
         old_machine.deinit(allocator);
+    }
+
+    pub fn rebindRuntimePointers(self: *Machine) void {
+        self.bus.rebindRuntimePointers();
     }
 
     pub fn runMasterSlice(self: *Machine, total_master_cycles: u32) void {
@@ -145,6 +156,15 @@ pub const Machine = struct {
         return &self.bus.vdp.framebuffer;
     }
 
+    pub fn romMetadata(self: *const Machine) RomMetadata {
+        return .{
+            .console = if (self.bus.rom.len >= 0x200) self.bus.rom[0x100..0x110] else null,
+            .title = if (self.bus.rom.len >= 0x200) self.bus.rom[0x150..0x180] else null,
+            .reset_stack_pointer = readBeU32(self.bus.rom[0..], 0),
+            .reset_program_counter = readBeU32(self.bus.rom[0..], 4),
+        };
+    }
+
     pub fn controllerIo(self: *Machine) *Io {
         return &self.bus.io;
     }
@@ -176,6 +196,11 @@ pub const Machine = struct {
 
     pub fn stackPointer(self: *const Machine) u32 {
         return @as(u32, self.cpu.core.a_regs[7].l);
+    }
+
+    pub fn installDummyTestRom(self: *Machine) void {
+        std.debug.assert(self.bus.rom.len >= 0x280);
+        seedDummyTestRom(self.bus.rom[0..]);
     }
 
     pub fn applyControllerTypes(self: *Machine, bindings: *const InputBindings.Bindings) void {
@@ -218,6 +243,93 @@ pub const Machine = struct {
         self.bus.vdp.debugDump();
     }
 };
+
+fn readBeU32(buffer: []const u8, offset: usize) u32 {
+    if (buffer.len < offset + 4) return 0;
+    return (@as(u32, buffer[offset]) << 24) |
+        (@as(u32, buffer[offset + 1]) << 16) |
+        (@as(u32, buffer[offset + 2]) << 8) |
+        @as(u32, buffer[offset + 3]);
+}
+
+fn writeBeU16(buffer: []u8, offset: usize, value: u16) void {
+    buffer[offset] = @truncate(value >> 8);
+    buffer[offset + 1] = @truncate(value);
+}
+
+fn writeBeU32(buffer: []u8, offset: usize, value: u32) void {
+    buffer[offset] = @truncate(value >> 24);
+    buffer[offset + 1] = @truncate(value >> 16);
+    buffer[offset + 2] = @truncate(value >> 8);
+    buffer[offset + 3] = @truncate(value);
+}
+
+fn emitMoveWordAbs(rom: []u8, pc: *u32, value: u16, address: u32) void {
+    writeBeU16(rom, pc.*, 0x33FC);
+    writeBeU16(rom, pc.* + 2, value);
+    writeBeU32(rom, pc.* + 4, address);
+    pc.* += 8;
+}
+
+fn emitMoveByteAbsToD0(rom: []u8, pc: *u32, address: u32) void {
+    writeBeU16(rom, pc.*, 0x1039);
+    writeBeU32(rom, pc.* + 2, address);
+    pc.* += 6;
+}
+
+fn emitAndiByteD0(rom: []u8, pc: *u32, value: u8) void {
+    writeBeU16(rom, pc.*, 0x0200);
+    writeBeU16(rom, pc.* + 2, value);
+    pc.* += 4;
+}
+
+fn emitBra8(rom: []u8, pc: *u32, offset: i32) void {
+    rom[pc.*] = 0x60;
+    rom[pc.* + 1] = @as(u8, @intCast(offset & 0xFF));
+    pc.* += 2;
+}
+
+fn seedDummyTestRom(rom: []u8) void {
+    writeBeU32(rom, 0, 0x00FF_0000);
+    writeBeU32(rom, 4, 0x0000_0200);
+
+    var pc: u32 = 0x0200;
+
+    emitMoveWordAbs(rom, &pc, 0x8238, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0x8F02, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0xC000, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0x0000, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0x000E, 0x00C0_0000);
+    emitMoveWordAbs(rom, &pc, 0x00E0, 0x00C0_0000);
+    emitMoveWordAbs(rom, &pc, 0x0040, 0x00A1_0002);
+
+    const loop_start = pc;
+    emitMoveByteAbsToD0(rom, &pc, 0x00A1_0003);
+    emitAndiByteD0(rom, &pc, 0x10);
+
+    const branch_loc = pc;
+    pc += 2;
+
+    emitMoveWordAbs(rom, &pc, 0xC000, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0x0000, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0x000E, 0x00C0_0000);
+
+    const back_jump = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
+    emitBra8(rom, &pc, back_jump);
+
+    const pressed_target = pc;
+    const fwd_jump = @as(i32, @intCast(pressed_target)) - @as(i32, @intCast(branch_loc + 2));
+    rom[branch_loc] = 0x67;
+    rom[branch_loc + 1] = @as(u8, @intCast(fwd_jump & 0xFF));
+
+    emitMoveWordAbs(rom, &pc, 0xC000, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0x0000, 0x00C0_0004);
+    emitMoveWordAbs(rom, &pc, 0x00E0, 0x00C0_0000);
+
+    const back_jump2 = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(pc + 2));
+    emitBra8(rom, &pc, back_jump2);
+    emitBra8(rom, &pc, -2);
+}
 
 test "machine snapshots restore CPU bus and Z80 state" {
     const allocator = std.testing.allocator;
@@ -367,4 +479,35 @@ test "machine audio drain helper routes pending audio to sink policy" {
     try std.testing.expectEqual(@as(usize, 1), sink.push_count);
     try std.testing.expectEqual(@as(usize, 1), sink.discard_count);
     try std.testing.expectEqual(@as(u32, 567), sink.last_master_cycles);
+}
+
+test "machine rom metadata exposes header slices and reset vectors" {
+    const allocator = std.testing.allocator;
+    const rom = try makeGenesisRom(allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{ 0x4E, 0x71 });
+    defer allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom);
+    defer machine.deinit(allocator);
+
+    const metadata = machine.romMetadata();
+    try std.testing.expect(metadata.console != null);
+    try std.testing.expect(metadata.title != null);
+    try std.testing.expectEqual(@as(u32, 0x00FF_FE00), metadata.reset_stack_pointer);
+    try std.testing.expectEqual(@as(u32, 0x0000_0200), metadata.reset_program_counter);
+}
+
+test "machine installs dummy test rom vectors and program" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    machine.installDummyTestRom();
+    const metadata = machine.romMetadata();
+
+    try std.testing.expectEqual(@as(u32, 0x00FF_0000), metadata.reset_stack_pointer);
+    try std.testing.expectEqual(@as(u32, 0x0000_0200), metadata.reset_program_counter);
+    try std.testing.expectEqual(@as(u16, 0x33FC), (@as(u16, machine.bus.rom[0x0200]) << 8) | @as(u16, machine.bus.rom[0x0201]));
+    try std.testing.expectEqual(@as(u16, 0x8238), (@as(u16, machine.bus.rom[0x0202]) << 8) | @as(u16, machine.bus.rom[0x0203]));
 }
