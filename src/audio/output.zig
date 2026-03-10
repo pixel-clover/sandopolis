@@ -1,5 +1,4 @@
 const std = @import("std");
-const zsdl3 = @import("zsdl3");
 const clock = @import("../clock.zig");
 const PendingAudioFrames = @import("timing.zig").PendingAudioFrames;
 const Z80 = @import("../cpu/z80.zig").Z80;
@@ -260,7 +259,6 @@ pub const AudioOutput = struct {
     const ym_internal_master_cycles: u16 = clock.m68k_divider * 6;
     const ym_internal_clocks_per_sample: u8 = @intCast(clock.fm_master_cycles_per_sample / ym_internal_master_cycles);
 
-    stream: *zsdl3.AudioStream,
     fm_converter: RateConverter = .{
         .in_rate_num = clock.master_clock_ntsc,
         .in_rate_den = clock.fm_master_cycles_per_sample,
@@ -965,27 +963,21 @@ pub const AudioOutput = struct {
         self.last_psg_resampled = 0.0;
     }
 
-    pub fn canAcceptPending(self: *AudioOutput) bool {
-        const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return false;
-        return queued_bytes < max_queued_bytes;
-    }
-
     pub fn setRenderMode(self: *AudioOutput, mode: RenderMode) void {
         self.render_mode = mode;
     }
 
     pub fn reset(self: *AudioOutput) void {
-        const stream = self.stream;
         const render_mode = self.render_mode;
         const timing_is_pal = self.timing_is_pal;
-        self.* = .{ .stream = stream };
+        self.* = .{};
         self.render_mode = render_mode;
         if (timing_is_pal) {
             self.setTimingMode(true);
         }
     }
 
-    fn processPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool, queue_output: bool) !void {
+    fn preparePending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) u32 {
         self.setTimingMode(is_pal);
 
         const ym_write_count = z80.takeYmWrites(self.ym_write_buffer[0..]);
@@ -999,7 +991,25 @@ pub const AudioOutput = struct {
             self.ym_reset_buffer[0..ym_reset_count],
             self.psg_command_buffer[0..psg_command_count],
         );
-        const out_frames: u32 = @intCast(@min(self.ym_resampler.outputBufferLen(), self.psg_resampler.outputBufferLen()));
+        return @intCast(@min(self.ym_resampler.outputBufferLen(), self.psg_resampler.outputBufferLen()));
+    }
+
+    pub fn renderPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool, sink: anytype) !void {
+        const out_frames = self.preparePending(pending, z80, is_pal);
+        if (out_frames == 0) return;
+        const max_frames_per_push = self.sample_chunk.len / channels;
+        var out_frame_offset: u32 = 0;
+        while (out_frame_offset < out_frames) {
+            const remaining_out_frames = out_frames - out_frame_offset;
+            const chunk_frames: usize = @min(@as(usize, @intCast(remaining_out_frames)), max_frames_per_push);
+            const samples = self.popMixedFrames(chunk_frames);
+            try sink.consumeSamples(samples);
+            out_frame_offset += @as(u32, @intCast(chunk_frames));
+        }
+    }
+
+    pub fn discardPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
+        const out_frames = self.preparePending(pending, z80, is_pal);
         if (out_frames == 0) return;
 
         const max_frames_per_push = self.sample_chunk.len / channels;
@@ -1007,20 +1017,9 @@ pub const AudioOutput = struct {
         while (out_frame_offset < out_frames) {
             const remaining_out_frames = out_frames - out_frame_offset;
             const chunk_frames: usize = @min(@as(usize, @intCast(remaining_out_frames)), max_frames_per_push);
-            const samples = self.popMixedFrames(chunk_frames);
-            if (queue_output) {
-                try zsdl3.putAudioStreamData(i16, self.stream, samples);
-            }
+            _ = self.popMixedFrames(chunk_frames);
             out_frame_offset += @as(u32, @intCast(chunk_frames));
         }
-    }
-
-    pub fn pushPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
-        try self.processPending(pending, z80, is_pal, true);
-    }
-
-    pub fn discardPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
-        try self.processPending(pending, z80, is_pal, false);
     }
 };
 
@@ -1125,9 +1124,7 @@ fn sampleEnergy(samples: []const i16) u64 {
 }
 
 test "rate converter keeps FM/PSG aligned over one NTSC frame" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
     const pending = PendingAudioFrames{
         .master_cycles = clock.ntsc_master_cycles_per_frame,
         .fm_frames = 888,
@@ -1144,9 +1141,7 @@ test "rate converter keeps FM/PSG aligned over one NTSC frame" {
 }
 
 test "rate converter keeps FM/PSG aligned over one PAL frame" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
     output.setTimingMode(true);
 
     const pending = PendingAudioFrames{
@@ -1165,9 +1160,7 @@ test "rate converter keeps FM/PSG aligned over one PAL frame" {
 }
 
 test "psg native-rate rendering stays audible after downsampling" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
     output.psg.doCommand(0x90);
     output.psg.doCommand(0x85);
     output.psg.doCommand(0x00);
@@ -1193,9 +1186,7 @@ test "psg native-rate rendering stays audible after downsampling" {
 }
 
 test "ym dac state uses port 0 and queued writes stay audible" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
     var z80 = Z80.init();
     defer z80.deinit();
 
@@ -1266,7 +1257,7 @@ test "chunked ym dac rendering matches single chunk output" {
     };
     const chunk_frames = [_]u32{ 17, 31, 48 };
 
-    var single = AudioOutput{ .stream = @ptrFromInt(1) };
+    var single = AudioOutput{};
     const single_samples = single.renderChunk(
         pending,
         0,
@@ -1280,7 +1271,7 @@ test "chunked ym dac rendering matches single chunk output" {
         &.{},
     );
 
-    var chunked = AudioOutput{ .stream = @ptrFromInt(1) };
+    var chunked = AudioOutput{};
     var chunked_samples: [96 * AudioOutput.channels]i16 = undefined;
     renderChunkedForTest(
         &chunked,
@@ -1311,7 +1302,7 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
         .{ .master_offset = clock.fm_master_cycles_per_sample / 2, .sequence = 3, .value = 0xFF },
     };
 
-    var full = AudioOutput{ .stream = @ptrFromInt(1) };
+    var full = AudioOutput{};
     const full_samples = full.renderChunk(
         pending,
         0,
@@ -1325,7 +1316,7 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
         &.{},
     );
 
-    var half = AudioOutput{ .stream = @ptrFromInt(1) };
+    var half = AudioOutput{};
     const half_samples = half.renderChunk(
         pending,
         0,
@@ -1359,7 +1350,7 @@ test "ym reset event clears render-side ym state for later samples" {
         .{ .master_offset = clock.fm_master_cycles_per_sample, .sequence = 3 },
     };
 
-    var reset_output = AudioOutput{ .stream = @ptrFromInt(1) };
+    var reset_output = AudioOutput{};
     const reset_samples = reset_output.renderChunk(
         pending,
         0,
@@ -1372,7 +1363,7 @@ test "ym reset event clears render-side ym state for later samples" {
         ym_resets[0..],
         &.{},
     );
-    var steady_output = AudioOutput{ .stream = @ptrFromInt(1) };
+    var steady_output = AudioOutput{};
     const steady_samples = steady_output.renderChunk(
         pending,
         0,
@@ -1413,7 +1404,7 @@ test "same-timestamp ym reset and dac events follow capture sequence order" {
         .{ .master_offset = 0, .sequence = 2, .value = 0xFF },
     };
 
-    var reset_first = AudioOutput{ .stream = @ptrFromInt(1) };
+    var reset_first = AudioOutput{};
     const reset_first_samples = reset_first.renderChunk(
         pending,
         0,
@@ -1427,7 +1418,7 @@ test "same-timestamp ym reset and dac events follow capture sequence order" {
         &.{},
     );
 
-    var dac_first = AudioOutput{ .stream = @ptrFromInt(1) };
+    var dac_first = AudioOutput{};
     const dac_first_samples = dac_first.renderChunk(
         pending,
         0,
@@ -1450,7 +1441,7 @@ test "same-timestamp ym reset and dac events follow capture sequence order" {
 }
 
 test "audio output reset preserves mode and clears render-side state" {
-    var output = AudioOutput{ .stream = @ptrFromInt(1) };
+    var output = AudioOutput{};
     output.render_mode = .psg_only;
     output.timing_is_pal = true;
     output.ym_synth.core.dacen = 1;
@@ -1479,9 +1470,7 @@ test "fm high bank frequency uses port 1 a0 and a4" {
 }
 
 test "psg commands are applied before chunk rendering" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
 
     output.psg_command_buffer[0] = .{ .master_offset = 0, .value = 0x90 };
     output.psg_command_buffer[1] = .{ .master_offset = 0, .value = 0x85 };
@@ -1508,9 +1497,7 @@ test "psg commands are applied before chunk rendering" {
 }
 
 test "psg command timestamps keep late mute out of early samples" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
 
     const commands = [_]PsgCommandEvent{
         .{ .master_offset = 0, .value = 0x90 },
@@ -1554,7 +1541,7 @@ test "render modes isolate ym and psg contributions" {
         .{ .master_offset = 0, .sequence = 2, .value = 0xF0 },
     };
 
-    var ym_only = AudioOutput{ .stream = @ptrFromInt(1) };
+    var ym_only = AudioOutput{};
     ym_only.setRenderMode(.ym_only);
     const ym_only_samples = ym_only.renderChunk(
         ym_pending,
@@ -1569,7 +1556,7 @@ test "render modes isolate ym and psg contributions" {
         &.{},
     );
 
-    var ym_normal = AudioOutput{ .stream = @ptrFromInt(1) };
+    var ym_normal = AudioOutput{};
     const ym_normal_samples = ym_normal.renderChunk(
         ym_pending,
         0,
@@ -1583,7 +1570,7 @@ test "render modes isolate ym and psg contributions" {
         &.{},
     );
 
-    var psg_only_for_ym = AudioOutput{ .stream = @ptrFromInt(1) };
+    var psg_only_for_ym = AudioOutput{};
     psg_only_for_ym.setRenderMode(.psg_only);
     const ym_suppressed_samples = psg_only_for_ym.renderChunk(
         ym_pending,
@@ -1608,7 +1595,7 @@ test "render modes isolate ym and psg contributions" {
         .{ .master_offset = 0, .value = 0x00 },
     };
 
-    var psg_only = AudioOutput{ .stream = @ptrFromInt(1) };
+    var psg_only = AudioOutput{};
     psg_only.setRenderMode(.psg_only);
     const psg_only_samples = psg_only.renderChunk(
         psg_pending,
@@ -1623,7 +1610,7 @@ test "render modes isolate ym and psg contributions" {
         psg_commands[0..],
     );
 
-    var ym_only_for_psg = AudioOutput{ .stream = @ptrFromInt(1) };
+    var ym_only_for_psg = AudioOutput{};
     ym_only_for_psg.setRenderMode(.ym_only);
     const psg_suppressed_samples = ym_only_for_psg.renderChunk(
         psg_pending,
@@ -1638,7 +1625,7 @@ test "render modes isolate ym and psg contributions" {
         psg_commands[0..],
     );
 
-    var ym_only_baseline = AudioOutput{ .stream = @ptrFromInt(1) };
+    var ym_only_baseline = AudioOutput{};
     ym_only_baseline.setRenderMode(.ym_only);
     const ym_only_baseline_samples = ym_only_baseline.renderChunk(
         psg_pending,
@@ -1665,7 +1652,7 @@ test "unfiltered mix preserves more high-frequency psg energy than the filtered 
         .{ .master_offset = 0, .value = 0x00 },
     };
 
-    var normal = AudioOutput{ .stream = @ptrFromInt(1) };
+    var normal = AudioOutput{};
     const normal_samples = normal.renderChunk(
         pending,
         0,
@@ -1679,7 +1666,7 @@ test "unfiltered mix preserves more high-frequency psg energy than the filtered 
         psg_commands[0..],
     );
 
-    var unfiltered = AudioOutput{ .stream = @ptrFromInt(1) };
+    var unfiltered = AudioOutput{};
     unfiltered.setRenderMode(.unfiltered_mix);
     const unfiltered_samples = unfiltered.renderChunk(
         pending,
@@ -1720,7 +1707,7 @@ test "chunked psg rendering matches single chunk output with start remainders" {
     };
     const chunk_frames = [_]u32{ 19, 47, 71 };
 
-    var single = AudioOutput{ .stream = @ptrFromInt(1) };
+    var single = AudioOutput{};
     const single_samples = single.renderChunk(
         pending,
         0,
@@ -1734,7 +1721,7 @@ test "chunked psg rendering matches single chunk output with start remainders" {
         commands[0..],
     );
 
-    var chunked = AudioOutput{ .stream = @ptrFromInt(1) };
+    var chunked = AudioOutput{};
     var chunked_samples: [137 * AudioOutput.channels]i16 = undefined;
     renderChunkedForTest(
         &chunked,
@@ -1752,11 +1739,13 @@ test "chunked psg rendering matches single chunk output with start remainders" {
 }
 
 test "zero-output windows still advance chip state and drain queued events" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
     var z80 = Z80.init();
     defer z80.deinit();
+    const NullSink = struct {
+        fn consumeSamples(_: *@This(), _: []const i16) !void {}
+    };
+    var sink = NullSink{};
 
     z80.setAudioMasterOffset(0);
     z80.writeByte(0x4000, 0x2B);
@@ -1772,7 +1761,7 @@ test "zero-output windows still advance chip state and drain queued events" {
     try std.testing.expectEqual(@as(u32, 0), output.fm_converter.toOutputFrames(pending.fm_frames, AudioOutput.output_rate));
     try std.testing.expectEqual(@as(u32, 0), output.psg_converter.toOutputFrames(pending.psg_frames, AudioOutput.output_rate));
 
-    try output.pushPending(pending, &z80, false);
+    try output.renderPending(pending, &z80, false, &sink);
 
     var ym_writes: [1]YmWriteEvent = undefined;
     var ym_dac_samples: [1]YmDacSampleEvent = undefined;
@@ -1787,9 +1776,7 @@ test "zero-output windows still advance chip state and drain queued events" {
 }
 
 test "discard pending drains a nonzero-output audio window without leaving queued events behind" {
-    var output = AudioOutput{
-        .stream = @ptrFromInt(1),
-    };
+    var output = AudioOutput{};
     var z80 = Z80.init();
     defer z80.deinit();
 
@@ -1885,7 +1872,7 @@ test "mix clamp saturates out-of-range samples" {
 }
 
 test "runtime resamplers cover requested output frames for a representative window" {
-    var output = AudioOutput{ .stream = @ptrFromInt(1) };
+    var output = AudioOutput{};
     output.setTimingMode(false);
 
     const pending = pendingWindow(@as(u32, 2048) * clock.fm_master_cycles_per_sample);

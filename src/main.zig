@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
+const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
@@ -12,6 +13,28 @@ const StateFile = @import("state_file.zig");
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
     output: AudioOutput,
+
+    pub fn canAcceptPending(self: *AudioInit) bool {
+        const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return false;
+        return queued_bytes < AudioOutput.max_queued_bytes;
+    }
+
+    pub fn pushPending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
+        const StreamSink = struct {
+            stream: *zsdl3.AudioStream,
+
+            pub fn consumeSamples(sink: *@This(), samples: []const i16) !void {
+                try zsdl3.putAudioStreamData(i16, sink.stream, samples);
+            }
+        };
+
+        var sink = StreamSink{ .stream = self.stream };
+        try self.output.renderPending(pending, z80, is_pal, &sink);
+    }
+
+    pub fn discardPending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
+        try self.output.discardPending(pending, z80, is_pal);
+    }
 };
 
 const SdlAudioSpecRaw = extern struct {
@@ -1068,7 +1091,7 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
                 std.debug.print("Audio enabled: {s} {d}Hz\n", .{ formatName(format), freq });
                 return .{
                     .stream = stream,
-                    .output = AudioOutput{ .stream = stream },
+                    .output = .{},
                 };
             }
         }
@@ -1861,7 +1884,7 @@ pub fn main() !void {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, machine.programCounter() });
         }
         if (audio) |*a| {
-            try machine.drainPendingAudio(&a.output);
+            try machine.drainPendingAudio(a);
         } else {
             machine.discardPendingAudio();
         }
