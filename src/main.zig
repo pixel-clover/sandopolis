@@ -7,6 +7,7 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 const Machine = @import("machine.zig").Machine;
+const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
 const StateFile = @import("state_file.zig");
@@ -100,51 +101,274 @@ const FrontendUi = struct {
     }
 };
 
+const performance_spike_log_threshold_ns: u64 = 4 * std.time.ns_per_ms;
+const performance_spike_log_burst_delta_ns: u64 = 8 * std.time.ns_per_ms;
+const performance_spike_window_ns: u64 = std.time.ns_per_s;
+const performance_core_sample_period: u64 = 16;
+const performance_core_burst_frames: u32 = 8;
+
+fn queuedAudioNsFromBytes(queued_bytes: usize) u64 {
+    return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
+        (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
+}
+
+const PerformanceStageSample = struct {
+    label: []const u8,
+    ns: u64,
+};
+
+const PerformanceFramePhases = struct {
+    emulation_ns: u64 = 0,
+    audio_ns: u64 = 0,
+    upload_ns: u64 = 0,
+    draw_ns: u64 = 0,
+    present_call_ns: u64 = 0,
+
+    fn hottestStage(self: *const PerformanceFramePhases) PerformanceStageSample {
+        var hottest = PerformanceStageSample{ .label = "EMU", .ns = self.emulation_ns };
+        if (self.audio_ns > hottest.ns) hottest = .{ .label = "AUD", .ns = self.audio_ns };
+        if (self.upload_ns > hottest.ns) hottest = .{ .label = "UPL", .ns = self.upload_ns };
+        if (self.draw_ns > hottest.ns) hottest = .{ .label = "DRAW", .ns = self.draw_ns };
+        if (self.present_call_ns > hottest.ns) hottest = .{ .label = "PRE", .ns = self.present_call_ns };
+        return hottest;
+    }
+};
+
+fn smoothPerformanceMetric(current_avg: u64, sample: u64) u64 {
+    return ((current_avg * 7) + sample + 4) / 8;
+}
+
 const PerformanceHudState = struct {
     frame_count: u64 = 0,
     slow_frame_count: u64 = 0,
+    core_sample_count: u64 = 0,
+    last_core_counters_sampled: bool = false,
     last_work_ns: u64 = 0,
     average_work_ns: u64 = 0,
+    last_present_ns: u64 = 0,
+    average_present_ns: u64 = 0,
     last_target_ns: u64 = 0,
     last_sleep_ns: u64 = 0,
     last_overrun_ns: u64 = 0,
+    last_other_ns: u64 = 0,
+    average_other_ns: u64 = 0,
     worst_work_ns: u64 = 0,
     worst_overrun_ns: u64 = 0,
     last_audio_queued_bytes: ?usize = null,
+    last_phases: PerformanceFramePhases = .{},
+    average_phases: PerformanceFramePhases = .{},
+    last_core_counters: CoreFrameCounters = .{},
+    average_core_counters: CoreFrameCounters = .{},
 
     fn reset(self: *PerformanceHudState) void {
         self.* = .{};
     }
 
-    fn noteFrame(self: *PerformanceHudState, work_ns: u64, target_ns: u64, audio_queued_bytes: ?usize) void {
+    fn noteFrame(
+        self: *PerformanceHudState,
+        work_ns: u64,
+        present_ns: u64,
+        target_ns: u64,
+        audio_queued_bytes: ?usize,
+        phases: PerformanceFramePhases,
+        core_counters: ?CoreFrameCounters,
+    ) void {
+        const measured_ns = phases.emulation_ns +| phases.audio_ns +| phases.upload_ns +| phases.draw_ns +| phases.present_call_ns;
+        const other_ns = work_ns -| measured_ns;
         self.frame_count += 1;
         self.last_work_ns = work_ns;
+        self.last_present_ns = present_ns;
         self.last_target_ns = target_ns;
-        self.last_sleep_ns = if (work_ns < target_ns) target_ns - work_ns else 0;
+        self.last_sleep_ns = present_ns -| work_ns;
         self.last_overrun_ns = if (work_ns > target_ns) work_ns - target_ns else 0;
+        self.last_other_ns = other_ns;
         self.worst_work_ns = @max(self.worst_work_ns, work_ns);
         self.worst_overrun_ns = @max(self.worst_overrun_ns, self.last_overrun_ns);
         self.last_audio_queued_bytes = audio_queued_bytes;
+        self.last_phases = phases;
+        self.last_core_counters_sampled = core_counters != null;
         if (self.last_overrun_ns != 0) self.slow_frame_count += 1;
 
         if (self.frame_count == 1) {
             self.average_work_ns = work_ns;
+            self.average_present_ns = present_ns;
+            self.average_phases = phases;
+            self.average_other_ns = other_ns;
         } else {
-            self.average_work_ns = ((self.average_work_ns * 7) + work_ns + 4) / 8;
+            self.average_work_ns = smoothPerformanceMetric(self.average_work_ns, work_ns);
+            self.average_present_ns = smoothPerformanceMetric(self.average_present_ns, present_ns);
+            self.average_phases.emulation_ns = smoothPerformanceMetric(self.average_phases.emulation_ns, phases.emulation_ns);
+            self.average_phases.audio_ns = smoothPerformanceMetric(self.average_phases.audio_ns, phases.audio_ns);
+            self.average_phases.upload_ns = smoothPerformanceMetric(self.average_phases.upload_ns, phases.upload_ns);
+            self.average_phases.draw_ns = smoothPerformanceMetric(self.average_phases.draw_ns, phases.draw_ns);
+            self.average_phases.present_call_ns = smoothPerformanceMetric(self.average_phases.present_call_ns, phases.present_call_ns);
+            self.average_other_ns = smoothPerformanceMetric(self.average_other_ns, other_ns);
+        }
+
+        if (core_counters) |sample| {
+            self.last_core_counters = sample;
+            if (self.core_sample_count == 0) {
+                self.average_core_counters = sample;
+            } else {
+                self.average_core_counters.m68k_instructions = smoothPerformanceMetric(self.average_core_counters.m68k_instructions, sample.m68k_instructions);
+                self.average_core_counters.z80_instructions = smoothPerformanceMetric(self.average_core_counters.z80_instructions, sample.z80_instructions);
+                self.average_core_counters.transfer_slots = smoothPerformanceMetric(self.average_core_counters.transfer_slots, sample.transfer_slots);
+                self.average_core_counters.access_slots = smoothPerformanceMetric(self.average_core_counters.access_slots, sample.access_slots);
+                self.average_core_counters.dma_words = smoothPerformanceMetric(self.average_core_counters.dma_words, sample.dma_words);
+                self.average_core_counters.render_scanlines = smoothPerformanceMetric(self.average_core_counters.render_scanlines, sample.render_scanlines);
+                self.average_core_counters.render_sprite_entries = smoothPerformanceMetric(self.average_core_counters.render_sprite_entries, sample.render_sprite_entries);
+                self.average_core_counters.render_sprite_pixels = smoothPerformanceMetric(self.average_core_counters.render_sprite_pixels, sample.render_sprite_pixels);
+                self.average_core_counters.render_sprite_opaque_pixels = smoothPerformanceMetric(self.average_core_counters.render_sprite_opaque_pixels, sample.render_sprite_opaque_pixels);
+            }
+            self.core_sample_count += 1;
         }
     }
 
     fn queuedAudioNs(self: *const PerformanceHudState) ?u64 {
         const queued_bytes = self.last_audio_queued_bytes orelse return null;
-        return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
-            (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
+        return queuedAudioNsFromBytes(queued_bytes);
+    }
+
+    fn slowFramePercentTenths(self: *const PerformanceHudState) u64 {
+        if (self.frame_count == 0) return 0;
+        return @intCast((@as(u128, self.slow_frame_count) * 1000 + @as(u128, self.frame_count) / 2) / @as(u128, self.frame_count));
+    }
+
+    fn hottestStage(self: *const PerformanceHudState) PerformanceStageSample {
+        var hottest = self.last_phases.hottestStage();
+        if (self.last_other_ns > hottest.ns) hottest = .{ .label = "OTH", .ns = self.last_other_ns };
+        return hottest;
     }
 };
+
+fn shouldSampleCoreCounters(show_hud: bool, frame_number: u64, burst_frames_remaining: u32) bool {
+    return show_hud and (burst_frames_remaining != 0 or frame_number % performance_core_sample_period == 0);
+}
+
+fn nextCoreBurstFramesRemaining(sampled_this_frame: bool, burst_frames_remaining: u32, perf: *const PerformanceHudState) u32 {
+    var remaining = burst_frames_remaining;
+    if (sampled_this_frame and remaining != 0) remaining -= 1;
+    if (isThresholdSlowFrame(perf)) remaining = @max(remaining, performance_core_burst_frames);
+    return remaining;
+}
+
+const PerformanceSpikeWindowSummary = struct {
+    start_frame: u64,
+    end_frame: u64,
+    frame_count: u64,
+    slow_frame_count: u64,
+    average_overrun_ns: u64,
+    max_overrun_ns: u64,
+    audio_queued_bytes: ?usize,
+
+    fn audioQueuedNs(self: *const PerformanceSpikeWindowSummary) ?u64 {
+        const queued_bytes = self.audio_queued_bytes orelse return null;
+        return queuedAudioNsFromBytes(queued_bytes);
+    }
+};
+
+const PerformanceSpikeLogUpdate = struct {
+    log_frame: bool = false,
+    summary: ?PerformanceSpikeWindowSummary = null,
+};
+
+const PerformanceSpikeLogState = struct {
+    burst_frame_count: u64 = 0,
+    burst_last_logged_overrun_ns: u64 = 0,
+    window_start_frame: u64 = 0,
+    window_frame_count: u64 = 0,
+    window_slow_frame_count: u64 = 0,
+    window_overrun_ns_total: u64 = 0,
+    window_max_overrun_ns: u64 = 0,
+    window_target_ns_total: u64 = 0,
+    window_last_audio_queued_bytes: ?usize = null,
+
+    fn reset(self: *PerformanceSpikeLogState) void {
+        self.resetBurst();
+        self.resetWindow();
+    }
+
+    fn resetBurst(self: *PerformanceSpikeLogState) void {
+        self.burst_frame_count = 0;
+        self.burst_last_logged_overrun_ns = 0;
+    }
+
+    fn resetWindow(self: *PerformanceSpikeLogState) void {
+        self.window_start_frame = 0;
+        self.window_frame_count = 0;
+        self.window_slow_frame_count = 0;
+        self.window_overrun_ns_total = 0;
+        self.window_max_overrun_ns = 0;
+        self.window_target_ns_total = 0;
+        self.window_last_audio_queued_bytes = null;
+    }
+
+    fn noteFrame(
+        self: *PerformanceSpikeLogState,
+        frame_number: u64,
+        perf: *const PerformanceHudState,
+    ) PerformanceSpikeLogUpdate {
+        var update = PerformanceSpikeLogUpdate{};
+        const threshold_slow = isThresholdSlowFrame(perf);
+        if (threshold_slow) {
+            if (self.burst_frame_count == 0) {
+                self.burst_frame_count = 1;
+                self.burst_last_logged_overrun_ns = perf.last_overrun_ns;
+                update.log_frame = true;
+            } else {
+                self.burst_frame_count += 1;
+                if (perf.last_overrun_ns >= self.burst_last_logged_overrun_ns + performance_spike_log_burst_delta_ns) {
+                    self.burst_last_logged_overrun_ns = perf.last_overrun_ns;
+                    update.log_frame = true;
+                }
+            }
+        } else {
+            self.resetBurst();
+        }
+
+        if (self.window_frame_count == 0) {
+            self.window_start_frame = frame_number;
+        }
+
+        self.window_frame_count += 1;
+        self.window_target_ns_total += perf.last_target_ns;
+        self.window_last_audio_queued_bytes = perf.last_audio_queued_bytes;
+
+        if (threshold_slow) {
+            self.window_slow_frame_count += 1;
+            self.window_overrun_ns_total += perf.last_overrun_ns;
+            self.window_max_overrun_ns = @max(self.window_max_overrun_ns, perf.last_overrun_ns);
+        }
+
+        if (self.window_target_ns_total < performance_spike_window_ns) return update;
+
+        if (self.window_slow_frame_count != 0) {
+            update.summary = .{
+                .start_frame = self.window_start_frame,
+                .end_frame = frame_number,
+                .frame_count = self.window_frame_count,
+                .slow_frame_count = self.window_slow_frame_count,
+                .average_overrun_ns = @intCast((@as(u128, self.window_overrun_ns_total) +
+                    @as(u128, self.window_slow_frame_count) / 2) / @as(u128, self.window_slow_frame_count)),
+                .max_overrun_ns = self.window_max_overrun_ns,
+                .audio_queued_bytes = self.window_last_audio_queued_bytes,
+            };
+        }
+
+        self.resetWindow();
+        return update;
+    }
+};
+
+fn isThresholdSlowFrame(perf: *const PerformanceHudState) bool {
+    return perf.last_overrun_ns >= performance_spike_log_threshold_ns;
+}
 
 const FrontendShortcut = enum {
     toggle_help,
     toggle_pause,
     toggle_performance_hud,
+    reset_performance_hud,
     open_rom,
 };
 
@@ -398,6 +622,7 @@ fn frontendShortcutForKey(scancode: zsdl3.Scancode, pressed: bool) ?FrontendShor
         .f1 => .toggle_help,
         .f2 => .toggle_pause,
         .f5 => .toggle_performance_hud,
+        .f12 => .reset_performance_hud,
         .f3 => .open_rom,
         else => null,
     };
@@ -409,6 +634,7 @@ fn applyFrontendShortcut(ui: *FrontendUi, scancode: zsdl3.Scancode, pressed: boo
         .toggle_help => ui.show_help = !ui.show_help,
         .toggle_pause => ui.paused = !ui.paused,
         .toggle_performance_hud => ui.show_performance_hud = !ui.show_performance_hud,
+        .reset_performance_hud => {},
         .open_rom => {},
     }
     return true;
@@ -1242,6 +1468,118 @@ fn formatDurationMsTenths(buffer: []u8, ns: u64) ![]const u8 {
     return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
 }
 
+fn formatRateHzTenths(buffer: []u8, ns: u64) ![]const u8 {
+    if (ns == 0) return std.fmt.bufPrint(buffer, "0.0", .{});
+    const tenths = (@as(u128, std.time.ns_per_s) * 10 + @as(u128, ns) / 2) / @as(u128, ns);
+    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
+}
+
+fn formatPercentTenths(buffer: []u8, tenths_percent: u64) ![]const u8 {
+    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths_percent / 10, tenths_percent % 10 });
+}
+
+fn formatPerformanceSpikeLine(buffer: []u8, frame_number: u32, perf: *const PerformanceHudState) ![]const u8 {
+    var metric_buffers: [4][16]u8 = undefined;
+    const work_text = try formatDurationMsTenths(metric_buffers[0][0..], perf.last_work_ns);
+    const overrun_text = try formatDurationMsTenths(metric_buffers[1][0..], perf.last_overrun_ns);
+    const hottest_stage = perf.hottestStage();
+    const hot_text = try formatDurationMsTenths(metric_buffers[2][0..], hottest_stage.ns);
+    const audio_text = if (perf.queuedAudioNs()) |queued_ns|
+        try formatDurationMsTenths(metric_buffers[3][0..], queued_ns)
+    else
+        "OFF";
+    const counter_state = if (perf.last_core_counters_sampled) "LIVE" else "HOLD";
+
+    if (!perf.last_core_counters_sampled) {
+        if (perf.last_audio_queued_bytes == null) {
+            return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} audio=OFF", .{
+                frame_number,
+                work_text,
+                overrun_text,
+                hottest_stage.label,
+                hot_text,
+                counter_state,
+            });
+        }
+
+        return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} audio={s}ms", .{
+            frame_number,
+            work_text,
+            overrun_text,
+            hottest_stage.label,
+            hot_text,
+            counter_state,
+            audio_text,
+        });
+    }
+
+    if (perf.last_audio_queued_bytes == null) {
+        return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} 68k={d} z80={d} xfer={d} acc={d} dma={d} spr={d}/{d}/{d} audio=OFF", .{
+            frame_number,
+            work_text,
+            overrun_text,
+            hottest_stage.label,
+            hot_text,
+            counter_state,
+            perf.last_core_counters.m68k_instructions,
+            perf.last_core_counters.z80_instructions,
+            perf.last_core_counters.transfer_slots,
+            perf.last_core_counters.access_slots,
+            perf.last_core_counters.dma_words,
+            perf.last_core_counters.render_sprite_entries,
+            perf.last_core_counters.render_sprite_pixels,
+            perf.last_core_counters.render_sprite_opaque_pixels,
+        });
+    }
+
+    return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} 68k={d} z80={d} xfer={d} acc={d} dma={d} spr={d}/{d}/{d} audio={s}ms", .{
+        frame_number,
+        work_text,
+        overrun_text,
+        hottest_stage.label,
+        hot_text,
+        counter_state,
+        perf.last_core_counters.m68k_instructions,
+        perf.last_core_counters.z80_instructions,
+        perf.last_core_counters.transfer_slots,
+        perf.last_core_counters.access_slots,
+        perf.last_core_counters.dma_words,
+        perf.last_core_counters.render_sprite_entries,
+        perf.last_core_counters.render_sprite_pixels,
+        perf.last_core_counters.render_sprite_opaque_pixels,
+        audio_text,
+    });
+}
+
+fn formatPerformanceSpikeWindowLine(buffer: []u8, summary: *const PerformanceSpikeWindowSummary) ![]const u8 {
+    var metric_buffers: [3][16]u8 = undefined;
+    const max_overrun_text = try formatDurationMsTenths(metric_buffers[0][0..], summary.max_overrun_ns);
+    const avg_overrun_text = try formatDurationMsTenths(metric_buffers[1][0..], summary.average_overrun_ns);
+    const audio_text = if (summary.audioQueuedNs()) |queued_ns|
+        try formatDurationMsTenths(metric_buffers[2][0..], queued_ns)
+    else
+        "OFF";
+
+    if (summary.audio_queued_bytes == null) {
+        return std.fmt.bufPrint(buffer, "SPIKE WINDOW f={d}-{d} slow={d} max_over={s}ms avg_over={s}ms audio=OFF", .{
+            summary.start_frame,
+            summary.end_frame,
+            summary.slow_frame_count,
+            max_overrun_text,
+            avg_overrun_text,
+        });
+    }
+
+    return std.fmt.bufPrint(buffer, "SPIKE WINDOW f={d}-{d} slow={d} max_over={s}ms avg_over={s}ms audio={s}ms", .{
+        summary.start_frame,
+        summary.end_frame,
+        summary.slow_frame_count,
+        max_overrun_text,
+        avg_overrun_text,
+        audio_text,
+    });
+}
+
 fn renderOverlayPanel(
     renderer: *zsdl3.Renderer,
     rect: zsdl3.FRect,
@@ -1281,6 +1619,7 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persisten
         "F3 OPEN ROM",
         "F4 KEYBOARD EDITOR",
         "F5 PERF HUD",
+        "F12 RESET PERF HUD",
         "F6 SAVE QUICK STATE",
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
@@ -1348,6 +1687,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent
         "F3 OPEN ROM DIALOG",
         "F4 KEYBOARD EDITOR",
         "F5 TOGGLE PERF HUD",
+        "F12 RESET PERF HUD",
         "F6 SAVE QUICK STATE",
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
@@ -1400,14 +1740,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent
     for (lines) |line| {
         const color: zsdl3.Color = if (line.len == 0)
             .{ .r = 0, .g = 0, .b = 0, .a = 0 }
-        else if (std.mem.startsWith(u8, line, "F1") or
-            std.mem.startsWith(u8, line, "F2") or
-            std.mem.startsWith(u8, line, "F3") or
-            std.mem.startsWith(u8, line, "F4") or
-            std.mem.startsWith(u8, line, "F6") or
-            std.mem.startsWith(u8, line, "F7") or
-            std.mem.startsWith(u8, line, "F8") or
-            std.mem.startsWith(u8, line, "F9"))
+        else if (line.len >= 2 and line[0] == 'F' and std.ascii.isDigit(line[1]))
             .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
         else if (std.mem.startsWith(u8, line, "HELP"))
             .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
@@ -1490,30 +1823,71 @@ fn renderPerformanceHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *
     const padding = 8.0 * scale;
     const line_height = 9.0 * scale;
 
-    var metric_buffers: [7][16]u8 = undefined;
-    const work_text = try formatDurationMsTenths(metric_buffers[0][0..], perf.last_work_ns);
-    const target_text = try formatDurationMsTenths(metric_buffers[1][0..], perf.last_target_ns);
-    const avg_text = try formatDurationMsTenths(metric_buffers[2][0..], perf.average_work_ns);
-    const sleep_text = try formatDurationMsTenths(metric_buffers[3][0..], perf.last_sleep_ns);
-    const overrun_text = try formatDurationMsTenths(metric_buffers[4][0..], perf.last_overrun_ns);
-    const worst_text = try formatDurationMsTenths(metric_buffers[5][0..], perf.worst_work_ns);
+    var metric_buffers: [19][16]u8 = undefined;
+    const fps_text = try formatRateHzTenths(metric_buffers[0][0..], perf.last_present_ns);
+    const avg_fps_text = try formatRateHzTenths(metric_buffers[1][0..], perf.average_present_ns);
+    const target_fps_text = try formatRateHzTenths(metric_buffers[2][0..], perf.last_target_ns);
+    const work_text = try formatDurationMsTenths(metric_buffers[3][0..], perf.last_work_ns);
+    const target_text = try formatDurationMsTenths(metric_buffers[4][0..], perf.last_target_ns);
+    const avg_text = try formatDurationMsTenths(metric_buffers[5][0..], perf.average_work_ns);
+    const sleep_text = try formatDurationMsTenths(metric_buffers[6][0..], perf.last_sleep_ns);
+    const overrun_text = try formatDurationMsTenths(metric_buffers[7][0..], perf.last_overrun_ns);
+    const slow_percent_text = try formatPercentTenths(metric_buffers[8][0..], perf.slowFramePercentTenths());
+    const worst_work_text = try formatDurationMsTenths(metric_buffers[9][0..], perf.worst_work_ns);
+    const worst_overrun_text = try formatDurationMsTenths(metric_buffers[10][0..], perf.worst_overrun_ns);
     const audio_text = if (perf.queuedAudioNs()) |queued_ns|
-        try formatDurationMsTenths(metric_buffers[6][0..], queued_ns)
+        try formatDurationMsTenths(metric_buffers[11][0..], queued_ns)
     else
         "OFF";
+    const emu_text = try formatDurationMsTenths(metric_buffers[12][0..], perf.last_phases.emulation_ns);
+    const emu_avg_text = try formatDurationMsTenths(metric_buffers[13][0..], perf.average_phases.emulation_ns);
+    const audio_cpu_text = try formatDurationMsTenths(metric_buffers[14][0..], perf.last_phases.audio_ns);
+    const audio_cpu_avg_text = try formatDurationMsTenths(metric_buffers[15][0..], perf.average_phases.audio_ns);
+    const other_text = try formatDurationMsTenths(metric_buffers[16][0..], perf.last_other_ns);
+    const other_avg_text = try formatDurationMsTenths(metric_buffers[17][0..], perf.average_other_ns);
+    const core_sample_text = try std.fmt.bufPrint(metric_buffers[18][0..], "1/{d}+B{d}", .{ performance_core_sample_period, performance_core_burst_frames });
 
-    var line_buffers: [7][48]u8 = undefined;
-    var lines: [7][]const u8 = undefined;
-    lines[0] = try std.fmt.bufPrint(&line_buffers[0], "WORK {s} / {s} MS", .{ work_text, target_text });
-    lines[1] = try std.fmt.bufPrint(&line_buffers[1], "AVG {s} MS", .{avg_text});
-    lines[2] = try std.fmt.bufPrint(&line_buffers[2], "SLEEP {s} MS", .{sleep_text});
-    lines[3] = try std.fmt.bufPrint(&line_buffers[3], "OVER {s} MS", .{overrun_text});
-    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "SLOW {d} / {d}", .{ perf.slow_frame_count, perf.frame_count });
-    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "WORST {s} MS", .{worst_text});
-    lines[6] = if (perf.last_audio_queued_bytes == null)
+    var line_buffers: [27][72]u8 = undefined;
+    var lines: [27][]const u8 = undefined;
+    lines[0] = try std.fmt.bufPrint(&line_buffers[0], "FPS {s} / {s}", .{ fps_text, target_fps_text });
+    lines[1] = try std.fmt.bufPrint(&line_buffers[1], "FPS AVG {s}", .{avg_fps_text});
+    lines[2] = try std.fmt.bufPrint(&line_buffers[2], "WORK {s} / {s} MS", .{ work_text, target_text });
+    lines[3] = try std.fmt.bufPrint(&line_buffers[3], "AVG {s} MS", .{avg_text});
+    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "EMU {s} / {s} MS", .{ emu_text, emu_avg_text });
+    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "OTHER {s} / {s} MS", .{ other_text, other_avg_text });
+    lines[6] = try std.fmt.bufPrint(&line_buffers[6], "CORE SAMP {s}", .{core_sample_text});
+    lines[7] = try std.fmt.bufPrint(&line_buffers[7], "68K INS {d} / {d}", .{ perf.last_core_counters.m68k_instructions, perf.average_core_counters.m68k_instructions });
+    lines[8] = try std.fmt.bufPrint(&line_buffers[8], "Z80 INS {d} / {d}", .{ perf.last_core_counters.z80_instructions, perf.average_core_counters.z80_instructions });
+    lines[9] = try std.fmt.bufPrint(&line_buffers[9], "XFER {d} / {d}", .{ perf.last_core_counters.transfer_slots, perf.average_core_counters.transfer_slots });
+    lines[10] = try std.fmt.bufPrint(&line_buffers[10], "ACCESS {d} / {d}", .{ perf.last_core_counters.access_slots, perf.average_core_counters.access_slots });
+    lines[11] = try std.fmt.bufPrint(&line_buffers[11], "DMA WORDS {d} / {d}", .{ perf.last_core_counters.dma_words, perf.average_core_counters.dma_words });
+    lines[12] = try std.fmt.bufPrint(&line_buffers[12], "SCANLINES {d} / {d}", .{ perf.last_core_counters.render_scanlines, perf.average_core_counters.render_scanlines });
+    lines[13] = try std.fmt.bufPrint(&line_buffers[13], "SPR ENTS {d} / {d}", .{ perf.last_core_counters.render_sprite_entries, perf.average_core_counters.render_sprite_entries });
+    lines[14] = try std.fmt.bufPrint(&line_buffers[14], "SPR PIX {d} / {d}", .{ perf.last_core_counters.render_sprite_pixels, perf.average_core_counters.render_sprite_pixels });
+    lines[15] = try std.fmt.bufPrint(&line_buffers[15], "SPR OPAQ {d} / {d}", .{ perf.last_core_counters.render_sprite_opaque_pixels, perf.average_core_counters.render_sprite_opaque_pixels });
+    lines[16] = try std.fmt.bufPrint(&line_buffers[16], "AUD CPU {s} / {s} MS", .{ audio_cpu_text, audio_cpu_avg_text });
+    lines[17] = try std.fmt.bufPrint(&line_buffers[17], "UPLOAD {d} / {d} US", .{
+        (perf.last_phases.upload_ns + 500) / 1000,
+        (perf.average_phases.upload_ns + 500) / 1000,
+    });
+    lines[18] = try std.fmt.bufPrint(&line_buffers[18], "DRAW {d} / {d} US", .{
+        (perf.last_phases.draw_ns + 500) / 1000,
+        (perf.average_phases.draw_ns + 500) / 1000,
+    });
+    lines[19] = try std.fmt.bufPrint(&line_buffers[19], "PRESENT {d} / {d} US", .{
+        (perf.last_phases.present_call_ns + 500) / 1000,
+        (perf.average_phases.present_call_ns + 500) / 1000,
+    });
+    lines[20] = try std.fmt.bufPrint(&line_buffers[20], "SLEEP {s} MS", .{sleep_text});
+    lines[21] = try std.fmt.bufPrint(&line_buffers[21], "OVER {s} MS", .{overrun_text});
+    lines[22] = try std.fmt.bufPrint(&line_buffers[22], "SLOW {d} {s} PCT", .{ perf.slow_frame_count, slow_percent_text });
+    lines[23] = try std.fmt.bufPrint(&line_buffers[23], "WORST WORK {s} MS", .{worst_work_text});
+    lines[24] = try std.fmt.bufPrint(&line_buffers[24], "WORST OVR {s} MS", .{worst_overrun_text});
+    lines[25] = if (perf.last_audio_queued_bytes == null)
         "AUDIO OFF"
     else
-        try std.fmt.bufPrint(&line_buffers[6], "AUDIO {s} MS", .{audio_text});
+        try std.fmt.bufPrint(&line_buffers[25], "AUDIO {s} MS", .{audio_text});
+    lines[26] = "F12 RESET";
 
     var max_width = overlayTextWidth(title, scale);
     for (lines) |line| {
@@ -1818,6 +2192,8 @@ pub fn main() !void {
     defer if (quick_state) |*state| state.deinit(allocator);
     var frontend_ui = FrontendUi{};
     var performance_hud = PerformanceHudState{};
+    var performance_spike_log = PerformanceSpikeLogState{};
+    var core_profile_frames_remaining: u32 = 0;
     var file_dialog_state = FileDialogState{};
     var binding_editor = BindingEditorState{};
 
@@ -1929,8 +2305,18 @@ pub fn main() !void {
                     }
                     if (frontendShortcutForKey(scancode, pressed)) |shortcut| {
                         _ = applyFrontendShortcut(&frontend_ui, scancode, pressed);
+                        if (shortcut == .toggle_performance_hud and !frontend_ui.show_performance_hud) {
+                            core_profile_frames_remaining = 0;
+                        }
                         if (shortcut == .toggle_performance_hud and frontend_ui.show_performance_hud) {
                             performance_hud.reset();
+                            performance_spike_log.reset();
+                            core_profile_frames_remaining = 0;
+                        }
+                        if (shortcut == .reset_performance_hud) {
+                            performance_hud.reset();
+                            performance_spike_log.reset();
+                            core_profile_frames_remaining = 0;
                         }
                         if (shortcut == .open_rom) {
                             _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window);
@@ -2007,11 +2393,26 @@ pub fn main() !void {
             },
         }
 
+        if (frame_counter == 0 and (performance_hud.frame_count != 0 or performance_spike_log.window_frame_count != 0)) {
+            performance_hud.reset();
+            performance_spike_log.reset();
+            core_profile_frames_remaining = 0;
+        }
+
         const emulation_paused = frontend_ui.emulationPaused();
+        var frame_phases = PerformanceFramePhases{};
+        var core_counters = CoreFrameCounters{};
         var target_frame_ns: ?u64 = null;
+        const sample_core_counters = shouldSampleCoreCounters(frontend_ui.show_performance_hud, frame_counter, core_profile_frames_remaining);
         if (!emulation_paused) {
             target_frame_ns = frameDurationNs(machine.palMode(), machine.frameMasterCycles());
-            machine.runFrame();
+            const emulation_start = std.time.Instant.now() catch frame_timer;
+            if (sample_core_counters) {
+                machine.runFrameProfiled(&core_counters);
+            } else {
+                machine.runFrame();
+            }
+            frame_phases.emulation_ns = (std.time.Instant.now() catch emulation_start).since(emulation_start);
         }
 
         if (!emulation_paused) {
@@ -2033,9 +2434,13 @@ pub fn main() !void {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, machine.programCounter() });
         }
         if (audio) |*a| {
+            const audio_start = std.time.Instant.now() catch frame_timer;
             try machine.drainPendingAudio(a);
+            frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
         } else {
+            const audio_start = std.time.Instant.now() catch frame_timer;
             machine.discardPendingAudio();
+            frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
         }
         const queued_audio_bytes = queuedAudioBytes(if (audio) |*a| a else null);
 
@@ -2047,8 +2452,11 @@ pub fn main() !void {
             .w = @intCast(Vdp.framebuffer_width),
             .h = framebuffer_height,
         };
+        const upload_start = std.time.Instant.now() catch frame_timer;
         _ = SDL_UpdateTexture(vdp_texture, &update_rect, @ptrCast(framebuffer.ptr), @intCast(Vdp.framebuffer_width * @sizeOf(u32)));
+        frame_phases.upload_ns = (std.time.Instant.now() catch upload_start).since(upload_start);
 
+        const draw_start = std.time.Instant.now() catch frame_timer;
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
         const source_rect = zsdl3.FRect{
@@ -2059,20 +2467,45 @@ pub fn main() !void {
         };
         try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, null);
         try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings, persistent_state_slot, &performance_hud);
+        frame_phases.draw_ns = (std.time.Instant.now() catch draw_start).since(draw_start);
+        const present_call_start = std.time.Instant.now() catch frame_timer;
         zsdl3.renderPresent(renderer);
+        frame_phases.present_call_ns = (std.time.Instant.now() catch present_call_start).since(present_call_start);
 
         frame_counter += 1;
         const frame_now = std.time.Instant.now() catch frame_timer;
-        const frame_elapsed = frame_now.since(frame_timer);
-        if (!emulation_paused) {
-            if (target_frame_ns) |frame_ns| {
-                performance_hud.noteFrame(frame_elapsed, frame_ns, queued_audio_bytes);
-            }
-        }
+        const work_elapsed = frame_now.since(frame_timer);
         if (frame_counter > uncapped_boot_frames) {
             if (target_frame_ns) |frame_ns| {
-                if (frame_elapsed < frame_ns) {
-                    std.Thread.sleep(frame_ns - frame_elapsed);
+                if (work_elapsed < frame_ns) {
+                    std.Thread.sleep(frame_ns - work_elapsed);
+                }
+            }
+        }
+        const present_elapsed = (std.time.Instant.now() catch frame_now).since(frame_timer);
+        if (!emulation_paused) {
+            if (target_frame_ns) |frame_ns| {
+                performance_hud.noteFrame(
+                    work_elapsed,
+                    present_elapsed,
+                    frame_ns,
+                    queued_audio_bytes,
+                    frame_phases,
+                    if (sample_core_counters) core_counters else null,
+                );
+                core_profile_frames_remaining = nextCoreBurstFramesRemaining(sample_core_counters, core_profile_frames_remaining, &performance_hud);
+                if (frontend_ui.show_performance_hud and frame_counter > uncapped_boot_frames) {
+                    const spike_update = performance_spike_log.noteFrame(frame_counter, &performance_hud);
+                    if (spike_update.log_frame) {
+                        var spike_buffer: [256]u8 = undefined;
+                        const spike_line = formatPerformanceSpikeLine(spike_buffer[0..], frame_counter, &performance_hud) catch "SLOW FRAME";
+                        std.debug.print("{s}\n", .{spike_line});
+                    }
+                    if (spike_update.summary) |summary| {
+                        var window_buffer: [128]u8 = undefined;
+                        const window_line = formatPerformanceSpikeWindowLine(window_buffer[0..], &summary) catch "SPIKE WINDOW";
+                        std.debug.print("{s}\n", .{window_line});
+                    }
                 }
             }
         }
@@ -2205,6 +2638,9 @@ test "frontend shortcuts toggle help and pause only on key down" {
     try std.testing.expect(applyFrontendShortcut(&ui, .f5, true));
     try std.testing.expect(ui.show_performance_hud);
     try std.testing.expect(!ui.emulationPaused());
+
+    try std.testing.expect(applyFrontendShortcut(&ui, .f12, true));
+    try std.testing.expect(ui.show_performance_hud);
 }
 
 test "frontend shortcut helper ignores unrelated keys" {
@@ -2226,23 +2662,301 @@ test "duration formatter rounds to tenths of a millisecond" {
     try std.testing.expectEqualStrings("0.0", try formatDurationMsTenths(buffer[0..], 0));
 }
 
+test "rate and percent formatters round to tenths" {
+    var buffer: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("59.9", try formatRateHzTenths(buffer[0..], 16_688_154));
+    try std.testing.expectEqualStrings("5.3", try formatPercentTenths(buffer[0..], 53));
+}
+
+test "performance spike formatter includes frame timing and audio" {
+    var perf = PerformanceHudState{};
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600, .{
+        .emulation_ns = 15_100_000,
+        .audio_ns = 400_000,
+        .upload_ns = 200_000,
+        .draw_ns = 100_000,
+        .present_call_ns = 50_000,
+    }, .{
+        .m68k_instructions = 2400,
+        .z80_instructions = 320,
+        .transfer_slots = 180,
+        .access_slots = 90,
+        .dma_words = 44,
+        .render_scanlines = 224,
+        .render_sprite_entries = 12,
+        .render_sprite_pixels = 96,
+        .render_sprite_opaque_pixels = 48,
+    });
+
+    var buffer: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "SLOW FRAME f=42 work=17.5ms over=0.8ms hot=EMU 15.1ms ctr=LIVE 68k=2400 z80=320 xfer=180 acc=90 dma=44 spr=12/96/48 audio=50.0ms",
+        try formatPerformanceSpikeLine(buffer[0..], 42, &perf),
+    );
+
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, null, .{
+        .emulation_ns = 15_100_000,
+        .audio_ns = 400_000,
+        .upload_ns = 200_000,
+        .draw_ns = 100_000,
+        .present_call_ns = 50_000,
+    }, .{
+        .m68k_instructions = 2400,
+        .z80_instructions = 320,
+        .transfer_slots = 180,
+        .access_slots = 90,
+        .dma_words = 44,
+        .render_scanlines = 224,
+        .render_sprite_entries = 12,
+        .render_sprite_pixels = 96,
+        .render_sprite_opaque_pixels = 48,
+    });
+    try std.testing.expectEqualStrings(
+        "SLOW FRAME f=43 work=17.5ms over=0.8ms hot=EMU 15.1ms ctr=LIVE 68k=2400 z80=320 xfer=180 acc=90 dma=44 spr=12/96/48 audio=OFF",
+        try formatPerformanceSpikeLine(buffer[0..], 43, &perf),
+    );
+}
+
+test "performance spike formatter reports OTHER when unmeasured work dominates" {
+    var perf = PerformanceHudState{};
+    perf.noteFrame(25_000_000, 25_000_000, 16_700_000, null, .{
+        .emulation_ns = 8_000_000,
+        .audio_ns = 500_000,
+        .upload_ns = 200_000,
+        .draw_ns = 150_000,
+        .present_call_ns = 50_000,
+    }, null);
+
+    var buffer: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "SLOW FRAME f=99 work=25.0ms over=8.3ms hot=OTH 16.1ms ctr=HOLD audio=OFF",
+        try formatPerformanceSpikeLine(buffer[0..], 99, &perf),
+    );
+}
+
+test "performance spike threshold ignores tiny overruns" {
+    var perf = PerformanceHudState{};
+
+    perf.noteFrame(20_600_000, 20_600_000, 16_700_000, null, .{}, null);
+    try std.testing.expect(!isThresholdSlowFrame(&perf));
+
+    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, .{}, null);
+    try std.testing.expect(isThresholdSlowFrame(&perf));
+}
+
+test "performance spike window formatter summarizes aggregate overruns" {
+    const summary = PerformanceSpikeWindowSummary{
+        .start_frame = 1200,
+        .end_frame = 1259,
+        .frame_count = 60,
+        .slow_frame_count = 9,
+        .average_overrun_ns = 4_800_000,
+        .max_overrun_ns = 12_600_000,
+        .audio_queued_bytes = 9_600,
+    };
+
+    var buffer: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "SPIKE WINDOW f=1200-1259 slow=9 max_over=12.6ms avg_over=4.8ms audio=50.0ms",
+        try formatPerformanceSpikeWindowLine(buffer[0..], &summary),
+    );
+}
+
+test "performance spike logger suppresses repeated frames inside a burst" {
+    var perf = PerformanceHudState{};
+    var spikes = PerformanceSpikeLogState{};
+
+    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, .{ .emulation_ns = 19_500_000 }, null);
+    var update = spikes.noteFrame(10, &perf);
+    try std.testing.expect(update.log_frame);
+    try std.testing.expect(update.summary == null);
+
+    perf.noteFrame(25_000_000, 25_000_000, 16_700_000, null, .{ .emulation_ns = 23_800_000 }, null);
+    update = spikes.noteFrame(11, &perf);
+    try std.testing.expect(!update.log_frame);
+
+    perf.noteFrame(28_800_000, 28_800_000, 16_700_000, null, .{ .emulation_ns = 27_000_000 }, null);
+    update = spikes.noteFrame(12, &perf);
+    try std.testing.expect(update.log_frame);
+
+    perf.noteFrame(16_700_000, 16_700_000, 16_700_000, null, .{ .emulation_ns = 15_500_000 }, null);
+    update = spikes.noteFrame(13, &perf);
+    try std.testing.expect(!update.log_frame);
+
+    perf.noteFrame(21_000_000, 21_000_000, 16_700_000, null, .{ .emulation_ns = 19_800_000 }, null);
+    update = spikes.noteFrame(14, &perf);
+    try std.testing.expect(update.log_frame);
+}
+
+test "performance spike window emits one-second summaries and resets" {
+    var perf = PerformanceHudState{};
+    var spikes = PerformanceSpikeLogState{};
+
+    perf.noteFrame(260_000_000, 260_000_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    var update = spikes.noteFrame(100, &perf);
+    try std.testing.expect(update.log_frame);
+    try std.testing.expect(update.summary == null);
+
+    perf.noteFrame(200_000_000, 200_000_000, 250_000_000, 9_600, .{ .emulation_ns = 180_000_000 }, null);
+    update = spikes.noteFrame(101, &perf);
+    try std.testing.expect(!update.log_frame);
+    try std.testing.expect(update.summary == null);
+
+    perf.noteFrame(280_000_000, 280_000_000, 250_000_000, 9_600, .{ .emulation_ns = 260_000_000 }, null);
+    update = spikes.noteFrame(102, &perf);
+    try std.testing.expect(update.log_frame);
+    try std.testing.expect(update.summary == null);
+
+    perf.noteFrame(240_000_000, 240_000_000, 250_000_000, 9_600, .{ .emulation_ns = 220_000_000 }, null);
+    update = spikes.noteFrame(103, &perf);
+    const summary = update.summary.?;
+    try std.testing.expectEqual(@as(u64, 100), summary.start_frame);
+    try std.testing.expectEqual(@as(u64, 103), summary.end_frame);
+    try std.testing.expectEqual(@as(u64, 4), summary.frame_count);
+    try std.testing.expectEqual(@as(u64, 2), summary.slow_frame_count);
+    try std.testing.expectEqual(@as(u64, 20_000_000), summary.average_overrun_ns);
+    try std.testing.expectEqual(@as(u64, 30_000_000), summary.max_overrun_ns);
+    try std.testing.expectEqual(@as(?usize, 9_600), summary.audio_queued_bytes);
+    try std.testing.expectEqual(@as(u64, 0), spikes.window_frame_count);
+    try std.testing.expectEqual(@as(u64, 0), spikes.window_slow_frame_count);
+}
+
+test "performance spike window ignores sub-threshold overruns" {
+    var perf = PerformanceHudState{};
+    var spikes = PerformanceSpikeLogState{};
+
+    perf.noteFrame(250_200_000, 250_200_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    _ = spikes.noteFrame(200, &perf);
+
+    perf.noteFrame(253_900_000, 253_900_000, 250_000_000, 9_600, .{ .emulation_ns = 243_000_000 }, null);
+    _ = spikes.noteFrame(201, &perf);
+
+    perf.noteFrame(250_000_000, 250_000_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    _ = spikes.noteFrame(202, &perf);
+
+    perf.noteFrame(250_000_000, 250_000_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    const update = spikes.noteFrame(203, &perf);
+    try std.testing.expect(!update.log_frame);
+    try std.testing.expect(update.summary == null);
+    try std.testing.expectEqual(@as(u64, 0), spikes.window_frame_count);
+    try std.testing.expectEqual(@as(u64, 0), spikes.window_slow_frame_count);
+}
+
 test "performance hud tracks slow frames and queued audio" {
     var perf = PerformanceHudState{};
 
-    perf.noteFrame(17_500_000, 16_700_000, 9_600);
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600, .{
+        .emulation_ns = 15_100_000,
+        .audio_ns = 400_000,
+        .upload_ns = 200_000,
+        .draw_ns = 100_000,
+        .present_call_ns = 50_000,
+    }, .{
+        .m68k_instructions = 2400,
+        .z80_instructions = 320,
+        .transfer_slots = 180,
+        .access_slots = 90,
+        .dma_words = 44,
+        .render_scanlines = 224,
+        .render_sprite_entries = 12,
+        .render_sprite_pixels = 96,
+        .render_sprite_opaque_pixels = 48,
+    });
     try std.testing.expectEqual(@as(u64, 1), perf.frame_count);
     try std.testing.expectEqual(@as(u64, 1), perf.slow_frame_count);
+    try std.testing.expectEqual(@as(u64, 1), perf.core_sample_count);
+    try std.testing.expect(perf.last_core_counters_sampled);
     try std.testing.expectEqual(@as(u64, 800_000), perf.last_overrun_ns);
-    try std.testing.expectEqual(@as(u64, 0), perf.last_sleep_ns);
+    try std.testing.expectEqual(@as(u64, 700_000), perf.last_sleep_ns);
     try std.testing.expectEqual(@as(u64, 17_500_000), perf.worst_work_ns);
+    try std.testing.expectEqual(@as(u64, 800_000), perf.worst_overrun_ns);
+    try std.testing.expectEqual(@as(u64, 18_200_000), perf.last_present_ns);
+    try std.testing.expectEqual(@as(u64, 15_100_000), perf.last_phases.emulation_ns);
+    try std.testing.expectEqual(@as(u64, 400_000), perf.last_phases.audio_ns);
+    try std.testing.expectEqual(@as(u64, 1_650_000), perf.last_other_ns);
+    try std.testing.expectEqual(@as(u64, 2400), perf.last_core_counters.m68k_instructions);
+    try std.testing.expectEqual(@as(u64, 44), perf.last_core_counters.dma_words);
+    try std.testing.expectEqual(@as(u64, 12), perf.last_core_counters.render_sprite_entries);
+    try std.testing.expectEqual(@as(u64, 96), perf.last_core_counters.render_sprite_pixels);
+    try std.testing.expectEqual(@as(u64, 48), perf.last_core_counters.render_sprite_opaque_pixels);
     try std.testing.expect(perf.queuedAudioNs() != null);
+    try std.testing.expectEqual(@as(u64, 1000), perf.slowFramePercentTenths());
 
-    perf.noteFrame(12_000_000, 16_700_000, null);
+    perf.noteFrame(12_000_000, 16_700_000, 16_700_000, null, .{
+        .emulation_ns = 10_000_000,
+        .audio_ns = 300_000,
+        .upload_ns = 100_000,
+        .draw_ns = 80_000,
+        .present_call_ns = 40_000,
+    }, .{
+        .m68k_instructions = 1600,
+        .z80_instructions = 200,
+        .transfer_slots = 120,
+        .access_slots = 60,
+        .dma_words = 20,
+        .render_scanlines = 224,
+        .render_sprite_entries = 8,
+        .render_sprite_pixels = 40,
+        .render_sprite_opaque_pixels = 20,
+    });
     try std.testing.expectEqual(@as(u64, 2), perf.frame_count);
     try std.testing.expectEqual(@as(u64, 1), perf.slow_frame_count);
+    try std.testing.expectEqual(@as(u64, 2), perf.core_sample_count);
+    try std.testing.expect(perf.last_core_counters_sampled);
     try std.testing.expectEqual(@as(u64, 4_700_000), perf.last_sleep_ns);
     try std.testing.expectEqual(@as(u64, 0), perf.last_overrun_ns);
     try std.testing.expectEqual(@as(?usize, null), perf.last_audio_queued_bytes);
+    try std.testing.expectEqual(@as(u64, 14_462_500), perf.average_phases.emulation_ns);
+    try std.testing.expectEqual(@as(u64, 1_628_750), perf.average_other_ns);
+    try std.testing.expectEqual(@as(u64, 2300), perf.average_core_counters.m68k_instructions);
+    try std.testing.expectEqual(@as(u64, 41), perf.average_core_counters.dma_words);
+    try std.testing.expectEqual(@as(u64, 224), perf.average_core_counters.render_scanlines);
+    try std.testing.expectEqual(@as(u64, 12), perf.average_core_counters.render_sprite_entries);
+    try std.testing.expectEqual(@as(u64, 89), perf.average_core_counters.render_sprite_pixels);
+    try std.testing.expectEqual(@as(u64, 45), perf.average_core_counters.render_sprite_opaque_pixels);
+    try std.testing.expectEqual(@as(u64, 500), perf.slowFramePercentTenths());
+}
+
+test "performance hud preserves counter sample until the next sampled frame" {
+    var perf = PerformanceHudState{};
+
+    perf.noteFrame(17_000_000, 17_000_000, 16_700_000, null, .{ .emulation_ns = 15_000_000 }, .{
+        .m68k_instructions = 1000,
+        .z80_instructions = 200,
+        .transfer_slots = 300,
+        .access_slots = 120,
+        .dma_words = 32,
+        .render_scanlines = 224,
+        .render_sprite_entries = 9,
+        .render_sprite_pixels = 72,
+        .render_sprite_opaque_pixels = 36,
+    });
+    perf.noteFrame(16_500_000, 16_500_000, 16_700_000, null, .{ .emulation_ns = 14_500_000 }, null);
+
+    try std.testing.expectEqual(@as(u64, 2), perf.frame_count);
+    try std.testing.expectEqual(@as(u64, 1), perf.core_sample_count);
+    try std.testing.expect(!perf.last_core_counters_sampled);
+    try std.testing.expectEqual(@as(u64, 1000), perf.last_core_counters.m68k_instructions);
+    try std.testing.expectEqual(@as(u64, 32), perf.last_core_counters.dma_words);
+    try std.testing.expectEqual(@as(u64, 9), perf.last_core_counters.render_sprite_entries);
+    try std.testing.expectEqual(@as(u64, 72), perf.last_core_counters.render_sprite_pixels);
+    try std.testing.expectEqual(@as(u64, 36), perf.last_core_counters.render_sprite_opaque_pixels);
+    try std.testing.expectEqual(@as(u64, 1000), perf.average_core_counters.m68k_instructions);
+    try std.testing.expectEqual(@as(u64, 32), perf.average_core_counters.dma_words);
+    try std.testing.expectEqual(@as(u64, 9), perf.average_core_counters.render_sprite_entries);
+    try std.testing.expectEqual(@as(u64, 72), perf.average_core_counters.render_sprite_pixels);
+    try std.testing.expectEqual(@as(u64, 36), perf.average_core_counters.render_sprite_opaque_pixels);
+}
+
+test "core counter sampling enters burst mode after a threshold slow frame" {
+    var perf = PerformanceHudState{};
+    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, .{ .emulation_ns = 19_500_000 }, null);
+
+    try std.testing.expect(!shouldSampleCoreCounters(true, 1, 0));
+    try std.testing.expect(shouldSampleCoreCounters(true, 16, 0));
+    try std.testing.expectEqual(@as(u32, performance_core_burst_frames), nextCoreBurstFramesRemaining(false, 0, &perf));
+    try std.testing.expect(shouldSampleCoreCounters(true, 2, performance_core_burst_frames));
+    try std.testing.expectEqual(@as(u32, performance_core_burst_frames - 1), nextCoreBurstFramesRemaining(true, performance_core_burst_frames, &PerformanceHudState{}));
 }
 
 test "binding editor opens releases inputs and rebinds selected action" {

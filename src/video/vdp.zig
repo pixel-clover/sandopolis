@@ -2,10 +2,35 @@ const std = @import("std");
 const render = @import("render.zig");
 const fifo_mod = @import("fifo.zig");
 const timing_mod = @import("timing.zig");
+const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 
 pub const Vdp = struct {
+    pub const save_state_skip_fields = .{
+        "active_execution_counters",
+        "sprite_cache_entries",
+        "sprite_cache_valid",
+        "sprite_cache_base",
+        "sprite_cache_total",
+    };
+
     pub const framebuffer_width: usize = 320;
     pub const max_framebuffer_height: usize = 240;
+    pub const sprite_cache_entry_count: usize = 80;
+
+    pub const SpriteCacheEntry = struct {
+        y_pos: i16 = 0,
+        x_pos_raw: u16 = 0,
+        x_pos: i16 = 0,
+        h_size: u8 = 0,
+        v_size: u8 = 0,
+        link: u8 = 0,
+        tile_base: u16 = 0,
+        palette: u8 = 0,
+        is_high: bool = false,
+        x_flip: bool = false,
+        y_flip: bool = false,
+        new_layer: u8 = 0,
+    };
 
     vram: [64 * 1024]u8,
     cram: [128]u8,
@@ -61,6 +86,11 @@ pub const Vdp = struct {
     dbg_cram_writes: u64,
     dbg_vsram_writes: u64,
     dbg_unknown_writes: u64,
+    active_execution_counters: ?*CoreFrameCounters,
+    sprite_cache_entries: [sprite_cache_entry_count]SpriteCacheEntry,
+    sprite_cache_valid: bool,
+    sprite_cache_base: u16,
+    sprite_cache_total: u8,
 
     pub const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
 
@@ -161,7 +191,16 @@ pub const Vdp = struct {
             .dbg_cram_writes = 0,
             .dbg_vsram_writes = 0,
             .dbg_unknown_writes = 0,
+            .active_execution_counters = null,
+            .sprite_cache_entries = [_]SpriteCacheEntry{.{}} ** sprite_cache_entry_count,
+            .sprite_cache_valid = false,
+            .sprite_cache_base = 0,
+            .sprite_cache_total = 0,
         };
+    }
+
+    pub fn setActiveExecutionCounters(self: *Vdp, counters: ?*CoreFrameCounters) void {
+        self.active_execution_counters = counters;
     }
 
     pub fn isH40(self: *const Vdp) bool {
@@ -186,6 +225,57 @@ pub const Vdp = struct {
 
     pub fn maxSpritesTotal(self: *const Vdp) u8 {
         return if (self.isH40()) 80 else 64;
+    }
+
+    pub fn spriteAttributeTableBase(self: *const Vdp) u16 {
+        return if (self.isH40())
+            ((@as(u16, self.regs[5] & 0x7F) << 9) & 0xFC00)
+        else
+            ((@as(u16, self.regs[5] & 0x7F) << 9) & 0xFE00);
+    }
+
+    pub fn invalidateSpriteCache(self: *Vdp) void {
+        self.sprite_cache_valid = false;
+    }
+
+    pub fn ensureSpriteCache(self: *Vdp) void {
+        const sprite_base = self.spriteAttributeTableBase();
+        const max_total = self.maxSpritesTotal();
+        if (self.sprite_cache_valid and self.sprite_cache_base == sprite_base and self.sprite_cache_total == max_total) {
+            return;
+        }
+
+        const vram = &self.vram;
+        for (0..max_total) |sprite_index_usize| {
+            const entry_addr = @as(usize, sprite_base) + (sprite_index_usize * 8);
+            const y_word = (@as(u16, vram[entry_addr]) << 8) | vram[entry_addr + 1];
+            const size = vram[entry_addr + 2];
+            const link = vram[entry_addr + 3] & 0x7F;
+            const attr = (@as(u16, vram[entry_addr + 4]) << 8) | vram[entry_addr + 5];
+            const x_word = (@as(u16, vram[entry_addr + 6]) << 8) | vram[entry_addr + 7];
+            const h_size: u8 = @intCast(((size >> 2) & 0x3) + 1);
+            const v_size: u8 = @intCast((size & 0x3) + 1);
+            const x_pos_raw = x_word & 0x01FF;
+
+            self.sprite_cache_entries[sprite_index_usize] = .{
+                .y_pos = @as(i16, @intCast(y_word & 0x03FF)) - 128,
+                .x_pos_raw = x_pos_raw,
+                .x_pos = @as(i16, @intCast(x_pos_raw)) - 128,
+                .h_size = h_size,
+                .v_size = v_size,
+                .link = link,
+                .tile_base = attr & 0x07FF,
+                .palette = @intCast((attr >> 13) & 0x3),
+                .is_high = (attr & 0x8000) != 0,
+                .x_flip = (attr & 0x0800) != 0,
+                .y_flip = (attr & 0x1000) != 0,
+                .new_layer = render.layerOrder(3, (attr & 0x8000) != 0),
+            };
+        }
+
+        self.sprite_cache_base = sprite_base;
+        self.sprite_cache_total = max_total;
+        self.sprite_cache_valid = true;
     }
 
     pub fn isDisplayEnabled(self: *const Vdp) bool {
@@ -234,13 +324,28 @@ pub const Vdp = struct {
     }
 
     pub fn vramWriteByte(self: *Vdp, address: u16, value: u8) void {
-        self.vram[address & 0xFFFF] = value;
+        const addr = address & 0xFFFF;
+        self.vram[addr] = value;
+        self.noteSpriteTableWrite(addr);
     }
 
     pub fn vramWriteWord(self: *Vdp, address: u16, value: u16) void {
         const addr = address & 0xFFFE;
         self.vram[addr] = @intCast((value >> 8) & 0xFF);
         self.vram[addr + 1] = @intCast(value & 0xFF);
+        self.noteSpriteTableWrite(addr);
+        self.noteSpriteTableWrite(addr + 1);
+    }
+
+    fn noteSpriteTableWrite(self: *Vdp, address: u16) void {
+        if (!self.sprite_cache_valid) return;
+
+        const sprite_base = self.spriteAttributeTableBase();
+        const sprite_end = @as(u32, sprite_base) + (@as(u32, self.maxSpritesTotal()) * 8);
+        const addr_u32 = @as(u32, address);
+        if (addr_u32 >= sprite_base and addr_u32 < sprite_end) {
+            self.invalidateSpriteCache();
+        }
     }
 
     pub const renderScanline = render.renderScanline;

@@ -73,6 +73,7 @@ struct Jgz80Handle {
     bool psg_latched_is_volume;
     Jgz80HostReadFunc host_read;
     Jgz80HostWriteFunc host_write;
+    Jgz80M68kBusAccessFunc host_m68k_bus_access;
     void *host_userdata;
     bool bus_req;
     bool bus_ack;
@@ -348,6 +349,9 @@ static uint8_t mapped_read_byte(Jgz80Handle *h, uint16_t addr) {
     if (zaddr >= 0x8000u) {
         if (h->host_read != NULL) {
             const uint32_t m68k_addr = ((uint32_t) h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
+            if (h->host_m68k_bus_access != NULL) {
+                h->host_m68k_bus_access(h->host_userdata);
+            }
             ++h->m68k_bus_access_count;
             return h->host_read(h->host_userdata, m68k_addr);
         }
@@ -443,6 +447,9 @@ static void mapped_write_byte(Jgz80Handle *h, uint16_t addr, uint8_t val) {
     if (zaddr >= 0x8000u) {
         if (h->host_write != NULL) {
             const uint32_t m68k_addr = ((uint32_t) h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
+            if (h->host_m68k_bus_access != NULL) {
+                h->host_m68k_bus_access(h->host_userdata);
+            }
             ++h->m68k_bus_access_count;
             h->host_write(h->host_userdata, m68k_addr, val);
         }
@@ -741,11 +748,17 @@ void jgz80_write_byte(Jgz80Handle *handle, uint16_t addr, uint8_t val) {
     mapped_write_byte(handle, addr, val);
 }
 
-void jgz80_set_host_callbacks(Jgz80Handle *handle, Jgz80HostReadFunc host_read, Jgz80HostWriteFunc host_write,
-                              void *userdata) {
+void jgz80_set_host_callbacks(
+    Jgz80Handle *handle,
+    Jgz80HostReadFunc host_read,
+    Jgz80HostWriteFunc host_write,
+    Jgz80M68kBusAccessFunc host_m68k_bus_access,
+    void *userdata
+) {
     if (!handle) return;
     handle->host_read = host_read;
     handle->host_write = host_write;
+    handle->host_m68k_bus_access = host_m68k_bus_access;
     handle->host_userdata = userdata;
 }
 

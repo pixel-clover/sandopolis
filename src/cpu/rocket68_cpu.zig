@@ -2,6 +2,7 @@ const std = @import("std");
 const clock = @import("../clock.zig");
 const MemoryInterface = @import("memory_interface.zig").MemoryInterface;
 const runtime_state = @import("runtime_state.zig");
+const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 const SchedulerCpu = @import("../scheduler/runtime.zig").SchedulerCpu;
 const SchedulerInstructionStep = @import("../scheduler/runtime.zig").InstructionStep;
 
@@ -142,6 +143,7 @@ pub const Cpu = struct {
     halted: bool,
     pending_wait_cycles: u32,
     pending_wait_master_cycles: u32,
+    active_execution_counters: ?*CoreFrameCounters,
 
     pub var trace_enabled: bool = false;
 
@@ -152,6 +154,7 @@ pub const Cpu = struct {
             .halted = false,
             .pending_wait_cycles = 0,
             .pending_wait_master_cycles = 0,
+            .active_execution_counters = null,
         };
 
         c.m68k_init(&self.core, &fallback_memory[0], fallback_memory.len);
@@ -173,6 +176,7 @@ pub const Cpu = struct {
         copy.halted = self.halted;
         copy.pending_wait_cycles = self.pending_wait_cycles;
         copy.pending_wait_master_cycles = self.pending_wait_master_cycles;
+        copy.active_execution_counters = null;
         copy.core.fault_trap_active = false;
         copy.core.fault_trap = std.mem.zeroes(@TypeOf(copy.core.fault_trap));
         return copy;
@@ -285,6 +289,10 @@ pub const Cpu = struct {
         active_cpu = null;
     }
 
+    pub fn setActiveExecutionCounters(self: *Cpu, counters: ?*CoreFrameCounters) void {
+        self.active_execution_counters = counters;
+    }
+
     fn addBusWaitMaster(self: *Cpu, master_cycles: u32) void {
         if (master_cycles == 0) return;
 
@@ -350,6 +358,7 @@ pub const Cpu = struct {
         runtime_state.clearActive();
         active_memory = null;
         active_cpu = null;
+        if (self.active_execution_counters) |counters| counters.m68k_instructions += 1;
 
         return .{
             .m68k_cycles = ran_cycles,

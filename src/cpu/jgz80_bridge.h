@@ -143,6 +143,8 @@ typedef uint8_t (*Jgz80HostReadFunc)(void *userdata, uint32_t addr);
 
 typedef void (*Jgz80HostWriteFunc)(void *userdata, uint32_t addr, uint8_t val);
 
+typedef void (*Jgz80M68kBusAccessFunc)(void *userdata);
+
 Jgz80Handle *jgz80_create(void);
 
 Jgz80Handle *jgz80_clone(const Jgz80Handle *handle);
@@ -163,8 +165,13 @@ uint8_t jgz80_read_byte(Jgz80Handle *handle, uint16_t addr);
 
 void jgz80_write_byte(Jgz80Handle *handle, uint16_t addr, uint8_t val);
 
-void jgz80_set_host_callbacks(Jgz80Handle *handle, Jgz80HostReadFunc host_read, Jgz80HostWriteFunc host_write,
-                              void *userdata);
+void jgz80_set_host_callbacks(
+    Jgz80Handle *handle,
+    Jgz80HostReadFunc host_read,
+    Jgz80HostWriteFunc host_write,
+    Jgz80M68kBusAccessFunc host_m68k_bus_access,
+    void *userdata
+);
 
 uint16_t jgz80_get_bank(Jgz80Handle *handle);
 

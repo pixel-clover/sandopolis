@@ -17,6 +17,7 @@ pub const Z80 = struct {
 
     pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
+    pub const HostM68kBusAccessFn = *const fn (userdata: ?*anyopaque) callconv(.c) void;
 
     pub fn init() Z80 {
         return .{ .handle = c.jgz80_create() };
@@ -68,8 +69,14 @@ pub const Z80 = struct {
         if (self.handle) |h| c.jgz80_write_byte(h, addr, val);
     }
 
-    pub fn setHostCallbacks(self: *Z80, userdata: ?*anyopaque, host_read: HostReadFn, host_write: HostWriteFn) void {
-        if (self.handle) |h| c.jgz80_set_host_callbacks(h, host_read, host_write, userdata);
+    pub fn setHostCallbacks(
+        self: *Z80,
+        userdata: ?*anyopaque,
+        host_read: HostReadFn,
+        host_write: HostWriteFn,
+        host_m68k_bus_access: HostM68kBusAccessFn,
+    ) void {
+        if (self.handle) |h| c.jgz80_set_host_callbacks(h, host_read, host_write, host_m68k_bus_access, userdata);
     }
 
     pub fn getBank(self: *const Z80) u16 {

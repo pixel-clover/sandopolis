@@ -5,6 +5,7 @@ const io_window = @import("io_window.zig");
 const vdp_ports = @import("vdp_ports.zig");
 const z80_host_bridge = @import("z80_host_bridge.zig");
 const clock = @import("../clock.zig");
+const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 const AudioTiming = @import("../audio/timing.zig").AudioTiming;
 const Vdp = @import("../video/vdp.zig").Vdp;
 const Io = @import("../input/io.zig").Io;
@@ -27,6 +28,7 @@ pub const Bus = struct {
     z80_odd_access: bool,
     m68k_wait_master_cycles: u32,
     open_bus: u16,
+    active_execution_counters: ?*CoreFrameCounters,
     fn initWithCartridge(cartridge: Cartridge) Bus {
         const bus = Bus{
             .rom = cartridge.rom,
@@ -35,7 +37,7 @@ pub const Bus = struct {
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),
-            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte),
+            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte, z80HostM68kBusAccess),
             .audio_timing = .{},
             .io_master_remainder = 0,
             .z80_master_credit = 0,
@@ -43,6 +45,7 @@ pub const Bus = struct {
             .z80_odd_access = false,
             .m68k_wait_master_cycles = 0,
             .open_bus = 0,
+            .active_execution_counters = null,
         };
         return bus;
     }
@@ -101,6 +104,11 @@ pub const Bus = struct {
         self.write8(address, value);
     }
 
+    fn z80HostM68kBusAccess(ctx: ?*anyopaque) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        self.recordZ80M68kBusAccess();
+    }
+
     fn vdpDmaReadWordCallback(userdata: ?*anyopaque, address: u32) u16 {
         const self: *Bus = @ptrCast(@alignCast(userdata orelse return 0));
         return self.read16(address);
@@ -155,14 +163,16 @@ pub const Bus = struct {
         var z80 = try self.z80.clone();
         errdefer z80.deinit();
 
+        var vdp = self.vdp;
+        vdp.active_execution_counters = null;
         return .{
             .rom = cartridge.rom,
             .cartridge = cartridge,
             .ram = self.ram,
-            .vdp = self.vdp,
+            .vdp = vdp,
             .io = self.io,
             .z80 = z80,
-            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte),
+            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte, z80HostM68kBusAccess),
             .audio_timing = self.audio_timing,
             .io_master_remainder = self.io_master_remainder,
             .z80_master_credit = self.z80_master_credit,
@@ -170,11 +180,17 @@ pub const Bus = struct {
             .z80_odd_access = self.z80_odd_access,
             .m68k_wait_master_cycles = self.m68k_wait_master_cycles,
             .open_bus = self.open_bus,
+            .active_execution_counters = null,
         };
     }
 
     pub fn rebindRuntimePointers(self: *Bus) void {
         self.z80_host_bridge.bind(&self.z80, self);
+    }
+
+    pub fn setActiveExecutionCounters(self: *Bus, counters: ?*CoreFrameCounters) void {
+        self.active_execution_counters = counters;
+        self.vdp.setActiveExecutionCounters(counters);
     }
 
     fn cpuMemoryRead8(ctx: ?*anyopaque, address: u32) u8 {
@@ -383,23 +399,24 @@ pub const Bus = struct {
         self.write16(address + 2, @intCast(value & 0xFFFF));
     }
 
-    fn recordZ80M68kBusAccesses(self: *Bus, access_count: u32) void {
-        if (access_count == 0) return;
+    fn recordZ80M68kBusAccess(self: *Bus) void {
+        if (self.z80_wait_master_cycles != 0) {
+            self.advanceNonZ80Master(self.z80_wait_master_cycles);
+            self.z80_wait_master_cycles = 0;
+        }
 
+        if (!self.vdp.shouldHaltCpu()) {
+            self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(11);
+        }
+
+        self.z80_wait_master_cycles = 49 + @as(u32, if (self.z80_odd_access) 1 else 0);
+        self.z80_odd_access = !self.z80_odd_access;
+    }
+
+    fn recordZ80M68kBusAccesses(self: *Bus, access_count: u32) void {
         var remaining = access_count;
         while (remaining > 0) : (remaining -= 1) {
-            const extra: u32 = if (self.z80_odd_access) 1 else 0;
-            const z80_wait: u32 = 49 + extra;
-            if (!self.vdp.shouldHaltCpu()) {
-                self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(11);
-            }
-
-            if (remaining > 1) {
-                self.advanceNonZ80Master(z80_wait);
-            } else {
-                self.z80_wait_master_cycles += z80_wait;
-            }
-            self.z80_odd_access = !self.z80_odd_access;
+            self.recordZ80M68kBusAccess();
         }
     }
 
@@ -508,9 +525,10 @@ pub const Bus = struct {
                 if (remaining != 0) self.advanceNonZ80Master(remaining);
                 return;
             }
+            if (self.active_execution_counters) |counters| counters.z80_instructions += 1;
 
             self.z80_master_credit -= @as(i64, instruction_cycles) * clock.z80_divider;
-            self.recordZ80M68kBusAccesses(self.z80.take68kBusAccessCount());
+            _ = self.z80.take68kBusAccessCount();
         }
     }
 
