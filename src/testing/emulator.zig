@@ -82,17 +82,18 @@ pub const Emulator = struct {
     }
 
     pub fn runCpuCycles(self: *Emulator, budget: u32) u32 {
-        var memory = self.handle.machine.bus.cpuMemory();
-        return self.handle.machine.cpu.runCycles(&memory, budget);
+        var machine = self.handle.machine.testing();
+        return machine.runCpuCycles(budget);
     }
 
     pub fn noteCpuBusAccessWait(self: *Emulator, address: u32, size_bytes: u8, is_write: bool) void {
-        var memory = self.handle.machine.bus.cpuMemory();
-        self.handle.machine.cpu.noteBusAccessWait(&memory, address, size_bytes, is_write);
+        var machine = self.handle.machine.testing();
+        machine.noteCpuBusAccessWait(address, size_bytes, is_write);
     }
 
     pub fn takeCpuWaitAccounting(self: *Emulator) WaitAccounting {
-        const wait = self.handle.machine.cpu.takeWaitAccounting();
+        var machine = self.handle.machine.testing();
+        const wait = machine.takeCpuWaitAccounting();
         return .{
             .m68k_cycles = wait.m68k_cycles,
             .master_cycles = wait.master_cycles,
@@ -100,107 +101,118 @@ pub const Emulator = struct {
     }
 
     pub fn formatCurrentInstruction(self: *Emulator, buffer: []u8) []const u8 {
-        var memory = self.handle.machine.bus.cpuMemory();
-        return self.handle.machine.cpu.formatCurrentInstruction(&memory, buffer);
+        var machine = self.handle.machine.testing();
+        return machine.formatCurrentInstruction(buffer);
     }
 
     pub fn read8(self: *Emulator, address: u32) u8 {
-        return self.handle.machine.bus.read8(address);
+        var machine = self.handle.machine.testing();
+        return machine.read8(address);
     }
 
     pub fn read16(self: *Emulator, address: u32) u16 {
-        return self.handle.machine.bus.read16(address);
+        var machine = self.handle.machine.testing();
+        return machine.read16(address);
     }
 
     pub fn read32(self: *Emulator, address: u32) u32 {
-        return self.handle.machine.bus.read32(address);
+        var machine = self.handle.machine.testing();
+        return machine.read32(address);
     }
 
     pub fn write8(self: *Emulator, address: u32, value: u8) void {
-        self.handle.machine.bus.write8(address, value);
+        var machine = self.handle.machine.testing();
+        machine.write8(address, value);
     }
 
     pub fn write16(self: *Emulator, address: u32, value: u16) void {
-        self.handle.machine.bus.write16(address, value);
+        var machine = self.handle.machine.testing();
+        machine.write16(address, value);
     }
 
     pub fn write32(self: *Emulator, address: u32, value: u32) void {
-        self.handle.machine.bus.write32(address, value);
+        var machine = self.handle.machine.testing();
+        machine.write32(address, value);
     }
 
     pub fn writeRomByte(self: *Emulator, offset: usize, value: u8) void {
-        std.debug.assert(offset < self.handle.machine.bus.rom.len);
-        self.handle.machine.bus.rom[offset] = value;
+        var machine = self.handle.machine.testing();
+        machine.writeRomByte(offset, value);
     }
 
     pub fn hasCartridgeRam(self: *const Emulator) bool {
-        return self.handle.machine.bus.hasCartridgeRam();
+        const machine = self.handle.machine.testingConst();
+        return machine.hasCartridgeRam();
     }
 
     pub fn isCartridgeRamMapped(self: *const Emulator) bool {
-        return self.handle.machine.bus.isCartridgeRamMapped();
+        const machine = self.handle.machine.testingConst();
+        return machine.isCartridgeRamMapped();
     }
 
     pub fn persistentSavePath(self: *const Emulator) ?[]const u8 {
-        return self.handle.machine.bus.persistentSavePath();
+        const machine = self.handle.machine.testingConst();
+        return machine.persistentSavePath();
     }
 
     pub fn configureVdpDataPort(self: *Emulator, code: u8, addr: u16, auto_increment: u8) void {
-        self.handle.machine.bus.vdp.regs[15] = auto_increment;
-        self.handle.machine.bus.vdp.code = code;
-        self.handle.machine.bus.vdp.addr = addr;
+        var machine = self.handle.machine.testing();
+        machine.configureVdpDataPort(code, addr, auto_increment);
     }
 
     pub fn setVdpRegister(self: *Emulator, index: usize, value: u8) void {
-        std.debug.assert(index < self.handle.machine.bus.vdp.regs.len);
-        self.handle.machine.bus.vdp.regs[index] = value;
+        var machine = self.handle.machine.testing();
+        machine.setVdpRegister(index, value);
     }
 
     pub fn vdpRegister(self: *const Emulator, index: usize) u8 {
-        std.debug.assert(index < self.handle.machine.bus.vdp.regs.len);
-        return self.handle.machine.bus.vdp.regs[index];
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpRegister(index);
     }
 
     pub fn setVdpCode(self: *Emulator, code: u8) void {
-        self.handle.machine.bus.vdp.code = code;
+        var machine = self.handle.machine.testing();
+        machine.setVdpCode(code);
     }
 
     pub fn setVdpAddr(self: *Emulator, addr: u16) void {
-        self.handle.machine.bus.vdp.addr = addr;
+        var machine = self.handle.machine.testing();
+        machine.setVdpAddr(addr);
     }
 
     pub fn vdpAddr(self: *const Emulator) u16 {
-        return self.handle.machine.bus.vdp.addr;
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpAddr();
     }
 
     pub fn writeVdpData(self: *Emulator, value: u16) void {
-        self.handle.machine.bus.vdp.writeData(value);
+        var machine = self.handle.machine.testing();
+        machine.writeVdpData(value);
     }
 
     pub fn vdpDataPortWriteWaitMasterCycles(self: *const Emulator) u32 {
-        return self.handle.machine.bus.vdp.dataPortWriteWaitMasterCycles();
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpDataPortWriteWaitMasterCycles();
     }
 
     pub fn vdpDataPortReadWaitMasterCycles(self: *const Emulator) u32 {
-        return self.handle.machine.bus.vdp.dataPortReadWaitMasterCycles();
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpDataPortReadWaitMasterCycles();
     }
 
     pub fn vdpShouldHaltCpu(self: *const Emulator) bool {
-        return self.handle.machine.bus.vdp.shouldHaltCpu();
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpShouldHaltCpu();
     }
 
     pub fn forceMemoryToVramDma(self: *Emulator, source_addr: u32, length: u16) void {
-        self.handle.machine.bus.vdp.dma_active = true;
-        self.handle.machine.bus.vdp.dma_fill = false;
-        self.handle.machine.bus.vdp.dma_copy = false;
-        self.handle.machine.bus.vdp.dma_source_addr = source_addr;
-        self.handle.machine.bus.vdp.dma_length = length;
-        self.handle.machine.bus.vdp.dma_remaining = length;
-        self.handle.machine.bus.vdp.dma_start_delay_slots = 0;
+        var machine = self.handle.machine.testing();
+        machine.forceMemoryToVramDma(source_addr, length);
     }
 
     pub fn vdpIsDmaActive(self: *const Emulator) bool {
-        return self.handle.machine.bus.vdp.dma_active;
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpIsDmaActive();
     }
 
     pub fn framebuffer(self: *const Emulator) []const u32 {
@@ -212,42 +224,52 @@ pub const Emulator = struct {
     }
 
     pub fn ymKeyMask(self: *const Emulator) u8 {
-        return self.handle.machine.bus.z80.getYmKeyMask();
+        const machine = self.handle.machine.testingConst();
+        return machine.ymKeyMask();
     }
 
     pub fn ymRegister(self: *const Emulator, port: u1, reg: u8) u8 {
-        return self.handle.machine.bus.z80.getYmRegister(port, reg);
+        const machine = self.handle.machine.testingConst();
+        return machine.ymRegister(port, reg);
     }
 
     pub fn z80Reset(self: *Emulator) void {
-        self.handle.machine.bus.z80.reset();
+        var machine = self.handle.machine.testing();
+        machine.z80Reset();
     }
 
     pub fn z80WriteByte(self: *Emulator, addr: u16, value: u8) void {
-        self.handle.machine.bus.z80.writeByte(addr, value);
+        var machine = self.handle.machine.testing();
+        machine.z80WriteByte(addr, value);
     }
 
     pub fn z80ProgramCounter(self: *const Emulator) u16 {
-        return self.handle.machine.bus.z80.getPc();
+        const machine = self.handle.machine.testingConst();
+        return machine.z80ProgramCounter();
     }
 
     pub fn setZ80BusRequest(self: *Emulator, value: u16) void {
-        self.handle.machine.bus.write16(0x00A1_1100, value);
+        var machine = self.handle.machine.testing();
+        machine.setZ80BusRequest(value);
     }
 
     pub fn setZ80ResetControl(self: *Emulator, value: u16) void {
-        self.handle.machine.bus.write16(0x00A1_1200, value);
+        var machine = self.handle.machine.testing();
+        machine.setZ80ResetControl(value);
     }
 
     pub fn pendingM68kWaitMasterCycles(self: *const Emulator) u32 {
-        return self.handle.machine.bus.pendingM68kWaitMasterCycles();
+        const machine = self.handle.machine.testingConst();
+        return machine.pendingM68kWaitMasterCycles();
     }
 
     pub fn setPendingM68kWaitMasterCycles(self: *Emulator, master_cycles: u32) void {
-        self.handle.machine.bus.m68k_wait_master_cycles = master_cycles;
+        var machine = self.handle.machine.testing();
+        machine.setPendingM68kWaitMasterCycles(master_cycles);
     }
 
     pub fn cpuDebtMasterCycles(self: *const Emulator) u32 {
-        return self.handle.machine.m68k_sync.debt_master_cycles;
+        const machine = self.handle.machine.testingConst();
+        return machine.cpuDebtMasterCycles();
     }
 };

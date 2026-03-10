@@ -30,6 +30,19 @@ When changing timing-sensitive behavior, treat these as the core interaction poi
 `Bus` is the coordination point for memory, timing, Z80 arbitration, VDP progression, and audio event timing.
 If a change crosses subsystem boundaries, it usually belongs there rather than in the SDL frontend.
 
+## Frontend and API boundaries
+
+Sandopolis now has three deliberate layers above the raw subsystem structs:
+
+- `src/main.zig` owns SDL-only behavior: windowing, event polling, file dialogs, audio-device queueing, and runtime overlays
+- `src/public/` is the host-facing runtime API for embedders and alternate frontends
+- `src/testing/` is the privileged testing facade for integration, regression, and developer-tool access that goes deeper than the public API
+
+`src/machine.zig` is the internal coordination layer joining frame execution, snapshots, runtime audio draining, ROM metadata, and input application without exposing `Bus`, `Cpu`, `Vdp`, or `Z80` directly to the SDL frontend.
+
+When extending the architecture, prefer adding behavior to one of those existing layers instead of introducing a new wrapper or facade.
+If a change does not remove a concrete dependency, test seam, or duplication, it is probably not worth another abstraction.
+
 ## Test targets
 
 Run the narrowest useful target while iterating:

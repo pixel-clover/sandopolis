@@ -23,6 +23,172 @@ pub const Machine = struct {
         reset_program_counter: u32,
     };
 
+    pub const TestingView = struct {
+        machine: *Machine,
+
+        pub fn runCpuCycles(self: *TestingView, budget: u32) u32 {
+            var memory = self.machine.bus.cpuMemory();
+            return self.machine.cpu.runCycles(&memory, budget);
+        }
+
+        pub fn noteCpuBusAccessWait(self: *TestingView, address: u32, size_bytes: u8, is_write: bool) void {
+            var memory = self.machine.bus.cpuMemory();
+            self.machine.cpu.noteBusAccessWait(&memory, address, size_bytes, is_write);
+        }
+
+        pub fn takeCpuWaitAccounting(self: *TestingView) Cpu.WaitAccounting {
+            return self.machine.cpu.takeWaitAccounting();
+        }
+
+        pub fn formatCurrentInstruction(self: *TestingView, buffer: []u8) []const u8 {
+            var memory = self.machine.bus.cpuMemory();
+            return self.machine.cpu.formatCurrentInstruction(&memory, buffer);
+        }
+
+        pub fn read8(self: *TestingView, address: u32) u8 {
+            return self.machine.bus.read8(address);
+        }
+
+        pub fn read16(self: *TestingView, address: u32) u16 {
+            return self.machine.bus.read16(address);
+        }
+
+        pub fn read32(self: *TestingView, address: u32) u32 {
+            return self.machine.bus.read32(address);
+        }
+
+        pub fn write8(self: *TestingView, address: u32, value: u8) void {
+            self.machine.bus.write8(address, value);
+        }
+
+        pub fn write16(self: *TestingView, address: u32, value: u16) void {
+            self.machine.bus.write16(address, value);
+        }
+
+        pub fn write32(self: *TestingView, address: u32, value: u32) void {
+            self.machine.bus.write32(address, value);
+        }
+
+        pub fn writeRomByte(self: *TestingView, offset: usize, value: u8) void {
+            std.debug.assert(offset < self.machine.bus.rom.len);
+            self.machine.bus.rom[offset] = value;
+        }
+
+        pub fn configureVdpDataPort(self: *TestingView, code: u8, addr: u16, auto_increment: u8) void {
+            self.machine.bus.vdp.regs[15] = auto_increment;
+            self.machine.bus.vdp.code = code;
+            self.machine.bus.vdp.addr = addr;
+        }
+
+        pub fn setVdpRegister(self: *TestingView, index: usize, value: u8) void {
+            std.debug.assert(index < self.machine.bus.vdp.regs.len);
+            self.machine.bus.vdp.regs[index] = value;
+        }
+
+        pub fn setVdpCode(self: *TestingView, code: u8) void {
+            self.machine.bus.vdp.code = code;
+        }
+
+        pub fn setVdpAddr(self: *TestingView, addr: u16) void {
+            self.machine.bus.vdp.addr = addr;
+        }
+
+        pub fn writeVdpData(self: *TestingView, value: u16) void {
+            self.machine.bus.vdp.writeData(value);
+        }
+
+        pub fn forceMemoryToVramDma(self: *TestingView, source_addr: u32, length: u16) void {
+            self.machine.bus.vdp.dma_active = true;
+            self.machine.bus.vdp.dma_fill = false;
+            self.machine.bus.vdp.dma_copy = false;
+            self.machine.bus.vdp.dma_source_addr = source_addr;
+            self.machine.bus.vdp.dma_length = length;
+            self.machine.bus.vdp.dma_remaining = length;
+            self.machine.bus.vdp.dma_start_delay_slots = 0;
+        }
+
+        pub fn z80Reset(self: *TestingView) void {
+            self.machine.bus.z80.reset();
+        }
+
+        pub fn z80WriteByte(self: *TestingView, addr: u16, value: u8) void {
+            self.machine.bus.z80.writeByte(addr, value);
+        }
+
+        pub fn setZ80BusRequest(self: *TestingView, value: u16) void {
+            self.machine.bus.write16(0x00A1_1100, value);
+        }
+
+        pub fn setZ80ResetControl(self: *TestingView, value: u16) void {
+            self.machine.bus.write16(0x00A1_1200, value);
+        }
+
+        pub fn setPendingM68kWaitMasterCycles(self: *TestingView, master_cycles: u32) void {
+            self.machine.bus.m68k_wait_master_cycles = master_cycles;
+        }
+    };
+
+    pub const TestingConstView = struct {
+        machine: *const Machine,
+
+        pub fn hasCartridgeRam(self: *const TestingConstView) bool {
+            return self.machine.bus.hasCartridgeRam();
+        }
+
+        pub fn isCartridgeRamMapped(self: *const TestingConstView) bool {
+            return self.machine.bus.isCartridgeRamMapped();
+        }
+
+        pub fn persistentSavePath(self: *const TestingConstView) ?[]const u8 {
+            return self.machine.bus.persistentSavePath();
+        }
+
+        pub fn vdpRegister(self: *const TestingConstView, index: usize) u8 {
+            std.debug.assert(index < self.machine.bus.vdp.regs.len);
+            return self.machine.bus.vdp.regs[index];
+        }
+
+        pub fn vdpAddr(self: *const TestingConstView) u16 {
+            return self.machine.bus.vdp.addr;
+        }
+
+        pub fn vdpDataPortWriteWaitMasterCycles(self: *const TestingConstView) u32 {
+            return self.machine.bus.vdp.dataPortWriteWaitMasterCycles();
+        }
+
+        pub fn vdpDataPortReadWaitMasterCycles(self: *const TestingConstView) u32 {
+            return self.machine.bus.vdp.dataPortReadWaitMasterCycles();
+        }
+
+        pub fn vdpShouldHaltCpu(self: *const TestingConstView) bool {
+            return self.machine.bus.vdp.shouldHaltCpu();
+        }
+
+        pub fn vdpIsDmaActive(self: *const TestingConstView) bool {
+            return self.machine.bus.vdp.dma_active;
+        }
+
+        pub fn ymKeyMask(self: *const TestingConstView) u8 {
+            return self.machine.bus.z80.getYmKeyMask();
+        }
+
+        pub fn ymRegister(self: *const TestingConstView, port: u1, reg: u8) u8 {
+            return self.machine.bus.z80.getYmRegister(port, reg);
+        }
+
+        pub fn z80ProgramCounter(self: *const TestingConstView) u16 {
+            return self.machine.bus.z80.getPc();
+        }
+
+        pub fn pendingM68kWaitMasterCycles(self: *const TestingConstView) u32 {
+            return self.machine.bus.pendingM68kWaitMasterCycles();
+        }
+
+        pub fn cpuDebtMasterCycles(self: *const TestingConstView) u32 {
+            return self.machine.m68k_sync.debt_master_cycles;
+        }
+    };
+
     bus: Bus,
     cpu: Cpu,
     m68k_sync: clock.M68kSync,
@@ -81,6 +247,14 @@ pub const Machine = struct {
 
     pub fn rebindRuntimePointers(self: *Machine) void {
         self.bus.rebindRuntimePointers();
+    }
+
+    pub fn testing(self: *Machine) TestingView {
+        return .{ .machine = self };
+    }
+
+    pub fn testingConst(self: *const Machine) TestingConstView {
+        return .{ .machine = self };
     }
 
     pub fn runMasterSlice(self: *Machine, total_master_cycles: u32) void {
