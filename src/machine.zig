@@ -3,6 +3,8 @@ const clock = @import("clock.zig");
 const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
 const Bus = @import("bus/bus.zig").Bus;
 const Cpu = @import("cpu/cpu.zig").Cpu;
+const InputBindings = @import("input/mapping.zig");
+const Io = @import("input/io.zig").Io;
 const scheduler = @import("scheduler/frame_scheduler.zig");
 
 pub const Machine = struct {
@@ -143,6 +145,10 @@ pub const Machine = struct {
         return &self.bus.vdp.framebuffer;
     }
 
+    pub fn controllerIo(self: *Machine) *Io {
+        return &self.bus.io;
+    }
+
     pub fn palMode(self: *const Machine) bool {
         return self.bus.vdp.pal_mode;
     }
@@ -151,12 +157,56 @@ pub const Machine = struct {
         return self.bus.audio_timing.takePending();
     }
 
+    pub fn drainPendingAudio(self: *Machine, sink: anytype) !void {
+        const pending = self.takePendingAudio();
+        if (sink.canAcceptPending()) {
+            try sink.pushPending(pending, &self.bus.z80, self.palMode());
+        } else {
+            try sink.discardPending(pending, &self.bus.z80, self.palMode());
+        }
+    }
+
+    pub fn discardPendingAudio(self: *Machine) void {
+        _ = self.takePendingAudio();
+    }
+
     pub fn programCounter(self: *const Machine) u32 {
         return @as(u32, self.cpu.core.pc);
     }
 
     pub fn stackPointer(self: *const Machine) u32 {
         return @as(u32, self.cpu.core.a_regs[7].l);
+    }
+
+    pub fn applyControllerTypes(self: *Machine, bindings: *const InputBindings.Bindings) void {
+        bindings.applyControllerTypes(&self.bus.io);
+    }
+
+    pub fn applyKeyboardBindings(
+        self: *Machine,
+        bindings: *const InputBindings.Bindings,
+        input: InputBindings.KeyboardInput,
+        pressed: bool,
+    ) bool {
+        return bindings.applyKeyboard(&self.bus.io, input, pressed);
+    }
+
+    pub fn releaseKeyboardBindings(self: *Machine, bindings: *const InputBindings.Bindings) void {
+        bindings.releaseKeyboard(&self.bus.io);
+    }
+
+    pub fn applyGamepadBindings(
+        self: *Machine,
+        bindings: *const InputBindings.Bindings,
+        port: usize,
+        input: InputBindings.GamepadInput,
+        pressed: bool,
+    ) bool {
+        return bindings.applyGamepad(&self.bus.io, port, input, pressed);
+    }
+
+    pub fn releaseGamepadBindings(self: *Machine, bindings: *const InputBindings.Bindings, port: usize) void {
+        bindings.releaseGamepad(&self.bus.io, port);
     }
 
     pub fn debugDump(self: *Machine) void {
@@ -243,4 +293,78 @@ test "machine runFrame advances execution and toggles the frame parity bit" {
 
     try std.testing.expect(machine.programCounter() != pc_before);
     try std.testing.expect(machine.bus.vdp.odd_frame);
+}
+
+test "machine binding helpers update and release controller state" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var bindings = InputBindings.Bindings.defaults();
+    machine.applyControllerTypes(&bindings);
+
+    _ = machine.applyKeyboardBindings(&bindings, .a, true);
+    try std.testing.expectEqual(@as(u16, 0), machine.bus.io.pad[0] & Io.Button.A);
+
+    machine.releaseKeyboardBindings(&bindings);
+    try std.testing.expect((machine.bus.io.pad[0] & Io.Button.A) != 0);
+
+    _ = machine.applyGamepadBindings(&bindings, 0, .east, true);
+    try std.testing.expectEqual(@as(u16, 0), machine.bus.io.pad[0] & Io.Button.B);
+
+    machine.releaseGamepadBindings(&bindings, 0);
+    try std.testing.expect((machine.bus.io.pad[0] & Io.Button.B) != 0);
+}
+
+test "machine audio drain helper routes pending audio to sink policy" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
+
+    const MockSink = struct {
+        can_accept: bool = true,
+        push_count: usize = 0,
+        discard_count: usize = 0,
+        last_master_cycles: u32 = 0,
+        saw_pal: bool = false,
+
+        fn canAcceptPending(self: *@This()) bool {
+            return self.can_accept;
+        }
+
+        fn pushPending(self: *@This(), pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
+            _ = z80;
+            self.push_count += 1;
+            self.last_master_cycles = pending.master_cycles;
+            self.saw_pal = is_pal;
+        }
+
+        fn discardPending(self: *@This(), pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
+            _ = z80;
+            self.discard_count += 1;
+            self.last_master_cycles = pending.master_cycles;
+            self.saw_pal = is_pal;
+        }
+    };
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+    machine.bus.vdp.pal_mode = true;
+
+    var sink = MockSink{};
+
+    machine.bus.audio_timing.consumeMaster(1234);
+    try machine.drainPendingAudio(&sink);
+    try std.testing.expectEqual(@as(usize, 1), sink.push_count);
+    try std.testing.expectEqual(@as(usize, 0), sink.discard_count);
+    try std.testing.expectEqual(@as(u32, 1234), sink.last_master_cycles);
+    try std.testing.expect(sink.saw_pal);
+
+    sink.can_accept = false;
+    machine.bus.audio_timing.consumeMaster(567);
+    try machine.drainPendingAudio(&sink);
+    try std.testing.expectEqual(@as(usize, 1), sink.push_count);
+    try std.testing.expectEqual(@as(usize, 1), sink.discard_count);
+    try std.testing.expectEqual(@as(u32, 567), sink.last_master_cycles);
 }

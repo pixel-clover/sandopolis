@@ -429,7 +429,7 @@ fn loadRomIntoMachine(
 
     logLoadedRomMetadata(&next_machine, rom_path);
     next_machine.reset();
-    input_bindings.applyControllerTypes(&next_machine.bus.io);
+    next_machine.applyControllerTypes(input_bindings);
     std.debug.print("CPU Reset complete.\n", .{});
     next_machine.debugDump();
 
@@ -546,12 +546,12 @@ fn bindingName(input: ?InputBindings.KeyboardInput) []const u8 {
     return if (input) |value| InputBindings.keyboardInputName(value) else "none";
 }
 
-fn bindingEditorOpen(ui: *FrontendUi, editor: *BindingEditorState, bindings: *const InputBindings.Bindings, io: *Io) void {
+fn bindingEditorOpen(ui: *FrontendUi, editor: *BindingEditorState, bindings: *const InputBindings.Bindings, machine: *Machine) void {
     ui.show_keyboard_editor = true;
     ui.show_help = false;
     editor.capture_mode = false;
     editor.setStatus(.neutral, "UP DOWN MOVE  ENTER REBIND  F5 SAVE  F4 CLOSE");
-    bindings.releaseKeyboard(io);
+    machine.releaseKeyboardBindings(bindings);
 }
 
 fn bindingEditorClose(ui: *FrontendUi, editor: *BindingEditorState) void {
@@ -582,14 +582,14 @@ fn handleBindingEditorKey(
     ui: *FrontendUi,
     editor: *BindingEditorState,
     bindings: *InputBindings.Bindings,
-    io: *Io,
+    machine: *Machine,
     input_config_path: ?[]const u8,
     scancode: zsdl3.Scancode,
     pressed: bool,
 ) bool {
     if (!ui.show_keyboard_editor) {
         if (!pressed or scancode != .f4) return false;
-        bindingEditorOpen(ui, editor, bindings, io);
+        bindingEditorOpen(ui, editor, bindings, machine);
         return true;
     }
 
@@ -920,13 +920,13 @@ fn updateHatState(state: *DirectionState, value: u8) [max_input_transitions]?Gam
 
 fn applyInputTransitions(
     bindings: *const InputBindings.Bindings,
-    io: *Io,
+    machine: *Machine,
     port: usize,
     transitions: anytype,
 ) void {
     for (transitions) |maybe_transition| {
         if (maybe_transition) |transition| {
-            _ = bindings.applyGamepad(io, port, transition.input, transition.pressed);
+            _ = machine.applyGamepadBindings(bindings, port, transition.input, transition.pressed);
         }
     }
 }
@@ -982,14 +982,14 @@ fn removeGamepadSlot(
     gamepads: *[InputBindings.player_count]?GamepadSlot,
     stick_states: *[InputBindings.player_count]DirectionState,
     trigger_states: *[InputBindings.player_count]TriggerState,
+    machine: *Machine,
     bindings: *const InputBindings.Bindings,
-    io: *Io,
     id: zsdl3.Joystick.Id,
 ) void {
     for (gamepads, 0..) |slot, port| {
         if (slot) |assigned| {
             if (assigned.id == id) {
-                bindings.releaseGamepad(io, port);
+                machine.releaseGamepadBindings(bindings, port);
                 stick_states[port] = .{};
                 trigger_states[port] = .{};
                 assigned.handle.close();
@@ -1028,14 +1028,14 @@ fn removeJoystickSlot(
     joysticks: *[InputBindings.player_count]?JoystickSlot,
     axis_states: *[InputBindings.player_count]DirectionState,
     hat_states: *[InputBindings.player_count]DirectionState,
+    machine: *Machine,
     bindings: *const InputBindings.Bindings,
-    io: *Io,
     id: zsdl3.Joystick.Id,
 ) void {
     for (joysticks, 0..) |slot, port| {
         if (slot) |assigned| {
             if (assigned.id == id) {
-                bindings.releaseGamepad(io, port);
+                machine.releaseGamepadBindings(bindings, port);
                 axis_states[port] = .{};
                 hat_states[port] = .{};
                 SDL_CloseJoystick(assigned.handle);
@@ -1636,7 +1636,7 @@ pub fn main() !void {
         machine.deinit(allocator);
     }
     const bus = &machine.bus;
-    input_bindings.applyControllerTypes(&bus.io);
+    machine.applyControllerTypes(&input_bindings);
 
     if (rom_path == null) {
         std.mem.writeInt(u32, bus.rom[0..4], 0x00FF0000, .big);
@@ -1885,15 +1885,15 @@ pub fn main() !void {
             switch (event.type) {
                 zsdl3.EventType.quit => break :mainLoop,
                 zsdl3.EventType.gamepad_added => assignGamepadSlot(&gamepads, &joysticks, &gamepad_sticks, &gamepad_triggers, event.gdevice.which),
-                zsdl3.EventType.gamepad_removed => removeGamepadSlot(&gamepads, &gamepad_sticks, &gamepad_triggers, &input_bindings, &bus.io, event.gdevice.which),
+                zsdl3.EventType.gamepad_removed => removeGamepadSlot(&gamepads, &gamepad_sticks, &gamepad_triggers, &machine, &input_bindings, event.gdevice.which),
                 zsdl3.EventType.joystick_added => assignJoystickSlot(&gamepads, &joysticks, &joystick_axes, &joystick_hats, event.jdevice.which),
-                zsdl3.EventType.joystick_removed => removeJoystickSlot(&joysticks, &joystick_axes, &joystick_hats, &input_bindings, &bus.io, event.jdevice.which),
+                zsdl3.EventType.joystick_removed => removeJoystickSlot(&joysticks, &joystick_axes, &joystick_hats, &machine, &input_bindings, event.jdevice.which),
                 zsdl3.EventType.gamepad_button_down, zsdl3.EventType.gamepad_button_up => {
                     const pressed = (event.type == zsdl3.EventType.gamepad_button_down);
                     const button = event.gbutton.button;
                     const port = findGamepadPort(&gamepads, event.gbutton.which) orelse continue;
                     if (gamepadInputFromButton(button)) |mapped_button| {
-                        _ = input_bindings.applyGamepad(&bus.io, port, mapped_button, pressed);
+                        _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
                 },
                 zsdl3.EventType.gamepad_axis_motion => {
@@ -1901,7 +1901,7 @@ pub fn main() !void {
                     const axis: zsdl3.Gamepad.Axis = @enumFromInt(event.gaxis.axis);
                     applyInputTransitions(
                         &input_bindings,
-                        &bus.io,
+                        &machine,
                         port,
                         updateGamepadAxisState(
                             &gamepad_sticks[port],
@@ -1917,14 +1917,14 @@ pub fn main() !void {
                     const pressed = (event.type == zsdl3.EventType.joystick_button_down);
                     const port = findJoystickPort(&joysticks, event.jbutton.which) orelse continue;
                     if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
-                        _ = input_bindings.applyGamepad(&bus.io, port, mapped_button, pressed);
+                        _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
                 },
                 zsdl3.EventType.joystick_axis_motion => {
                     const port = findJoystickPort(&joysticks, event.jaxis.which) orelse continue;
                     applyInputTransitions(
                         &input_bindings,
-                        &bus.io,
+                        &machine,
                         port,
                         updateJoystickAxisState(
                             &joystick_axes[port],
@@ -1939,7 +1939,7 @@ pub fn main() !void {
                     const port = findJoystickPort(&joysticks, event.jhat.which) orelse continue;
                     applyInputTransitions(
                         &input_bindings,
-                        &bus.io,
+                        &machine,
                         port,
                         updateHatState(&joystick_hats[port], event.jhat.value),
                     );
@@ -1951,7 +1951,7 @@ pub fn main() !void {
                         &frontend_ui,
                         &binding_editor,
                         &input_bindings,
-                        &bus.io,
+                        &machine,
                         input_config_path,
                         scancode,
                         pressed,
@@ -1991,7 +1991,7 @@ pub fn main() !void {
                         continue;
                     }
                     if (keyboardInputFromScancode(scancode)) |mapped_key| {
-                        _ = input_bindings.applyKeyboard(&bus.io, mapped_key, pressed);
+                        _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
 
                         if (pressed) {
                             switch (input_bindings.hotkeyForKeyboard(mapped_key) orelse continue) {
@@ -2012,7 +2012,7 @@ pub fn main() !void {
                                         gif_recorder = null;
                                         std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
                                     } else {
-                                        const fps: u16 = if (bus.vdp.pal_mode) 25 else 30;
+                                        const fps: u16 = if (machine.palMode()) 25 else 30;
                                         const path = gifOutputPath();
                                         const path_str = std.mem.sliceTo(&path, 0);
                                         gif_recorder = GifRecorder.start(path_str, fps) catch |err| {
@@ -2083,14 +2083,9 @@ pub fn main() !void {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, machine.programCounter() });
         }
         if (audio) |*a| {
-            const audio_frames = machine.takePendingAudio();
-            if (a.output.canAcceptPending()) {
-                try a.output.pushPending(audio_frames, &bus.z80, machine.palMode());
-            } else {
-                try a.output.discardPending(audio_frames, &bus.z80, machine.palMode());
-            }
+            try machine.drainPendingAudio(&a.output);
         } else {
-            _ = machine.takePendingAudio();
+            machine.discardPendingAudio();
         }
 
         const framebuffer = machine.framebuffer();
@@ -2252,39 +2247,45 @@ test "frontend shortcut helper exposes open rom key" {
 }
 
 test "binding editor opens releases inputs and rebinds selected action" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
-    var io = Io.init();
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
 
-    _ = bindings.applyKeyboard(&io, .a, true);
-    try std.testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.A);
+    _ = machine.applyKeyboardBindings(&bindings, .a, true);
+    try std.testing.expectEqual(@as(u16, 0), machine.bus.io.pad[0] & Io.Button.A);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f4, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f4, true));
     try std.testing.expect(ui.show_keyboard_editor);
     try std.testing.expect(ui.emulationPaused());
-    try std.testing.expect((io.pad[0] & Io.Button.A) != 0);
+    try std.testing.expect((machine.bus.io.pad[0] & Io.Button.A) != 0);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .@"return", true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", true));
     try std.testing.expect(editor.capture_mode);
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .v, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .v, true));
     try std.testing.expect(!editor.capture_mode);
     try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, .v), bindings.keyboardBinding(0, .up));
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f4, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f4, true));
     try std.testing.expect(!ui.show_keyboard_editor);
 }
 
 test "binding editor clears hotkeys during capture" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
-    var io = Io.init();
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f4, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f4, true));
     editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len;
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .@"return", true));
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f12, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f12, true));
     try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, null), bindings.hotkeyBinding(.step));
 }
 
