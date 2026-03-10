@@ -74,9 +74,12 @@ Fixed frontend keys:
 - `F4`: open the in-window keyboard binding editor
 - `F6`: save a quick state in the current session
 - `F7`: load the saved quick state
+- `F8`: save a persistent state file for the current ROM
+- `F9`: load the persistent state file for the current ROM
 
 The help overlay, pause mode, open-ROM dialog, and keyboard editor freeze emulation until you close or resume them.
 The quick-state slot is session-local and restores the full saved machine snapshot, including the ROM that was active when you saved it.
+The persistent state-file slot defaults to `<rom-name>.state` when the current ROM came from disk, and falls back to `sandopolis.state` otherwise.
 
 Keyboard editor controls:
 

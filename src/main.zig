@@ -7,6 +7,7 @@ const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 const Machine = @import("machine.zig").Machine;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
+const StateFile = @import("state_file.zig");
 
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
@@ -675,6 +676,62 @@ fn handleQuickStateKey(
     }
 }
 
+fn handlePersistentStateKey(
+    allocator: std.mem.Allocator,
+    scancode: zsdl3.Scancode,
+    pressed: bool,
+    machine: *Machine,
+    explicit_state_path: ?[]const u8,
+    audio: ?*AudioInit,
+    gif_recorder: *?GifRecorder,
+    frame_counter: *u32,
+) bool {
+    if (!pressed) return false;
+
+    var owned_state_path: ?[]u8 = null;
+    defer if (owned_state_path) |path| allocator.free(path);
+
+    const state_path = explicit_state_path orelse blk: {
+        owned_state_path = StateFile.defaultPathForMachine(allocator, machine) catch |err| {
+            std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
+            return true;
+        };
+        break :blk owned_state_path.?;
+    };
+
+    switch (scancode) {
+        .f8 => {
+            StateFile.saveToFile(machine, state_path) catch |err| {
+                std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                return true;
+            };
+            std.debug.print("Saved state file: {s}\n", .{state_path});
+            return true;
+        },
+        .f9 => {
+            var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
+                std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                return true;
+            };
+            errdefer next_machine.deinit(allocator);
+
+            stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
+            if (audio) |a| {
+                resetAudioOutput(a);
+            }
+
+            var old_machine = machine.*;
+            machine.* = next_machine;
+            machine.bus.rebindRuntimePointers();
+            old_machine.deinit(allocator);
+            frame_counter.* = 0;
+            std.debug.print("Loaded state file: {s}\n", .{state_path});
+            return true;
+        },
+        else => return false,
+    }
+}
+
 fn gamepadInputFromButton(button: u8) ?InputBindings.GamepadInput {
     if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_up)) return .dpad_up;
     if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_down)) return .dpad_down;
@@ -1109,8 +1166,10 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F2 RESUME",
         "F3 OPEN ROM",
         "F4 KEYBOARD EDITOR",
-        "F6 SAVE STATE",
-        "F7 LOAD STATE",
+        "F6 SAVE QUICK STATE",
+        "F7 LOAD QUICK STATE",
+        "F8 SAVE STATE FILE",
+        "F9 LOAD STATE FILE",
         "F1 HELP",
     };
     const scale = overlayScale(viewport);
@@ -1169,6 +1228,8 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F4 KEYBOARD EDITOR",
         "F6 SAVE QUICK STATE",
         "F7 LOAD QUICK STATE",
+        "F8 SAVE STATE FILE",
+        "F9 LOAD STATE FILE",
         "",
         "SPACE STEP CPU",
         "BACKSPACE REGISTER DUMP",
@@ -1220,7 +1281,9 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
             std.mem.startsWith(u8, line, "F3") or
             std.mem.startsWith(u8, line, "F4") or
             std.mem.startsWith(u8, line, "F6") or
-            std.mem.startsWith(u8, line, "F7"))
+            std.mem.startsWith(u8, line, "F7") or
+            std.mem.startsWith(u8, line, "F8") or
+            std.mem.startsWith(u8, line, "F9"))
             .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
         else if (std.mem.startsWith(u8, line, "HELP"))
             .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
@@ -1864,6 +1927,18 @@ pub fn main() !void {
                     )) {
                         continue;
                     }
+                    if (handlePersistentStateKey(
+                        allocator,
+                        scancode,
+                        pressed,
+                        &machine,
+                        null,
+                        if (audio) |*a| a else null,
+                        &gif_recorder,
+                        &frame_counter,
+                    )) {
+                        continue;
+                    }
                     if (frontendShortcutForKey(scancode, pressed)) |shortcut| {
                         _ = applyFrontendShortcut(&frontend_ui, scancode, pressed);
                         if (shortcut == .open_rom) {
@@ -2231,6 +2306,34 @@ test "quick state helper saves and restores machine state" {
     machine.bus.ram[0x20] = 0x00;
     frame_counter = 99;
     try std.testing.expect(handleQuickStateKey(allocator, .f7, true, &machine, &quick_state, null, &gif_recorder, &frame_counter));
+
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u32, 0), frame_counter);
+}
+
+test "persistent state helper saves and restores machine state" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = [_]u8{0} ** 0x400;
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
+    defer allocator.free(state_path);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var gif_recorder: ?GifRecorder = null;
+    var frame_counter: u32 = 42;
+
+    machine.bus.ram[0x20] = 0x5A;
+    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, null, &gif_recorder, &frame_counter));
+
+    machine.bus.ram[0x20] = 0x00;
+    frame_counter = 99;
+    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, null, &gif_recorder, &frame_counter));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.bus.ram[0x20]);
     try std.testing.expectEqual(@as(u32, 0), frame_counter);

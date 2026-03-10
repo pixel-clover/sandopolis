@@ -13,6 +13,7 @@ pub const Z80 = struct {
     pub const YmResetEvent = c.Jgz80YmResetEvent;
     pub const PsgCommandEvent = c.Jgz80PsgCommandEvent;
     pub const RegisterDump = c.Jgz80RegisterDump;
+    pub const State = c.Jgz80State;
 
     pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
@@ -26,6 +27,16 @@ pub const Z80 = struct {
         return .{
             .handle = c.jgz80_clone(handle) orelse return error.OutOfMemory,
         };
+    }
+
+    pub fn captureState(self: *const Z80) State {
+        var state = std.mem.zeroes(State);
+        if (self.handle) |h| c.jgz80_capture_state(h, &state);
+        return state;
+    }
+
+    pub fn restoreState(self: *Z80, state: *const State) void {
+        if (self.handle) |h| c.jgz80_restore_state(h, state);
     }
 
     pub fn deinit(self: *Z80) void {
