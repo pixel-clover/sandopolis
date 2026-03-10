@@ -1271,6 +1271,31 @@ fn formatPercentTenths(buffer: []u8, tenths_percent: u64) ![]const u8 {
     return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths_percent / 10, tenths_percent % 10 });
 }
 
+fn formatPerformanceSpikeLine(buffer: []u8, frame_number: u32, perf: *const PerformanceHudState) ![]const u8 {
+    var metric_buffers: [3][16]u8 = undefined;
+    const work_text = try formatDurationMsTenths(metric_buffers[0][0..], perf.last_work_ns);
+    const overrun_text = try formatDurationMsTenths(metric_buffers[1][0..], perf.last_overrun_ns);
+    const audio_text = if (perf.queuedAudioNs()) |queued_ns|
+        try formatDurationMsTenths(metric_buffers[2][0..], queued_ns)
+    else
+        "OFF";
+
+    if (perf.last_audio_queued_bytes == null) {
+        return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms audio=OFF", .{
+            frame_number,
+            work_text,
+            overrun_text,
+        });
+    }
+
+    return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms audio={s}ms", .{
+        frame_number,
+        work_text,
+        overrun_text,
+        audio_text,
+    });
+}
+
 fn renderOverlayPanel(
     renderer: *zsdl3.Renderer,
     rect: zsdl3.FRect,
@@ -2111,6 +2136,12 @@ pub fn main() !void {
         if (!emulation_paused) {
             if (target_frame_ns) |frame_ns| {
                 performance_hud.noteFrame(work_elapsed, present_elapsed, frame_ns, queued_audio_bytes);
+                const frame_number = frame_counter + 1;
+                if (frontend_ui.show_performance_hud and frame_number > uncapped_boot_frames and performance_hud.last_overrun_ns != 0) {
+                    var spike_buffer: [96]u8 = undefined;
+                    const spike_line = formatPerformanceSpikeLine(spike_buffer[0..], frame_number, &performance_hud) catch "SLOW FRAME";
+                    std.debug.print("{s}\n", .{spike_line});
+                }
             }
         }
     }
@@ -2270,6 +2301,23 @@ test "rate and percent formatters round to tenths" {
     var buffer: [16]u8 = undefined;
     try std.testing.expectEqualStrings("59.9", try formatRateHzTenths(buffer[0..], 16_688_154));
     try std.testing.expectEqualStrings("5.3", try formatPercentTenths(buffer[0..], 53));
+}
+
+test "performance spike formatter includes frame timing and audio" {
+    var perf = PerformanceHudState{};
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600);
+
+    var buffer: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "SLOW FRAME f=42 work=17.5ms over=0.8ms audio=50.0ms",
+        try formatPerformanceSpikeLine(buffer[0..], 42, &perf),
+    );
+
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, null);
+    try std.testing.expectEqualStrings(
+        "SLOW FRAME f=43 work=17.5ms over=0.8ms audio=OFF",
+        try formatPerformanceSpikeLine(buffer[0..], 43, &perf),
+    );
 }
 
 test "performance hud tracks slow frames and queued audio" {
