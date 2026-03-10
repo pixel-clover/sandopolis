@@ -15,7 +15,7 @@ const LAYER_PLANE_B_HIGH: u8 = 4;
 const LAYER_PLANE_A_HIGH: u8 = 5;
 const LAYER_SPRITE_HIGH: u8 = 6;
 
-fn layerOrder(source_id: u8, high_pri: bool) u8 {
+pub fn layerOrder(source_id: u8, high_pri: bool) u8 {
     return switch (source_id) {
         1 => if (high_pri) LAYER_PLANE_B_HIGH else LAYER_PLANE_B_LOW,
         2 => if (high_pri) LAYER_PLANE_A_HIGH else LAYER_PLANE_A_LOW,
@@ -339,14 +339,12 @@ fn renderSpritesToBuffer(
 ) void {
     const screen_w = self.screenWidth();
     const screen_w_i32: i32 = @intCast(screen_w);
-    const sprite_base: u16 = if (self.isH40())
-        ((@as(u16, self.regs[5] & 0x7F) << 9) & 0xFC00)
-    else
-        ((@as(u16, self.regs[5] & 0x7F) << 9) & 0xFE00);
     const y_line: i32 = @intCast(line);
+    const tile_h_shift = self.tileHeightShift();
     const max_sprites = self.maxSpritesPerLine();
     const max_pixels = self.maxSpritePixelsPerLine();
     const max_total = self.maxSpritesTotal();
+    self.ensureSpriteCache();
 
     var sprites_on_line: u8 = 0;
     var pixels_drawn: u16 = 0;
@@ -360,20 +358,9 @@ fn renderSpritesToBuffer(
         if (self.active_execution_counters) |counters| {
             counters.render_sprite_entries += 1;
         }
-        const entry_addr: u16 = sprite_base +% (@as(u16, sprite_index) *% 8);
-        const y_word = (@as(u16, self.vramReadByte(entry_addr)) << 8) | self.vramReadByte(entry_addr + 1);
-        const size = self.vramReadByte(entry_addr + 2);
-        const link = self.vramReadByte(entry_addr + 3) & 0x7F;
-        const attr = (@as(u16, self.vramReadByte(entry_addr + 4)) << 8) | self.vramReadByte(entry_addr + 5);
-        const x_word = (@as(u16, self.vramReadByte(entry_addr + 6)) << 8) | self.vramReadByte(entry_addr + 7);
-
-        const h_size: i32 = @as(i32, ((size >> 2) & 0x3)) + 1;
-        const v_size: i32 = @as(i32, (size & 0x3)) + 1;
-        const sprite_v_px = v_size * @as(i32, tile_h);
-        const y_pos = @as(i32, @intCast(y_word & 0x03FF)) - 128;
-        const x_pos_raw: u16 = x_word & 0x01FF;
-        const x_pos = @as(i32, @intCast(x_pos_raw)) - 128;
-        const y_in_non_flipped = y_line - y_pos;
+        const entry = self.sprite_cache_entries[sprite_index];
+        const sprite_v_px = @as(i32, entry.v_size) * @as(i32, tile_h);
+        const y_in_non_flipped = y_line - @as(i32, entry.y_pos);
 
         if (y_in_non_flipped >= 0 and y_in_non_flipped < sprite_v_px) {
             sprites_on_line += 1;
@@ -383,7 +370,7 @@ fn renderSpritesToBuffer(
                 break;
             }
 
-            if (x_pos_raw == 0) {
+            if (entry.x_pos_raw == 0) {
                 if (had_nonzero_x or self.sprite_dot_overflow) {
                     sprite_masked = true;
                 }
@@ -392,27 +379,21 @@ fn renderSpritesToBuffer(
             }
 
             if (!sprite_masked) {
-                const is_high = (attr & 0x8000) != 0;
-                const y_flip = (attr & 0x1000) != 0;
-                const x_flip = (attr & 0x0800) != 0;
-                const palette: u8 = @intCast((attr >> 13) & 0x3);
-                const tile_base: u16 = attr & 0x07FF;
-                const y_in_sprite = if (y_flip) (sprite_v_px - 1 - y_in_non_flipped) else y_in_non_flipped;
-                const tile_y: u16 = @intCast(@as(u32, @intCast(y_in_sprite)) >> @intCast(self.tileHeightShift()));
+                const y_in_sprite = if (entry.y_flip) (sprite_v_px - 1 - y_in_non_flipped) else y_in_non_flipped;
+                const tile_y: u16 = @intCast(@as(u32, @intCast(y_in_sprite)) >> tile_h_shift);
                 const fine_y: u8 = @intCast(@as(u32, @intCast(y_in_sprite)) & tile_h_mask);
-                const h_size_u16: u16 = @intCast(h_size);
-                const v_size_u16: u16 = @intCast(v_size);
+                const h_size_u16 = @as(u16, entry.h_size);
+                const v_size_u16 = @as(u16, entry.v_size);
 
-                const new_layer = layerOrder(3, is_high);
                 var screen_tile_x: u16 = 0;
                 while (screen_tile_x < h_size_u16) : (screen_tile_x += 1) {
-                    const tile_screen_start = x_pos + (@as(i32, screen_tile_x) * 8);
+                    const tile_screen_start = @as(i32, entry.x_pos) + (@as(i32, screen_tile_x) * 8);
                     var screen_x = @max(tile_screen_start, 0);
                     const tile_screen_end = @min(tile_screen_start + 8, screen_w_i32);
                     if (screen_x >= tile_screen_end) continue;
 
-                    const tile_x: u16 = if (x_flip) h_size_u16 - 1 - screen_tile_x else screen_tile_x;
-                    const tile_index: u16 = tile_base +% (tile_x *% v_size_u16) +% tile_y;
+                    const tile_x: u16 = if (entry.x_flip) h_size_u16 - 1 - screen_tile_x else screen_tile_x;
+                    const tile_index: u16 = entry.tile_base +% (tile_x *% v_size_u16) +% tile_y;
                     const pattern_row_addr = (@as(u32, tile_index) * tile_sz) + (@as(u32, fine_y) * 4);
                     const pattern_row = [4]u8{
                         self.vramReadByte(@intCast(pattern_row_addr & 0xFFFF)),
@@ -433,7 +414,7 @@ fn renderSpritesToBuffer(
                         }
 
                         const offset_in_tile: u8 = @intCast(screen_x - tile_screen_start);
-                        const fine_x: u8 = if (x_flip) @as(u8, 7) - offset_in_tile else offset_in_tile;
+                        const fine_x: u8 = if (entry.x_flip) @as(u8, 7) - offset_in_tile else offset_in_tile;
                         const pattern_byte = pattern_row[fine_x >> 1];
                         const color_idx: u8 = if ((fine_x & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
                         if (color_idx == 0) continue;
@@ -442,17 +423,17 @@ fn renderSpritesToBuffer(
                         }
 
                         const sx: usize = @intCast(screen_x);
-                        const palette_index = (palette * 16) + color_idx;
+                        const palette_index = (entry.palette * 16) + color_idx;
 
                         if (source_buf[sx] == 3) {
                             self.sprite_collision = true;
                         }
 
-                        if (sh_mode and palette == 3 and color_idx == 14) {
+                        if (sh_mode and entry.palette == 3 and color_idx == 14) {
                             sh_buf[sx] = SH_NORMAL;
                             continue;
                         }
-                        if (sh_mode and palette == 3 and color_idx == 15) {
+                        if (sh_mode and entry.palette == 3 and color_idx == 15) {
                             if (sh_buf[sx] == SH_SHADOW) {
                                 sh_buf[sx] = SH_NORMAL;
                             } else {
@@ -462,11 +443,11 @@ fn renderSpritesToBuffer(
                         }
 
                         const cur_layer = layer_buf[sx];
-                        if (new_layer > cur_layer) {
+                        if (entry.new_layer > cur_layer) {
                             pixel_buf[sx] = palette_index;
-                            layer_buf[sx] = new_layer;
+                            layer_buf[sx] = entry.new_layer;
                             source_buf[sx] = 3;
-                            if (sh_mode and is_high) {
+                            if (sh_mode and entry.is_high) {
                                 sh_buf[sx] = SH_NORMAL;
                             }
                         }
@@ -477,11 +458,60 @@ fn renderSpritesToBuffer(
             }
         }
 
-        if (link == 0 or link >= max_total) break;
-        sprite_index = link;
+        if (entry.link == 0 or entry.link >= max_total) break;
+        sprite_index = entry.link;
     }
 
     self.sprite_dot_overflow = dot_overflow;
+}
+
+fn seedAscendingSpritePattern(vdp: *Vdp, tile_index: u16) void {
+    const pattern_addr = @as(u32, tile_index) * vdp.tileSizeBytes();
+    vdp.vramWriteByte(@intCast(pattern_addr & 0xFFFF), 0x12);
+    vdp.vramWriteByte(@intCast((pattern_addr + 1) & 0xFFFF), 0x34);
+    vdp.vramWriteByte(@intCast((pattern_addr + 2) & 0xFFFF), 0x56);
+    vdp.vramWriteByte(@intCast((pattern_addr + 3) & 0xFFFF), 0x78);
+}
+
+fn writeTestSpriteEntry(vdp: *Vdp, sprite_base: u16, attr: u16, x: u16) void {
+    vdp.vramWriteWord(sprite_base, 128);
+    vdp.vramWriteByte(sprite_base + 2, 0x00);
+    vdp.vramWriteByte(sprite_base + 3, 0x00);
+    vdp.vramWriteWord(sprite_base + 4, attr);
+    vdp.vramWriteWord(sprite_base + 6, x);
+}
+
+fn clearSpriteBuffers(
+    pixel_buf: *[Vdp.framebuffer_width]u8,
+    layer_buf: *[Vdp.framebuffer_width]u8,
+    source_buf: *[Vdp.framebuffer_width]u8,
+    sh_buf: *[Vdp.framebuffer_width]u8,
+) void {
+    @memset(pixel_buf, 0);
+    @memset(layer_buf, LAYER_BACKDROP);
+    @memset(source_buf, 0);
+    @memset(sh_buf, SH_NORMAL);
+}
+
+fn renderSpriteLineForTest(
+    vdp: *Vdp,
+    pixel_buf: *[Vdp.framebuffer_width]u8,
+    layer_buf: *[Vdp.framebuffer_width]u8,
+    source_buf: *[Vdp.framebuffer_width]u8,
+    sh_buf: *[Vdp.framebuffer_width]u8,
+) void {
+    renderSpritesToBuffer(
+        vdp,
+        0,
+        vdp.tileHeight(),
+        vdp.tileHeightMask(),
+        vdp.tileSizeBytes(),
+        pixel_buf,
+        layer_buf,
+        source_buf,
+        sh_buf,
+        false,
+    );
 }
 
 test "sprite renderer draws a simple sprite row and tracks counters" {
@@ -489,17 +519,10 @@ test "sprite renderer draws a simple sprite row and tracks counters" {
     vdp.regs[1] = 0x40;
     vdp.regs[5] = 0x01;
 
-    vdp.vramWriteByte(0, 0x12);
-    vdp.vramWriteByte(1, 0x34);
-    vdp.vramWriteByte(2, 0x56);
-    vdp.vramWriteByte(3, 0x78);
+    seedAscendingSpritePattern(&vdp, 0);
 
     const sprite_base: u16 = 0x0200;
-    vdp.vramWriteWord(sprite_base, 128);
-    vdp.vramWriteByte(sprite_base + 2, 0x00);
-    vdp.vramWriteByte(sprite_base + 3, 0x00);
-    vdp.vramWriteWord(sprite_base + 4, 0x0000);
-    vdp.vramWriteWord(sprite_base + 6, 128);
+    writeTestSpriteEntry(&vdp, sprite_base, 0x0000, 128);
 
     var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
     var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
@@ -509,18 +532,7 @@ test "sprite renderer draws a simple sprite row and tracks counters" {
     vdp.setActiveExecutionCounters(&counters);
     defer vdp.setActiveExecutionCounters(null);
 
-    renderSpritesToBuffer(
-        &vdp,
-        0,
-        vdp.tileHeight(),
-        vdp.tileHeightMask(),
-        vdp.tileSizeBytes(),
-        &pixel_buf,
-        &layer_buf,
-        &source_buf,
-        &sh_buf,
-        false,
-    );
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[0..8]);
     try std.testing.expectEqual(@as(u64, 1), counters.render_sprite_entries);
@@ -533,35 +545,69 @@ test "sprite renderer respects horizontal flip" {
     vdp.regs[1] = 0x40;
     vdp.regs[5] = 0x01;
 
-    vdp.vramWriteByte(0, 0x12);
-    vdp.vramWriteByte(1, 0x34);
-    vdp.vramWriteByte(2, 0x56);
-    vdp.vramWriteByte(3, 0x78);
+    seedAscendingSpritePattern(&vdp, 0);
 
     const sprite_base: u16 = 0x0200;
-    vdp.vramWriteWord(sprite_base, 128);
-    vdp.vramWriteByte(sprite_base + 2, 0x00);
-    vdp.vramWriteByte(sprite_base + 3, 0x00);
-    vdp.vramWriteWord(sprite_base + 4, 0x0800);
-    vdp.vramWriteWord(sprite_base + 6, 128);
+    writeTestSpriteEntry(&vdp, sprite_base, 0x0800, 128);
 
     var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
     var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
     var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
     var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
 
-    renderSpritesToBuffer(
-        &vdp,
-        0,
-        vdp.tileHeight(),
-        vdp.tileHeightMask(),
-        vdp.tileSizeBytes(),
-        &pixel_buf,
-        &layer_buf,
-        &source_buf,
-        &sh_buf,
-        false,
-    );
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
     try std.testing.expectEqualSlices(u8, &[_]u8{ 8, 7, 6, 5, 4, 3, 2, 1 }, pixel_buf[0..8]);
+}
+
+test "sprite renderer invalidates cached sprite entries on SAT writes" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    seedAscendingSpritePattern(&vdp, 0);
+
+    const sprite_base: u16 = 0x0200;
+    writeTestSpriteEntry(&vdp, sprite_base, 0x0000, 128);
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[0..8]);
+
+    clearSpriteBuffers(&pixel_buf, &layer_buf, &source_buf, &sh_buf);
+    vdp.vramWriteWord(sprite_base + 6, 136);
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[8..16]);
+}
+
+test "sprite renderer rebuilds cache when the SAT base changes" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    seedAscendingSpritePattern(&vdp, 0);
+
+    writeTestSpriteEntry(&vdp, 0x0200, 0x0000, 128);
+    writeTestSpriteEntry(&vdp, 0x0400, 0x0000, 136);
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[0..8]);
+
+    clearSpriteBuffers(&pixel_buf, &layer_buf, &source_buf, &sh_buf);
+    vdp.regs[5] = 0x02;
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[8..16]);
 }
