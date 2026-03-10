@@ -11,12 +11,14 @@ TEST_DIR      := tests
 BUILD_DIR     := zig-out
 CACHE_DIR     := .zig-cache
 DOC_OUT       := docs/api/
+SITE_DIR      := site
 BINARY_NAME   := sandopolis
 BINARY_PATH   := $(BUILD_DIR)/bin/$(BINARY_NAME)
 PREFIX        ?= /usr/local
 RELEASE_MODE := ReleaseSmall
 TMP_DIRS	  := .zig-cache .zig-cache-unit .zig-global-cache
 ARGS          ?=
+UV            ?= $(shell which uv || echo ~/.local/bin/uv)
 
 SHELL         := /usr/bin/env bash
 .SHELLFLAGS   := -eu -o pipefail -c
@@ -25,7 +27,7 @@ SHELL         := /usr/bin/env bash
 # Targets
 ################################################################################
 
-.PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs clean \
+.PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs docs-serve clean \
  install-deps release help setup-hooks test-hooks
 .DEFAULT_GOAL := help
 
@@ -64,9 +66,9 @@ release: ## Build in Release mode
 	@echo "Building the project in Release mode..."
 	@$(MAKE) BUILD_TYPE=$(RELEASE_MODE) build
 
-clean: ## Remove docs, build artifacts, and cache directories
+clean: ## Remove docs output, build artifacts, and cache directories
 	@echo "Removing build artifacts, cache, and generated docs..."
-	rm -rf $(BUILD_DIR) $(CACHE_DIR) $(DOC_OUT) $(TMP_DIRS)
+	rm -rf $(BUILD_DIR) $(CACHE_DIR) $(DOC_OUT) $(SITE_DIR) $(TMP_DIRS)
 
 lint: ## Check code style and formatting of Zig files
 	@echo "Running code style checks..."
@@ -76,9 +78,17 @@ format: ## Format Zig files
 	@echo "Formatting Zig files..."
 	$(ZIG) fmt .
 
-docs: ## Generate API documentation
-	@echo "Generating API documentation into $(DOC_OUT)..."
+docs: ## Generate Zig API docs and build the MkDocs site
+	@echo "Generating Zig API documentation into $(DOC_OUT)..."
 	$(ZIG) build docs $(BUILD_OPTS) --prefix . -j$(JOBS)
+	@echo "Building MkDocs site into $(SITE_DIR)..."
+	$(UV) run mkdocs build --strict
+
+docs-serve: ## Regenerate Zig API docs and serve the MkDocs site locally
+	@echo "Generating Zig API documentation into $(DOC_OUT)..."
+	$(ZIG) build docs $(BUILD_OPTS) --prefix . -j$(JOBS)
+	@echo "Starting MkDocs dev server..."
+	$(UV) run mkdocs serve
 
 install-deps: ## Install system dependencies (for Debian-based systems)
 	@echo "Installing system dependencies..."

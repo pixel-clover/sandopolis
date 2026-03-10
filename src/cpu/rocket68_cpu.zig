@@ -96,6 +96,37 @@ pub const Cpu = struct {
     const default_stack_pointer: u32 = 0x00FF_FE00;
     const default_program_counter: u32 = 0x0000_0200;
 
+    pub const State = struct {
+        d_regs: [8]u32,
+        a_regs: [8]u32,
+        pc: u32,
+        ppc: u32,
+        sr: u16,
+        ir: u16,
+        irq_level: i32,
+        usp: u32,
+        ssp: u32,
+        stopped: bool,
+        trace_pending: bool,
+        exception_thrown: i32,
+        in_address_error: bool,
+        in_bus_error: bool,
+        fault_address: u32,
+        fault_ir: u16,
+        fault_ssw: u16,
+        fault_program_access: bool,
+        fault_valid: bool,
+        vbr: u32,
+        sfc: u32,
+        dfc: u32,
+        target_cycles: i32,
+        cycles_remaining: i32,
+        cycles: u64,
+        halted: bool,
+        pending_wait_cycles: u32,
+        pending_wait_master_cycles: u32,
+    };
+
     pub const WaitAccounting = struct {
         m68k_cycles: u32 = 0,
         master_cycles: u32 = 0,
@@ -133,6 +164,92 @@ pub const Cpu = struct {
         c.m68k_set_int_ack_callback(&self.core, cpuIntAck);
 
         return self;
+    }
+
+    pub fn clone(self: *const Cpu) Cpu {
+        var copy = Cpu.init();
+        copy.core = self.core;
+        copy.cycles = self.cycles;
+        copy.halted = self.halted;
+        copy.pending_wait_cycles = self.pending_wait_cycles;
+        copy.pending_wait_master_cycles = self.pending_wait_master_cycles;
+        copy.core.fault_trap_active = false;
+        copy.core.fault_trap = std.mem.zeroes(@TypeOf(copy.core.fault_trap));
+        return copy;
+    }
+
+    pub fn captureState(self: *const Cpu) State {
+        var state: State = undefined;
+
+        for (0..state.d_regs.len) |i| {
+            state.d_regs[i] = self.core.d_regs[i].l;
+            state.a_regs[i] = self.core.a_regs[i].l;
+        }
+
+        state.pc = self.core.pc;
+        state.ppc = self.core.ppc;
+        state.sr = self.core.sr;
+        state.ir = self.core.ir;
+        state.irq_level = self.core.irq_level;
+        state.usp = self.core.usp;
+        state.ssp = self.core.ssp;
+        state.stopped = self.core.stopped;
+        state.trace_pending = self.core.trace_pending;
+        state.exception_thrown = self.core.exception_thrown;
+        state.in_address_error = self.core.in_address_error;
+        state.in_bus_error = self.core.in_bus_error;
+        state.fault_address = self.core.fault_address;
+        state.fault_ir = self.core.fault_ir;
+        state.fault_ssw = self.core.fault_ssw;
+        state.fault_program_access = self.core.fault_program_access;
+        state.fault_valid = self.core.fault_valid;
+        state.vbr = self.core.vbr;
+        state.sfc = self.core.sfc;
+        state.dfc = self.core.dfc;
+        state.target_cycles = self.core.target_cycles;
+        state.cycles_remaining = self.core.cycles_remaining;
+        state.cycles = self.cycles;
+        state.halted = self.halted;
+        state.pending_wait_cycles = self.pending_wait_cycles;
+        state.pending_wait_master_cycles = self.pending_wait_master_cycles;
+
+        return state;
+    }
+
+    pub fn restoreState(self: *Cpu, state: *const State) void {
+        for (0..state.d_regs.len) |i| {
+            self.core.d_regs[i].l = state.d_regs[i];
+            self.core.a_regs[i].l = state.a_regs[i];
+        }
+
+        self.core.pc = state.pc;
+        self.core.ppc = state.ppc;
+        self.core.sr = state.sr;
+        self.core.ir = state.ir;
+        self.core.irq_level = @intCast(state.irq_level);
+        self.core.usp = state.usp;
+        self.core.ssp = state.ssp;
+        self.core.stopped = state.stopped;
+        self.core.trace_pending = state.trace_pending;
+        self.core.exception_thrown = @intCast(state.exception_thrown);
+        self.core.in_address_error = state.in_address_error;
+        self.core.in_bus_error = state.in_bus_error;
+        self.core.fault_address = state.fault_address;
+        self.core.fault_ir = state.fault_ir;
+        self.core.fault_ssw = state.fault_ssw;
+        self.core.fault_program_access = state.fault_program_access;
+        self.core.fault_valid = state.fault_valid;
+        self.core.fault_trap_active = false;
+        self.core.fault_trap = std.mem.zeroes(@TypeOf(self.core.fault_trap));
+        self.core.vbr = state.vbr;
+        self.core.sfc = state.sfc;
+        self.core.dfc = state.dfc;
+        self.core.target_cycles = @intCast(state.target_cycles);
+        self.core.cycles_remaining = @intCast(state.cycles_remaining);
+        self.cycles = state.cycles;
+        self.halted = state.halted;
+        self.pending_wait_cycles = state.pending_wait_cycles;
+        self.pending_wait_master_cycles = state.pending_wait_master_cycles;
     }
 
     fn currentOpcodeFromCpu(ctx: ?*anyopaque) u16 {

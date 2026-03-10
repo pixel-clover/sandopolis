@@ -1,4 +1,4 @@
-## Project roadmap
+## Project Roadmap
 
 This document outlines the features implemented in Sandopolis emulator and the future goals for the project.
 
@@ -55,6 +55,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Regression test coverage for CPU, bus, VDP, DMA/FIFO, SRAM, and audio paths
 - [x] Boot smoke test with ROM startup progression check
 - [x] Test ROM collection in `tests/testroms/`
+- [x] Deliberate public and testing facades that keep SDL frontend code out of the core runtime path
 - [ ] Timing accuracy
 - [ ] Debugger with single stepping, breakpoints, and register/memory inspection
 - [ ] Compatibility test suite against broad external test ROM suites

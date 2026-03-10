@@ -80,6 +80,49 @@ test "machine runMasterSlice advances the reset program through the public API" 
     try testing.expectEqual(@as(u32, 0x0000_0202), machine.cpuState().program_counter);
 }
 
+test "machine public API exposes metadata framebuffer and timing mode from ROM bytes" {
+    const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+    });
+    defer testing.allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(testing.allocator, rom);
+    defer machine.deinit(testing.allocator);
+    machine.reset();
+
+    const metadata = machine.romMetadata();
+    try testing.expect(metadata.console != null);
+    try testing.expect(metadata.title != null);
+    try testing.expectEqualStrings("SEGA", metadata.console.?[0..4]);
+    try testing.expectEqual(@as(u32, 0x00FF_FE00), metadata.reset_stack_pointer);
+    try testing.expectEqual(@as(u32, 0x0000_0200), metadata.reset_program_counter);
+    try testing.expectEqual(@as(usize, 320 * 224), machine.framebuffer().len);
+    try testing.expect(!machine.palMode());
+}
+
+test "machine public snapshot restores cpu state" {
+    const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x4E, 0x71,
+        0x60, 0xFC,
+    });
+    defer testing.allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(testing.allocator, rom);
+    defer machine.deinit(testing.allocator);
+    machine.reset();
+
+    var snapshot = try machine.captureSnapshot(testing.allocator);
+    defer snapshot.deinit(testing.allocator);
+
+    machine.runMasterSlice(clock.m68kCyclesToMaster(4));
+    machine.runMasterSlice(clock.m68kCyclesToMaster(4));
+    try testing.expectEqual(@as(u32, 0x0000_0204), machine.cpuState().program_counter);
+
+    try machine.restoreSnapshot(testing.allocator, &snapshot);
+    try testing.expectEqual(@as(u32, 0x0000_0200), machine.cpuState().program_counter);
+}
+
 test "emulator persistent cartridge sram flushes to save file and reloads" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

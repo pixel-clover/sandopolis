@@ -501,6 +501,194 @@ Jgz80Handle *jgz80_create(void) {
     return h;
 }
 
+Jgz80Handle *jgz80_clone(const Jgz80Handle *handle) {
+    if (!handle) return NULL;
+
+    Jgz80Handle *copy = (Jgz80Handle *) calloc(1, sizeof(Jgz80Handle));
+    if (!copy) return NULL;
+
+    memcpy(copy, handle, sizeof(Jgz80Handle));
+    bind_callbacks(copy);
+    return copy;
+}
+
+void jgz80_capture_state(const Jgz80Handle *handle, Jgz80State *state) {
+    if (!state) return;
+    memset(state, 0, sizeof(*state));
+    if (!handle) return;
+
+    state->pc = handle->core.pc;
+    state->sp = handle->core.sp;
+    state->ix = handle->core.ix;
+    state->iy = handle->core.iy;
+    state->mem_ptr = handle->core.mem_ptr;
+    state->af = handle->core.af;
+    state->bc = handle->core.bc;
+    state->de = handle->core.de;
+    state->hl = handle->core.hl;
+    state->af_alt = handle->core.a_f_;
+    state->bc_alt = handle->core.b_c_;
+    state->de_alt = handle->core.d_e_;
+    state->hl_alt = handle->core.h_l_;
+    state->i = handle->core.i;
+    state->r = handle->core.r;
+    state->iff_delay = handle->core.iff_delay;
+    state->interrupt_mode = handle->core.interrupt_mode;
+    state->irq_data = handle->core.irq_data;
+    state->irq_pending = handle->core.irq_pending;
+    state->nmi_pending = handle->core.nmi_pending;
+    state->iff1 = handle->core.iff1 ? 1u : 0u;
+    state->iff2 = handle->core.iff2 ? 1u : 0u;
+    state->halted = handle->core.halted ? 1u : 0u;
+
+    memcpy(state->ram, handle->ram, sizeof(state->ram));
+    state->bank = handle->bank;
+    state->audio_master_offset = handle->audio_master_offset;
+    memcpy(state->ym_addr, handle->ym_addr, sizeof(state->ym_addr));
+    memcpy(state->ym_regs, handle->ym_regs, sizeof(state->ym_regs));
+    state->ym_key_mask = handle->ym_key_mask;
+    state->ym_offset_cursor = handle->ym_offset_cursor;
+    state->ym_internal_master_remainder = handle->ym_internal_master_remainder;
+    state->ym_cycle = handle->ym_cycle;
+    state->ym_busy = handle->ym_busy;
+    state->ym_busy_cycles_remaining = handle->ym_busy_cycles_remaining;
+    state->ym_last_status_read = handle->ym_last_status_read;
+    state->ym_timer_a_cnt = handle->ym_timer_a_cnt;
+    state->ym_timer_a_reg = handle->ym_timer_a_reg;
+    state->ym_timer_a_load_lock = handle->ym_timer_a_load_lock;
+    state->ym_timer_a_load = handle->ym_timer_a_load;
+    state->ym_timer_a_enable = handle->ym_timer_a_enable;
+    state->ym_timer_a_reset = handle->ym_timer_a_reset;
+    state->ym_timer_a_load_latch = handle->ym_timer_a_load_latch;
+    state->ym_timer_a_overflow_flag = handle->ym_timer_a_overflow_flag;
+    state->ym_timer_a_overflow = handle->ym_timer_a_overflow;
+    state->ym_timer_b_cnt = handle->ym_timer_b_cnt;
+    state->ym_timer_b_subcnt = handle->ym_timer_b_subcnt;
+    state->ym_timer_b_reg = handle->ym_timer_b_reg;
+    state->ym_timer_b_load_lock = handle->ym_timer_b_load_lock;
+    state->ym_timer_b_load = handle->ym_timer_b_load;
+    state->ym_timer_b_enable = handle->ym_timer_b_enable;
+    state->ym_timer_b_reset = handle->ym_timer_b_reset;
+    state->ym_timer_b_load_latch = handle->ym_timer_b_load_latch;
+    state->ym_timer_b_overflow_flag = handle->ym_timer_b_overflow_flag;
+    state->ym_timer_b_overflow = handle->ym_timer_b_overflow;
+    state->audio_event_sequence = handle->audio_event_sequence;
+    memcpy(state->ym_write_events, handle->ym_write_events, sizeof(state->ym_write_events));
+    state->ym_write_write_index = handle->ym_write_write_index;
+    state->ym_write_read_index = handle->ym_write_read_index;
+    state->ym_write_count = handle->ym_write_count;
+    memcpy(state->ym_dac_samples, handle->ym_dac_samples, sizeof(state->ym_dac_samples));
+    state->ym_dac_write_index = handle->ym_dac_write_index;
+    state->ym_dac_read_index = handle->ym_dac_read_index;
+    state->ym_dac_count = handle->ym_dac_count;
+    memcpy(state->ym_reset_events, handle->ym_reset_events, sizeof(state->ym_reset_events));
+    state->ym_reset_write_index = handle->ym_reset_write_index;
+    state->ym_reset_read_index = handle->ym_reset_read_index;
+    state->ym_reset_count = handle->ym_reset_count;
+    memcpy(state->psg_commands, handle->psg_commands, sizeof(state->psg_commands));
+    state->psg_command_write_index = handle->psg_command_write_index;
+    state->psg_command_read_index = handle->psg_command_read_index;
+    state->psg_command_count = handle->psg_command_count;
+    state->psg_last = handle->psg_last;
+    memcpy(state->psg_tone, handle->psg_tone, sizeof(state->psg_tone));
+    memcpy(state->psg_volume, handle->psg_volume, sizeof(state->psg_volume));
+    state->psg_noise = handle->psg_noise;
+    state->psg_latched_channel = handle->psg_latched_channel;
+    state->psg_latched_is_volume = handle->psg_latched_is_volume ? 1u : 0u;
+    state->bus_req = handle->bus_req ? 1u : 0u;
+    state->bus_ack = handle->bus_ack ? 1u : 0u;
+    state->reset_line = handle->reset_line ? 1u : 0u;
+    state->m68k_bus_access_count = handle->m68k_bus_access_count;
+}
+
+void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state) {
+    if (!handle || !state) return;
+
+    handle->core.pc = state->pc;
+    handle->core.sp = state->sp;
+    handle->core.ix = state->ix;
+    handle->core.iy = state->iy;
+    handle->core.mem_ptr = state->mem_ptr;
+    handle->core.af = state->af;
+    handle->core.bc = state->bc;
+    handle->core.de = state->de;
+    handle->core.hl = state->hl;
+    handle->core.a_f_ = state->af_alt;
+    handle->core.b_c_ = state->bc_alt;
+    handle->core.d_e_ = state->de_alt;
+    handle->core.h_l_ = state->hl_alt;
+    handle->core.i = state->i;
+    handle->core.r = state->r;
+    handle->core.iff_delay = state->iff_delay;
+    handle->core.interrupt_mode = state->interrupt_mode;
+    handle->core.irq_data = state->irq_data;
+    handle->core.irq_pending = state->irq_pending;
+    handle->core.nmi_pending = state->nmi_pending;
+    handle->core.iff1 = state->iff1 != 0u;
+    handle->core.iff2 = state->iff2 != 0u;
+    handle->core.halted = state->halted != 0u;
+    bind_callbacks(handle);
+
+    memcpy(handle->ram, state->ram, sizeof(handle->ram));
+    handle->bank = state->bank;
+    handle->audio_master_offset = state->audio_master_offset;
+    memcpy(handle->ym_addr, state->ym_addr, sizeof(handle->ym_addr));
+    memcpy(handle->ym_regs, state->ym_regs, sizeof(handle->ym_regs));
+    handle->ym_key_mask = state->ym_key_mask;
+    handle->ym_offset_cursor = state->ym_offset_cursor;
+    handle->ym_internal_master_remainder = state->ym_internal_master_remainder;
+    handle->ym_cycle = state->ym_cycle;
+    handle->ym_busy = state->ym_busy;
+    handle->ym_busy_cycles_remaining = state->ym_busy_cycles_remaining;
+    handle->ym_last_status_read = state->ym_last_status_read;
+    handle->ym_timer_a_cnt = state->ym_timer_a_cnt;
+    handle->ym_timer_a_reg = state->ym_timer_a_reg;
+    handle->ym_timer_a_load_lock = state->ym_timer_a_load_lock;
+    handle->ym_timer_a_load = state->ym_timer_a_load;
+    handle->ym_timer_a_enable = state->ym_timer_a_enable;
+    handle->ym_timer_a_reset = state->ym_timer_a_reset;
+    handle->ym_timer_a_load_latch = state->ym_timer_a_load_latch;
+    handle->ym_timer_a_overflow_flag = state->ym_timer_a_overflow_flag;
+    handle->ym_timer_a_overflow = state->ym_timer_a_overflow;
+    handle->ym_timer_b_cnt = state->ym_timer_b_cnt;
+    handle->ym_timer_b_subcnt = state->ym_timer_b_subcnt;
+    handle->ym_timer_b_reg = state->ym_timer_b_reg;
+    handle->ym_timer_b_load_lock = state->ym_timer_b_load_lock;
+    handle->ym_timer_b_load = state->ym_timer_b_load;
+    handle->ym_timer_b_enable = state->ym_timer_b_enable;
+    handle->ym_timer_b_reset = state->ym_timer_b_reset;
+    handle->ym_timer_b_load_latch = state->ym_timer_b_load_latch;
+    handle->ym_timer_b_overflow_flag = state->ym_timer_b_overflow_flag;
+    handle->ym_timer_b_overflow = state->ym_timer_b_overflow;
+    handle->audio_event_sequence = state->audio_event_sequence;
+    memcpy(handle->ym_write_events, state->ym_write_events, sizeof(handle->ym_write_events));
+    handle->ym_write_write_index = state->ym_write_write_index;
+    handle->ym_write_read_index = state->ym_write_read_index;
+    handle->ym_write_count = state->ym_write_count;
+    memcpy(handle->ym_dac_samples, state->ym_dac_samples, sizeof(handle->ym_dac_samples));
+    handle->ym_dac_write_index = state->ym_dac_write_index;
+    handle->ym_dac_read_index = state->ym_dac_read_index;
+    handle->ym_dac_count = state->ym_dac_count;
+    memcpy(handle->ym_reset_events, state->ym_reset_events, sizeof(handle->ym_reset_events));
+    handle->ym_reset_write_index = state->ym_reset_write_index;
+    handle->ym_reset_read_index = state->ym_reset_read_index;
+    handle->ym_reset_count = state->ym_reset_count;
+    memcpy(handle->psg_commands, state->psg_commands, sizeof(handle->psg_commands));
+    handle->psg_command_write_index = state->psg_command_write_index;
+    handle->psg_command_read_index = state->psg_command_read_index;
+    handle->psg_command_count = state->psg_command_count;
+    handle->psg_last = state->psg_last;
+    memcpy(handle->psg_tone, state->psg_tone, sizeof(handle->psg_tone));
+    memcpy(handle->psg_volume, state->psg_volume, sizeof(handle->psg_volume));
+    handle->psg_noise = state->psg_noise;
+    handle->psg_latched_channel = state->psg_latched_channel;
+    handle->psg_latched_is_volume = state->psg_latched_is_volume != 0u;
+    handle->bus_req = state->bus_req != 0u;
+    handle->bus_ack = state->bus_ack != 0u;
+    handle->reset_line = state->reset_line != 0u;
+    handle->m68k_bus_access_count = state->m68k_bus_access_count;
+}
+
 void jgz80_destroy(Jgz80Handle *handle) {
     free(handle);
 }

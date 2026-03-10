@@ -13,12 +13,30 @@ pub const Z80 = struct {
     pub const YmResetEvent = c.Jgz80YmResetEvent;
     pub const PsgCommandEvent = c.Jgz80PsgCommandEvent;
     pub const RegisterDump = c.Jgz80RegisterDump;
+    pub const State = c.Jgz80State;
 
     pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
 
     pub fn init() Z80 {
         return .{ .handle = c.jgz80_create() };
+    }
+
+    pub fn clone(self: *const Z80) error{OutOfMemory}!Z80 {
+        const handle = self.handle orelse return .{ .handle = null };
+        return .{
+            .handle = c.jgz80_clone(handle) orelse return error.OutOfMemory,
+        };
+    }
+
+    pub fn captureState(self: *const Z80) State {
+        var state = std.mem.zeroes(State);
+        if (self.handle) |h| c.jgz80_capture_state(h, &state);
+        return state;
+    }
+
+    pub fn restoreState(self: *Z80, state: *const State) void {
+        if (self.handle) |h| c.jgz80_restore_state(h, state);
     }
 
     pub fn deinit(self: *Z80) void {
@@ -210,6 +228,24 @@ test "z80 register dump reflects stepped state" {
     const dump = z80.getRegisterDump();
     try std.testing.expectEqual(@as(u16, 0x0001), dump.pc);
     try std.testing.expectEqual(@as(u8, 0), dump.halted);
+}
+
+test "z80 clone preserves and decouples RAM contents" {
+    var original = Z80.init();
+    defer original.deinit();
+
+    original.writeByte(0x0000, 0x12);
+    original.writeByte(0x0001, 0x34);
+
+    var cloned = try original.clone();
+    defer cloned.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0x12), cloned.readByte(0x0000));
+    try std.testing.expectEqual(@as(u8, 0x34), cloned.readByte(0x0001));
+
+    cloned.writeByte(0x0000, 0xAB);
+    try std.testing.expectEqual(@as(u8, 0x12), original.readByte(0x0000));
+    try std.testing.expectEqual(@as(u8, 0xAB), cloned.readByte(0x0000));
 }
 
 test "z80 audio events retain scheduler master offsets" {

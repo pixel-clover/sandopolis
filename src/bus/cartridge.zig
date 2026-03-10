@@ -143,6 +143,24 @@ const Ram = struct {
         self.* = initEmpty();
     }
 
+    fn clone(self: *const Ram, allocator: std.mem.Allocator) !Ram {
+        const data = if (self.data) |source| blk: {
+            const copy = try allocator.alloc(u8, source.len);
+            std.mem.copyForwards(u8, copy, source);
+            break :blk copy;
+        } else null;
+
+        return .{
+            .data = data,
+            .ram_type = self.ram_type,
+            .persistent = self.persistent,
+            .dirty = self.dirty,
+            .mapped = self.mapped,
+            .start_address = self.start_address,
+            .end_address = self.end_address,
+        };
+    }
+
     fn hasStorage(self: *const Ram) bool {
         return self.data != null;
     }
@@ -217,6 +235,7 @@ pub const Cartridge = struct {
     rom: []u8,
     ram: Ram,
     save_path: ?[]u8,
+    source_path: ?[]u8,
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Cartridge {
         var rom_data: []u8 = undefined;
@@ -280,10 +299,17 @@ pub const Cartridge = struct {
         checksum_override: ?u32,
     ) !Cartridge {
         const checksum = checksum_override orelse std.hash.Crc32.hash(rom_data);
+        const source_path = if (rom_path) |path|
+            try allocator.dupe(u8, path)
+        else
+            null;
+        errdefer if (source_path) |path| allocator.free(path);
+
         var cartridge = Cartridge{
             .rom = rom_data,
             .ram = try Ram.initFromRomHeader(allocator, rom_data, checksum),
             .save_path = null,
+            .source_path = source_path,
         };
 
         if (cartridge.ram.persistent and cartridge.ram.hasStorage() and rom_path != null) {
@@ -297,7 +323,36 @@ pub const Cartridge = struct {
     pub fn deinit(self: *Cartridge, allocator: std.mem.Allocator) void {
         self.ram.deinit(allocator);
         if (self.save_path) |save_path| allocator.free(save_path);
+        if (self.source_path) |source_path| allocator.free(source_path);
         allocator.free(self.rom);
+    }
+
+    pub fn clone(self: *const Cartridge, allocator: std.mem.Allocator) !Cartridge {
+        const rom = try allocator.alloc(u8, self.rom.len);
+        errdefer allocator.free(rom);
+        std.mem.copyForwards(u8, rom, self.rom);
+
+        var ram = try self.ram.clone(allocator);
+        errdefer ram.deinit(allocator);
+
+        const save_path = if (self.save_path) |path|
+            try allocator.dupe(u8, path)
+        else
+            null;
+        errdefer if (save_path) |path| allocator.free(path);
+
+        const source_path = if (self.source_path) |path|
+            try allocator.dupe(u8, path)
+        else
+            null;
+        errdefer if (source_path) |path| allocator.free(path);
+
+        return .{
+            .rom = rom,
+            .ram = ram,
+            .save_path = save_path,
+            .source_path = source_path,
+        };
     }
 
     fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
@@ -372,6 +427,10 @@ pub const Cartridge = struct {
 
     pub fn persistentSavePath(self: *const Cartridge) ?[]const u8 {
         return self.save_path;
+    }
+
+    pub fn sourcePath(self: *const Cartridge) ?[]const u8 {
+        return self.source_path;
     }
 
     pub fn readByte(self: *const Cartridge, address: u32) ?u8 {

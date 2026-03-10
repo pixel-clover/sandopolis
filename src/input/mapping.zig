@@ -95,7 +95,7 @@ pub const GamepadInput = enum(u8) {
     right_trigger,
 };
 
-const actions = [_]Action{
+pub const all_actions = [_]Action{
     .up,
     .down,
     .left,
@@ -110,7 +110,10 @@ const actions = [_]Action{
     .start,
 };
 
-const hotkey_actions = [_]HotkeyAction{ .step, .registers, .record_gif, .toggle_fullscreen, .quit };
+pub const all_hotkey_actions = [_]HotkeyAction{ .step, .registers, .record_gif, .toggle_fullscreen, .quit };
+
+const actions = all_actions;
+const hotkey_actions = all_hotkey_actions;
 
 pub const Bindings = struct {
     keyboard: [player_count][actions.len]?KeyboardInput,
@@ -261,6 +264,16 @@ pub const Bindings = struct {
         return handled;
     }
 
+    pub fn releaseKeyboard(self: *const Bindings, io: *Io) void {
+        for (0..player_count) |port| {
+            for (actions) |action| {
+                if (self.keyboard[port][actionIndex(action)] != null) {
+                    io.setButton(port, actionToIoButton(action), false);
+                }
+            }
+        }
+    }
+
     pub fn applyGamepad(self: *const Bindings, io: *Io, port: usize, input: GamepadInput, pressed: bool) bool {
         var handled = false;
         for (actions) |action| {
@@ -287,6 +300,68 @@ pub const Bindings = struct {
             }
         }
         return null;
+    }
+
+    pub fn keyboardBinding(self: *const Bindings, port: usize, action: Action) ?KeyboardInput {
+        return self.keyboard[port][actionIndex(action)];
+    }
+
+    pub fn hotkeyBinding(self: *const Bindings, action: HotkeyAction) ?KeyboardInput {
+        return self.hotkeys[hotkeyIndex(action)];
+    }
+
+    pub fn writeContents(self: *const Bindings, writer: anytype) !void {
+        for (0..player_count) |port| {
+            try writer.print("controller.{s} = {s}\n", .{
+                portName(port),
+                controllerTypeName(self.controller_types[port]),
+            });
+        }
+        try writer.writeByte('\n');
+
+        try writer.print("analog.gamepad_axis = {d}\n", .{self.gamepad_axis_threshold});
+        try writer.print("analog.joystick_axis = {d}\n", .{self.joystick_axis_threshold});
+        try writer.print("analog.trigger = {d}\n", .{self.trigger_threshold});
+        try writer.writeByte('\n');
+
+        for (0..player_count) |port| {
+            for (actions) |action| {
+                try writer.print("keyboard.{s}.{s} = ", .{
+                    portName(port),
+                    actionName(action),
+                });
+                try writeOptionalInputName(writer, self.keyboardBinding(port, action));
+                try writer.writeByte('\n');
+            }
+            try writer.writeByte('\n');
+        }
+
+        for (0..player_count) |port| {
+            for (actions) |action| {
+                try writer.print("gamepad.{s}.{s} = ", .{
+                    portName(port),
+                    actionName(action),
+                });
+                try writeOptionalInputName(writer, self.gamepad[port][actionIndex(action)]);
+                try writer.writeByte('\n');
+            }
+            try writer.writeByte('\n');
+        }
+
+        for (hotkey_actions) |action| {
+            try writer.print("hotkey.{s} = ", .{hotkeyActionName(action)});
+            try writeOptionalInputName(writer, self.hotkeyBinding(action));
+            try writer.writeByte('\n');
+        }
+    }
+
+    pub fn saveToFile(self: *const Bindings, path: []const u8) !void {
+        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        defer file.close();
+        var buffer: [4096]u8 = undefined;
+        var writer = file.writer(&buffer);
+        try self.writeContents(&writer.interface);
+        try writer.interface.flush();
     }
 
     fn applyAssignment(self: *Bindings, lhs: []const u8, rhs: []const u8) !void {
@@ -350,6 +425,22 @@ pub fn defaultConfigPath(allocator: std.mem.Allocator) !?[]u8 {
     return try allocator.dupe(u8, default_config_name);
 }
 
+pub fn actionName(action: Action) []const u8 {
+    return @tagName(action);
+}
+
+pub fn hotkeyActionName(action: HotkeyAction) []const u8 {
+    return @tagName(action);
+}
+
+pub fn keyboardInputName(input: KeyboardInput) []const u8 {
+    return @tagName(input);
+}
+
+pub fn gamepadInputName(input: GamepadInput) []const u8 {
+    return @tagName(input);
+}
+
 fn trimLine(raw_line: []const u8) []const u8 {
     const line_without_comment = if (std.mem.indexOfAny(u8, raw_line, "#;")) |comment_start|
         raw_line[0..comment_start]
@@ -407,6 +498,14 @@ fn parsePortName(name: []const u8) ?usize {
     return null;
 }
 
+fn portName(port: usize) []const u8 {
+    return switch (port) {
+        0 => "p1",
+        1 => "p2",
+        else => unreachable,
+    };
+}
+
 fn parseAction(name: []const u8) ?Action {
     inline for (std.meta.fields(Action)) |field| {
         if (std.ascii.eqlIgnoreCase(name, field.name)) {
@@ -461,10 +560,25 @@ fn parseControllerType(name: []const u8) ?ControllerType {
     return null;
 }
 
+fn controllerTypeName(controller_type: ControllerType) []const u8 {
+    return switch (controller_type) {
+        .three_button => "three_button",
+        .six_button => "six_button",
+    };
+}
+
 fn parseAnalogThreshold(name: []const u8) !i16 {
     const threshold = try std.fmt.parseUnsigned(u16, name, 10);
     if (threshold > std.math.maxInt(i16)) return error.InvalidAnalogThreshold;
     return @intCast(threshold);
+}
+
+fn writeOptionalInputName(writer: anytype, input: anytype) !void {
+    if (input) |value| {
+        try writer.writeAll(@tagName(value));
+    } else {
+        try writer.writeAll("none");
+    }
 }
 
 test "input bindings parse overrides and unbinds" {
@@ -520,6 +634,41 @@ test "input bindings apply remapped inputs" {
     try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.Mode);
     try testing.expectEqual(HotkeyAction.step, bindings.hotkeyForKeyboard(.backspace).?);
     try testing.expectEqual(HotkeyAction.registers, bindings.hotkeyForKeyboard(.space).?);
+}
+
+test "input bindings release mapped keyboard inputs for both ports" {
+    var io = Io.init();
+    const bindings = Bindings.defaults();
+
+    _ = bindings.applyKeyboard(&io, .a, true);
+    _ = bindings.applyKeyboard(&io, .u, true);
+    try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.A);
+    try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.A);
+
+    bindings.releaseKeyboard(&io);
+
+    try testing.expect((io.pad[0] & Io.Button.A) != 0);
+    try testing.expect((io.pad[1] & Io.Button.A) != 0);
+}
+
+test "input bindings write contents round trip" {
+    var bindings = Bindings.defaults();
+    bindings.setKeyboard(.a, .q);
+    bindings.setKeyboardForPort(1, .start, null);
+    bindings.setHotkey(.quit, .backspace);
+    bindings.setControllerType(1, .three_button);
+    bindings.setGamepadAxisThreshold(12_345);
+
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(testing.allocator);
+    try bindings.writeContents(output.writer(testing.allocator));
+
+    const round_tripped = try Bindings.parseContents(output.items);
+    try testing.expectEqual(@as(?KeyboardInput, .q), round_tripped.keyboardBinding(0, .a));
+    try testing.expectEqual(@as(?KeyboardInput, null), round_tripped.keyboardBinding(1, .start));
+    try testing.expectEqual(@as(?KeyboardInput, .backspace), round_tripped.hotkeyBinding(.quit));
+    try testing.expectEqual(ControllerType.three_button, round_tripped.controller_types[1]);
+    try testing.expectEqual(@as(i16, 12_345), round_tripped.gamepad_axis_threshold);
 }
 
 test "input bindings reject out-of-range analog thresholds" {

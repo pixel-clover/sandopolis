@@ -55,11 +55,101 @@ typedef struct Jgz80RegisterDump {
     uint8_t halted;
 } Jgz80RegisterDump;
 
+typedef struct Jgz80State {
+    uint16_t pc;
+    uint16_t sp;
+    uint16_t ix;
+    uint16_t iy;
+    uint16_t mem_ptr;
+    uint16_t af;
+    uint16_t bc;
+    uint16_t de;
+    uint16_t hl;
+    uint16_t af_alt;
+    uint16_t bc_alt;
+    uint16_t de_alt;
+    uint16_t hl_alt;
+    uint8_t i;
+    uint8_t r;
+    uint8_t iff_delay;
+    uint8_t interrupt_mode;
+    uint8_t irq_data;
+    uint8_t irq_pending;
+    uint8_t nmi_pending;
+    uint8_t iff1;
+    uint8_t iff2;
+    uint8_t halted;
+    uint8_t ram[8 * 1024];
+    uint16_t bank;
+    uint32_t audio_master_offset;
+    uint8_t ym_addr[2];
+    uint8_t ym_regs[2][256];
+    uint8_t ym_key_mask;
+    uint32_t ym_offset_cursor;
+    uint16_t ym_internal_master_remainder;
+    uint8_t ym_cycle;
+    uint8_t ym_busy;
+    uint8_t ym_busy_cycles_remaining;
+    uint8_t ym_last_status_read;
+    uint16_t ym_timer_a_cnt;
+    uint16_t ym_timer_a_reg;
+    uint8_t ym_timer_a_load_lock;
+    uint8_t ym_timer_a_load;
+    uint8_t ym_timer_a_enable;
+    uint8_t ym_timer_a_reset;
+    uint8_t ym_timer_a_load_latch;
+    uint8_t ym_timer_a_overflow_flag;
+    uint8_t ym_timer_a_overflow;
+    uint16_t ym_timer_b_cnt;
+    uint8_t ym_timer_b_subcnt;
+    uint8_t ym_timer_b_reg;
+    uint8_t ym_timer_b_load_lock;
+    uint8_t ym_timer_b_load;
+    uint8_t ym_timer_b_enable;
+    uint8_t ym_timer_b_reset;
+    uint8_t ym_timer_b_load_latch;
+    uint8_t ym_timer_b_overflow_flag;
+    uint8_t ym_timer_b_overflow;
+    uint32_t audio_event_sequence;
+    Jgz80YmWriteEvent ym_write_events[32768];
+    uint16_t ym_write_write_index;
+    uint16_t ym_write_read_index;
+    uint16_t ym_write_count;
+    Jgz80YmDacSampleEvent ym_dac_samples[4096];
+    uint16_t ym_dac_write_index;
+    uint16_t ym_dac_read_index;
+    uint16_t ym_dac_count;
+    Jgz80YmResetEvent ym_reset_events[64];
+    uint16_t ym_reset_write_index;
+    uint16_t ym_reset_read_index;
+    uint16_t ym_reset_count;
+    Jgz80PsgCommandEvent psg_commands[8192];
+    uint16_t psg_command_write_index;
+    uint16_t psg_command_read_index;
+    uint16_t psg_command_count;
+    uint8_t psg_last;
+    uint16_t psg_tone[3];
+    uint8_t psg_volume[4];
+    uint8_t psg_noise;
+    uint8_t psg_latched_channel;
+    uint8_t psg_latched_is_volume;
+    uint8_t bus_req;
+    uint8_t bus_ack;
+    uint8_t reset_line;
+    uint32_t m68k_bus_access_count;
+} Jgz80State;
+
 typedef uint8_t (*Jgz80HostReadFunc)(void *userdata, uint32_t addr);
 
 typedef void (*Jgz80HostWriteFunc)(void *userdata, uint32_t addr, uint8_t val);
 
 Jgz80Handle *jgz80_create(void);
+
+Jgz80Handle *jgz80_clone(const Jgz80Handle *handle);
+
+void jgz80_capture_state(const Jgz80Handle *handle, Jgz80State *state);
+
+void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state);
 
 void jgz80_destroy(Jgz80Handle *handle);
 
