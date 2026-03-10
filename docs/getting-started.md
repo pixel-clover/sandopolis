@@ -71,8 +71,17 @@ Fixed frontend keys:
 - `F1`: toggle the in-window help overlay
 - `F2`: pause or resume emulation
 - `F3`: open the host file dialog and load a different ROM at runtime
+- `F4`: open the in-window keyboard binding editor
 
-The help overlay, pause mode, and open-ROM dialog freeze emulation until you close or resume them.
+The help overlay, pause mode, open-ROM dialog, and keyboard editor freeze emulation until you close or resume them.
+
+Keyboard editor controls:
+
+- `Up` / `Down`: move between bindings
+- `Return`: rebind the selected action or hotkey
+- `F12`: clear the selected binding while capture mode is active
+- `F5`: save the current bindings to the active input config path
+- `F4` or `Escape`: close the editor
 
 ## Input configuration
 

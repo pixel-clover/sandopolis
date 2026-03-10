@@ -68,9 +68,10 @@ const FrontendUi = struct {
     paused: bool = false,
     show_help: bool = false,
     dialog_active: bool = false,
+    show_keyboard_editor: bool = false,
 
     fn emulationPaused(self: *const FrontendUi) bool {
-        return self.paused or self.show_help or self.dialog_active;
+        return self.paused or self.show_help or self.dialog_active or self.show_keyboard_editor;
     }
 };
 
@@ -177,6 +178,101 @@ const FileDialogState = struct {
         self.failure_message.len = len;
         self.outcome = .failed;
         self.in_flight = false;
+    }
+};
+
+const BindingEditorTarget = union(enum) {
+    player_action: struct {
+        port: usize,
+        action: InputBindings.Action,
+    },
+    hotkey: InputBindings.HotkeyAction,
+};
+
+const BindingEditorStatus = enum {
+    neutral,
+    success,
+    failed,
+};
+
+const BindingEditorState = struct {
+    selected_index: usize = 0,
+    capture_mode: bool = false,
+    status: BindingEditorStatus = .neutral,
+    status_message: DialogMessageCopy = .{},
+
+    fn selectionCount() usize {
+        return InputBindings.player_count * InputBindings.all_actions.len + InputBindings.all_hotkey_actions.len;
+    }
+
+    fn currentTarget(self: *const BindingEditorState) BindingEditorTarget {
+        return targetForIndex(self.selected_index);
+    }
+
+    fn move(self: *BindingEditorState, delta: isize) void {
+        const count: isize = @intCast(selectionCount());
+        var next: isize = @intCast(self.selected_index);
+        next += delta;
+        while (next < 0) next += count;
+        while (next >= count) next -= count;
+        self.selected_index = @intCast(next);
+    }
+
+    fn beginCapture(self: *BindingEditorState) void {
+        self.capture_mode = true;
+        self.setStatus(.neutral, "PRESS A KEY  ESC CANCEL  F12 CLEAR");
+    }
+
+    fn cancelCapture(self: *BindingEditorState) void {
+        self.capture_mode = false;
+        self.setStatus(.neutral, "REBIND CANCELED");
+    }
+
+    fn assign(self: *BindingEditorState, bindings: *InputBindings.Bindings, input: InputBindings.KeyboardInput) void {
+        switch (self.currentTarget()) {
+            .player_action => |target| bindings.setKeyboardForPort(target.port, target.action, input),
+            .hotkey => |action| bindings.setHotkey(action, input),
+        }
+        self.capture_mode = false;
+        self.setStatus(.success, "BINDING UPDATED");
+    }
+
+    fn clearSelected(self: *BindingEditorState, bindings: *InputBindings.Bindings) void {
+        switch (self.currentTarget()) {
+            .player_action => |target| bindings.setKeyboardForPort(target.port, target.action, null),
+            .hotkey => |action| bindings.setHotkey(action, null),
+        }
+        self.capture_mode = false;
+        self.setStatus(.success, "BINDING CLEARED");
+    }
+
+    fn clearStatus(self: *BindingEditorState) void {
+        self.status = .neutral;
+        self.status_message = .{};
+    }
+
+    fn setStatus(self: *BindingEditorState, status: BindingEditorStatus, message: []const u8) void {
+        self.status = status;
+        self.status_message = .{};
+        const len = @min(message.len, self.status_message.bytes.len);
+        @memcpy(self.status_message.bytes[0..len], message[0..len]);
+        self.status_message.len = len;
+    }
+
+    fn targetForIndex(index: usize) BindingEditorTarget {
+        const per_player_count = InputBindings.all_actions.len;
+        const player_action_count = InputBindings.player_count * per_player_count;
+        if (index < player_action_count) {
+            return .{
+                .player_action = .{
+                    .port = index / per_player_count,
+                    .action = InputBindings.all_actions[index % per_player_count],
+                },
+            };
+        }
+        return .{
+            .hotkey = InputBindings.all_hotkey_actions[index - player_action_count],
+        };
     }
 };
 
@@ -438,6 +534,98 @@ fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardIn
         .f11 => .f11,
         else => null,
     };
+}
+
+fn effectiveInputConfigPath(input_config_path: ?[]const u8) []const u8 {
+    return input_config_path orelse InputBindings.default_config_name;
+}
+
+fn bindingName(input: ?InputBindings.KeyboardInput) []const u8 {
+    return if (input) |value| InputBindings.keyboardInputName(value) else "none";
+}
+
+fn bindingEditorOpen(ui: *FrontendUi, editor: *BindingEditorState, bindings: *const InputBindings.Bindings, io: *Io) void {
+    ui.show_keyboard_editor = true;
+    ui.show_help = false;
+    editor.capture_mode = false;
+    editor.setStatus(.neutral, "UP DOWN MOVE  ENTER REBIND  F5 SAVE  F4 CLOSE");
+    bindings.releaseKeyboard(io);
+}
+
+fn bindingEditorClose(ui: *FrontendUi, editor: *BindingEditorState) void {
+    ui.show_keyboard_editor = false;
+    editor.capture_mode = false;
+    editor.clearStatus();
+}
+
+fn bindingEditorRowText(
+    buffer: []u8,
+    bindings: *const InputBindings.Bindings,
+    target: BindingEditorTarget,
+) ![]const u8 {
+    return switch (target) {
+        .player_action => |item| std.fmt.bufPrint(buffer, "P{d} {s} = {s}", .{
+            item.port + 1,
+            InputBindings.actionName(item.action),
+            bindingName(bindings.keyboardBinding(item.port, item.action)),
+        }),
+        .hotkey => |action| std.fmt.bufPrint(buffer, "HOTKEY {s} = {s}", .{
+            InputBindings.hotkeyActionName(action),
+            bindingName(bindings.hotkeyBinding(action)),
+        }),
+    };
+}
+
+fn handleBindingEditorKey(
+    ui: *FrontendUi,
+    editor: *BindingEditorState,
+    bindings: *InputBindings.Bindings,
+    io: *Io,
+    input_config_path: ?[]const u8,
+    scancode: zsdl3.Scancode,
+    pressed: bool,
+) bool {
+    if (!ui.show_keyboard_editor) {
+        if (!pressed or scancode != .f4) return false;
+        bindingEditorOpen(ui, editor, bindings, io);
+        return true;
+    }
+
+    if (!pressed) return true;
+
+    if (editor.capture_mode) {
+        switch (scancode) {
+            .escape => editor.cancelCapture(),
+            .f12 => editor.clearSelected(bindings),
+            else => {
+                if (keyboardInputFromScancode(scancode)) |input| {
+                    editor.assign(bindings, input);
+                } else {
+                    editor.setStatus(.failed, "KEY NOT SUPPORTED");
+                }
+            },
+        }
+        return true;
+    }
+
+    switch (scancode) {
+        .f4, .escape => bindingEditorClose(ui, editor),
+        .up => editor.move(-1),
+        .down => editor.move(1),
+        .@"return" => editor.beginCapture(),
+        .f5 => {
+            const path = effectiveInputConfigPath(input_config_path);
+            bindings.saveToFile(path) catch |err| {
+                std.debug.print("Failed to save input config {s}: {s}\n", .{ path, @errorName(err) });
+                editor.setStatus(.failed, "FAILED TO SAVE CONFIG");
+                return true;
+            };
+            std.debug.print("Saved input config: {s}\n", .{path});
+            editor.setStatus(.success, "CONFIG SAVED");
+        },
+        else => {},
+    }
+    return true;
 }
 
 fn gamepadInputFromButton(button: u8) ?InputBindings.GamepadInput {
@@ -873,6 +1061,7 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     const lines = [_][]const u8{
         "F2 RESUME",
         "F3 OPEN ROM",
+        "F4 KEYBOARD EDITOR",
         "F1 HELP",
     };
     const scale = overlayScale(viewport);
@@ -928,6 +1117,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F1 CLOSE HELP",
         "F2 PAUSE OR RESUME",
         "F3 OPEN ROM DIALOG",
+        "F4 KEYBOARD EDITOR",
         "",
         "SPACE STEP CPU",
         "BACKSPACE REGISTER DUMP",
@@ -935,7 +1125,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F11 TOGGLE FULLSCREEN",
         "ESC QUIT",
         "",
-        "HELP AND PAUSE FREEZE EMULATION",
+        "HELP PAUSE AND MENUS FREEZE EMULATION",
     };
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
@@ -974,7 +1164,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     for (lines) |line| {
         const color: zsdl3.Color = if (line.len == 0)
             .{ .r = 0, .g = 0, .b = 0, .a = 0 }
-        else if (std.mem.startsWith(u8, line, "F1") or std.mem.startsWith(u8, line, "F2") or std.mem.startsWith(u8, line, "F3"))
+        else if (std.mem.startsWith(u8, line, "F1") or std.mem.startsWith(u8, line, "F2") or std.mem.startsWith(u8, line, "F3") or std.mem.startsWith(u8, line, "F4"))
             .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
         else if (std.mem.startsWith(u8, line, "HELP"))
             .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
@@ -1051,13 +1241,127 @@ fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     }
 }
 
-fn renderFrontendOverlay(renderer: *zsdl3.Renderer, ui: *const FrontendUi) !void {
-    if (!ui.paused and !ui.show_help and !ui.dialog_active) return;
+fn renderKeyboardEditorOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    editor: *const BindingEditorState,
+    bindings: *const InputBindings.Bindings,
+) !void {
+    const title = "KEYBOARD EDITOR";
+    const controls = if (editor.capture_mode)
+        "PRESS A KEY  ESC CANCEL  F12 CLEAR"
+    else
+        "UP DOWN MOVE  ENTER REBIND  F5 SAVE  F4 CLOSE";
+    const scale = overlayScale(viewport);
+    const padding = 10.0 * scale;
+    const row_height = 10.0 * scale;
+    const header_height = 28.0 * scale;
+    const footer_height = 18.0 * scale;
+    const visible_rows = @min(@as(usize, 11), BindingEditorState.selectionCount());
+
+    const panel = zsdl3.FRect{
+        .x = 12.0 * scale,
+        .y = 12.0 * scale,
+        .w = @as(f32, @floatFromInt(viewport.w)) - 24.0 * scale,
+        .h = header_height + footer_height + @as(f32, @floatFromInt(visible_rows)) * row_height + padding * 2.0,
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        .{ .r = 0x0B, .g = 0x11, .b = 0x19, .a = 0xED },
+        .{ .r = 0x6A, .g = 0xB5, .b = 0xFF, .a = 0xFF },
+        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x90 },
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding,
+        scale,
+        .{ .r = 0x6A, .g = 0xB5, .b = 0xFF, .a = 0xFF },
+        title,
+    );
+    try drawOverlayText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding + 11.0 * scale,
+        scale,
+        .{ .r = 0xD7, .g = 0xE2, .b = 0xEE, .a = 0xFF },
+        controls,
+    );
+
+    const first_visible = if (editor.selected_index < visible_rows / 2)
+        @as(usize, 0)
+    else
+        @min(
+            editor.selected_index - visible_rows / 2,
+            BindingEditorState.selectionCount() - visible_rows,
+        );
+    var y = panel.y + padding + header_height;
+    for (0..visible_rows) |row| {
+        const index = first_visible + row;
+        const selected = index == editor.selected_index;
+        const row_rect = zsdl3.FRect{
+            .x = panel.x + padding - 3.0 * scale,
+            .y = y - 1.0 * scale,
+            .w = panel.w - padding * 2.0 + 6.0 * scale,
+            .h = row_height,
+        };
+        if (selected) {
+            try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 });
+            try zsdl3.renderFillRect(renderer, row_rect);
+            try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x6A, .g = 0xB5, .b = 0xFF, .a = 0xFF });
+            try zsdl3.renderRect(renderer, row_rect);
+        }
+
+        var line_buffer: [96]u8 = undefined;
+        const line = try bindingEditorRowText(line_buffer[0..], bindings, BindingEditorState.targetForIndex(index));
+        try drawOverlayText(
+            renderer,
+            panel.x + padding,
+            y,
+            scale,
+            if (selected)
+                .{ .r = 0xFF, .g = 0xF4, .b = 0xC4, .a = 0xFF }
+            else
+                .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+            line,
+        );
+        y += row_height;
+    }
+
+    const status_color: zsdl3.Color = switch (editor.status) {
+        .neutral => .{ .r = 0xD7, .g = 0xE2, .b = 0xEE, .a = 0xFF },
+        .success => .{ .r = 0x89, .g = 0xDA, .b = 0xA2, .a = 0xFF },
+        .failed => .{ .r = 0xFF, .g = 0x9B, .b = 0x8E, .a = 0xFF },
+    };
+    if (editor.status_message.len != 0) {
+        try drawOverlayText(
+            renderer,
+            panel.x + padding,
+            panel.y + panel.h - padding - 7.0 * scale,
+            scale,
+            status_color,
+            editor.status_message.slice(),
+        );
+    }
+}
+
+fn renderFrontendOverlay(
+    renderer: *zsdl3.Renderer,
+    ui: *const FrontendUi,
+    editor: *const BindingEditorState,
+    bindings: *const InputBindings.Bindings,
+) !void {
+    if (!ui.paused and !ui.show_help and !ui.dialog_active and !ui.show_keyboard_editor) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
     if (ui.dialog_active) {
         try renderDialogOverlay(renderer, viewport);
+    } else if (ui.show_keyboard_editor) {
+        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings);
     } else if (ui.show_help) {
         try renderHelpOverlay(renderer, viewport);
     } else {
@@ -1407,6 +1711,7 @@ pub fn main() !void {
     var gif_recorder: ?GifRecorder = null;
     var frontend_ui = FrontendUi{};
     var file_dialog_state = FileDialogState{};
+    var binding_editor = BindingEditorState{};
 
     var frame_timer = std.time.Instant.now() catch unreachable;
     mainLoop: while (true) {
@@ -1478,6 +1783,17 @@ pub fn main() !void {
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
                     const pressed = (event.type == zsdl3.EventType.key_down);
                     const scancode = event.key.scancode;
+                    if (handleBindingEditorKey(
+                        &frontend_ui,
+                        &binding_editor,
+                        &input_bindings,
+                        &bus.io,
+                        input_config_path,
+                        scancode,
+                        pressed,
+                    )) {
+                        continue;
+                    }
                     if (frontendShortcutForKey(scancode, pressed)) |shortcut| {
                         _ = applyFrontendShortcut(&frontend_ui, scancode, pressed);
                         if (shortcut == .open_rom) {
@@ -1638,7 +1954,7 @@ pub fn main() !void {
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
         try zsdl3.renderTexture(renderer, vdp_texture, null, null);
-        try renderFrontendOverlay(renderer, &frontend_ui);
+        try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings);
         zsdl3.renderPresent(renderer);
 
         frame_counter += 1;
@@ -1788,6 +2104,43 @@ test "frontend shortcut helper exposes open rom key" {
     try std.testing.expectEqual(FrontendShortcut.open_rom, frontendShortcutForKey(.f3, true).?);
     try std.testing.expect(applyFrontendShortcut(&ui, .f3, true));
     try std.testing.expect(!ui.emulationPaused());
+}
+
+test "binding editor opens releases inputs and rebinds selected action" {
+    var ui = FrontendUi{};
+    var editor = BindingEditorState{};
+    var bindings = InputBindings.Bindings.defaults();
+    var io = Io.init();
+
+    _ = bindings.applyKeyboard(&io, .a, true);
+    try std.testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.A);
+
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f4, true));
+    try std.testing.expect(ui.show_keyboard_editor);
+    try std.testing.expect(ui.emulationPaused());
+    try std.testing.expect((io.pad[0] & Io.Button.A) != 0);
+
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .@"return", true));
+    try std.testing.expect(editor.capture_mode);
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .v, true));
+    try std.testing.expect(!editor.capture_mode);
+    try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, .v), bindings.keyboardBinding(0, .up));
+
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f4, true));
+    try std.testing.expect(!ui.show_keyboard_editor);
+}
+
+test "binding editor clears hotkeys during capture" {
+    var ui = FrontendUi{};
+    var editor = BindingEditorState{};
+    var bindings = InputBindings.Bindings.defaults();
+    var io = Io.init();
+
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f4, true));
+    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len;
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .@"return", true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f12, true));
+    try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, null), bindings.hotkeyBinding(.step));
 }
 
 test "file dialog state records selected paths and failures" {
