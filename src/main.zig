@@ -676,28 +676,57 @@ fn handleQuickStateKey(
     }
 }
 
+fn resolvePersistentStatePath(
+    allocator: std.mem.Allocator,
+    machine: *const Machine,
+    explicit_state_path: ?[]const u8,
+    persistent_state_slot: u8,
+) ![]u8 {
+    if (explicit_state_path) |path| {
+        return StateFile.pathForSlot(allocator, path, persistent_state_slot);
+    }
+    return StateFile.pathForMachineSlot(allocator, machine, persistent_state_slot);
+}
+
 fn handlePersistentStateKey(
     allocator: std.mem.Allocator,
     scancode: zsdl3.Scancode,
     pressed: bool,
     machine: *Machine,
     explicit_state_path: ?[]const u8,
+    persistent_state_slot: *u8,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
     frame_counter: *u32,
 ) bool {
     if (!pressed) return false;
 
+    persistent_state_slot.* = StateFile.normalizePersistentStateSlot(persistent_state_slot.*);
+    if (scancode == .f10) {
+        persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
+
+        const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
+            std.debug.print("Failed to resolve state-file slot path: {s}\n", .{@errorName(err)});
+            return true;
+        };
+        defer allocator.free(state_path);
+
+        std.debug.print("Persistent state slot {d}/{d}: {s}\n", .{
+            persistent_state_slot.*,
+            StateFile.persistent_state_slot_count,
+            state_path,
+        });
+        return true;
+    }
+
     var owned_state_path: ?[]u8 = null;
     defer if (owned_state_path) |path| allocator.free(path);
 
-    const state_path = explicit_state_path orelse blk: {
-        owned_state_path = StateFile.defaultPathForMachine(allocator, machine) catch |err| {
-            std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
-            return true;
-        };
-        break :blk owned_state_path.?;
+    owned_state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
+        std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
+        return true;
     };
+    const state_path = owned_state_path.?;
 
     switch (scancode) {
         .f8 => {
@@ -1160,9 +1189,15 @@ fn renderOverlayPanel(
     });
 }
 
-fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
+fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent_state_slot: u8) !void {
     const title = "PAUSED";
+    var slot_line_buffer: [32]u8 = undefined;
+    const slot_line = try std.fmt.bufPrint(&slot_line_buffer, "STATE FILE SLOT {d}/{d}", .{
+        persistent_state_slot,
+        StateFile.persistent_state_slot_count,
+    });
     const lines = [_][]const u8{
+        slot_line,
         "F2 RESUME",
         "F3 OPEN ROM",
         "F4 KEYBOARD EDITOR",
@@ -1170,6 +1205,7 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
         "F9 LOAD STATE FILE",
+        "F10 NEXT STATE SLOT",
         "F1 HELP",
     };
     const scale = overlayScale(viewport);
@@ -1219,8 +1255,13 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     }
 }
 
-fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
+fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent_state_slot: u8) !void {
     const title = "SANDOPOLIS HELP";
+    var slot_line_buffer: [32]u8 = undefined;
+    const slot_line = try std.fmt.bufPrint(&slot_line_buffer, "ACTIVE STATE SLOT {d}/{d}", .{
+        persistent_state_slot,
+        StateFile.persistent_state_slot_count,
+    });
     const lines = [_][]const u8{
         "F1 CLOSE HELP",
         "F2 PAUSE OR RESUME",
@@ -1230,6 +1271,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
         "F9 LOAD STATE FILE",
+        "F10 NEXT STATE SLOT",
         "",
         "SPACE STEP CPU",
         "BACKSPACE REGISTER DUMP",
@@ -1237,6 +1279,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F11 TOGGLE FULLSCREEN",
         "ESC QUIT",
         "",
+        slot_line,
         "HELP PAUSE AND MENUS FREEZE EMULATION",
     };
     const scale = overlayScale(viewport);
@@ -1472,6 +1515,7 @@ fn renderFrontendOverlay(
     ui: *const FrontendUi,
     editor: *const BindingEditorState,
     bindings: *const InputBindings.Bindings,
+    persistent_state_slot: u8,
 ) !void {
     if (!ui.paused and !ui.show_help and !ui.dialog_active and !ui.show_keyboard_editor) return;
 
@@ -1482,9 +1526,9 @@ fn renderFrontendOverlay(
     } else if (ui.show_keyboard_editor) {
         try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings);
     } else if (ui.show_help) {
-        try renderHelpOverlay(renderer, viewport);
+        try renderHelpOverlay(renderer, viewport, persistent_state_slot);
     } else {
-        try renderPauseOverlay(renderer, viewport);
+        try renderPauseOverlay(renderer, viewport, persistent_state_slot);
     }
 }
 
@@ -1829,6 +1873,7 @@ pub fn main() !void {
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
     var quick_state: ?Machine.Snapshot = null;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     defer if (quick_state) |*state| state.deinit(allocator);
     var frontend_ui = FrontendUi{};
     var file_dialog_state = FileDialogState{};
@@ -1933,6 +1978,7 @@ pub fn main() !void {
                         pressed,
                         &machine,
                         null,
+                        &persistent_state_slot,
                         if (audio) |*a| a else null,
                         &gif_recorder,
                         &frame_counter,
@@ -2099,7 +2145,7 @@ pub fn main() !void {
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
         try zsdl3.renderTexture(renderer, vdp_texture, null, null);
-        try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings);
+        try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings, persistent_state_slot);
         zsdl3.renderPresent(renderer);
 
         frame_counter += 1;
@@ -2327,15 +2373,61 @@ test "persistent state helper saves and restores machine state" {
 
     var gif_recorder: ?GifRecorder = null;
     var frame_counter: u32 = 42;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.bus.ram[0x20] = 0x5A;
-    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
     machine.bus.ram[0x20] = 0x00;
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u32, 0), frame_counter);
+}
+
+test "persistent state helper cycles slots and keeps files separate" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = [_]u8{0} ** 0x400;
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
+    defer allocator.free(state_path);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var gif_recorder: ?GifRecorder = null;
+    var frame_counter: u32 = 17;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+
+    machine.bus.ram[0x20] = 0x11;
+    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+
+    try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
+
+    machine.bus.ram[0x20] = 0x22;
+    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+
+    machine.bus.ram[0x20] = 0x00;
+    frame_counter = 99;
+    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expectEqual(@as(u8, 0x22), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u32, 0), frame_counter);
+
+    try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
+    try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
+
+    machine.bus.ram[0x20] = 0x00;
+    frame_counter = 55;
+    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expectEqual(@as(u8, 0x11), machine.bus.ram[0x20]);
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 

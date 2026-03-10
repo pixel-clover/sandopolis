@@ -11,6 +11,8 @@ const Z80 = @import("cpu/z80.zig").Z80;
 const save_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
 const save_state_version: u16 = 1;
 const default_state_name = "sandopolis.state";
+pub const default_persistent_state_slot: u8 = 1;
+pub const persistent_state_slot_count: u8 = 3;
 
 const Header = struct {
     magic: [8]u8,
@@ -174,6 +176,36 @@ fn replaceExtension(allocator: std.mem.Allocator, path: []const u8, extension: [
     });
 }
 
+pub fn normalizePersistentStateSlot(slot: u8) u8 {
+    return if (slot >= default_persistent_state_slot and slot <= persistent_state_slot_count)
+        slot
+    else
+        default_persistent_state_slot;
+}
+
+pub fn nextPersistentStateSlot(slot: u8) u8 {
+    const normalized = normalizePersistentStateSlot(slot);
+    return if (normalized == persistent_state_slot_count) default_persistent_state_slot else normalized + 1;
+}
+
+pub fn pathForSlot(allocator: std.mem.Allocator, path: []const u8, slot: u8) ![]u8 {
+    const normalized = normalizePersistentStateSlot(slot);
+    if (normalized == default_persistent_state_slot) {
+        return allocator.dupe(u8, path);
+    }
+
+    const current_extension = std.fs.path.extension(path);
+    if (current_extension.len == 0) {
+        return std.fmt.allocPrint(allocator, "{s}.slot{d}.state", .{ path, normalized });
+    }
+
+    return std.fmt.allocPrint(allocator, "{s}.slot{d}{s}", .{
+        path[0 .. path.len - current_extension.len],
+        normalized,
+        current_extension,
+    });
+}
+
 fn captureBusState(machine: *const Machine) BusState {
     return .{
         .ram = machine.bus.ram,
@@ -201,6 +233,16 @@ pub fn defaultPathForMachine(allocator: std.mem.Allocator, machine: *const Machi
         return replaceExtension(allocator, source_path, ".state");
     }
     return allocator.dupe(u8, default_state_name);
+}
+
+pub fn pathForMachineSlot(allocator: std.mem.Allocator, machine: *const Machine, slot: u8) ![]u8 {
+    const normalized = normalizePersistentStateSlot(slot);
+    const default_path = try defaultPathForMachine(allocator, machine);
+    if (normalized == default_persistent_state_slot) {
+        return default_path;
+    }
+    defer allocator.free(default_path);
+    return pathForSlot(allocator, default_path, normalized);
 }
 
 pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
@@ -327,7 +369,7 @@ fn tempFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: [
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }
 
-test "default state path derives from ROM source path and falls back" {
+test "default state path derives from ROM source path, slots, and fallback" {
     const allocator = testing.allocator;
     const rom = [_]u8{0} ** 0x400;
 
@@ -338,11 +380,22 @@ test "default state path derives from ROM source path and falls back" {
     defer allocator.free(fallback_path);
     try testing.expectEqualStrings(default_state_name, fallback_path);
 
+    const fallback_slot_path = try pathForMachineSlot(allocator, &machine, 2);
+    defer allocator.free(fallback_slot_path);
+    try testing.expectEqualStrings("sandopolis.slot2.state", fallback_slot_path);
+
     machine.bus.cartridge.source_path = try allocator.dupe(u8, "roms/test.bin");
 
     const derived_path = try defaultPathForMachine(allocator, &machine);
     defer allocator.free(derived_path);
     try testing.expectEqualStrings("roms/test.state", derived_path);
+
+    const derived_slot_path = try pathForMachineSlot(allocator, &machine, 3);
+    defer allocator.free(derived_slot_path);
+    try testing.expectEqualStrings("roms/test.slot3.state", derived_slot_path);
+
+    try testing.expectEqual(@as(u8, 2), nextPersistentStateSlot(1));
+    try testing.expectEqual(@as(u8, 1), nextPersistentStateSlot(persistent_state_slot_count));
 }
 
 test "save-state files round-trip machine state" {
