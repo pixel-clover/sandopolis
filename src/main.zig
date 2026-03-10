@@ -93,15 +93,58 @@ const FrontendUi = struct {
     show_help: bool = false,
     dialog_active: bool = false,
     show_keyboard_editor: bool = false,
+    show_performance_hud: bool = false,
 
     fn emulationPaused(self: *const FrontendUi) bool {
         return self.paused or self.show_help or self.dialog_active or self.show_keyboard_editor;
     }
 };
 
+const PerformanceHudState = struct {
+    frame_count: u64 = 0,
+    slow_frame_count: u64 = 0,
+    last_work_ns: u64 = 0,
+    average_work_ns: u64 = 0,
+    last_target_ns: u64 = 0,
+    last_sleep_ns: u64 = 0,
+    last_overrun_ns: u64 = 0,
+    worst_work_ns: u64 = 0,
+    worst_overrun_ns: u64 = 0,
+    last_audio_queued_bytes: ?usize = null,
+
+    fn reset(self: *PerformanceHudState) void {
+        self.* = .{};
+    }
+
+    fn noteFrame(self: *PerformanceHudState, work_ns: u64, target_ns: u64, audio_queued_bytes: ?usize) void {
+        self.frame_count += 1;
+        self.last_work_ns = work_ns;
+        self.last_target_ns = target_ns;
+        self.last_sleep_ns = if (work_ns < target_ns) target_ns - work_ns else 0;
+        self.last_overrun_ns = if (work_ns > target_ns) work_ns - target_ns else 0;
+        self.worst_work_ns = @max(self.worst_work_ns, work_ns);
+        self.worst_overrun_ns = @max(self.worst_overrun_ns, self.last_overrun_ns);
+        self.last_audio_queued_bytes = audio_queued_bytes;
+        if (self.last_overrun_ns != 0) self.slow_frame_count += 1;
+
+        if (self.frame_count == 1) {
+            self.average_work_ns = work_ns;
+        } else {
+            self.average_work_ns = ((self.average_work_ns * 7) + work_ns + 4) / 8;
+        }
+    }
+
+    fn queuedAudioNs(self: *const PerformanceHudState) ?u64 {
+        const queued_bytes = self.last_audio_queued_bytes orelse return null;
+        return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
+            (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
+    }
+};
+
 const FrontendShortcut = enum {
     toggle_help,
     toggle_pause,
+    toggle_performance_hud,
     open_rom,
 };
 
@@ -354,6 +397,7 @@ fn frontendShortcutForKey(scancode: zsdl3.Scancode, pressed: bool) ?FrontendShor
     return switch (scancode) {
         .f1 => .toggle_help,
         .f2 => .toggle_pause,
+        .f5 => .toggle_performance_hud,
         .f3 => .open_rom,
         else => null,
     };
@@ -364,6 +408,7 @@ fn applyFrontendShortcut(ui: *FrontendUi, scancode: zsdl3.Scancode, pressed: boo
     switch (shortcut) {
         .toggle_help => ui.show_help = !ui.show_help,
         .toggle_pause => ui.paused = !ui.paused,
+        .toggle_performance_hud => ui.show_performance_hud = !ui.show_performance_hud,
         .open_rom => {},
     }
     return true;
@@ -413,6 +458,11 @@ fn resetAudioOutput(audio: *AudioInit) void {
         std.debug.print("Failed to clear queued audio on ROM load: {}\n", .{err});
     };
     audio.output.reset();
+}
+
+fn queuedAudioBytes(audio: ?*AudioInit) ?usize {
+    const handle = audio orelse return null;
+    return zsdl3.getAudioStreamQueued(handle.stream) catch null;
 }
 
 fn stopGifRecording(gif_recorder: *?GifRecorder, reason: []const u8) void {
@@ -1187,6 +1237,11 @@ fn drawOverlayText(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color:
     }
 }
 
+fn formatDurationMsTenths(buffer: []u8, ns: u64) ![]const u8 {
+    const tenths = (ns + 50_000) / 100_000;
+    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
+}
+
 fn renderOverlayPanel(
     renderer: *zsdl3.Renderer,
     rect: zsdl3.FRect,
@@ -1225,6 +1280,7 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persisten
         "F2 RESUME",
         "F3 OPEN ROM",
         "F4 KEYBOARD EDITOR",
+        "F5 PERF HUD",
         "F6 SAVE QUICK STATE",
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
@@ -1291,6 +1347,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent
         "F2 PAUSE OR RESUME",
         "F3 OPEN ROM DIALOG",
         "F4 KEYBOARD EDITOR",
+        "F5 TOGGLE PERF HUD",
         "F6 SAVE QUICK STATE",
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
@@ -1427,6 +1484,80 @@ fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     }
 }
 
+fn renderPerformanceHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const PerformanceHudState) !void {
+    const title = "PERF HUD";
+    const scale = overlayScale(viewport);
+    const padding = 8.0 * scale;
+    const line_height = 9.0 * scale;
+
+    var metric_buffers: [7][16]u8 = undefined;
+    const work_text = try formatDurationMsTenths(metric_buffers[0][0..], perf.last_work_ns);
+    const target_text = try formatDurationMsTenths(metric_buffers[1][0..], perf.last_target_ns);
+    const avg_text = try formatDurationMsTenths(metric_buffers[2][0..], perf.average_work_ns);
+    const sleep_text = try formatDurationMsTenths(metric_buffers[3][0..], perf.last_sleep_ns);
+    const overrun_text = try formatDurationMsTenths(metric_buffers[4][0..], perf.last_overrun_ns);
+    const worst_text = try formatDurationMsTenths(metric_buffers[5][0..], perf.worst_work_ns);
+    const audio_text = if (perf.queuedAudioNs()) |queued_ns|
+        try formatDurationMsTenths(metric_buffers[6][0..], queued_ns)
+    else
+        "OFF";
+
+    var line_buffers: [7][48]u8 = undefined;
+    var lines: [7][]const u8 = undefined;
+    lines[0] = try std.fmt.bufPrint(&line_buffers[0], "WORK {s} / {s} MS", .{ work_text, target_text });
+    lines[1] = try std.fmt.bufPrint(&line_buffers[1], "AVG {s} MS", .{avg_text});
+    lines[2] = try std.fmt.bufPrint(&line_buffers[2], "SLEEP {s} MS", .{sleep_text});
+    lines[3] = try std.fmt.bufPrint(&line_buffers[3], "OVER {s} MS", .{overrun_text});
+    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "SLOW {d} / {d}", .{ perf.slow_frame_count, perf.frame_count });
+    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "WORST {s} MS", .{worst_text});
+    lines[6] = if (perf.last_audio_queued_bytes == null)
+        "AUDIO OFF"
+    else
+        try std.fmt.bufPrint(&line_buffers[6], "AUDIO {s} MS", .{audio_text});
+
+    var max_width = overlayTextWidth(title, scale);
+    for (lines) |line| {
+        max_width = @max(max_width, overlayTextWidth(line, scale));
+    }
+
+    const panel = zsdl3.FRect{
+        .x = 12.0 * scale,
+        .y = 12.0 * scale,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        .{ .r = 0x12, .g = 0x16, .b = 0x1D, .a = 0xD8 },
+        .{ .r = 0xFF, .g = 0x8C, .b = 0x42, .a = 0xFF },
+        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x80 },
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding,
+        scale,
+        .{ .r = 0xFF, .g = 0xC4, .b = 0x8A, .a = 0xFF },
+        title,
+    );
+
+    var y = panel.y + padding + 12.0 * scale;
+    for (lines) |line| {
+        try drawOverlayText(
+            renderer,
+            panel.x + padding,
+            y,
+            scale,
+            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+            line,
+        );
+        y += line_height;
+    }
+}
+
 fn renderKeyboardEditorOverlay(
     renderer: *zsdl3.Renderer,
     viewport: zsdl3.Rect,
@@ -1540,11 +1671,16 @@ fn renderFrontendOverlay(
     editor: *const BindingEditorState,
     bindings: *const InputBindings.Bindings,
     persistent_state_slot: u8,
+    perf: *const PerformanceHudState,
 ) !void {
-    if (!ui.paused and !ui.show_help and !ui.dialog_active and !ui.show_keyboard_editor) return;
+    if (!ui.show_performance_hud and !ui.paused and !ui.show_help and !ui.dialog_active and !ui.show_keyboard_editor) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
+    if (ui.show_performance_hud) {
+        try renderPerformanceHud(renderer, viewport, perf);
+    }
+    if (!ui.paused and !ui.show_help and !ui.dialog_active and !ui.show_keyboard_editor) return;
     if (ui.dialog_active) {
         try renderDialogOverlay(renderer, viewport);
     } else if (ui.show_keyboard_editor) {
@@ -1681,6 +1817,7 @@ pub fn main() !void {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     defer if (quick_state) |*state| state.deinit(allocator);
     var frontend_ui = FrontendUi{};
+    var performance_hud = PerformanceHudState{};
     var file_dialog_state = FileDialogState{};
     var binding_editor = BindingEditorState{};
 
@@ -1792,6 +1929,9 @@ pub fn main() !void {
                     }
                     if (frontendShortcutForKey(scancode, pressed)) |shortcut| {
                         _ = applyFrontendShortcut(&frontend_ui, scancode, pressed);
+                        if (shortcut == .toggle_performance_hud and frontend_ui.show_performance_hud) {
+                            performance_hud.reset();
+                        }
                         if (shortcut == .open_rom) {
                             _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window);
                         }
@@ -1897,6 +2037,7 @@ pub fn main() !void {
         } else {
             machine.discardPendingAudio();
         }
+        const queued_audio_bytes = queuedAudioBytes(if (audio) |*a| a else null);
 
         const framebuffer = machine.framebuffer();
         const framebuffer_height: i32 = @intCast(framebuffer.len / Vdp.framebuffer_width);
@@ -1917,14 +2058,19 @@ pub fn main() !void {
             .h = @floatFromInt(framebuffer_height),
         };
         try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, null);
-        try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings, persistent_state_slot);
+        try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings, persistent_state_slot, &performance_hud);
         zsdl3.renderPresent(renderer);
 
         frame_counter += 1;
+        const frame_now = std.time.Instant.now() catch frame_timer;
+        const frame_elapsed = frame_now.since(frame_timer);
+        if (!emulation_paused) {
+            if (target_frame_ns) |frame_ns| {
+                performance_hud.noteFrame(frame_elapsed, frame_ns, queued_audio_bytes);
+            }
+        }
         if (frame_counter > uncapped_boot_frames) {
             if (target_frame_ns) |frame_ns| {
-                const now = std.time.Instant.now() catch frame_timer;
-                const frame_elapsed = now.since(frame_timer);
                 if (frame_elapsed < frame_ns) {
                     std.Thread.sleep(frame_ns - frame_elapsed);
                 }
@@ -2055,6 +2201,10 @@ test "frontend shortcuts toggle help and pause only on key down" {
 
     try std.testing.expect(applyFrontendShortcut(&ui, .f2, true));
     try std.testing.expect(!ui.emulationPaused());
+
+    try std.testing.expect(applyFrontendShortcut(&ui, .f5, true));
+    try std.testing.expect(ui.show_performance_hud);
+    try std.testing.expect(!ui.emulationPaused());
 }
 
 test "frontend shortcut helper ignores unrelated keys" {
@@ -2068,6 +2218,31 @@ test "frontend shortcut helper exposes open rom key" {
     try std.testing.expectEqual(FrontendShortcut.open_rom, frontendShortcutForKey(.f3, true).?);
     try std.testing.expect(applyFrontendShortcut(&ui, .f3, true));
     try std.testing.expect(!ui.emulationPaused());
+}
+
+test "duration formatter rounds to tenths of a millisecond" {
+    var buffer: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("16.7", try formatDurationMsTenths(buffer[0..], 16_651_000));
+    try std.testing.expectEqualStrings("0.0", try formatDurationMsTenths(buffer[0..], 0));
+}
+
+test "performance hud tracks slow frames and queued audio" {
+    var perf = PerformanceHudState{};
+
+    perf.noteFrame(17_500_000, 16_700_000, 9_600);
+    try std.testing.expectEqual(@as(u64, 1), perf.frame_count);
+    try std.testing.expectEqual(@as(u64, 1), perf.slow_frame_count);
+    try std.testing.expectEqual(@as(u64, 800_000), perf.last_overrun_ns);
+    try std.testing.expectEqual(@as(u64, 0), perf.last_sleep_ns);
+    try std.testing.expectEqual(@as(u64, 17_500_000), perf.worst_work_ns);
+    try std.testing.expect(perf.queuedAudioNs() != null);
+
+    perf.noteFrame(12_000_000, 16_700_000, null);
+    try std.testing.expectEqual(@as(u64, 2), perf.frame_count);
+    try std.testing.expectEqual(@as(u64, 1), perf.slow_frame_count);
+    try std.testing.expectEqual(@as(u64, 4_700_000), perf.last_sleep_ns);
+    try std.testing.expectEqual(@as(u64, 0), perf.last_overrun_ns);
+    try std.testing.expectEqual(@as(?usize, null), perf.last_audio_queued_bytes);
 }
 
 test "binding editor opens releases inputs and rebinds selected action" {
