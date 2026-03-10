@@ -148,6 +148,35 @@ pub const Bus = struct {
         self.cartridge.deinit(allocator);
     }
 
+    pub fn clone(self: *const Bus, allocator: std.mem.Allocator) !Bus {
+        var cartridge = try self.cartridge.clone(allocator);
+        errdefer cartridge.deinit(allocator);
+
+        var z80 = try self.z80.clone();
+        errdefer z80.deinit();
+
+        return .{
+            .rom = cartridge.rom,
+            .cartridge = cartridge,
+            .ram = self.ram,
+            .vdp = self.vdp,
+            .io = self.io,
+            .z80 = z80,
+            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte),
+            .audio_timing = self.audio_timing,
+            .io_master_remainder = self.io_master_remainder,
+            .z80_master_credit = self.z80_master_credit,
+            .z80_wait_master_cycles = self.z80_wait_master_cycles,
+            .z80_odd_access = self.z80_odd_access,
+            .m68k_wait_master_cycles = self.m68k_wait_master_cycles,
+            .open_bus = self.open_bus,
+        };
+    }
+
+    pub fn rebindRuntimePointers(self: *Bus) void {
+        self.z80_host_bridge.bind(&self.z80, self);
+    }
+
     fn cpuMemoryRead8(ctx: ?*anyopaque, address: u32) u8 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
         return self.read8(address);

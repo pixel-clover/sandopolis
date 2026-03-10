@@ -72,8 +72,11 @@ Fixed frontend keys:
 - `F2`: pause or resume emulation
 - `F3`: open the host file dialog and load a different ROM at runtime
 - `F4`: open the in-window keyboard binding editor
+- `F6`: save a quick state in the current session
+- `F7`: load the saved quick state
 
 The help overlay, pause mode, open-ROM dialog, and keyboard editor freeze emulation until you close or resume them.
+The quick-state slot is session-local and restores the full saved machine snapshot, including the ROM that was active when you saved it.
 
 Keyboard editor controls:
 

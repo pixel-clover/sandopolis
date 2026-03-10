@@ -61,6 +61,8 @@ typedef void (*Jgz80HostWriteFunc)(void *userdata, uint32_t addr, uint8_t val);
 
 Jgz80Handle *jgz80_create(void);
 
+Jgz80Handle *jgz80_clone(const Jgz80Handle *handle);
+
 void jgz80_destroy(Jgz80Handle *handle);
 
 void jgz80_reset(Jgz80Handle *handle);

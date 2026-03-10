@@ -135,6 +135,18 @@ pub const Cpu = struct {
         return self;
     }
 
+    pub fn clone(self: *const Cpu) Cpu {
+        var copy = Cpu.init();
+        copy.core = self.core;
+        copy.cycles = self.cycles;
+        copy.halted = self.halted;
+        copy.pending_wait_cycles = self.pending_wait_cycles;
+        copy.pending_wait_master_cycles = self.pending_wait_master_cycles;
+        copy.core.fault_trap_active = false;
+        copy.core.fault_trap = std.mem.zeroes(@TypeOf(copy.core.fault_trap));
+        return copy;
+    }
+
     fn currentOpcodeFromCpu(ctx: ?*anyopaque) u16 {
         const self: *Cpu = @ptrCast(@alignCast(ctx orelse return 0));
         return self.core.ir;

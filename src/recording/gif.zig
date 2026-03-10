@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 
 pub const GifRecorder = struct {
     file: std.fs.File,
@@ -302,7 +303,16 @@ fn emitCode(
     }
 }
 
+fn tempGifPath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: []const u8) ![]u8 {
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    return std.fs.path.join(allocator, &.{ dir_path, file_name });
+}
+
 test "GIF recorder creates valid single-frame GIF" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
     var framebuffer: [320 * 224]u32 = undefined;
     for (0..224) |y| {
         for (0..320) |x| {
@@ -312,12 +322,13 @@ test "GIF recorder creates valid single-frame GIF" {
         }
     }
 
-    const tmp_path = "test_output.gif";
+    const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_output.gif");
+    defer testing.allocator.free(tmp_path);
     var recorder = try GifRecorder.start(tmp_path, 60);
     try recorder.addFrame(&framebuffer);
     recorder.finish();
 
-    const file = try std.fs.cwd().openFile(tmp_path, .{});
+    const file = try tmp.dir.openFile("test_output.gif", .{});
     defer file.close();
     var header: [6]u8 = undefined;
     _ = try file.readAll(&header);
@@ -325,12 +336,14 @@ test "GIF recorder creates valid single-frame GIF" {
 
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);
-
-    try std.fs.cwd().deleteFile(tmp_path);
 }
 
 test "GIF recorder handles multiple frames" {
-    const tmp_path = "test_multi.gif";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_multi.gif");
+    defer testing.allocator.free(tmp_path);
     var recorder = try GifRecorder.start(tmp_path, 30);
 
     var fb: [320 * 224]u32 = undefined;
@@ -343,16 +356,18 @@ test "GIF recorder handles multiple frames" {
 
     try std.testing.expectEqual(@as(u32, 3), recorder.frame_count);
 
-    const file = try std.fs.cwd().openFile(tmp_path, .{});
+    const file = try tmp.dir.openFile("test_multi.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 2000);
-
-    try std.fs.cwd().deleteFile(tmp_path);
 }
 
 test "GIF recorder handles noisy framebuffer without overflow" {
-    const tmp_path = "test_noisy.gif";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_noisy.gif");
+    defer testing.allocator.free(tmp_path);
     var recorder = try GifRecorder.start(tmp_path, 60);
 
     var fb: [320 * 224]u32 = undefined;
@@ -363,10 +378,8 @@ test "GIF recorder handles noisy framebuffer without overflow" {
     try recorder.addFrame(&fb);
     recorder.finish();
 
-    const file = try std.fs.cwd().openFile(tmp_path, .{});
+    const file = try tmp.dir.openFile("test_noisy.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);
-
-    try std.fs.cwd().deleteFile(tmp_path);
 }

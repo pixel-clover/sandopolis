@@ -8,7 +8,7 @@ The project prioritizes correctness and subsystem timing first, then maintainabl
 - M68000 execution through the `rocket68` core and Z80 execution through the `jgz80` bridge.
 - VDP rendering with scrolling planes, sprites, DMA, FIFO timing, shadow and highlight, H32 and H40 modes, and interlace mode 2.
 - YM2612 and SN76489 audio routed through timestamped event capture and a shared output pipeline.
-- Keyboard and gamepad input for two players, a runtime keyboard editor, configurable bindings, fullscreen toggle, GIF recording, and SRAM persistence.
+- Keyboard and gamepad input for two players, a runtime keyboard editor, quick save/load states, configurable bindings, fullscreen toggle, GIF recording, and SRAM persistence.
 - Unit, frontend, integration, regression, and property-based tests.
 
 ## Read this site by task

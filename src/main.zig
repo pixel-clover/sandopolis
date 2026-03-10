@@ -443,6 +443,7 @@ fn loadRomIntoMachine(
 
     var old_machine = machine.*;
     machine.* = next_machine;
+    machine.bus.rebindRuntimePointers();
     old_machine.deinit(allocator);
     frame_counter.* = 0;
 }
@@ -626,6 +627,52 @@ fn handleBindingEditorKey(
         else => {},
     }
     return true;
+}
+
+fn handleQuickStateKey(
+    allocator: std.mem.Allocator,
+    scancode: zsdl3.Scancode,
+    pressed: bool,
+    machine: *Machine,
+    quick_state: *?Machine.Snapshot,
+    audio: ?*AudioInit,
+    gif_recorder: *?GifRecorder,
+    frame_counter: *u32,
+) bool {
+    if (!pressed) return false;
+
+    switch (scancode) {
+        .f6 => {
+            const snapshot = machine.captureSnapshot(allocator) catch |err| {
+                std.debug.print("Failed to save quick state: {}\n", .{err});
+                return true;
+            };
+            if (quick_state.*) |*saved| {
+                saved.deinit(allocator);
+            }
+            quick_state.* = snapshot;
+            std.debug.print("Quick state saved.\n", .{});
+            return true;
+        },
+        .f7 => {
+            if (quick_state.*) |*saved| {
+                machine.restoreSnapshot(allocator, saved) catch |err| {
+                    std.debug.print("Failed to load quick state: {}\n", .{err});
+                    return true;
+                };
+                stopGifRecording(gif_recorder, "GIF recording stopped for state load");
+                if (audio) |a| {
+                    resetAudioOutput(a);
+                }
+                frame_counter.* = 0;
+                std.debug.print("Quick state loaded.\n", .{});
+            } else {
+                std.debug.print("No quick state saved.\n", .{});
+            }
+            return true;
+        },
+        else => return false,
+    }
 }
 
 fn gamepadInputFromButton(button: u8) ?InputBindings.GamepadInput {
@@ -1062,6 +1109,8 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F2 RESUME",
         "F3 OPEN ROM",
         "F4 KEYBOARD EDITOR",
+        "F6 SAVE STATE",
+        "F7 LOAD STATE",
         "F1 HELP",
     };
     const scale = overlayScale(viewport);
@@ -1118,6 +1167,8 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         "F2 PAUSE OR RESUME",
         "F3 OPEN ROM DIALOG",
         "F4 KEYBOARD EDITOR",
+        "F6 SAVE QUICK STATE",
+        "F7 LOAD QUICK STATE",
         "",
         "SPACE STEP CPU",
         "BACKSPACE REGISTER DUMP",
@@ -1164,7 +1215,12 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     for (lines) |line| {
         const color: zsdl3.Color = if (line.len == 0)
             .{ .r = 0, .g = 0, .b = 0, .a = 0 }
-        else if (std.mem.startsWith(u8, line, "F1") or std.mem.startsWith(u8, line, "F2") or std.mem.startsWith(u8, line, "F3") or std.mem.startsWith(u8, line, "F4"))
+        else if (std.mem.startsWith(u8, line, "F1") or
+            std.mem.startsWith(u8, line, "F2") or
+            std.mem.startsWith(u8, line, "F3") or
+            std.mem.startsWith(u8, line, "F4") or
+            std.mem.startsWith(u8, line, "F6") or
+            std.mem.startsWith(u8, line, "F7"))
             .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
         else if (std.mem.startsWith(u8, line, "HELP"))
             .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
@@ -1709,6 +1765,8 @@ pub fn main() !void {
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
+    var quick_state: ?Machine.Snapshot = null;
+    defer if (quick_state) |*state| state.deinit(allocator);
     var frontend_ui = FrontendUi{};
     var file_dialog_state = FileDialogState{};
     var binding_editor = BindingEditorState{};
@@ -1791,6 +1849,18 @@ pub fn main() !void {
                         input_config_path,
                         scancode,
                         pressed,
+                    )) {
+                        continue;
+                    }
+                    if (handleQuickStateKey(
+                        allocator,
+                        scancode,
+                        pressed,
+                        &machine,
+                        &quick_state,
+                        if (audio) |*a| a else null,
+                        &gif_recorder,
+                        &frame_counter,
                     )) {
                         continue;
                     }
@@ -2141,6 +2211,29 @@ test "binding editor clears hotkeys during capture" {
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .@"return", true));
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &io, null, .f12, true));
     try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, null), bindings.hotkeyBinding(.step));
+}
+
+test "quick state helper saves and restores machine state" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var quick_state: ?Machine.Snapshot = null;
+    defer if (quick_state) |*state| state.deinit(allocator);
+    var gif_recorder: ?GifRecorder = null;
+    var frame_counter: u32 = 42;
+
+    machine.bus.ram[0x20] = 0x5A;
+    try std.testing.expect(handleQuickStateKey(allocator, .f6, true, &machine, &quick_state, null, &gif_recorder, &frame_counter));
+
+    machine.bus.ram[0x20] = 0x00;
+    frame_counter = 99;
+    try std.testing.expect(handleQuickStateKey(allocator, .f7, true, &machine, &quick_state, null, &gif_recorder, &frame_counter));
+
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.bus.ram[0x20]);
+    try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
 test "file dialog state records selected paths and failures" {

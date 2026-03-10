@@ -501,6 +501,17 @@ Jgz80Handle *jgz80_create(void) {
     return h;
 }
 
+Jgz80Handle *jgz80_clone(const Jgz80Handle *handle) {
+    if (!handle) return NULL;
+
+    Jgz80Handle *copy = (Jgz80Handle *) calloc(1, sizeof(Jgz80Handle));
+    if (!copy) return NULL;
+
+    memcpy(copy, handle, sizeof(Jgz80Handle));
+    bind_callbacks(copy);
+    return copy;
+}
+
 void jgz80_destroy(Jgz80Handle *handle) {
     free(handle);
 }
