@@ -815,6 +815,7 @@ fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopa
     const entry = makeWriteFifoEntry(self, word, dma_fifo_latency_slots);
     self.dma_source_addr +%= 2;
     self.dma_remaining -= 1;
+    if (self.active_execution_counters) |counters| counters.dma_words += 1;
     fifoPush(self, entry);
     advanceAddr(self);
 }
@@ -838,6 +839,7 @@ fn progressVramCopyDma(self: *Vdp, access_slots: u32) void {
     }
 
     self.dma_remaining -= copied;
+    if (self.active_execution_counters) |counters| counters.dma_words += copied;
     finishDmaIfIdle(self);
 }
 
@@ -914,6 +916,7 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
         if (slot_end > end_master_cycle) break;
 
         if (!transferSlotIsRefresh(self, slot_idx)) {
+            if (self.active_execution_counters) |counters| counters.transfer_slots += 1;
             if (self.dma_active and !self.dma_fill and !self.dma_copy) {
                 if (read_word) |reader| {
                     progressMemoryToVramDmaReadSlot(self, slot_idx, read_ctx, reader);
@@ -924,6 +927,7 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
         }
 
         if (transferSlotIsAccess(self, slot_idx, blanking)) {
+            if (self.active_execution_counters) |counters| counters.access_slots += 1;
             serviceAccessSlot(self);
         }
     }

@@ -54,6 +54,15 @@ fn storageIntType(comptime T: type) type {
     return std.meta.Int(int_info.signedness, bit_count);
 }
 
+fn skipSaveStateField(comptime Parent: type, comptime field_name: []const u8) bool {
+    if (!@hasDecl(Parent, "save_state_skip_fields")) return false;
+
+    inline for (@field(Parent, "save_state_skip_fields")) |skip_name| {
+        if (comptime std.mem.eql(u8, skip_name, field_name)) return true;
+    }
+    return false;
+}
+
 fn writeValue(writer: anytype, value: anytype) !void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
@@ -79,6 +88,7 @@ fn writeValue(writer: anytype, value: anytype) !void {
         },
         .@"struct" => |struct_info| {
             inline for (struct_info.fields) |field| {
+                if (comptime skipSaveStateField(T, field.name)) continue;
                 try writeValue(writer, @field(value, field.name));
             }
         },
@@ -131,6 +141,10 @@ fn readInto(reader: anytype, out: anytype) !void {
         },
         .@"struct" => |struct_info| {
             inline for (struct_info.fields) |field| {
+                if (comptime skipSaveStateField(T, field.name)) {
+                    @field(out.*, field.name) = std.mem.zeroes(field.type);
+                    continue;
+                }
                 try readInto(reader, &@field(out.*, field.name));
             }
         },

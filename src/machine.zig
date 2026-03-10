@@ -5,10 +5,13 @@ const Bus = @import("bus/bus.zig").Bus;
 const Cpu = @import("cpu/cpu.zig").Cpu;
 const InputBindings = @import("input/mapping.zig");
 const Io = @import("input/io.zig").Io;
+const perf_profile = @import("performance_profile.zig");
 const scheduler = @import("scheduler/frame_scheduler.zig");
 const Vdp = @import("video/vdp.zig").Vdp;
 
 pub const Machine = struct {
+    pub const CoreFrameCounters = perf_profile.CoreFrameCounters;
+
     pub const Snapshot = struct {
         machine: Machine,
 
@@ -271,6 +274,24 @@ pub const Machine = struct {
     }
 
     pub fn runFrame(self: *Machine) void {
+        self.runFrameInternal(null);
+    }
+
+    pub fn runFrameProfiled(self: *Machine, counters: *CoreFrameCounters) void {
+        self.runFrameInternal(counters);
+    }
+
+    fn runFrameInternal(self: *Machine, counters: ?*CoreFrameCounters) void {
+        if (counters) |active_counters| {
+            active_counters.* = .{};
+        }
+        self.bus.setActiveExecutionCounters(counters);
+        self.cpu.setActiveExecutionCounters(counters);
+        defer {
+            self.bus.setActiveExecutionCounters(null);
+            self.cpu.setActiveExecutionCounters(null);
+        }
+
         const visible_lines = self.bus.vdp.activeVisibleLines();
         const total_lines = self.bus.vdp.totalLinesForCurrentFrame();
         const master_cycles_per_line: u16 = if (self.bus.vdp.pal_mode) clock.pal_master_cycles_per_line else clock.ntsc_master_cycles_per_line;
@@ -329,6 +350,7 @@ pub const Machine = struct {
             self.bus.vdp.setHBlank(false);
 
             if (line < visible_lines) {
+                if (counters) |active_counters| active_counters.render_scanlines += 1;
                 self.bus.vdp.renderScanline(line);
             }
         }

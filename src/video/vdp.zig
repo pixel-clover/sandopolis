@@ -2,8 +2,11 @@ const std = @import("std");
 const render = @import("render.zig");
 const fifo_mod = @import("fifo.zig");
 const timing_mod = @import("timing.zig");
+const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 
 pub const Vdp = struct {
+    pub const save_state_skip_fields = .{"active_execution_counters"};
+
     pub const framebuffer_width: usize = 320;
     pub const max_framebuffer_height: usize = 240;
 
@@ -61,6 +64,7 @@ pub const Vdp = struct {
     dbg_cram_writes: u64,
     dbg_vsram_writes: u64,
     dbg_unknown_writes: u64,
+    active_execution_counters: ?*CoreFrameCounters,
 
     pub const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
 
@@ -161,7 +165,12 @@ pub const Vdp = struct {
             .dbg_cram_writes = 0,
             .dbg_vsram_writes = 0,
             .dbg_unknown_writes = 0,
+            .active_execution_counters = null,
         };
+    }
+
+    pub fn setActiveExecutionCounters(self: *Vdp, counters: ?*CoreFrameCounters) void {
+        self.active_execution_counters = counters;
     }
 
     pub fn isH40(self: *const Vdp) bool {

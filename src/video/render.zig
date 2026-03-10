@@ -355,6 +355,9 @@ fn renderSpritesToBuffer(
     var sprite_index: u8 = 0;
     var count: u8 = 0;
     while (count < max_total) : (count += 1) {
+        if (self.active_execution_counters) |counters| {
+            counters.render_sprite_entries += 1;
+        }
         const entry_addr: u16 = sprite_base +% (@as(u16, sprite_index) *% 8);
         const y_word = (@as(u16, self.vramReadByte(entry_addr)) << 8) | self.vramReadByte(entry_addr + 1);
         const size = self.vramReadByte(entry_addr + 2);
@@ -402,6 +405,9 @@ fn renderSpritesToBuffer(
                 while (x_pix < sprite_h_px) : (x_pix += 1) {
                     const screen_x = x_pos + x_pix;
                     if (screen_x < 0 or screen_x >= screen_w) continue;
+                    if (self.active_execution_counters) |counters| {
+                        counters.render_sprite_pixels += 1;
+                    }
 
                     pixels_drawn += 1;
                     if (pixels_drawn > max_pixels) {
@@ -417,6 +423,9 @@ fn renderSpritesToBuffer(
                     const pattern_byte = self.vramReadByte(@intCast(pattern_addr & 0xFFFF));
                     const color_idx: u8 = if ((fine_x & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
                     if (color_idx == 0) continue;
+                    if (self.active_execution_counters) |counters| {
+                        counters.render_sprite_opaque_pixels += 1;
+                    }
 
                     const sx: usize = @intCast(screen_x);
                     const palette_index = (palette * 16) + color_idx;
