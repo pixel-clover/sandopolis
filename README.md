@@ -39,7 +39,7 @@ Demos of Sandopolis running a few games:
 
 - Accurate Sega Genesis/Mega Drive emulation
 - Very portable; can be built and run on any platform that Zig supports
-- Very configurable input and rendering settings, with runtime ROM loading, quick states, persistent state files, and keyboard rebinding
+- Very configurable input and rendering settings, with runtime ROM loading, quick states, persistent state slots, and keyboard rebinding
 - Has a permissive license that allows commercial use
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
