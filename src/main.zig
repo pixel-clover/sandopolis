@@ -105,6 +105,8 @@ const PerformanceHudState = struct {
     slow_frame_count: u64 = 0,
     last_work_ns: u64 = 0,
     average_work_ns: u64 = 0,
+    last_present_ns: u64 = 0,
+    average_present_ns: u64 = 0,
     last_target_ns: u64 = 0,
     last_sleep_ns: u64 = 0,
     last_overrun_ns: u64 = 0,
@@ -116,11 +118,18 @@ const PerformanceHudState = struct {
         self.* = .{};
     }
 
-    fn noteFrame(self: *PerformanceHudState, work_ns: u64, target_ns: u64, audio_queued_bytes: ?usize) void {
+    fn noteFrame(
+        self: *PerformanceHudState,
+        work_ns: u64,
+        present_ns: u64,
+        target_ns: u64,
+        audio_queued_bytes: ?usize,
+    ) void {
         self.frame_count += 1;
         self.last_work_ns = work_ns;
+        self.last_present_ns = present_ns;
         self.last_target_ns = target_ns;
-        self.last_sleep_ns = if (work_ns < target_ns) target_ns - work_ns else 0;
+        self.last_sleep_ns = present_ns -| work_ns;
         self.last_overrun_ns = if (work_ns > target_ns) work_ns - target_ns else 0;
         self.worst_work_ns = @max(self.worst_work_ns, work_ns);
         self.worst_overrun_ns = @max(self.worst_overrun_ns, self.last_overrun_ns);
@@ -129,8 +138,10 @@ const PerformanceHudState = struct {
 
         if (self.frame_count == 1) {
             self.average_work_ns = work_ns;
+            self.average_present_ns = present_ns;
         } else {
             self.average_work_ns = ((self.average_work_ns * 7) + work_ns + 4) / 8;
+            self.average_present_ns = ((self.average_present_ns * 7) + present_ns + 4) / 8;
         }
     }
 
@@ -139,12 +150,18 @@ const PerformanceHudState = struct {
         return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
             (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
     }
+
+    fn slowFramePercentTenths(self: *const PerformanceHudState) u64 {
+        if (self.frame_count == 0) return 0;
+        return @intCast((@as(u128, self.slow_frame_count) * 1000 + @as(u128, self.frame_count) / 2) / @as(u128, self.frame_count));
+    }
 };
 
 const FrontendShortcut = enum {
     toggle_help,
     toggle_pause,
     toggle_performance_hud,
+    reset_performance_hud,
     open_rom,
 };
 
@@ -398,6 +415,7 @@ fn frontendShortcutForKey(scancode: zsdl3.Scancode, pressed: bool) ?FrontendShor
         .f1 => .toggle_help,
         .f2 => .toggle_pause,
         .f5 => .toggle_performance_hud,
+        .f12 => .reset_performance_hud,
         .f3 => .open_rom,
         else => null,
     };
@@ -409,6 +427,7 @@ fn applyFrontendShortcut(ui: *FrontendUi, scancode: zsdl3.Scancode, pressed: boo
         .toggle_help => ui.show_help = !ui.show_help,
         .toggle_pause => ui.paused = !ui.paused,
         .toggle_performance_hud => ui.show_performance_hud = !ui.show_performance_hud,
+        .reset_performance_hud => {},
         .open_rom => {},
     }
     return true;
@@ -1242,6 +1261,16 @@ fn formatDurationMsTenths(buffer: []u8, ns: u64) ![]const u8 {
     return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
 }
 
+fn formatRateHzTenths(buffer: []u8, ns: u64) ![]const u8 {
+    if (ns == 0) return std.fmt.bufPrint(buffer, "0.0", .{});
+    const tenths = (@as(u128, std.time.ns_per_s) * 10 + @as(u128, ns) / 2) / @as(u128, ns);
+    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
+}
+
+fn formatPercentTenths(buffer: []u8, tenths_percent: u64) ![]const u8 {
+    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths_percent / 10, tenths_percent % 10 });
+}
+
 fn renderOverlayPanel(
     renderer: *zsdl3.Renderer,
     rect: zsdl3.FRect,
@@ -1281,6 +1310,7 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persisten
         "F3 OPEN ROM",
         "F4 KEYBOARD EDITOR",
         "F5 PERF HUD",
+        "F12 RESET PERF HUD",
         "F6 SAVE QUICK STATE",
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
@@ -1348,6 +1378,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent
         "F3 OPEN ROM DIALOG",
         "F4 KEYBOARD EDITOR",
         "F5 TOGGLE PERF HUD",
+        "F12 RESET PERF HUD",
         "F6 SAVE QUICK STATE",
         "F7 LOAD QUICK STATE",
         "F8 SAVE STATE FILE",
@@ -1400,14 +1431,7 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent
     for (lines) |line| {
         const color: zsdl3.Color = if (line.len == 0)
             .{ .r = 0, .g = 0, .b = 0, .a = 0 }
-        else if (std.mem.startsWith(u8, line, "F1") or
-            std.mem.startsWith(u8, line, "F2") or
-            std.mem.startsWith(u8, line, "F3") or
-            std.mem.startsWith(u8, line, "F4") or
-            std.mem.startsWith(u8, line, "F6") or
-            std.mem.startsWith(u8, line, "F7") or
-            std.mem.startsWith(u8, line, "F8") or
-            std.mem.startsWith(u8, line, "F9"))
+        else if (line.len >= 2 and line[0] == 'F' and std.ascii.isDigit(line[1]))
             .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
         else if (std.mem.startsWith(u8, line, "HELP"))
             .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
@@ -1490,30 +1514,39 @@ fn renderPerformanceHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *
     const padding = 8.0 * scale;
     const line_height = 9.0 * scale;
 
-    var metric_buffers: [7][16]u8 = undefined;
-    const work_text = try formatDurationMsTenths(metric_buffers[0][0..], perf.last_work_ns);
-    const target_text = try formatDurationMsTenths(metric_buffers[1][0..], perf.last_target_ns);
-    const avg_text = try formatDurationMsTenths(metric_buffers[2][0..], perf.average_work_ns);
-    const sleep_text = try formatDurationMsTenths(metric_buffers[3][0..], perf.last_sleep_ns);
-    const overrun_text = try formatDurationMsTenths(metric_buffers[4][0..], perf.last_overrun_ns);
-    const worst_text = try formatDurationMsTenths(metric_buffers[5][0..], perf.worst_work_ns);
+    var metric_buffers: [12][16]u8 = undefined;
+    const fps_text = try formatRateHzTenths(metric_buffers[0][0..], perf.last_present_ns);
+    const avg_fps_text = try formatRateHzTenths(metric_buffers[1][0..], perf.average_present_ns);
+    const target_fps_text = try formatRateHzTenths(metric_buffers[2][0..], perf.last_target_ns);
+    const work_text = try formatDurationMsTenths(metric_buffers[3][0..], perf.last_work_ns);
+    const target_text = try formatDurationMsTenths(metric_buffers[4][0..], perf.last_target_ns);
+    const avg_text = try formatDurationMsTenths(metric_buffers[5][0..], perf.average_work_ns);
+    const sleep_text = try formatDurationMsTenths(metric_buffers[6][0..], perf.last_sleep_ns);
+    const overrun_text = try formatDurationMsTenths(metric_buffers[7][0..], perf.last_overrun_ns);
+    const slow_percent_text = try formatPercentTenths(metric_buffers[8][0..], perf.slowFramePercentTenths());
+    const worst_work_text = try formatDurationMsTenths(metric_buffers[9][0..], perf.worst_work_ns);
+    const worst_overrun_text = try formatDurationMsTenths(metric_buffers[10][0..], perf.worst_overrun_ns);
     const audio_text = if (perf.queuedAudioNs()) |queued_ns|
-        try formatDurationMsTenths(metric_buffers[6][0..], queued_ns)
+        try formatDurationMsTenths(metric_buffers[11][0..], queued_ns)
     else
         "OFF";
 
-    var line_buffers: [7][48]u8 = undefined;
-    var lines: [7][]const u8 = undefined;
-    lines[0] = try std.fmt.bufPrint(&line_buffers[0], "WORK {s} / {s} MS", .{ work_text, target_text });
-    lines[1] = try std.fmt.bufPrint(&line_buffers[1], "AVG {s} MS", .{avg_text});
-    lines[2] = try std.fmt.bufPrint(&line_buffers[2], "SLEEP {s} MS", .{sleep_text});
-    lines[3] = try std.fmt.bufPrint(&line_buffers[3], "OVER {s} MS", .{overrun_text});
-    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "SLOW {d} / {d}", .{ perf.slow_frame_count, perf.frame_count });
-    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "WORST {s} MS", .{worst_text});
-    lines[6] = if (perf.last_audio_queued_bytes == null)
+    var line_buffers: [11][56]u8 = undefined;
+    var lines: [11][]const u8 = undefined;
+    lines[0] = try std.fmt.bufPrint(&line_buffers[0], "FPS {s} / {s}", .{ fps_text, target_fps_text });
+    lines[1] = try std.fmt.bufPrint(&line_buffers[1], "FPS AVG {s}", .{avg_fps_text});
+    lines[2] = try std.fmt.bufPrint(&line_buffers[2], "WORK {s} / {s} MS", .{ work_text, target_text });
+    lines[3] = try std.fmt.bufPrint(&line_buffers[3], "AVG {s} MS", .{avg_text});
+    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "SLEEP {s} MS", .{sleep_text});
+    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "OVER {s} MS", .{overrun_text});
+    lines[6] = try std.fmt.bufPrint(&line_buffers[6], "SLOW {d} {s} PCT", .{ perf.slow_frame_count, slow_percent_text });
+    lines[7] = try std.fmt.bufPrint(&line_buffers[7], "WORST WORK {s} MS", .{worst_work_text});
+    lines[8] = try std.fmt.bufPrint(&line_buffers[8], "WORST OVR {s} MS", .{worst_overrun_text});
+    lines[9] = if (perf.last_audio_queued_bytes == null)
         "AUDIO OFF"
     else
-        try std.fmt.bufPrint(&line_buffers[6], "AUDIO {s} MS", .{audio_text});
+        try std.fmt.bufPrint(&line_buffers[9], "AUDIO {s} MS", .{audio_text});
+    lines[10] = "F12 RESET";
 
     var max_width = overlayTextWidth(title, scale);
     for (lines) |line| {
@@ -1932,6 +1965,9 @@ pub fn main() !void {
                         if (shortcut == .toggle_performance_hud and frontend_ui.show_performance_hud) {
                             performance_hud.reset();
                         }
+                        if (shortcut == .reset_performance_hud) {
+                            performance_hud.reset();
+                        }
                         if (shortcut == .open_rom) {
                             _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window);
                         }
@@ -2063,17 +2099,18 @@ pub fn main() !void {
 
         frame_counter += 1;
         const frame_now = std.time.Instant.now() catch frame_timer;
-        const frame_elapsed = frame_now.since(frame_timer);
-        if (!emulation_paused) {
-            if (target_frame_ns) |frame_ns| {
-                performance_hud.noteFrame(frame_elapsed, frame_ns, queued_audio_bytes);
-            }
-        }
+        const work_elapsed = frame_now.since(frame_timer);
         if (frame_counter > uncapped_boot_frames) {
             if (target_frame_ns) |frame_ns| {
-                if (frame_elapsed < frame_ns) {
-                    std.Thread.sleep(frame_ns - frame_elapsed);
+                if (work_elapsed < frame_ns) {
+                    std.Thread.sleep(frame_ns - work_elapsed);
                 }
+            }
+        }
+        const present_elapsed = (std.time.Instant.now() catch frame_now).since(frame_timer);
+        if (!emulation_paused) {
+            if (target_frame_ns) |frame_ns| {
+                performance_hud.noteFrame(work_elapsed, present_elapsed, frame_ns, queued_audio_bytes);
             }
         }
     }
@@ -2205,6 +2242,9 @@ test "frontend shortcuts toggle help and pause only on key down" {
     try std.testing.expect(applyFrontendShortcut(&ui, .f5, true));
     try std.testing.expect(ui.show_performance_hud);
     try std.testing.expect(!ui.emulationPaused());
+
+    try std.testing.expect(applyFrontendShortcut(&ui, .f12, true));
+    try std.testing.expect(ui.show_performance_hud);
 }
 
 test "frontend shortcut helper ignores unrelated keys" {
@@ -2226,23 +2266,33 @@ test "duration formatter rounds to tenths of a millisecond" {
     try std.testing.expectEqualStrings("0.0", try formatDurationMsTenths(buffer[0..], 0));
 }
 
+test "rate and percent formatters round to tenths" {
+    var buffer: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("59.9", try formatRateHzTenths(buffer[0..], 16_688_154));
+    try std.testing.expectEqualStrings("5.3", try formatPercentTenths(buffer[0..], 53));
+}
+
 test "performance hud tracks slow frames and queued audio" {
     var perf = PerformanceHudState{};
 
-    perf.noteFrame(17_500_000, 16_700_000, 9_600);
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600);
     try std.testing.expectEqual(@as(u64, 1), perf.frame_count);
     try std.testing.expectEqual(@as(u64, 1), perf.slow_frame_count);
     try std.testing.expectEqual(@as(u64, 800_000), perf.last_overrun_ns);
-    try std.testing.expectEqual(@as(u64, 0), perf.last_sleep_ns);
+    try std.testing.expectEqual(@as(u64, 700_000), perf.last_sleep_ns);
     try std.testing.expectEqual(@as(u64, 17_500_000), perf.worst_work_ns);
+    try std.testing.expectEqual(@as(u64, 800_000), perf.worst_overrun_ns);
+    try std.testing.expectEqual(@as(u64, 18_200_000), perf.last_present_ns);
     try std.testing.expect(perf.queuedAudioNs() != null);
+    try std.testing.expectEqual(@as(u64, 1000), perf.slowFramePercentTenths());
 
-    perf.noteFrame(12_000_000, 16_700_000, null);
+    perf.noteFrame(12_000_000, 16_700_000, 16_700_000, null);
     try std.testing.expectEqual(@as(u64, 2), perf.frame_count);
     try std.testing.expectEqual(@as(u64, 1), perf.slow_frame_count);
     try std.testing.expectEqual(@as(u64, 4_700_000), perf.last_sleep_ns);
     try std.testing.expectEqual(@as(u64, 0), perf.last_overrun_ns);
     try std.testing.expectEqual(@as(?usize, null), perf.last_audio_queued_bytes);
+    try std.testing.expectEqual(@as(u64, 500), perf.slowFramePercentTenths());
 }
 
 test "binding editor opens releases inputs and rebinds selected action" {
