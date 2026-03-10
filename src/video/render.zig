@@ -1,3 +1,4 @@
+const std = @import("std");
 const Vdp = @import("vdp.zig").Vdp;
 
 const color_lut = [8]u8{ 0, 36, 73, 109, 146, 182, 219, 255 };
@@ -337,6 +338,7 @@ fn renderSpritesToBuffer(
     sh_mode: bool,
 ) void {
     const screen_w = self.screenWidth();
+    const screen_w_i32: i32 = @intCast(screen_w);
     const sprite_base: u16 = if (self.isH40())
         ((@as(u16, self.regs[5] & 0x7F) << 9) & 0xFC00)
     else
@@ -367,7 +369,6 @@ fn renderSpritesToBuffer(
 
         const h_size: i32 = @as(i32, ((size >> 2) & 0x3)) + 1;
         const v_size: i32 = @as(i32, (size & 0x3)) + 1;
-        const sprite_h_px = h_size * 8;
         const sprite_v_px = v_size * @as(i32, tile_h);
         const y_pos = @as(i32, @intCast(y_word & 0x03FF)) - 128;
         const x_pos_raw: u16 = x_word & 0x01FF;
@@ -399,67 +400,78 @@ fn renderSpritesToBuffer(
                 const y_in_sprite = if (y_flip) (sprite_v_px - 1 - y_in_non_flipped) else y_in_non_flipped;
                 const tile_y: u16 = @intCast(@as(u32, @intCast(y_in_sprite)) >> @intCast(self.tileHeightShift()));
                 const fine_y: u8 = @intCast(@as(u32, @intCast(y_in_sprite)) & tile_h_mask);
+                const h_size_u16: u16 = @intCast(h_size);
                 const v_size_u16: u16 = @intCast(v_size);
 
-                var x_pix: i32 = 0;
-                while (x_pix < sprite_h_px) : (x_pix += 1) {
-                    const screen_x = x_pos + x_pix;
-                    if (screen_x < 0 or screen_x >= screen_w) continue;
-                    if (self.active_execution_counters) |counters| {
-                        counters.render_sprite_pixels += 1;
-                    }
+                const new_layer = layerOrder(3, is_high);
+                var screen_tile_x: u16 = 0;
+                while (screen_tile_x < h_size_u16) : (screen_tile_x += 1) {
+                    const tile_screen_start = x_pos + (@as(i32, screen_tile_x) * 8);
+                    var screen_x = @max(tile_screen_start, 0);
+                    const tile_screen_end = @min(tile_screen_start + 8, screen_w_i32);
+                    if (screen_x >= tile_screen_end) continue;
 
-                    pixels_drawn += 1;
-                    if (pixels_drawn > max_pixels) {
-                        dot_overflow = true;
-                        break;
-                    }
-
-                    const x_in_sprite = if (x_flip) (sprite_h_px - 1 - x_pix) else x_pix;
-                    const tile_x: u16 = @intCast(@divFloor(x_in_sprite, 8));
-                    const fine_x: u8 = @intCast(@mod(x_in_sprite, 8));
+                    const tile_x: u16 = if (x_flip) h_size_u16 - 1 - screen_tile_x else screen_tile_x;
                     const tile_index: u16 = tile_base +% (tile_x *% v_size_u16) +% tile_y;
-                    const pattern_addr = (@as(u32, tile_index) * tile_sz) + (@as(u32, fine_y) * 4) + @as(u32, fine_x / 2);
-                    const pattern_byte = self.vramReadByte(@intCast(pattern_addr & 0xFFFF));
-                    const color_idx: u8 = if ((fine_x & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
-                    if (color_idx == 0) continue;
-                    if (self.active_execution_counters) |counters| {
-                        counters.render_sprite_opaque_pixels += 1;
-                    }
+                    const pattern_row_addr = (@as(u32, tile_index) * tile_sz) + (@as(u32, fine_y) * 4);
+                    const pattern_row = [4]u8{
+                        self.vramReadByte(@intCast(pattern_row_addr & 0xFFFF)),
+                        self.vramReadByte(@intCast((pattern_row_addr + 1) & 0xFFFF)),
+                        self.vramReadByte(@intCast((pattern_row_addr + 2) & 0xFFFF)),
+                        self.vramReadByte(@intCast((pattern_row_addr + 3) & 0xFFFF)),
+                    };
 
-                    const sx: usize = @intCast(screen_x);
-                    const palette_index = (palette * 16) + color_idx;
-
-                    if (source_buf[sx] == 3) {
-                        self.sprite_collision = true;
-                    }
-
-                    if (sh_mode and palette == 3 and color_idx == 14) {
-                        sh_buf[sx] = SH_NORMAL;
-                        continue;
-                    }
-                    if (sh_mode and palette == 3 and color_idx == 15) {
-                        if (sh_buf[sx] == SH_SHADOW) {
-                            sh_buf[sx] = SH_NORMAL;
-                        } else {
-                            sh_buf[sx] = SH_HIGHLIGHT;
+                    while (screen_x < tile_screen_end) : (screen_x += 1) {
+                        if (self.active_execution_counters) |counters| {
+                            counters.render_sprite_pixels += 1;
                         }
-                        continue;
-                    }
 
-                    const new_layer = layerOrder(3, is_high);
-                    const cur_layer = layer_buf[sx];
+                        pixels_drawn += 1;
+                        if (pixels_drawn > max_pixels) {
+                            dot_overflow = true;
+                            break;
+                        }
 
-                    if (new_layer > cur_layer) {
-                        pixel_buf[sx] = palette_index;
-                        layer_buf[sx] = new_layer;
-                        source_buf[sx] = 3;
-                        if (sh_mode) {
-                            if (is_high) {
+                        const offset_in_tile: u8 = @intCast(screen_x - tile_screen_start);
+                        const fine_x: u8 = if (x_flip) @as(u8, 7) - offset_in_tile else offset_in_tile;
+                        const pattern_byte = pattern_row[fine_x >> 1];
+                        const color_idx: u8 = if ((fine_x & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
+                        if (color_idx == 0) continue;
+                        if (self.active_execution_counters) |counters| {
+                            counters.render_sprite_opaque_pixels += 1;
+                        }
+
+                        const sx: usize = @intCast(screen_x);
+                        const palette_index = (palette * 16) + color_idx;
+
+                        if (source_buf[sx] == 3) {
+                            self.sprite_collision = true;
+                        }
+
+                        if (sh_mode and palette == 3 and color_idx == 14) {
+                            sh_buf[sx] = SH_NORMAL;
+                            continue;
+                        }
+                        if (sh_mode and palette == 3 and color_idx == 15) {
+                            if (sh_buf[sx] == SH_SHADOW) {
+                                sh_buf[sx] = SH_NORMAL;
+                            } else {
+                                sh_buf[sx] = SH_HIGHLIGHT;
+                            }
+                            continue;
+                        }
+
+                        const cur_layer = layer_buf[sx];
+                        if (new_layer > cur_layer) {
+                            pixel_buf[sx] = palette_index;
+                            layer_buf[sx] = new_layer;
+                            source_buf[sx] = 3;
+                            if (sh_mode and is_high) {
                                 sh_buf[sx] = SH_NORMAL;
                             }
                         }
                     }
+                    if (dot_overflow) break;
                 }
                 if (dot_overflow) break;
             }
@@ -470,4 +482,86 @@ fn renderSpritesToBuffer(
     }
 
     self.sprite_dot_overflow = dot_overflow;
+}
+
+test "sprite renderer draws a simple sprite row and tracks counters" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    vdp.vramWriteByte(0, 0x12);
+    vdp.vramWriteByte(1, 0x34);
+    vdp.vramWriteByte(2, 0x56);
+    vdp.vramWriteByte(3, 0x78);
+
+    const sprite_base: u16 = 0x0200;
+    vdp.vramWriteWord(sprite_base, 128);
+    vdp.vramWriteByte(sprite_base + 2, 0x00);
+    vdp.vramWriteByte(sprite_base + 3, 0x00);
+    vdp.vramWriteWord(sprite_base + 4, 0x0000);
+    vdp.vramWriteWord(sprite_base + 6, 128);
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var counters = @import("../performance_profile.zig").CoreFrameCounters{};
+    vdp.setActiveExecutionCounters(&counters);
+    defer vdp.setActiveExecutionCounters(null);
+
+    renderSpritesToBuffer(
+        &vdp,
+        0,
+        vdp.tileHeight(),
+        vdp.tileHeightMask(),
+        vdp.tileSizeBytes(),
+        &pixel_buf,
+        &layer_buf,
+        &source_buf,
+        &sh_buf,
+        false,
+    );
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[0..8]);
+    try std.testing.expectEqual(@as(u64, 1), counters.render_sprite_entries);
+    try std.testing.expectEqual(@as(u64, 8), counters.render_sprite_pixels);
+    try std.testing.expectEqual(@as(u64, 8), counters.render_sprite_opaque_pixels);
+}
+
+test "sprite renderer respects horizontal flip" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    vdp.vramWriteByte(0, 0x12);
+    vdp.vramWriteByte(1, 0x34);
+    vdp.vramWriteByte(2, 0x56);
+    vdp.vramWriteByte(3, 0x78);
+
+    const sprite_base: u16 = 0x0200;
+    vdp.vramWriteWord(sprite_base, 128);
+    vdp.vramWriteByte(sprite_base + 2, 0x00);
+    vdp.vramWriteByte(sprite_base + 3, 0x00);
+    vdp.vramWriteWord(sprite_base + 4, 0x0800);
+    vdp.vramWriteWord(sprite_base + 6, 128);
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpritesToBuffer(
+        &vdp,
+        0,
+        vdp.tileHeight(),
+        vdp.tileHeightMask(),
+        vdp.tileSizeBytes(),
+        &pixel_buf,
+        &layer_buf,
+        &source_buf,
+        &sh_buf,
+        false,
+    );
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 8, 7, 6, 5, 4, 3, 2, 1 }, pixel_buf[0..8]);
 }
