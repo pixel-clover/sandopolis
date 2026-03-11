@@ -76,6 +76,17 @@ pub const Io = struct {
         self.version_is_overseas = overseas;
     }
 
+    pub fn resetForHardware(self: *Io) void {
+        const pad = self.pad;
+        const controller_types = self.controller_types;
+        const version_is_overseas = self.version_is_overseas;
+
+        self.* = Io.init();
+        self.pad = pad;
+        self.controller_types = controller_types;
+        self.version_is_overseas = version_is_overseas;
+    }
+
     fn readData(self: *const Io, port: usize) u8 {
         var controller_byte: u8 = switch (self.controllerState(port)) {
             .th_high => @as(u8, @truncate(self.pad[port] & 0x3F)),
@@ -254,4 +265,26 @@ test "three-button controllers ignore the six-button identification cycle" {
 
     io.write(0x03, 0x00);
     try testing.expectEqual(@as(u8, 0x33), io.read(0x03));
+}
+
+test "hardware reset clears transient io state but preserves controller wiring and held inputs" {
+    var io = Io.init();
+    io.setControllerType(0, .three_button);
+    io.setVersionIsOverseas(false);
+    io.setButton(0, Io.Button.A, true);
+    io.write(0x09, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    try testing.expect(io.th_flip_count[0] != 0);
+    try testing.expectEqual(@as(u8, 0x40), io.ctrl[0]);
+
+    io.resetForHardware();
+
+    try testing.expectEqual(Io.ControllerType.three_button, io.getControllerType(0));
+    try testing.expect(!io.versionIsOverseas());
+    try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.A);
+    try testing.expectEqual(@as(u8, 0), io.ctrl[0]);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+    try testing.expect(io.controller_th[0]);
 }

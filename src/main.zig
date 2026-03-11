@@ -379,7 +379,8 @@ const pause_overlay_lines = [_]OverlayLine{
     .state_file_slot,
     .{ .hotkey = .{ .action = .toggle_pause, .label = "RESUME" } },
     .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM" } },
-    .{ .hotkey = .{ .action = .restart_rom, .label = "RESTART ROM" } },
+    .{ .hotkey = .{ .action = .restart_rom, .label = "SOFT RESET" } },
+    .{ .hotkey = .{ .action = .reload_rom, .label = "HARD RESET / RELOAD" } },
     .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD EDITOR" } },
     .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERF HUD" } },
     .{ .hotkey = .{ .action = .reset_performance_hud, .label = "RESET PERF HUD" } },
@@ -395,7 +396,8 @@ const help_overlay_lines = [_]OverlayLine{
     .{ .hotkey = .{ .action = .toggle_help, .label = "CLOSE HELP" } },
     .{ .hotkey = .{ .action = .toggle_pause, .label = "PAUSE OR RESUME" } },
     .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM DIALOG" } },
-    .{ .hotkey = .{ .action = .restart_rom, .label = "RESTART CURRENT ROM" } },
+    .{ .hotkey = .{ .action = .restart_rom, .label = "SOFT RESET CONSOLE" } },
+    .{ .hotkey = .{ .action = .reload_rom, .label = "HARD RESET OR RELOAD ROM" } },
     .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD EDITOR" } },
     .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "TOGGLE PERF HUD" } },
     .{ .hotkey = .{ .action = .reset_performance_hud, .label = "RESET PERF HUD" } },
@@ -719,7 +721,8 @@ fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
         .toggle_help => "HELP",
         .toggle_pause => "PAUSE",
         .open_rom => "OPEN ROM",
-        .restart_rom => "RESTART ROM",
+        .restart_rom => "SOFT RESET",
+        .reload_rom => "HARD RESET / RELOAD",
         .open_keyboard_editor => "KEYBOARD EDITOR",
         .toggle_performance_hud => "PERF HUD",
         .reset_performance_hud => "RESET PERF HUD",
@@ -877,7 +880,14 @@ fn loadRomIntoMachine(
     frame_counter.* = 0;
 }
 
-fn restartCurrentMachine(
+fn softResetCurrentMachine(machine: *Machine, frame_counter: *u32) void {
+    machine.softReset();
+    frame_counter.* = 0;
+    std.debug.print("CPU Soft Reset complete.\n", .{});
+    machine.debugDump();
+}
+
+fn hardResetCurrentMachine(
     allocator: std.mem.Allocator,
     machine: *Machine,
     input_bindings: *const InputBindings.Bindings,
@@ -901,7 +911,7 @@ fn restartCurrentMachine(
         return;
     }
 
-    stopGifRecording(gif_recorder, "GIF recording stopped for restart");
+    stopGifRecording(gif_recorder, "GIF recording stopped for hard reset");
     if (audio) |a| {
         resetAudioOutput(a);
     }
@@ -915,7 +925,7 @@ fn restartCurrentMachine(
     frame_counter.* = 0;
     std.debug.print("Timing mode: {s}\n", .{resolved_timing.description});
     std.debug.print("Console region: {s}\n", .{resolved_region.description});
-    std.debug.print("CPU Reset complete.\n", .{});
+    std.debug.print("CPU Hard Reset complete.\n", .{});
     machine.debugDump();
 }
 
@@ -2679,8 +2689,9 @@ pub fn main() !void {
                                     .toggle_help => frontend_ui.show_help = !frontend_ui.show_help,
                                     .toggle_pause => frontend_ui.paused = !frontend_ui.paused,
                                     .open_rom => _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window),
-                                    .restart_rom => {
-                                        restartCurrentMachine(
+                                    .restart_rom => softResetCurrentMachine(&machine, &frame_counter),
+                                    .reload_rom => {
+                                        hardResetCurrentMachine(
                                             allocator,
                                             &machine,
                                             &input_bindings,
@@ -2690,7 +2701,7 @@ pub fn main() !void {
                                             &frame_counter,
                                             if (current_rom_path.len != 0) current_rom_path.slice() else null,
                                         ) catch |err| {
-                                            std.debug.print("Failed to restart current ROM: {}\n", .{err});
+                                            std.debug.print("Failed to hard reset or reload current ROM: {}\n", .{err});
                                         };
                                     },
                                     .toggle_performance_hud => {
@@ -3027,8 +3038,16 @@ test "default hotkeys include frontend commands and modifiers" {
         bindings.hotkeyBinding(.restart_rom),
     );
     try std.testing.expectEqual(
+        InputBindings.HotkeyBinding{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
+        bindings.hotkeyBinding(.reload_rom),
+    );
+    try std.testing.expectEqual(
         InputBindings.HotkeyAction.restart_rom,
         bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .shift = true } }).?,
+    );
+    try std.testing.expectEqual(
+        InputBindings.HotkeyAction.reload_rom,
+        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } }).?,
     );
     try std.testing.expect(bindings.hotkeyForBinding(.{ .input = .f3 }) == .open_rom);
 }
@@ -3425,7 +3444,7 @@ test "binding editor captures modifier hotkeys" {
         .{ .input = .f4 },
         true,
     ));
-    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len + @intFromEnum(InputBindings.HotkeyAction.restart_rom);
+    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(handleBindingEditorKey(
         &ui,
@@ -3439,7 +3458,7 @@ test "binding editor captures modifier hotkeys" {
     ));
     try std.testing.expectEqual(
         InputBindings.HotkeyBinding{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
-        bindings.hotkeyBinding(.restart_rom),
+        bindings.hotkeyBinding(.reload_rom),
     );
 }
 
@@ -3454,7 +3473,43 @@ fn makeFrontendTestRom(allocator: std.mem.Allocator) ![]u8 {
     return rom;
 }
 
-test "restart helper reloads the current rom path" {
+test "soft reset helper rewinds cpu without reloading runtime state" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = try makeFrontendTestRom(allocator);
+    defer allocator.free(rom);
+    try tmp.dir.writeFile(.{ .sub_path = "restart.bin", .data = rom });
+
+    const rom_path = try tmp.dir.realpathAlloc(allocator, "restart.bin");
+    defer allocator.free(rom_path);
+
+    var machine = try Machine.init(allocator, rom_path);
+    defer machine.deinit(allocator);
+
+    var bindings = InputBindings.Bindings.defaults();
+    machine.applyControllerTypes(&bindings);
+    const resolved_timing = resolveTimingMode(machine.romMetadata(), .auto);
+    const resolved_region = resolveConsoleRegion(machine.romMetadata());
+    machine.reset();
+    machine.setPalMode(resolved_timing.pal_mode);
+    machine.setConsoleIsOverseas(resolved_region.overseas);
+
+    machine.writeWorkRamByte(0x20, 0x5A);
+    var frame_counter: u32 = 42;
+    machine.runMasterSlice(clock.m68kCyclesToMaster(4));
+
+    try std.testing.expectEqual(@as(u32, 0x0000_0202), machine.programCounter());
+
+    softResetCurrentMachine(&machine, &frame_counter);
+
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u32, 0), frame_counter);
+    try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
+}
+
+test "hard reset helper reloads the current rom path" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3481,7 +3536,7 @@ test "restart helper reloads the current rom path" {
     var gif_recorder: ?GifRecorder = null;
     var frame_counter: u32 = 42;
 
-    try restartCurrentMachine(
+    try hardResetCurrentMachine(
         allocator,
         &machine,
         &bindings,

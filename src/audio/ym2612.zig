@@ -1211,16 +1211,18 @@ pub const Ym2612Synth = struct {
                         mode_write = candidate;
                         mode_index = idx;
                     }
-                } else {
-                    if (deferred_write == null) {
-                        if (self.core.canConsumeWrite(candidate)) {
-                            deferred_write = candidate;
-                            deferred_index = idx;
-                        }
-                        break;
-                    }
                 }
-                if (mode_write != null and deferred_write != null) break;
+            }
+
+            // YM mode-register writes bypass older deferred operator/channel writes.
+            for (0..self.pending_write_count) |idx| {
+                const candidate = self.pending_writes[idx];
+                if (self.core.isImmediateModeWrite(candidate)) continue;
+                if (self.core.canConsumeWrite(candidate)) {
+                    deferred_write = candidate;
+                    deferred_index = idx;
+                }
+                break;
             }
         }
 
@@ -1413,6 +1415,21 @@ test "ym native sample drains exactly one frame of internal writes" {
     _ = synth.tick();
 
     try std.testing.expectEqual(@as(usize, 1), synth.pending_write_count);
+}
+
+test "ym immediate mode writes bypass blocked deferred writes" {
+    var synth = Ym2612Synth{};
+
+    synth.applyWrite(writeEvent(0, 0x35, 0x01));
+    synth.applyWrite(writeEvent(0, 0x21, 0x40));
+
+    _ = synth.clockOneInternal();
+
+    try std.testing.expectEqual(@as(u8, 1), synth.core.mode_test_21[6]);
+    try std.testing.expectEqual(@as(u8, 0), synth.core.mode_test_21[7]);
+    try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(0));
+    try std.testing.expectEqual(@as(usize, 1), synth.pending_write_count);
+    try std.testing.expectEqual(@as(u8, 0x35), synth.pending_writes[0].reg);
 }
 
 test "ym key on waits for the channel phase latch" {

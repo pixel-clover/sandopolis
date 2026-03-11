@@ -404,6 +404,13 @@ pub const Cartridge = struct {
         };
     }
 
+    pub fn resetHardwareState(self: *Cartridge) void {
+        self.mapper = detectMapper(self.rom);
+        if (self.ram.hasStorage()) {
+            self.ram.setMapped(self.ram.start_address >= self.rom.len);
+        }
+    }
+
     fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
         const extension = std.fs.path.extension(rom_path);
         if (extension.len == 0) {
@@ -512,3 +519,63 @@ pub const Cartridge = struct {
         return self.ram.writeWord(address, value);
     }
 };
+
+fn makeBasicGenesisRom(allocator: std.mem.Allocator, rom_len: usize) ![]u8 {
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    return rom;
+}
+
+fn makeSsfMapperRom(allocator: std.mem.Allocator, bank_count: usize) ![]u8 {
+    const bank_size = 512 * 1024;
+    const rom_len = bank_count * bank_size;
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x108], "SEGA SSF");
+
+    const marker_offset = 0x0400;
+    for (0..bank_count) |bank| {
+        rom[bank * bank_size + marker_offset] = @truncate(bank);
+    }
+
+    return rom;
+}
+
+test "cartridge reset restores default ssf mapper banks" {
+    const rom = try makeSsfMapperRom(std.testing.allocator, 16);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    const marker_offset: u32 = 0x0400;
+    try std.testing.expectEqual(@as(u8, 1), cartridge.readRomByte(0x080000 + marker_offset));
+
+    try std.testing.expect(cartridge.writeRegisterByte(0xA130F3, 10));
+    try std.testing.expectEqual(@as(u8, 10), cartridge.readRomByte(0x080000 + marker_offset));
+
+    cartridge.resetHardwareState();
+    try std.testing.expectEqual(@as(u8, 1), cartridge.readRomByte(0x080000 + marker_offset));
+}
+
+test "cartridge reset restores default sram mapping state" {
+    const rom = try makeBasicGenesisRom(std.testing.allocator, 0x200000);
+    defer std.testing.allocator.free(rom);
+    rom[0x1B0] = 'R';
+    rom[0x1B1] = 'A';
+    rom[0x1B2] = 0xF8;
+    rom[0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x1B4..0x1B8], 0x00200001, .big);
+    std.mem.writeInt(u32, rom[0x1B8..0x1BC], 0x00203FFF, .big);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.isRamMapped());
+    try std.testing.expect(cartridge.writeRegisterByte(0xA130F1, 0));
+    try std.testing.expect(!cartridge.isRamMapped());
+
+    cartridge.resetHardwareState();
+    try std.testing.expect(cartridge.isRamMapped());
+}

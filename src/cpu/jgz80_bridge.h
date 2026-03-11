@@ -159,6 +159,8 @@ void jgz80_destroy(Jgz80Handle *handle);
 
 void jgz80_reset(Jgz80Handle *handle);
 
+void jgz80_soft_reset(Jgz80Handle *handle);
+
 void jgz80_step(Jgz80Handle *handle, uint32_t cycles);
 
 uint32_t jgz80_step_one(Jgz80Handle *handle);

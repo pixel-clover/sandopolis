@@ -381,6 +381,7 @@ pub const Vdp = struct {
     pub const setHBlank = timing_mod.setHBlank;
     pub const isVBlankInterruptEnabled = timing_mod.isVBlankInterruptEnabled;
     pub const beginFrame = timing_mod.beginFrame;
+    pub const applyPowerOnResetTiming = timing_mod.applyPowerOnResetTiming;
     pub const consumeHintForLine = timing_mod.consumeHintForLine;
     pub const hInterruptMasterCycles = timing_mod.hInterruptMasterCycles;
     pub const hblankStartMasterCycles = timing_mod.hblankStartMasterCycles;

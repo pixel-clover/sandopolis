@@ -201,6 +201,52 @@ pub const Bus = struct {
         self.vdp.setActiveExecutionCounters(counters);
     }
 
+    pub fn reset(self: *Bus) void {
+        const pal_mode = self.vdp.pal_mode;
+        const controller_pad = self.io.pad;
+        const controller_types = self.io.controller_types;
+        const version_is_overseas = self.io.versionIsOverseas();
+        const active_execution_counters = self.active_execution_counters;
+
+        self.cartridge.resetHardwareState();
+        self.ram = [_]u8{0} ** self.ram.len;
+
+        self.vdp = Vdp.init();
+        self.vdp.pal_mode = pal_mode;
+        self.vdp.applyPowerOnResetTiming();
+        self.vdp.setActiveExecutionCounters(active_execution_counters);
+
+        self.io.resetForHardware();
+        self.io.pad = controller_pad;
+        self.io.controller_types = controller_types;
+        self.io.setVersionIsOverseas(version_is_overseas);
+
+        self.z80.reset();
+        self.audio_timing = .{};
+        self.io_master_remainder = 0;
+        self.z80_master_credit = 0;
+        self.z80_stall_master_debt = 0;
+        self.z80_wait_master_cycles = 0;
+        self.z80_odd_access = false;
+        self.m68k_wait_master_cycles = 0;
+        self.open_bus = 0;
+        self.ensureZ80HostWindow();
+    }
+
+    pub fn softReset(self: *Bus) void {
+        self.cartridge.resetHardwareState();
+        self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+        self.z80.softReset();
+        self.io_master_remainder = 0;
+        self.z80_master_credit = 0;
+        self.z80_stall_master_debt = 0;
+        self.z80_wait_master_cycles = 0;
+        self.z80_odd_access = false;
+        self.m68k_wait_master_cycles = 0;
+        self.open_bus = 0;
+        self.ensureZ80HostWindow();
+    }
+
     fn cpuMemoryRead8(ctx: ?*anyopaque, address: u32) u8 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
         return self.read8(address);

@@ -1243,6 +1243,20 @@ void jgz80_reset(Jgz80Handle *handle) {
     z80_reset(&handle->core);
 }
 
+void jgz80_soft_reset(Jgz80Handle *handle) {
+    if (!handle) return;
+    bind_callbacks(handle);
+    handle->bus_req = false;
+    handle->bus_ack = false;
+    handle->reset_line = false;
+    handle->bank = 0;
+    handle->m68k_bus_access_count = 0;
+    clear_ym2612_shadow_state(handle);
+    clear_ym2612_runtime_state(handle);
+    push_ym_reset_event(handle);
+    z80_reset(&handle->core);
+}
+
 void jgz80_step(Jgz80Handle *handle, uint32_t cycles) {
     if (!handle) return;
     bind_callbacks(handle);

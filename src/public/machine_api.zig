@@ -64,6 +64,10 @@ pub const Machine = struct {
         self.handle.machine.reset();
     }
 
+    pub fn softReset(self: *Machine) void {
+        self.handle.machine.softReset();
+    }
+
     pub fn flushPersistentStorage(self: *Machine) !void {
         try self.handle.machine.flushPersistentStorage();
     }

@@ -52,6 +52,10 @@ pub const Z80 = struct {
         if (self.handle) |h| c.jgz80_reset(h);
     }
 
+    pub fn softReset(self: *Z80) void {
+        if (self.handle) |h| c.jgz80_soft_reset(h);
+    }
+
     pub fn step(self: *Z80, cycles: u32) void {
         if (self.handle) |h| c.jgz80_step(h, cycles);
     }
@@ -305,6 +309,43 @@ test "z80 reset emits a timed ym reset event without dropping earlier ym audio e
     var ym_dac_events: [1]Z80.YmDacSampleEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmDacSamples(ym_dac_events[0..]));
     try std.testing.expectEqual(@as(u32, 9), ym_dac_events[0].master_offset);
+
+    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
+    try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
+}
+
+test "z80 soft reset preserves ram and psg state while resetting ym and bank state" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.writeByte(0x0000, 0xAB);
+    z80.writeByte(0x7F11, 0x9F);
+
+    var state = z80.captureState();
+    state.bank = 0x0123;
+    z80.restoreState(&state);
+
+    z80.setAudioMasterOffset(9);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x33);
+
+    z80.setAudioMasterOffset(27);
+    z80.softReset();
+
+    try std.testing.expectEqual(@as(u8, 0xAB), z80.readByte(0x0000));
+    try std.testing.expectEqual(@as(u16, 0), z80.getBank());
+    try std.testing.expectEqual(@as(u8, 0x9F), z80.getPsgLast());
+    try std.testing.expectEqual(@as(u8, 0x0F), z80.getPsgVolume(0));
+
+    var ym_events: [1]Z80.YmWriteEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
+    try std.testing.expectEqual(@as(u32, 9), ym_events[0].master_offset);
+
+    var psg_events: [1]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expectEqual(@as(u32, 0), psg_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x9F), psg_events[0].value);
 
     var ym_reset_events: [1]Z80.YmResetEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));

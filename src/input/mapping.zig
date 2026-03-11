@@ -29,6 +29,7 @@ pub const HotkeyAction = enum(u8) {
     toggle_pause,
     open_rom,
     restart_rom,
+    reload_rom,
     open_keyboard_editor,
     toggle_performance_hud,
     reset_performance_hud,
@@ -151,6 +152,7 @@ pub const all_hotkey_actions = [_]HotkeyAction{
     .toggle_pause,
     .open_rom,
     .restart_rom,
+    .reload_rom,
     .open_keyboard_editor,
     .toggle_performance_hud,
     .reset_performance_hud,
@@ -234,6 +236,7 @@ pub const Bindings = struct {
         bindings.setHotkey(.toggle_pause, .f2);
         bindings.setHotkey(.open_rom, .f3);
         bindings.setHotkeyWithModifiers(.restart_rom, .f3, .{ .shift = true });
+        bindings.setHotkeyWithModifiers(.reload_rom, .f3, .{ .shift = true, .ctrl = true });
         bindings.setHotkey(.open_keyboard_editor, .f4);
         bindings.setHotkey(.toggle_performance_hud, .f5);
         bindings.setHotkey(.reset_performance_hud, .f12);
@@ -762,7 +765,7 @@ test "input bindings parse overrides and unbinds" {
         \\gamepad.mode = misc1
         \\analog.gamepad_axis = 12000
         \\analog.trigger = 20000
-        \\hotkey.restart_rom = ctrl+shift+f3
+        \\hotkey.reload_rom = ctrl+shift+f3
         \\hotkey.registers = none
         \\hotkey.quit = backspace
         \\controller.p2 = three_button
@@ -780,9 +783,32 @@ test "input bindings parse overrides and unbinds" {
     try testing.expectEqual(HotkeyBinding{ .input = .backspace }, bindings.hotkeys[@intFromEnum(HotkeyAction.quit)]);
     try testing.expectEqual(
         HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true, .ctrl = true } },
-        bindings.hotkeys[@intFromEnum(HotkeyAction.restart_rom)],
+        bindings.hotkeys[@intFromEnum(HotkeyAction.reload_rom)],
     );
     try testing.expectEqual(ControllerType.three_button, bindings.controller_types[1]);
+}
+
+test "default hotkeys distinguish open rom soft reset and hard reload" {
+    const bindings = Bindings.defaults();
+
+    try testing.expectEqual(HotkeyBinding{ .input = .f3 }, bindings.hotkeyBinding(.open_rom));
+    try testing.expectEqual(
+        HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true } },
+        bindings.hotkeyBinding(.restart_rom),
+    );
+    try testing.expectEqual(
+        HotkeyBinding{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
+        bindings.hotkeyBinding(.reload_rom),
+    );
+    try testing.expectEqual(HotkeyAction.open_rom, bindings.hotkeyForBinding(.{ .input = .f3 }).?);
+    try testing.expectEqual(
+        HotkeyAction.restart_rom,
+        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .shift = true } }).?,
+    );
+    try testing.expectEqual(
+        HotkeyAction.reload_rom,
+        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } }).?,
+    );
 }
 
 test "input bindings apply remapped inputs" {

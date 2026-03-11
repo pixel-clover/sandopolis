@@ -11,6 +11,11 @@ const Vdp = @import("video/vdp.zig").Vdp;
 
 pub const Machine = struct {
     pub const CoreFrameCounters = perf_profile.CoreFrameCounters;
+    const PendingFramePhase = enum {
+        none,
+        hard_reset,
+        current,
+    };
 
     pub const Snapshot = struct {
         machine: Machine,
@@ -91,7 +96,7 @@ pub const Machine = struct {
         }
 
         pub fn setPalMode(self: *TestingView, pal_mode: bool) void {
-            self.machine.bus.vdp.pal_mode = pal_mode;
+            self.machine.setPalMode(pal_mode);
         }
 
         pub fn setVdpCode(self: *TestingView, code: u8) void {
@@ -205,12 +210,14 @@ pub const Machine = struct {
     bus: Bus,
     cpu: Cpu,
     m68k_sync: clock.M68kSync,
+    pending_frame_phase: PendingFramePhase,
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Machine {
         return .{
             .bus = try Bus.init(allocator, rom_path),
             .cpu = Cpu.init(),
             .m68k_sync = .{},
+            .pending_frame_phase = .none,
         };
     }
 
@@ -219,6 +226,7 @@ pub const Machine = struct {
             .bus = try Bus.initFromRomBytes(allocator, rom_bytes),
             .cpu = Cpu.init(),
             .m68k_sync = .{},
+            .pending_frame_phase = .none,
         };
     }
 
@@ -231,13 +239,24 @@ pub const Machine = struct {
             .bus = try self.bus.clone(allocator),
             .cpu = self.cpu.clone(),
             .m68k_sync = self.m68k_sync,
+            .pending_frame_phase = self.pending_frame_phase,
         };
     }
 
     pub fn reset(self: *Machine) void {
+        self.bus.reset();
         var memory = self.bus.cpuMemory();
         self.cpu.reset(&memory);
         self.m68k_sync = .{};
+        self.pending_frame_phase = .hard_reset;
+    }
+
+    pub fn softReset(self: *Machine) void {
+        self.bus.softReset();
+        var memory = self.bus.cpuMemory();
+        self.cpu.reset(&memory);
+        self.m68k_sync = .{};
+        self.pending_frame_phase = .current;
     }
 
     pub fn flushPersistentStorage(self: *Machine) !void {
@@ -293,6 +312,22 @@ pub const Machine = struct {
             self.cpu.setActiveExecutionCounters(null);
         }
 
+        if (self.pending_frame_phase != .none) {
+            const startup_visible_lines = self.bus.vdp.activeVisibleLines();
+            const startup_total_lines = self.bus.vdp.totalLinesForCurrentFrame();
+            const startup_master_cycles_per_line: u16 = if (self.bus.vdp.pal_mode) clock.pal_master_cycles_per_line else clock.ntsc_master_cycles_per_line;
+            const startup_line = self.bus.vdp.scanline;
+            const startup_line_master_cycle = self.bus.vdp.line_master_cycle;
+
+            self.pending_frame_phase = .none;
+            self.bus.vdp.beginFrame();
+            for (startup_line..startup_total_lines) |line_idx| {
+                const line: u16 = @intCast(line_idx);
+                const line_start_master_cycles: u16 = if (line == startup_line) startup_line_master_cycle else 0;
+                self.runScheduledScanline(line, startup_visible_lines, startup_total_lines, startup_master_cycles_per_line, line_start_master_cycles, false, null);
+            }
+        }
+
         const visible_lines = self.bus.vdp.activeVisibleLines();
         const total_lines = self.bus.vdp.totalLinesForCurrentFrame();
         const master_cycles_per_line: u16 = if (self.bus.vdp.pal_mode) clock.pal_master_cycles_per_line else clock.ntsc_master_cycles_per_line;
@@ -300,62 +335,95 @@ pub const Machine = struct {
         self.bus.vdp.beginFrame();
         for (0..total_lines) |line_idx| {
             const line: u16 = @intCast(line_idx);
-            const entering_vblank = self.bus.vdp.setScanlineState(line, visible_lines, total_lines);
-            if (entering_vblank and self.bus.vdp.isVBlankInterruptEnabled()) {
-                self.cpu.requestInterrupt(6);
-            }
-            if (entering_vblank) {
-                self.bus.z80.assertIrq(0xFF);
-            } else if (!self.bus.vdp.vint_pending) {
-                self.bus.z80.clearIrq();
-            }
-            self.bus.vdp.setHBlank(false);
-
-            const hint_master_cycles = self.bus.vdp.hInterruptMasterCycles();
-            const hblank_start_master_cycles = self.bus.vdp.hblankStartMasterCycles();
-            const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
-            const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
-
-            scheduler.runMasterSlice(self.bus.schedulerRuntime(), self.cpu.schedulerRuntime(), &self.m68k_sync, first_event_master_cycles);
-
-            if (hblank_start_master_cycles == first_event_master_cycles) {
-                self.bus.vdp.setHBlank(true);
-            }
-            if (hint_master_cycles == first_event_master_cycles and self.bus.vdp.consumeHintForLine(line, visible_lines)) {
-                self.cpu.requestInterrupt(4);
-            }
-
-            scheduler.runMasterSlice(
-                self.bus.schedulerRuntime(),
-                self.cpu.schedulerRuntime(),
-                &self.m68k_sync,
-                second_event_master_cycles - first_event_master_cycles,
-            );
-
-            if (hblank_start_master_cycles == second_event_master_cycles and hblank_start_master_cycles != first_event_master_cycles) {
-                self.bus.vdp.setHBlank(true);
-            }
-            if (hint_master_cycles == second_event_master_cycles and
-                hint_master_cycles != first_event_master_cycles and
-                self.bus.vdp.consumeHintForLine(line, visible_lines))
-            {
-                self.cpu.requestInterrupt(4);
-            }
-
-            scheduler.runMasterSlice(
-                self.bus.schedulerRuntime(),
-                self.cpu.schedulerRuntime(),
-                &self.m68k_sync,
-                master_cycles_per_line - second_event_master_cycles,
-            );
-            self.bus.vdp.setHBlank(false);
-
-            if (line < visible_lines) {
-                if (counters) |active_counters| active_counters.render_scanlines += 1;
-                self.bus.vdp.renderScanline(line);
-            }
+            self.runScheduledScanline(line, visible_lines, total_lines, master_cycles_per_line, 0, true, counters);
         }
         self.bus.vdp.odd_frame = !self.bus.vdp.odd_frame;
+    }
+
+    fn runScheduledScanline(
+        self: *Machine,
+        line: u16,
+        visible_lines: u16,
+        total_lines: u16,
+        master_cycles_per_line: u16,
+        start_master_cycles: u16,
+        render_visible: bool,
+        counters: ?*CoreFrameCounters,
+    ) void {
+        const entering_vblank = self.bus.vdp.setScanlineState(line, visible_lines, total_lines);
+        if (entering_vblank and self.bus.vdp.isVBlankInterruptEnabled()) {
+            self.cpu.requestInterrupt(6);
+        }
+        if (entering_vblank) {
+            self.bus.z80.assertIrq(0xFF);
+        } else if (!self.bus.vdp.vint_pending) {
+            self.bus.z80.clearIrq();
+        }
+
+        const hint_master_cycles = self.bus.vdp.hInterruptMasterCycles();
+        const hblank_start_master_cycles = self.bus.vdp.hblankStartMasterCycles();
+        self.bus.vdp.hblank = start_master_cycles >= hblank_start_master_cycles;
+
+        var current_master_cycles = start_master_cycles;
+        const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
+        const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
+
+        if (current_master_cycles < first_event_master_cycles) {
+            scheduler.runMasterSlice(
+                self.bus.schedulerRuntime(),
+                self.cpu.schedulerRuntime(),
+                &self.m68k_sync,
+                first_event_master_cycles - current_master_cycles,
+            );
+            current_master_cycles = first_event_master_cycles;
+        }
+        if (first_event_master_cycles > start_master_cycles) {
+            self.applyScanlineEvent(line, visible_lines, hint_master_cycles, hblank_start_master_cycles, first_event_master_cycles);
+        }
+
+        if (current_master_cycles < second_event_master_cycles) {
+            scheduler.runMasterSlice(
+                self.bus.schedulerRuntime(),
+                self.cpu.schedulerRuntime(),
+                &self.m68k_sync,
+                second_event_master_cycles - current_master_cycles,
+            );
+            current_master_cycles = second_event_master_cycles;
+        }
+        if (second_event_master_cycles > start_master_cycles and second_event_master_cycles != first_event_master_cycles) {
+            self.applyScanlineEvent(line, visible_lines, hint_master_cycles, hblank_start_master_cycles, second_event_master_cycles);
+        }
+
+        if (current_master_cycles < master_cycles_per_line) {
+            scheduler.runMasterSlice(
+                self.bus.schedulerRuntime(),
+                self.cpu.schedulerRuntime(),
+                &self.m68k_sync,
+                master_cycles_per_line - current_master_cycles,
+            );
+        }
+        self.bus.vdp.setHBlank(false);
+
+        if (render_visible and line < visible_lines) {
+            if (counters) |active_counters| active_counters.render_scanlines += 1;
+            self.bus.vdp.renderScanline(line);
+        }
+    }
+
+    fn applyScanlineEvent(
+        self: *Machine,
+        line: u16,
+        visible_lines: u16,
+        hint_master_cycles: u16,
+        hblank_start_master_cycles: u16,
+        event_master_cycles: u16,
+    ) void {
+        if (hblank_start_master_cycles == event_master_cycles) {
+            self.bus.vdp.setHBlank(true);
+        }
+        if (hint_master_cycles == event_master_cycles and self.bus.vdp.consumeHintForLine(line, visible_lines)) {
+            self.cpu.requestInterrupt(4);
+        }
     }
 
     pub fn frameMasterCycles(self: *const Machine) u32 {
@@ -397,6 +465,9 @@ pub const Machine = struct {
 
     pub fn setPalMode(self: *Machine, pal_mode: bool) void {
         self.bus.vdp.pal_mode = pal_mode;
+        if (self.pending_frame_phase == .hard_reset) {
+            self.bus.vdp.applyPowerOnResetTiming();
+        }
     }
 
     pub fn consoleIsOverseas(self: *const Machine) bool {
@@ -641,6 +712,76 @@ test "machine runFrame advances execution and toggles the frame parity bit" {
     try std.testing.expect(machine.bus.vdp.odd_frame);
 }
 
+test "machine reset seeds the reference power-on phase and setPalMode retargets it before first frame" {
+    const allocator = std.testing.allocator;
+    const rom = try makeGenesisRom(allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x60, 0xFE,
+    });
+    defer allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom);
+    defer machine.deinit(allocator);
+
+    machine.reset();
+    try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .hard_reset), machine.pending_frame_phase);
+    try std.testing.expectEqual(@as(u16, 159), machine.bus.vdp.scanline);
+    try std.testing.expectEqual(@as(u16, 522), machine.bus.vdp.line_master_cycle);
+
+    machine.setPalMode(true);
+    try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .hard_reset), machine.pending_frame_phase);
+    try std.testing.expect(machine.palMode());
+    try std.testing.expectEqual(@as(u16, 132), machine.bus.vdp.scanline);
+    try std.testing.expectEqual(@as(u16, 522), machine.bus.vdp.line_master_cycle);
+
+    machine.runFrame();
+    try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .none), machine.pending_frame_phase);
+
+    const scanline_after_frame = machine.bus.vdp.scanline;
+    const line_master_cycle_after_frame = machine.bus.vdp.line_master_cycle;
+    machine.setPalMode(false);
+    try std.testing.expectEqual(scanline_after_frame, machine.bus.vdp.scanline);
+    try std.testing.expectEqual(line_master_cycle_after_frame, machine.bus.vdp.line_master_cycle);
+}
+
+test "machine soft reset preserves runtime memory and phase while resetting cpu and z80 core state" {
+    const allocator = std.testing.allocator;
+    const rom = try makeGenesisRom(allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x60, 0xFE,
+    });
+    defer allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom);
+    defer machine.deinit(allocator);
+
+    machine.reset();
+    machine.runFrame();
+
+    machine.writeWorkRamByte(0x1234, 0xA5);
+    machine.bus.vdp.scanline = 77;
+    machine.bus.vdp.line_master_cycle = 1234;
+    machine.bus.vdp.odd_frame = true;
+    machine.bus.z80.writeByte(0x0000, 0x12);
+
+    machine.softReset();
+
+    try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .current), machine.pending_frame_phase);
+    try std.testing.expectEqual(@as(u8, 0xA5), machine.readWorkRamByte(0x1234));
+    try std.testing.expectEqual(@as(u16, 77), machine.bus.vdp.scanline);
+    try std.testing.expectEqual(@as(u16, 1234), machine.bus.vdp.line_master_cycle);
+    try std.testing.expect(machine.bus.vdp.odd_frame);
+    try std.testing.expectEqual(@as(u8, 0x12), machine.bus.z80.readByte(0x0000));
+    try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
+
+    machine.setPalMode(true);
+    try std.testing.expectEqual(@as(u16, 77), machine.bus.vdp.scanline);
+    try std.testing.expectEqual(@as(u16, 1234), machine.bus.vdp.line_master_cycle);
+
+    machine.runFrame();
+    try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .none), machine.pending_frame_phase);
+}
+
 test "machine binding helpers update and release controller state" {
     const allocator = std.testing.allocator;
     const rom = [_]u8{0} ** 0x400;
@@ -744,4 +885,50 @@ test "machine installs dummy test rom vectors and program" {
     try std.testing.expectEqual(@as(u32, 0x0000_0200), metadata.reset_program_counter);
     try std.testing.expectEqual(@as(u16, 0x33FC), (@as(u16, machine.bus.rom[0x0200]) << 8) | @as(u16, machine.bus.rom[0x0201]));
     try std.testing.expectEqual(@as(u16, 0x8238), (@as(u16, machine.bus.rom[0x0202]) << 8) | @as(u16, machine.bus.rom[0x0203]));
+}
+
+test "machine reset clears transient hardware state and preserves console configuration" {
+    const allocator = std.testing.allocator;
+    const rom = try makeGenesisRom(allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x60, 0xFE,
+    });
+    defer allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom);
+    defer machine.deinit(allocator);
+
+    var bindings = InputBindings.Bindings.defaults();
+    bindings.setControllerType(0, .three_button);
+
+    machine.setPalMode(true);
+    machine.setConsoleIsOverseas(false);
+    machine.applyControllerTypes(&bindings);
+    _ = machine.applyKeyboardBindings(&bindings, .a, true);
+
+    machine.bus.ram[0x1234] = 0xA5;
+    machine.bus.vdp.regs[1] = 0x40;
+    machine.bus.vdp.scanline = 77;
+    machine.bus.vdp.line_master_cycle = 1234;
+    machine.bus.vdp.odd_frame = true;
+    machine.bus.z80.writeByte(0x0000, 0x12);
+    machine.bus.audio_timing.consumeMaster(555);
+    machine.m68k_sync.master_cycles = 777;
+
+    machine.reset();
+
+    try std.testing.expectEqual(@as(u8, 0), machine.bus.ram[0x1234]);
+    try std.testing.expectEqual(@as(u8, 0), machine.bus.vdp.regs[1]);
+    try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .hard_reset), machine.pending_frame_phase);
+    try std.testing.expectEqual(@as(u16, 132), machine.bus.vdp.scanline);
+    try std.testing.expectEqual(@as(u16, 522), machine.bus.vdp.line_master_cycle);
+    try std.testing.expect(!machine.bus.vdp.odd_frame);
+    try std.testing.expect(machine.palMode());
+    try std.testing.expect(!machine.consoleIsOverseas());
+    try std.testing.expectEqual(Io.ControllerType.three_button, machine.bus.io.getControllerType(0));
+    try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
+    try std.testing.expectEqual(@as(u8, 0), machine.bus.z80.readByte(0x0000));
+    try std.testing.expectEqual(@as(u32, 0), machine.takePendingAudio().master_cycles);
+    try std.testing.expectEqual(@as(u64, 0), machine.m68k_sync.master_cycles);
+    try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
 }

@@ -100,6 +100,25 @@ test "machine runMasterSlice advances the reset program through the public API" 
     try testing.expectEqual(@as(u32, 0x0000_0202), machine.cpuState().program_counter);
 }
 
+test "machine public API softReset rewinds the cpu to the reset vector" {
+    const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x4E, 0x71,
+        0x60, 0xFC,
+    });
+    defer testing.allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(testing.allocator, rom);
+    defer machine.deinit(testing.allocator);
+    machine.reset();
+
+    machine.runMasterSlice(clock.m68kCyclesToMaster(8));
+    try testing.expectEqual(@as(u32, 0x0000_0204), machine.cpuState().program_counter);
+
+    machine.softReset();
+    try testing.expectEqual(@as(u32, 0x0000_0200), machine.cpuState().program_counter);
+}
+
 test "machine public API exposes metadata framebuffer and timing mode from ROM bytes" {
     const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
         0x4E, 0x71,

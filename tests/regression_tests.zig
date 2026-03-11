@@ -213,6 +213,30 @@ test "zero reset stack pointer survives ram clear rts trampoline" {
     try testing.expectEqual(@as(u8, 0x42), emulator.read8(0x00FF_0000));
 }
 
+test "hard reset seeds the first mode-5 hv counter read to the reference values" {
+    const program = [_]u8{
+        0x33, 0xFC, 0x81, 0x04, 0x00, 0xC0, 0x00, 0x04, // move.w #$8104, $00C00004.l
+        0x30, 0x39, 0x00, 0xC0, 0x00, 0x08, // move.w $00C00008.l, d0
+        0x33, 0xC0, 0x00, 0xFF, 0x00, 0x00, // move.w d0, $00FF0000.l
+        0x60, 0xFE, // bra.s -2
+    };
+    const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &program);
+    defer testing.allocator.free(rom);
+
+    var ntsc = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer ntsc.deinit(testing.allocator);
+    ntsc.reset();
+    ntsc.runFrame();
+    try testing.expectEqual(@as(u16, 0x9F21), ntsc.read16(0x00FF_0000));
+
+    var pal = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer pal.deinit(testing.allocator);
+    pal.reset();
+    pal.setPalMode(true);
+    pal.runFrame();
+    try testing.expectEqual(@as(u16, 0x8421), pal.read16(0x00FF_0000));
+}
+
 test "frame scheduler stalls cpu while vdp dma owns the bus" {
     const rom = try seedResetNopsRom(testing.allocator, 1);
     defer testing.allocator.free(rom);
@@ -290,6 +314,7 @@ test "frame scheduler interleaves z80 contention within a master slice" {
 
     var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer contended.deinit(testing.allocator);
+    contended.reset();
     contended.writeRomByte(0x0000, 0x12);
     contended.z80Reset();
     contended.z80WriteByte(0x0000, 0x3A);
@@ -297,7 +322,6 @@ test "frame scheduler interleaves z80 contention within a master slice" {
     contended.z80WriteByte(0x0002, 0x80);
     contended.z80WriteByte(0x0003, 0x18);
     contended.z80WriteByte(0x0004, 0xFB);
-    contended.reset();
     contended.runMasterSlice(224);
 
     try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);
@@ -316,6 +340,7 @@ test "frame scheduler interleaves z80 vdp-window contention within a master slic
 
     var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer contended.deinit(testing.allocator);
+    contended.reset();
     contended.z80Reset();
     contended.z80WriteByte(0x0000, 0x21);
     contended.z80WriteByte(0x0001, 0x08);
@@ -323,7 +348,6 @@ test "frame scheduler interleaves z80 vdp-window contention within a master slic
     contended.z80WriteByte(0x0003, 0x7E);
     contended.z80WriteByte(0x0004, 0x18);
     contended.z80WriteByte(0x0005, 0xFD);
-    contended.reset();
     contended.runMasterSlice(224);
 
     try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);
@@ -342,6 +366,7 @@ test "frame scheduler does not stall cpu for z80 psg writes" {
 
     var psg = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer psg.deinit(testing.allocator);
+    psg.reset();
     psg.z80Reset();
     psg.z80WriteByte(0x0000, 0x3E);
     psg.z80WriteByte(0x0001, 0x90);
@@ -351,7 +376,6 @@ test "frame scheduler does not stall cpu for z80 psg writes" {
     psg.z80WriteByte(0x0005, 0x77);
     psg.z80WriteByte(0x0006, 0x18);
     psg.z80WriteByte(0x0007, 0xFD);
-    psg.reset();
     psg.runMasterSlice(448);
 
     try testing.expectEqual(base.cpuState().program_counter, psg.cpuState().program_counter);
@@ -370,6 +394,7 @@ test "frame scheduler interleaves z80 vdp-window writes within a master slice" {
 
     var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer contended.deinit(testing.allocator);
+    contended.reset();
     contended.z80Reset();
     contended.z80WriteByte(0x0000, 0x3E);
     contended.z80WriteByte(0x0001, 0x5A);
@@ -379,7 +404,6 @@ test "frame scheduler interleaves z80 vdp-window writes within a master slice" {
     contended.z80WriteByte(0x0005, 0x77);
     contended.z80WriteByte(0x0006, 0x18);
     contended.z80WriteByte(0x0007, 0xFD);
-    contended.reset();
     contended.runMasterSlice(448);
 
     try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);

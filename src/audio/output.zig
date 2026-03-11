@@ -655,7 +655,7 @@ pub const AudioOutput = struct {
 
             while (psg_native_cursor < next_psg_command_frame) : (psg_native_cursor += 1) {
                 self.last_psg_sample = self.psg.nextSample();
-                self.psg_resampler.collectSample(.{self.postPsgSample(@as(f32, @floatFromInt(self.last_psg_sample)) / 32768.0)});
+                self.psg_resampler.collectSample(.{@as(f32, @floatFromInt(self.last_psg_sample)) / 32768.0});
             }
         }
 
@@ -670,12 +670,13 @@ pub const AudioOutput = struct {
                 self.last_ym_resampled_right = sample[1];
                 break :blk sample;
             } else .{ self.last_ym_resampled_left, self.last_ym_resampled_right };
-            const psg = if (self.psg_resampler.outputBufferPopFront()) |sample| blk: {
+            const psg_raw = if (self.psg_resampler.outputBufferPopFront()) |sample| blk: {
                 self.last_psg_resampled = sample[0];
                 break :blk sample;
             } else .{self.last_psg_resampled};
+            const psg = self.postPsgSample(psg_raw[0]);
 
-            const mixed = self.mixSources(ym, psg[0]);
+            const mixed = self.mixSources(ym, psg);
             const finished = self.finishMixedFrame(mixed[0], mixed[1]);
             self.sample_chunk[i * channels] = finished[0];
             self.sample_chunk[i * channels + 1] = finished[1];
@@ -971,6 +972,7 @@ pub const AudioOutput = struct {
         const render_mode = self.render_mode;
         const timing_is_pal = self.timing_is_pal;
         self.* = .{};
+        self.psg = Psg.powerOn();
         self.render_mode = render_mode;
         if (timing_is_pal) {
             self.setTimingMode(true);
@@ -1455,6 +1457,10 @@ test "audio output reset preserves mode and clears render-side state" {
     try std.testing.expectEqual(@as(u8, 0), output.ym_synth.core.dacen);
     try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample);
     try std.testing.expectEqual(@as(f32, 0.0), output.last_ym_resampled_left);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[0].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[1].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[2].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.noise.attenuation);
 }
 
 test "fm high bank frequency uses port 1 a0 and a4" {
@@ -1804,6 +1810,62 @@ test "discard pending drains a nonzero-output audio window without leaving queue
     try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_commands[0..]));
     try std.testing.expect(output.last_ym_left != 0.0 or output.last_ym_right != 0.0);
     try std.testing.expect(output.last_psg_sample != 0);
+}
+
+test "runtime psg filtering is applied after resampling" {
+    const pending = pendingWindow(@as(u32, 1024) * clock.psg_master_cycles_per_sample);
+    const commands = [_]u8{ 0x90, 0x81, 0x00 };
+
+    var normal = AudioOutput{};
+    var normal_z80 = Z80.init();
+    defer normal_z80.deinit();
+    for (commands) |command| normal_z80.writeByte(0x7F11, command);
+
+    var unfiltered = AudioOutput{};
+    unfiltered.setRenderMode(.unfiltered_mix);
+    var unfiltered_z80 = Z80.init();
+    defer unfiltered_z80.deinit();
+    for (commands) |command| unfiltered_z80.writeByte(0x7F11, command);
+
+    const normal_frames = normal.preparePending(pending, &normal_z80, false);
+    const unfiltered_frames = unfiltered.preparePending(pending, &unfiltered_z80, false);
+    try std.testing.expectEqual(normal_frames, unfiltered_frames);
+
+    const compare_frames = @min(@as(usize, @intCast(normal_frames)), 32);
+    for (0..compare_frames) |_| {
+        const normal_sample = normal.psg_resampler.outputBufferPopFront().?;
+        const unfiltered_sample = unfiltered.psg_resampler.outputBufferPopFront().?;
+        try std.testing.expectApproxEqAbs(normal_sample[0], unfiltered_sample[0], 0.000001);
+    }
+
+    const CollectSink = struct {
+        samples: [512]i16 = undefined,
+        len: usize = 0,
+
+        fn consumeSamples(self: *@This(), input: []const i16) !void {
+            std.debug.assert(self.len + input.len <= self.samples.len);
+            @memcpy(self.samples[self.len .. self.len + input.len], input);
+            self.len += input.len;
+        }
+    };
+
+    var normal_runtime = AudioOutput{};
+    var normal_runtime_z80 = Z80.init();
+    defer normal_runtime_z80.deinit();
+    for (commands) |command| normal_runtime_z80.writeByte(0x7F11, command);
+    var normal_sink = CollectSink{};
+    try normal_runtime.renderPending(pending, &normal_runtime_z80, false, &normal_sink);
+
+    var unfiltered_runtime = AudioOutput{};
+    unfiltered_runtime.setRenderMode(.unfiltered_mix);
+    var unfiltered_runtime_z80 = Z80.init();
+    defer unfiltered_runtime_z80.deinit();
+    for (commands) |command| unfiltered_runtime_z80.writeByte(0x7F11, command);
+    var unfiltered_sink = CollectSink{};
+    try unfiltered_runtime.renderPending(pending, &unfiltered_runtime_z80, false, &unfiltered_sink);
+
+    try std.testing.expectEqual(normal_sink.len, unfiltered_sink.len);
+    try std.testing.expect(sampleEnergy(unfiltered_sink.samples[0..unfiltered_sink.len]) > sampleEnergy(normal_sink.samples[0..normal_sink.len]));
 }
 
 test "psg output lpf attenuates high-frequency content" {

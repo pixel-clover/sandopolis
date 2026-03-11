@@ -21,6 +21,16 @@ pub fn activeVisibleLines(self: *const Vdp) u16 {
     return if ((self.regs[1] & 0x08) != 0) clock.pal_visible_lines else clock.ntsc_visible_lines;
 }
 
+fn powerOnStartScanline(self: *const Vdp) u16 {
+    return if (self.pal_mode) 132 else 159;
+}
+
+fn powerOnStartLineMasterCycle() u16 {
+    // Genesis Plus GX seeds hard reset from the measured first-HVC point; Sandopolis's
+    // internal line origin differs, so this maps the same hardware point into our timing model.
+    return 522;
+}
+
 pub fn totalLinesForCurrentFrame(self: *const Vdp) u16 {
     if (!self.isInterlaceMode2()) {
         return if (self.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
@@ -184,9 +194,22 @@ fn pixelToInternalHH40(pixel: u16) u16 {
     return if (pixel <= 0x016C) pixel else pixel + (0x01C9 - 0x016D);
 }
 
+fn h40UsesEarlyCounterIncrement(line_master_cycle: u16) bool {
+    return switch (line_master_cycle) {
+        2961, 2981, 3001, 3021, 3039, 3059, 3079, 3099, 3137, 3157, 3177, 3215, 3235, 3255, 3275 => true,
+        else => false,
+    };
+}
+
 fn computeHCounterFor(self: *const Vdp, line_master_cycle: u16) u8 {
     const internal_h = internalHFor(self, line_master_cycle);
-    return @truncate(internal_h >> 1);
+    var counter: u8 = @truncate(internal_h >> 1);
+    // Standard H40 mode has a handful of single-master-cycle counter edges during HSYNC
+    // that occur one cycle earlier than the simplified EDCLK phase model predicts.
+    if (self.isH40() and h40UsesEarlyCounterIncrement(line_master_cycle)) {
+        counter +%= 1;
+    }
+    return counter;
 }
 
 fn vintFlagForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) bool {
@@ -326,6 +349,17 @@ pub fn beginFrame(self: *Vdp) void {
     self.hint_counter = @intCast(self.regs[10]);
 }
 
+pub fn applyPowerOnResetTiming(self: *Vdp) void {
+    self.scanline = powerOnStartScanline(self);
+    self.line_master_cycle = powerOnStartLineMasterCycle();
+    self.hblank = false;
+    self.vblank = false;
+    self.vint_pending = false;
+    self.hv_latched_valid = false;
+    self.transfer_line_master_cycle = self.line_master_cycle;
+    self.projected_data_port_write_wait = .{};
+}
+
 pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
     if (line >= visible_lines) return false;
     self.hint_counter -= 1;
@@ -362,6 +396,52 @@ test "HV counter advances to the next scanline at the H interrupt boundary" {
 
     vdp.line_master_cycle = hint_boundary;
     try testing.expectEqual(@as(u8, 0x23), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "power-on reset timing seeds the reference startup phase" {
+    var ntsc = Vdp.init();
+    ntsc.applyPowerOnResetTiming();
+    try testing.expectEqual(@as(u16, 159), ntsc.scanline);
+    try testing.expectEqual(@as(u16, 522), ntsc.line_master_cycle);
+    try testing.expect(!ntsc.hblank);
+    try testing.expect(!ntsc.vblank);
+    try testing.expectEqual(ntsc.line_master_cycle, ntsc.transfer_line_master_cycle);
+
+    var pal = Vdp.init();
+    pal.pal_mode = true;
+    pal.applyPowerOnResetTiming();
+    try testing.expectEqual(@as(u16, 132), pal.scanline);
+    try testing.expectEqual(@as(u16, 522), pal.line_master_cycle);
+    try testing.expect(!pal.hblank);
+    try testing.expect(!pal.vblank);
+}
+
+test "H40 HV counter matches reference single-cycle HSYNC edges" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+
+    const checkpoints = [_]struct {
+        line_master_cycle: u16,
+        expected_h: u8,
+    }{
+        .{ .line_master_cycle = 2960, .expected_h = 0xE6 },
+        .{ .line_master_cycle = 2961, .expected_h = 0xE7 },
+        .{ .line_master_cycle = 2980, .expected_h = 0xE7 },
+        .{ .line_master_cycle = 2981, .expected_h = 0xE8 },
+        .{ .line_master_cycle = 3020, .expected_h = 0xE9 },
+        .{ .line_master_cycle = 3021, .expected_h = 0xEA },
+        .{ .line_master_cycle = 3038, .expected_h = 0xEA },
+        .{ .line_master_cycle = 3039, .expected_h = 0xEB },
+        .{ .line_master_cycle = 3136, .expected_h = 0xEF },
+        .{ .line_master_cycle = 3137, .expected_h = 0xF0 },
+        .{ .line_master_cycle = 3274, .expected_h = 0xF6 },
+        .{ .line_master_cycle = 3275, .expected_h = 0xF7 },
+    };
+
+    for (checkpoints) |checkpoint| {
+        vdp.line_master_cycle = checkpoint.line_master_cycle;
+        try testing.expectEqual(checkpoint.expected_h, @as(u8, @truncate(vdp.readHVCounter())));
+    }
 }
 
 test "stepping to the hblank boundary preserves the external hblank edge" {

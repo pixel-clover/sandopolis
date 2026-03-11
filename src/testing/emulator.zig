@@ -57,6 +57,10 @@ pub const Emulator = struct {
         self.handle.machine.reset();
     }
 
+    pub fn softReset(self: *Emulator) void {
+        self.handle.machine.softReset();
+    }
+
     pub fn flushPersistentStorage(self: *Emulator) !void {
         try self.handle.machine.flushPersistentStorage();
     }
