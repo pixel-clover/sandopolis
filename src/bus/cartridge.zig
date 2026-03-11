@@ -31,6 +31,10 @@ const RamType = enum {
 };
 
 const sonic_and_knuckles_serial = "GM MK-1563 ";
+const ssf_console_prefix = "SEGA SSF";
+const ssf_bank_size: u32 = 512 * 1024;
+const ssf_switchable_bank_count: usize = 7;
+const ssf_max_page_mask: u8 = 0x3F;
 const force_8kb_sram_checksums = [_]u32{
     0x8135702C,
     0xF509145F,
@@ -41,6 +45,48 @@ const force_32kb_sram_checksums = [_]u32{
     0xA4F2F011,
 };
 const forced_sram_start_address: u32 = 0x200001;
+
+const SsfMapper = struct {
+    bank_registers: [ssf_switchable_bank_count]u8 = .{ 1, 2, 3, 4, 5, 6, 7 },
+
+    fn registerIndex(address: u32) ?usize {
+        if (address < 0xA130F3 or address > 0xA130FF or (address & 1) == 0) return null;
+
+        const index: usize = @intCast((address - 0xA130F3) / 2);
+        if (index >= ssf_switchable_bank_count) return null;
+        return index;
+    }
+
+    fn translateRomAddress(self: *const SsfMapper, address: u32) u32 {
+        if (address < ssf_bank_size) return address;
+        if (address >= ssf_bank_size * (ssf_switchable_bank_count + 1)) return address;
+
+        const bank_index: usize = @intCast((address / ssf_bank_size) - 1);
+        const page = self.bank_registers[bank_index];
+        return @as(u32, page) * ssf_bank_size + (address & (ssf_bank_size - 1));
+    }
+
+    fn writeRegisterByte(self: *SsfMapper, address: u32, value: u8) bool {
+        const index = registerIndex(address) orelse return false;
+        self.bank_registers[index] = value & ssf_max_page_mask;
+        return true;
+    }
+};
+
+const Mapper = union(enum) {
+    none,
+    ssf: SsfMapper,
+};
+
+fn detectMapper(rom: []const u8) Mapper {
+    if (rom.len >= 0x100 + ssf_console_prefix.len and
+        std.mem.startsWith(u8, rom[0x100..@min(rom.len, 0x110)], ssf_console_prefix))
+    {
+        return .{ .ssf = .{} };
+    }
+
+    return .none;
+}
 
 const Ram = struct {
     data: ?[]u8,
@@ -234,6 +280,7 @@ const Ram = struct {
 pub const Cartridge = struct {
     rom: []u8,
     ram: Ram,
+    mapper: Mapper,
     save_path: ?[]u8,
     source_path: ?[]u8,
 
@@ -308,6 +355,7 @@ pub const Cartridge = struct {
         var cartridge = Cartridge{
             .rom = rom_data,
             .ram = try Ram.initFromRomHeader(allocator, rom_data, checksum),
+            .mapper = detectMapper(rom_data),
             .save_path = null,
             .source_path = source_path,
         };
@@ -350,6 +398,7 @@ pub const Cartridge = struct {
         return .{
             .rom = rom,
             .ram = ram,
+            .mapper = self.mapper,
             .save_path = save_path,
             .source_path = source_path,
         };
@@ -396,9 +445,15 @@ pub const Cartridge = struct {
 
     pub fn readRomByte(self: *const Cartridge, address: u32) u8 {
         if (self.rom.len == 0) return 0;
+
+        const mapped_address = switch (self.mapper) {
+            .none => address,
+            .ssf => |mapper| mapper.translateRomAddress(address),
+        };
+
         const rom_len_u32: u32 = @intCast(self.rom.len);
-        if (address >= rom_len_u32) return 0;
-        return self.rom[@intCast(address)];
+        if (mapped_address >= rom_len_u32) return 0;
+        return self.rom[@intCast(mapped_address)];
     }
 
     pub fn writeRegisterByte(self: *Cartridge, address: u32, value: u8) bool {
@@ -406,6 +461,14 @@ pub const Cartridge = struct {
             self.ram.setMapped((value & 1) != 0);
             return true;
         }
+
+        switch (self.mapper) {
+            .none => {},
+            .ssf => |*mapper| {
+                if (mapper.writeRegisterByte(address, value)) return true;
+            },
+        }
+
         return false;
     }
 

@@ -7,6 +7,26 @@ const Emulator = sandopolis.testing.Emulator;
 const graphics_sampler_rom = "tests/testroms/Graphics & Joystick Sampler by Charles Doty (PD).bin";
 const window_test_rom = "tests/testroms/Window Test by Fonzie (PD).bin";
 const fm_test_rom = "tests/testroms/FM Test by DevSter (PD).bin";
+const overdrive_rom = "tests/testroms/TiTAN - Overdrive (Rev1.1-106-Final) (Hardware).bin";
+
+fn makeSsfMapperRom(allocator: std.mem.Allocator, bank_count: usize) ![]u8 {
+    const bank_size = 512 * 1024;
+    const rom_len = bank_count * bank_size;
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x108], "SEGA SSF");
+    std.mem.writeInt(u32, rom[0..4], 0x00FF_FE00, .big);
+    std.mem.writeInt(u32, rom[4..8], 0x0000_0200, .big);
+    rom[0x0200] = 0x60;
+    rom[0x0201] = 0xFE;
+
+    const marker_offset = 0x0400;
+    for (0..bank_count) |bank| {
+        rom[bank * bank_size + marker_offset] = @truncate(bank);
+    }
+
+    return rom;
+}
 
 fn makeGenesisRom(allocator: std.mem.Allocator, stack_pointer: u32, program_counter: u32, program: []const u8) ![]u8 {
     const rom_len = @max(@as(usize, 0x4000), 0x0200 + program.len);
@@ -112,6 +132,87 @@ test "fm test rom initializes ym shadow state" {
     try testing.expect(ym_active);
 }
 
+test "ssf mapper remaps switchable rom windows" {
+    const rom = try makeSsfMapperRom(testing.allocator, 16);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+
+    const marker_offset: u32 = 0x0400;
+
+    try testing.expectEqual(@as(u8, 0), emulator.read8(0x000000 + marker_offset));
+    try testing.expectEqual(@as(u8, 1), emulator.read8(0x080000 + marker_offset));
+    try testing.expectEqual(@as(u8, 7), emulator.read8(0x380000 + marker_offset));
+
+    emulator.write8(0xA130F3, 10);
+    try testing.expectEqual(@as(u8, 10), emulator.read8(0x080000 + marker_offset));
+
+    emulator.write16(0xA130F4, 0x000C);
+    try testing.expectEqual(@as(u8, 12), emulator.read8(0x100000 + marker_offset));
+
+    emulator.write8(0xA130FF, 15);
+    try testing.expectEqual(@as(u8, 15), emulator.read8(0x380000 + marker_offset));
+}
+
+test "overdrive rom runs for 5000 frames without wedging the core" {
+    var emulator = try Emulator.init(testing.allocator, overdrive_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(5000);
+
+    var non_black_pixels: usize = 0;
+    for (emulator.framebuffer()) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(emulator.cpuState().program_counter != 0);
+}
+
+test "overdrive rom runs for 5000 frames with audio output processing" {
+    var emulator = try Emulator.init(testing.allocator, overdrive_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    try emulator.runFramesProcessingAudio(5000);
+
+    var non_black_pixels: usize = 0;
+    for (emulator.framebuffer()) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(emulator.cpuState().program_counter != 0);
+}
+
+test "zero reset stack pointer survives ram clear rts trampoline" {
+    const program = [_]u8{
+        0x2F, 0x3C, 0x00, 0x00, 0x02, 0x1C, // move.l #$0000021C, -(sp)
+        0x70, 0x00, // moveq #0, d0
+        0x22, 0x3C, 0x00, 0x00, 0x3F, 0xFD, // move.l #$00003FFD, d1
+        0x41, 0xF9, 0x00, 0xFF, 0x00, 0x00, // lea $00FF0000.l, a0
+        0x20, 0xC0, // move.l d0, (a0)+
+        0x51, 0xC9, 0xFF, 0xFC, // dbf d1, -4
+        0x4E, 0x75, // rts
+        0x13, 0xFC, 0x00, 0x42, 0x00, 0xFF, 0x00, 0x00, // move.b #$42, $00FF0000.l
+        0x60, 0xFE, // bra.s -2
+    };
+    const rom = try makeGenesisRom(testing.allocator, 0x0000_0000, 0x0000_0200, &program);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(6);
+
+    try testing.expectEqual(@as(u8, 0x42), emulator.read8(0x00FF_0000));
+}
+
 test "frame scheduler stalls cpu while vdp dma owns the bus" {
     const rom = try seedResetNopsRom(testing.allocator, 1);
     defer testing.allocator.free(rom);
@@ -202,6 +303,88 @@ test "frame scheduler interleaves z80 contention within a master slice" {
     try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);
     try testing.expect(contended.cpuState().program_counter > 0x0200);
     try testing.expect(contended.z80ProgramCounter() != 0);
+}
+
+test "frame scheduler interleaves z80 vdp-window contention within a master slice" {
+    const rom = try seedResetNopsRom(testing.allocator, 32);
+    defer testing.allocator.free(rom);
+
+    var base = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer base.deinit(testing.allocator);
+    base.reset();
+    base.runMasterSlice(224);
+
+    var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer contended.deinit(testing.allocator);
+    contended.z80Reset();
+    contended.z80WriteByte(0x0000, 0x21);
+    contended.z80WriteByte(0x0001, 0x08);
+    contended.z80WriteByte(0x0002, 0x7F);
+    contended.z80WriteByte(0x0003, 0x7E);
+    contended.z80WriteByte(0x0004, 0x18);
+    contended.z80WriteByte(0x0005, 0xFD);
+    contended.reset();
+    contended.runMasterSlice(224);
+
+    try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);
+    try testing.expect(contended.cpuState().program_counter > 0x0200);
+    try testing.expect(contended.z80ProgramCounter() != 0);
+}
+
+test "frame scheduler does not stall cpu for z80 psg writes" {
+    const rom = try seedResetNopsRom(testing.allocator, 32);
+    defer testing.allocator.free(rom);
+
+    var base = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer base.deinit(testing.allocator);
+    base.reset();
+    base.runMasterSlice(448);
+
+    var psg = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer psg.deinit(testing.allocator);
+    psg.z80Reset();
+    psg.z80WriteByte(0x0000, 0x3E);
+    psg.z80WriteByte(0x0001, 0x90);
+    psg.z80WriteByte(0x0002, 0x21);
+    psg.z80WriteByte(0x0003, 0x11);
+    psg.z80WriteByte(0x0004, 0x7F);
+    psg.z80WriteByte(0x0005, 0x77);
+    psg.z80WriteByte(0x0006, 0x18);
+    psg.z80WriteByte(0x0007, 0xFD);
+    psg.reset();
+    psg.runMasterSlice(448);
+
+    try testing.expectEqual(base.cpuState().program_counter, psg.cpuState().program_counter);
+    try testing.expect(psg.z80ProgramCounter() >= 0x0005);
+    try testing.expectEqual(@as(u32, 0), psg.pendingM68kWaitMasterCycles());
+}
+
+test "frame scheduler interleaves z80 vdp-window writes within a master slice" {
+    const rom = try seedResetNopsRom(testing.allocator, 32);
+    defer testing.allocator.free(rom);
+
+    var base = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer base.deinit(testing.allocator);
+    base.reset();
+    base.runMasterSlice(448);
+
+    var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer contended.deinit(testing.allocator);
+    contended.z80Reset();
+    contended.z80WriteByte(0x0000, 0x3E);
+    contended.z80WriteByte(0x0001, 0x5A);
+    contended.z80WriteByte(0x0002, 0x21);
+    contended.z80WriteByte(0x0003, 0x08);
+    contended.z80WriteByte(0x0004, 0x7F);
+    contended.z80WriteByte(0x0005, 0x77);
+    contended.z80WriteByte(0x0006, 0x18);
+    contended.z80WriteByte(0x0007, 0xFD);
+    contended.reset();
+    contended.runMasterSlice(448);
+
+    try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);
+    try testing.expect(contended.cpuState().program_counter > 0x0200);
+    try testing.expect(contended.z80ProgramCounter() >= 0x0005);
 }
 
 test "read16 routes full io window range through io handler" {

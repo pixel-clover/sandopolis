@@ -39,7 +39,7 @@ test "machine reset applies fallback vectors when ROM vectors are invalid" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const rom = try makeGenesisRom(testing.allocator, 0x0000_0000, 0x0000_0200, &.{});
+    const rom = try makeGenesisRom(testing.allocator, 0x0100_0001, 0x0000_0000, &.{});
     defer testing.allocator.free(rom);
     try tmp.dir.writeFile(.{ .sub_path = "fallback.bin", .data = rom });
 
@@ -52,6 +52,26 @@ test "machine reset applies fallback vectors when ROM vectors are invalid" {
 
     const cpu = machine.cpuState();
     try testing.expectEqual(@as(u32, 0x00FF_FE00), cpu.stack_pointer);
+    try testing.expectEqual(@as(u32, 0x0000_0200), cpu.program_counter);
+}
+
+test "machine reset preserves zero stack pointer when reset pc is valid" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = try makeGenesisRom(testing.allocator, 0x0000_0000, 0x0000_0200, &.{ 0x4E, 0x71 });
+    defer testing.allocator.free(rom);
+    try tmp.dir.writeFile(.{ .sub_path = "zero-sp.bin", .data = rom });
+
+    const rom_path = try tmp.dir.realpathAlloc(testing.allocator, "zero-sp.bin");
+    defer testing.allocator.free(rom_path);
+
+    var machine = try Machine.init(testing.allocator, rom_path);
+    defer machine.deinit(testing.allocator);
+    machine.reset();
+
+    const cpu = machine.cpuState();
+    try testing.expectEqual(@as(u32, 0x0000_0000), cpu.stack_pointer);
     try testing.expectEqual(@as(u32, 0x0000_0200), cpu.program_counter);
 }
 

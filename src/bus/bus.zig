@@ -24,6 +24,7 @@ pub const Bus = struct {
     audio_timing: AudioTiming,
     io_master_remainder: u8,
     z80_master_credit: i64,
+    z80_stall_master_debt: u32,
     z80_wait_master_cycles: u32,
     z80_odd_access: bool,
     m68k_wait_master_cycles: u32,
@@ -37,10 +38,11 @@ pub const Bus = struct {
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),
-            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte, z80HostM68kBusAccess),
+            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowPeekByte, z80HostWindowWriteByte, z80HostM68kBusAccess),
             .audio_timing = .{},
             .io_master_remainder = 0,
             .z80_master_credit = 0,
+            .z80_stall_master_debt = 0,
             .z80_wait_master_cycles = 0,
             .z80_odd_access = false,
             .m68k_wait_master_cycles = 0,
@@ -99,14 +101,19 @@ pub const Bus = struct {
         return self.read8(address);
     }
 
+    fn z80HostWindowPeekByte(ctx: ?*anyopaque, address: u32) u8 {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0xFF));
+        return self.peek8NoSideEffects(address);
+    }
+
     fn z80HostWindowWriteByte(ctx: ?*anyopaque, address: u32, value: u8) void {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
         self.write8(address, value);
     }
 
-    fn z80HostM68kBusAccess(ctx: ?*anyopaque) void {
+    fn z80HostM68kBusAccess(ctx: ?*anyopaque, pre_access_master_cycles: u32) void {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
-        self.recordZ80M68kBusAccess();
+        self.recordZ80M68kBusAccess(pre_access_master_cycles);
     }
 
     fn vdpDmaReadWordCallback(userdata: ?*anyopaque, address: u32) u16 {
@@ -172,10 +179,11 @@ pub const Bus = struct {
             .vdp = vdp,
             .io = self.io,
             .z80 = z80,
-            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowWriteByte, z80HostM68kBusAccess),
+            .z80_host_bridge = z80_host_bridge.HostBridge.init(z80HostWindowReadByte, z80HostWindowPeekByte, z80HostWindowWriteByte, z80HostM68kBusAccess),
             .audio_timing = self.audio_timing,
             .io_master_remainder = self.io_master_remainder,
             .z80_master_credit = self.z80_master_credit,
+            .z80_stall_master_debt = self.z80_stall_master_debt,
             .z80_wait_master_cycles = self.z80_wait_master_cycles,
             .z80_odd_access = self.z80_odd_access,
             .m68k_wait_master_cycles = self.m68k_wait_master_cycles,
@@ -290,6 +298,19 @@ pub const Bus = struct {
         return 0;
     }
 
+    fn peek8NoSideEffects(self: *Bus, address: u32) u8 {
+        const addr = address & 0xFFFFFF;
+
+        if (self.cartridge.readByte(addr)) |value| {
+            return value;
+        }
+
+        if (addr < 0xA00000) return self.cartridge.readRomByte(addr);
+        if (addr >= 0xE00000 and addr < 0x1000000) return self.ram[addr & 0xFFFF];
+
+        return 0xFF;
+    }
+
     pub fn read16(self: *Bus, address: u32) u16 {
         const addr = address & 0xFFFFFF;
         if (self.cartridge.readWord(addr)) |value| {
@@ -399,11 +420,22 @@ pub const Bus = struct {
         self.write16(address + 2, @intCast(value & 0xFFFF));
     }
 
-    fn recordZ80M68kBusAccess(self: *Bus) void {
+    fn recordZ80EarlyAdvancedMaster(self: *Bus, master_cycles: u32, count_toward_z80_credit: bool) void {
+        if (master_cycles == 0) return;
+        self.advanceNonZ80Master(master_cycles);
+        self.z80_stall_master_debt += master_cycles;
+        if (count_toward_z80_credit) {
+            self.z80_master_credit += @intCast(master_cycles);
+        }
+    }
+
+    fn recordZ80M68kBusAccess(self: *Bus, pre_access_master_cycles: u32) void {
         if (self.z80_wait_master_cycles != 0) {
-            self.advanceNonZ80Master(self.z80_wait_master_cycles);
+            self.recordZ80EarlyAdvancedMaster(self.z80_wait_master_cycles, false);
             self.z80_wait_master_cycles = 0;
         }
+
+        self.recordZ80EarlyAdvancedMaster(pre_access_master_cycles, true);
 
         if (!self.vdp.shouldHaltCpu()) {
             self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(11);
@@ -416,7 +448,7 @@ pub const Bus = struct {
     fn recordZ80M68kBusAccesses(self: *Bus, access_count: u32) void {
         var remaining = access_count;
         while (remaining > 0) : (remaining -= 1) {
-            self.recordZ80M68kBusAccess();
+            self.recordZ80M68kBusAccess(0);
         }
     }
 
@@ -494,6 +526,14 @@ pub const Bus = struct {
         var remaining = master_cycles;
 
         while (true) {
+            if (self.z80_stall_master_debt != 0) {
+                const consumed = @min(remaining, self.z80_stall_master_debt);
+                self.z80_stall_master_debt -= consumed;
+                remaining -= consumed;
+                if (remaining == 0) return;
+                continue;
+            }
+
             if (!self.z80.canRun()) {
                 if (remaining != 0) self.advanceNonZ80Master(remaining);
                 return;
@@ -1134,9 +1174,70 @@ test "multiple z80 68k-bus accesses only leave the final stall pending" {
 
     bus.recordZ80M68kBusAccesses(2);
 
+    try testing.expectEqual(@as(u32, 49), bus.z80_stall_master_debt);
     try testing.expectEqual(@as(u32, 50), bus.z80_wait_master_cycles);
     try testing.expectEqual(@as(u32, 49), bus.audio_timing.pending_master_cycles);
     try testing.expectEqual(clock.m68kCyclesToMaster(22), bus.pendingM68kWaitMasterCycles());
+}
+
+test "mid-instruction z80 stall flush is charged against later master slices" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.z80.reset();
+    bus.z80.writeByte(0x0000, 0x34); // INC (HL)
+
+    var state = bus.z80.captureState();
+    state.pc = 0x0000;
+    state.hl = 0x8000;
+    state.bank = 0x0000;
+    bus.z80.restoreState(&state);
+    bus.rom[0x0000] = 0x10;
+
+    bus.stepMaster(clock.z80_divider);
+    try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
+    try testing.expectEqual(@as(u32, 169), bus.z80_stall_master_debt);
+    try testing.expectEqual(@as(u32, 50), bus.z80_wait_master_cycles);
+    try testing.expectEqual(@as(u32, clock.z80_divider + 169), bus.audio_timing.pending_master_cycles);
+
+    bus.stepMaster(169);
+    try testing.expectEqual(@as(u32, 0), bus.z80_stall_master_debt);
+    try testing.expectEqual(@as(u32, 50), bus.z80_wait_master_cycles);
+    try testing.expectEqual(@as(u32, clock.z80_divider + 169), bus.audio_timing.pending_master_cycles);
+
+    bus.stepMaster(50);
+    try testing.expectEqual(@as(u32, 0), bus.z80_wait_master_cycles);
+    try testing.expectEqual(@as(u32, clock.z80_divider + 219), bus.audio_timing.pending_master_cycles);
+}
+
+test "banked access offsets advance vdp state before the first z80 host read" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.vdp.scanline = 0;
+    bus.vdp.line_master_cycle = 0;
+
+    var expected_vdp = bus.vdp;
+    expected_vdp.step(11 * clock.z80_divider);
+    const expected_counter_byte: u8 = @truncate(expected_vdp.readHVCounterAdjusted(0));
+    try testing.expect(expected_counter_byte != @as(u8, @truncate(bus.vdp.readHVCounterAdjusted(0))));
+
+    bus.z80.reset();
+    bus.z80.writeByte(0x0000, 0x3A); // LD A,(nn)
+    bus.z80.writeByte(0x0001, 0x09);
+    bus.z80.writeByte(0x0002, 0x80);
+    var state = bus.z80.captureState();
+    state.pc = 0x0000;
+    state.bank = 0x0180;
+    bus.z80.restoreState(&state);
+
+    bus.stepMaster(clock.z80_divider);
+
+    const a = @as(u8, @truncate(bus.z80.getRegisterDump().af >> 8));
+    try testing.expectEqual(expected_counter_byte, a);
+    try testing.expectEqual(@as(u32, 150), bus.z80_stall_master_debt);
+    try testing.expectEqual(@as(u32, 49), bus.z80_wait_master_cycles);
+    try testing.expectEqual(@as(u32, 165), bus.audio_timing.pending_master_cycles);
 }
 
 test "z80 instruction overshoot carries between bus slices" {

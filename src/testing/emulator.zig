@@ -1,6 +1,7 @@
 const std = @import("std");
 const internal_machine = @import("../machine.zig");
 const internal_timing = @import("../audio/timing.zig");
+const AudioOutput = @import("../audio/output.zig").AudioOutput;
 
 const empty_rom = [_]u8{};
 
@@ -71,6 +72,26 @@ pub const Emulator = struct {
     pub fn runFrames(self: *Emulator, frames: usize) void {
         for (0..frames) |_| {
             self.handle.machine.runFrame();
+        }
+    }
+
+    pub fn discardPendingAudio(self: *Emulator) void {
+        self.handle.machine.discardPendingAudio();
+    }
+
+    pub fn runFramesDiscardingAudio(self: *Emulator, frames: usize) void {
+        for (0..frames) |_| {
+            self.handle.machine.runFrame();
+            self.handle.machine.discardPendingAudio();
+        }
+    }
+
+    pub fn runFramesProcessingAudio(self: *Emulator, frames: usize) !void {
+        var output = AudioOutput{};
+        for (0..frames) |_| {
+            self.handle.machine.runFrame();
+            const pending = self.handle.machine.takePendingAudio();
+            try output.discardPending(pending, &self.handle.machine.bus.z80, self.handle.machine.palMode());
         }
     }
 

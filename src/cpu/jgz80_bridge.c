@@ -72,6 +72,7 @@ struct Jgz80Handle {
     uint8_t psg_latched_channel;
     bool psg_latched_is_volume;
     Jgz80HostReadFunc host_read;
+    Jgz80HostPeekFunc host_peek;
     Jgz80HostWriteFunc host_write;
     Jgz80M68kBusAccessFunc host_m68k_bus_access;
     void *host_userdata;
@@ -79,7 +80,532 @@ struct Jgz80Handle {
     bool bus_ack;
     bool reset_line;
     uint32_t m68k_bus_access_count;
+    uint16_t instruction_pc;
+    uint8_t instruction_bank_access_index;
+    uint8_t instruction_context_valid;
 };
+
+static uint8_t peek_mapped_byte_no_side_effects(Jgz80Handle *h, uint16_t addr) {
+    const uint16_t zaddr = (uint16_t)(addr & 0xFFFFu);
+    if (zaddr < 0x2000u) {
+        return h->ram[zaddr & 0x1FFFu];
+    }
+
+    if (zaddr == 0x7F11u) {
+        return 0xFFu;
+    }
+
+    if (zaddr >= 0x7F00u && zaddr <= 0x7FFFu) {
+        if (h->host_peek != NULL) {
+            return h->host_peek(h->host_userdata, 0xC00000u + (zaddr & 0x1Fu));
+        }
+        if (h->host_read != NULL) {
+            return h->host_read(h->host_userdata, 0xC00000u + (zaddr & 0x1Fu));
+        }
+        return 0xFFu;
+    }
+
+    if (zaddr >= 0x8000u) {
+        if (h->host_peek != NULL) {
+            const uint32_t m68k_addr = ((uint32_t) h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
+            return h->host_peek(h->host_userdata, m68k_addr);
+        }
+        if (h->host_read != NULL) {
+            const uint32_t m68k_addr = ((uint32_t) h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
+            return h->host_read(h->host_userdata, m68k_addr);
+        }
+        return 0xFFu;
+    }
+
+    return 0xFFu;
+}
+
+static bool is_host_mapped_z80_address(uint16_t addr) {
+    const uint16_t zaddr = (uint16_t)(addr & 0xFFFFu);
+    return ((zaddr >= 0x7F00u && zaddr <= 0x7FFFu && zaddr != 0x7F11u) || zaddr >= 0x8000u);
+}
+
+static bool is_index_prefix(uint8_t opcode) {
+    return opcode == 0xDDu || opcode == 0xFDu;
+}
+
+static uint8_t indexed_instruction_opcode(Jgz80Handle *h) {
+    return peek_mapped_byte_no_side_effects(h, (uint16_t)(h->instruction_pc + 1u));
+}
+
+static bool indexed_instruction_is_cb_prefixed(Jgz80Handle *h) {
+    return indexed_instruction_opcode(h) == 0xCBu;
+}
+
+static uint8_t indexed_cb_instruction_opcode(Jgz80Handle *h) {
+    return peek_mapped_byte_no_side_effects(h, (uint16_t)(h->instruction_pc + 3u));
+}
+
+static uint8_t cb_instruction_opcode(Jgz80Handle *h) {
+    return peek_mapped_byte_no_side_effects(h, (uint16_t)(h->instruction_pc + 1u));
+}
+
+static bool condition_code_true(Jgz80Handle *h, uint8_t cc) {
+    const uint8_t f = (uint8_t)(h->core.af & 0x00FFu);
+    switch (cc & 0x07u) {
+        case 0u:
+            return (f & 0x40u) == 0u;
+        case 1u:
+            return (f & 0x40u) != 0u;
+        case 2u:
+            return (f & 0x01u) == 0u;
+        case 3u:
+            return (f & 0x01u) != 0u;
+        case 4u:
+            return (f & 0x04u) == 0u;
+        case 5u:
+            return (f & 0x04u) != 0u;
+        case 6u:
+            return (f & 0x80u) == 0u;
+        case 7u:
+            return (f & 0x80u) != 0u;
+        default:
+            return false;
+    }
+}
+
+static uint8_t indexed_instruction_length_bytes(Jgz80Handle *h) {
+    if (indexed_instruction_is_cb_prefixed(h)) {
+        return 4u;
+    }
+
+    const uint8_t opcode = indexed_instruction_opcode(h);
+    switch (opcode) {
+        case 0x21:
+        case 0x22:
+        case 0x2A:
+        case 0x36:
+            return 4u;
+        case 0x34:
+        case 0x35:
+        case 0x46:
+        case 0x4E:
+        case 0x56:
+        case 0x5E:
+        case 0x66:
+        case 0x6E:
+        case 0x70:
+        case 0x71:
+        case 0x72:
+        case 0x73:
+        case 0x74:
+        case 0x75:
+        case 0x77:
+        case 0x7E:
+        case 0x86:
+        case 0x8E:
+        case 0x96:
+        case 0x9E:
+        case 0xA6:
+        case 0xAE:
+        case 0xB6:
+        case 0xBE:
+            return 3u;
+        default:
+            return 2u;
+    }
+}
+
+static uint8_t instruction_length_bytes(Jgz80Handle *h, uint8_t opcode) {
+    if (is_index_prefix(opcode)) {
+        return indexed_instruction_length_bytes(h);
+    }
+
+    switch (opcode) {
+        case 0x06:
+        case 0x0E:
+        case 0x10:
+        case 0x16:
+        case 0x18:
+        case 0x1E:
+        case 0x20:
+        case 0x26:
+        case 0x28:
+        case 0x2E:
+        case 0x30:
+        case 0x36:
+        case 0x38:
+        case 0x3E:
+        case 0xC6:
+        case 0xCB:
+        case 0xCE:
+        case 0xD3:
+        case 0xD6:
+        case 0xDB:
+        case 0xDE:
+        case 0xE6:
+        case 0xEE:
+        case 0xF6:
+        case 0xFE:
+            return 2u;
+        case 0x01:
+        case 0x11:
+        case 0x21:
+        case 0x22:
+        case 0x2A:
+        case 0x31:
+        case 0x32:
+        case 0x3A:
+        case 0xC2:
+        case 0xC3:
+        case 0xC4:
+        case 0xCA:
+        case 0xCC:
+        case 0xCD:
+        case 0xD2:
+        case 0xD4:
+        case 0xDA:
+        case 0xDC:
+        case 0xE2:
+        case 0xE4:
+        case 0xEA:
+        case 0xEC:
+        case 0xF2:
+        case 0xF4:
+        case 0xFA:
+        case 0xFC:
+            return 3u;
+        case 0xED: {
+            const uint8_t ext = peek_mapped_byte_no_side_effects(h, (uint16_t)(h->instruction_pc + 1u));
+            switch (ext) {
+                case 0x43:
+                case 0x4B:
+                case 0x53:
+                case 0x5B:
+                case 0x63:
+                case 0x6B:
+                case 0x73:
+                case 0x7B:
+                    return 4u;
+                default:
+                    return 2u;
+            }
+        }
+        default:
+            return 1u;
+    }
+}
+
+static uint32_t instruction_fetch_start_z80_cycles(Jgz80Handle *h, uint8_t byte_index) {
+    const uint8_t opcode = peek_mapped_byte_no_side_effects(h, h->instruction_pc);
+    if (byte_index == 0u) return 0u;
+
+    if (is_index_prefix(opcode)) {
+        switch (byte_index) {
+            case 1u:
+                return 4u;
+            case 2u:
+                return 8u;
+            case 3u:
+                return 11u;
+            default:
+                return 0u;
+        }
+    }
+
+    if (opcode == 0xED) {
+        switch (byte_index) {
+            case 1u:
+                return 4u;
+            case 2u:
+                return 8u;
+            case 3u:
+                return 11u;
+            default:
+                return 0u;
+        }
+    }
+
+    switch (byte_index) {
+        case 1u:
+            return 4u;
+        case 2u:
+            return 7u;
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t instruction_data_access_start_z80_cycles(Jgz80Handle *h, uint8_t access_index) {
+    const uint8_t opcode = peek_mapped_byte_no_side_effects(h, h->instruction_pc);
+    if (is_index_prefix(opcode)) {
+        if (indexed_instruction_is_cb_prefixed(h)) {
+            const uint8_t cb_opcode = indexed_cb_instruction_opcode(h);
+            if ((cb_opcode & 0xC0u) == 0x40u) {
+                return access_index == 0u ? 15u : 0u;
+            }
+
+            if (access_index == 0u) return 15u;
+            if (access_index == 1u) return 19u;
+            return 0u;
+        }
+
+        const uint8_t ext = indexed_instruction_opcode(h);
+        switch (ext) {
+            case 0xE3:
+                if (access_index == 0u) return 8u;
+                if (access_index == 1u) return 11u;
+                if (access_index == 2u) return 15u;
+                if (access_index == 3u) return 18u;
+                return 0u;
+            case 0xE1:
+                if (access_index == 0u) return 8u;
+                if (access_index == 1u) return 11u;
+                return 0u;
+            case 0xE5:
+                if (access_index == 0u) return 9u;
+                if (access_index == 1u) return 12u;
+                return 0u;
+            case 0x46:
+            case 0x4E:
+            case 0x56:
+            case 0x5E:
+            case 0x66:
+            case 0x6E:
+            case 0x70:
+            case 0x71:
+            case 0x72:
+            case 0x73:
+            case 0x74:
+            case 0x75:
+            case 0x77:
+            case 0x7E:
+            case 0x86:
+            case 0x8E:
+            case 0x96:
+            case 0x9E:
+            case 0xA6:
+            case 0xAE:
+            case 0xB6:
+            case 0xBE:
+                return access_index == 0u ? 15u : 0u;
+            case 0x34:
+            case 0x35:
+                if (access_index == 0u) return 15u;
+                if (access_index == 1u) return 19u;
+                return 0u;
+            case 0x36:
+                return access_index == 0u ? 15u : 0u;
+            case 0x22:
+            case 0x2A:
+                if (access_index == 0u) return 14u;
+                if (access_index == 1u) return 17u;
+                return 0u;
+            default:
+                return 0u;
+        }
+    }
+
+    switch (opcode) {
+        case 0xE3:
+            if (access_index == 0u) return 4u;
+            if (access_index == 1u) return 7u;
+            if (access_index == 2u) return 11u;
+            if (access_index == 3u) return 14u;
+            return 0u;
+        case 0xC0:
+        case 0xC8:
+        case 0xD0:
+        case 0xD8:
+        case 0xE0:
+        case 0xE8:
+        case 0xF0:
+        case 0xF8:
+            if (!condition_code_true(h, (uint8_t)((opcode >> 3) & 0x07u))) return 0u;
+            if (access_index == 0u) return 5u;
+            if (access_index == 1u) return 8u;
+            return 0u;
+        case 0xC1:
+        case 0xD1:
+        case 0xE1:
+        case 0xF1:
+        case 0xC9:
+            if (access_index == 0u) return 4u;
+            if (access_index == 1u) return 7u;
+            return 0u;
+        case 0xC5:
+        case 0xD5:
+        case 0xE5:
+        case 0xF5:
+        case 0xC7:
+        case 0xCF:
+        case 0xD7:
+        case 0xDF:
+        case 0xE7:
+        case 0xEF:
+        case 0xF7:
+        case 0xFF:
+            if (access_index == 0u) return 5u;
+            if (access_index == 1u) return 8u;
+            return 0u;
+        case 0x02:
+        case 0x0A:
+        case 0x12:
+        case 0x1A:
+        case 0x46:
+        case 0x4E:
+        case 0x56:
+        case 0x5E:
+        case 0x66:
+        case 0x6E:
+        case 0x70:
+        case 0x71:
+        case 0x72:
+        case 0x73:
+        case 0x74:
+        case 0x75:
+        case 0x77:
+        case 0x7E:
+        case 0x86:
+        case 0x8E:
+        case 0x96:
+        case 0x9E:
+        case 0xA6:
+        case 0xAE:
+        case 0xB6:
+        case 0xBE:
+            return access_index == 0u ? 4u : 0u;
+        case 0x34:
+        case 0x35:
+            if (access_index == 0u) return 4u;
+            if (access_index == 1u) return 8u;
+            return 0u;
+        case 0x36:
+            return access_index == 0u ? 7u : 0u;
+        case 0x22:
+        case 0x2A:
+            if (access_index == 0u) return 10u;
+            if (access_index == 1u) return 13u;
+            return 0u;
+        case 0x32:
+        case 0x3A:
+            return access_index == 0u ? 10u : 0u;
+        case 0xC4:
+        case 0xCC:
+        case 0xD4:
+        case 0xDC:
+        case 0xE4:
+        case 0xEC:
+        case 0xF4:
+        case 0xFC:
+            if (!condition_code_true(h, (uint8_t)((opcode >> 3) & 0x07u))) return 0u;
+            if (access_index == 0u) return 11u;
+            if (access_index == 1u) return 14u;
+            return 0u;
+        case 0xCD:
+            if (access_index == 0u) return 11u;
+            if (access_index == 1u) return 14u;
+            return 0u;
+        case 0xCB: {
+            const uint8_t cb_opcode = cb_instruction_opcode(h);
+            if ((cb_opcode & 0x07u) != 0x06u) return 0u;
+            if ((cb_opcode & 0xC0u) == 0x40u) {
+                return access_index == 0u ? 8u : 0u;
+            }
+
+            if (access_index == 0u) return 8u;
+            if (access_index == 1u) return 12u;
+            return 0u;
+        }
+        case 0xED: {
+            const uint8_t ext = peek_mapped_byte_no_side_effects(h, (uint16_t)(h->instruction_pc + 1u));
+            switch (ext) {
+                case 0x43:
+                case 0x4B:
+                case 0x53:
+                case 0x5B:
+                case 0x63:
+                case 0x6B:
+                case 0x73:
+                case 0x7B:
+                    if (access_index == 0u) return 14u;
+                    if (access_index == 1u) return 17u;
+                    return 0u;
+                case 0x45:
+                case 0x4D:
+                    if (access_index == 0u) return 8u;
+                    if (access_index == 1u) return 11u;
+                    return 0u;
+                case 0x67:
+                case 0x6F:
+                    if (access_index == 0u) return 8u;
+                    if (access_index == 1u) return 11u;
+                    return 0u;
+                case 0xA0:
+                case 0xA8:
+                case 0xB0:
+                case 0xB8:
+                    if (access_index == 0u) return 8u;
+                    if (ext == 0xA0 || ext == 0xA8 || ext == 0xB0 || ext == 0xB8) {
+                        return access_index == 1u ? 11u : 0u;
+                    }
+                    return 0u;
+                case 0xA1:
+                case 0xA9:
+                case 0xB1:
+                case 0xB9:
+                    return access_index == 0u ? 8u : 0u;
+                case 0xA2:
+                case 0xAA:
+                case 0xB2:
+                case 0xBA:
+                    return access_index == 0u ? 12u : 0u;
+                case 0xA3:
+                case 0xAB:
+                case 0xB3:
+                case 0xBB:
+                    return access_index == 0u ? 4u : 0u;
+                default:
+                    return 0u;
+            }
+        }
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t instruction_bank_access_start_z80_cycles(Jgz80Handle *h, uint8_t access_index) {
+    if (h->instruction_context_valid == 0u) return 0u;
+
+    const uint8_t opcode = peek_mapped_byte_no_side_effects(h, h->instruction_pc);
+    const uint8_t length = instruction_length_bytes(h, opcode);
+    uint8_t host_fetch_count = 0u;
+
+    for (uint8_t byte_index = 0u; byte_index < length; ++byte_index) {
+        if (!is_host_mapped_z80_address((uint16_t)(h->instruction_pc + byte_index))) continue;
+        if (host_fetch_count == access_index) {
+            return instruction_fetch_start_z80_cycles(h, byte_index);
+        }
+        ++host_fetch_count;
+    }
+
+    return instruction_data_access_start_z80_cycles(h, (uint8_t)(access_index - host_fetch_count));
+}
+
+static uint32_t current_instruction_pre_access_master_cycles(Jgz80Handle *h) {
+    const uint8_t access_index = h->instruction_bank_access_index;
+    const uint32_t access_start = instruction_bank_access_start_z80_cycles(h, access_index);
+    if (access_start == 0u) return 0u;
+
+    const uint32_t previous_start = access_index == 0u
+        ? 0u
+        : instruction_bank_access_start_z80_cycles(h, (uint8_t)(access_index - 1u));
+    if (access_start <= previous_start) return 0u;
+    return (access_start - previous_start) * 15u;
+}
+
+static void notify_contended_host_access(Jgz80Handle *h) {
+    if (h->host_m68k_bus_access != NULL) {
+        h->host_m68k_bus_access(h->host_userdata, current_instruction_pre_access_master_cycles(h));
+    }
+    ++h->instruction_bank_access_index;
+    ++h->m68k_bus_access_count;
+}
 
 static void clear_ym2612_shadow_state(Jgz80Handle *h) {
     memset(h->ym_addr, 0, sizeof(h->ym_addr));
@@ -341,6 +867,7 @@ static uint8_t mapped_read_byte(Jgz80Handle *h, uint16_t addr) {
 
     if (zaddr >= 0x7F00u && zaddr <= 0x7FFFu) {
         if (h->host_read != NULL) {
+            notify_contended_host_access(h);
             return h->host_read(h->host_userdata, 0xC00000u + (zaddr & 0x1Fu));
         }
         return 0xFFu;
@@ -349,10 +876,7 @@ static uint8_t mapped_read_byte(Jgz80Handle *h, uint16_t addr) {
     if (zaddr >= 0x8000u) {
         if (h->host_read != NULL) {
             const uint32_t m68k_addr = ((uint32_t) h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
-            if (h->host_m68k_bus_access != NULL) {
-                h->host_m68k_bus_access(h->host_userdata);
-            }
-            ++h->m68k_bus_access_count;
+            notify_contended_host_access(h);
             return h->host_read(h->host_userdata, m68k_addr);
         }
         return 0xFFu;
@@ -439,6 +963,7 @@ static void mapped_write_byte(Jgz80Handle *h, uint16_t addr, uint8_t val) {
 
     if (zaddr >= 0x7F00u && zaddr <= 0x7FFFu) {
         if (h->host_write != NULL) {
+            notify_contended_host_access(h);
             h->host_write(h->host_userdata, 0xC00000u + (zaddr & 0x1Fu), val);
         }
         return;
@@ -447,10 +972,7 @@ static void mapped_write_byte(Jgz80Handle *h, uint16_t addr, uint8_t val) {
     if (zaddr >= 0x8000u) {
         if (h->host_write != NULL) {
             const uint32_t m68k_addr = ((uint32_t) h->bank << 15) | (uint32_t)(zaddr & 0x7FFFu);
-            if (h->host_m68k_bus_access != NULL) {
-                h->host_m68k_bus_access(h->host_userdata);
-            }
-            ++h->m68k_bus_access_count;
+            notify_contended_host_access(h);
             h->host_write(h->host_userdata, m68k_addr, val);
         }
         return;
@@ -733,7 +1255,11 @@ uint32_t jgz80_step_one(Jgz80Handle *handle) {
     if (!handle) return 0;
     bind_callbacks(handle);
     if (handle->bus_req || handle->reset_line) return 0;
+    handle->instruction_pc = handle->core.pc;
+    handle->instruction_bank_access_index = 0u;
+    handle->instruction_context_valid = 1u;
     const uint32_t cycles = z80_step(&handle->core);
+    handle->instruction_context_valid = 0u;
     advance_ym_master(handle, cycles * 15u);
     return cycles;
 }
@@ -751,12 +1277,14 @@ void jgz80_write_byte(Jgz80Handle *handle, uint16_t addr, uint8_t val) {
 void jgz80_set_host_callbacks(
     Jgz80Handle *handle,
     Jgz80HostReadFunc host_read,
+    Jgz80HostPeekFunc host_peek,
     Jgz80HostWriteFunc host_write,
     Jgz80M68kBusAccessFunc host_m68k_bus_access,
     void *userdata
 ) {
     if (!handle) return;
     handle->host_read = host_read;
+    handle->host_peek = host_peek;
     handle->host_write = host_write;
     handle->host_m68k_bus_access = host_m68k_bus_access;
     handle->host_userdata = userdata;

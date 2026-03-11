@@ -128,8 +128,13 @@ fn popPendingPortWrite(self: *Vdp) ?Vdp.PendingPortWrite {
     return write;
 }
 
+fn normalizeTransferLineMasterCycle(total_master_cycles: u32) u16 {
+    return @intCast(total_master_cycles % clock.ntsc_master_cycles_per_line);
+}
+
 fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
-    self.transfer_line_master_cycle +%= @intCast(master_cycles);
+    const total = @as(u32, self.transfer_line_master_cycle) + master_cycles;
+    self.transfer_line_master_cycle = normalizeTransferLineMasterCycle(total);
 }
 
 fn slotIndexInSet(slot_idx: u16, comptime slot_set: []const u8) bool {
@@ -314,12 +319,13 @@ fn nextTransferEventForState(self: *const Vdp, line_master_cycle: u16, blanking:
 }
 
 fn nextTransferStepForState(self: *const Vdp, line_master_cycle: u16, blanking: bool) u32 {
+    const normalized_line_master_cycle = normalizeTransferLineMasterCycle(line_master_cycle);
     const needs_non_refresh = (self.dma_active and !self.dma_fill and !self.dma_copy) or
         !fifoIsEmpty(self) or
         !pendingFifoIsEmpty(self);
     const needs_access_only = self.dma_copy;
-    const event = nextTransferEventForState(self, line_master_cycle, blanking, needs_non_refresh, needs_access_only) orelse
-        return clock.ntsc_master_cycles_per_line - line_master_cycle;
+    const event = nextTransferEventForState(self, normalized_line_master_cycle, blanking, needs_non_refresh, needs_access_only) orelse
+        return clock.ntsc_master_cycles_per_line - normalized_line_master_cycle;
     return event.wait_master_cycles;
 }
 
@@ -394,7 +400,7 @@ fn tickSimLatency(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: u8) void {
     var i: usize = 0;
     while (i < @as(usize, fifo_len)) : (i += 1) {
         if (fifo_entries[i].latency > 0) {
-            fifo_entries[i].latency -= 1;
+            fifo_entries[i].latency -|= 1;
         }
     }
 }
@@ -524,7 +530,7 @@ fn fifoTickLatency(self: *Vdp) void {
     while (i < @as(usize, self.fifo_len)) : (i += 1) {
         const idx = (@as(usize, self.fifo_head) + i) % self.fifo.len;
         if (self.fifo[idx].latency > 0) {
-            self.fifo[idx].latency -= 1;
+            self.fifo[idx].latency -|= 1;
         }
     }
 }
@@ -908,7 +914,8 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
     if (available_master_cycles == 0) return;
 
     const blanking = self.vblank or self.hblank;
-    const end_master_cycle: u16 = @intCast(self.transfer_line_master_cycle + available_master_cycles);
+    self.transfer_line_master_cycle = normalizeTransferLineMasterCycle(self.transfer_line_master_cycle);
+    const end_master_cycle = @as(u32, self.transfer_line_master_cycle) + available_master_cycles;
     var slot_idx: u16 = 0;
     while (slot_idx < transferSlotCount(self)) : (slot_idx += 1) {
         const slot_end = transferSlotEndMasterCycles(self, slot_idx);
@@ -932,7 +939,7 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
         }
     }
 
-    self.transfer_line_master_cycle = end_master_cycle;
+    self.transfer_line_master_cycle = normalizeTransferLineMasterCycle(end_master_cycle);
     finishDmaIfIdle(self);
 }
 
@@ -1180,6 +1187,17 @@ test "data port read wait crosses the external hblank edge" {
     progressed.progressTransfers(predicted - 1, null, null);
 
     try testing.expectEqual(@as(u8, 0), progressed.fifo_len);
+}
+
+test "progressTransfers normalizes the transfer cursor after line overshoot" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.transfer_line_master_cycle = clock.ntsc_master_cycles_per_line - 4;
+
+    vdp.progressTransfers(16, null, null);
+
+    try testing.expectEqual(@as(u16, 12), vdp.transfer_line_master_cycle);
+    try testing.expect(vdp.nextTransferStepMasterCycles() > 0);
 }
 
 test "projected data port write wait carries hblank phase across reservations" {

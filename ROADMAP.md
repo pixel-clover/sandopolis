@@ -13,7 +13,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Z80 CPU via jgz80 C bridge with host callbacks
 - [x] Frame scheduler with per-line HINT/HBlank/VBlank event handling
 - [x] Z80 bus control with BUSREQ/RESET and 68K window gating
-- [ ] Accurate bus arbitration (per-access Z80/68K)
+- [ ] Per-access 68K/Z80 arbitration and wait-state behavior in shared bus windows
 
 ### Video display processor
 
@@ -26,7 +26,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Status register with VInt, sprite overflow/collision, and FIFO flags
 - [x] DMA timing
 - [x] FIFO emulation
-- [ ] VDP accuracy
+- [ ] More hardware-accurate CRAM-dot, border, and mid-scanline timing behavior
+- [ ] More hardware-accurate VDP interrupt/status edge cases and DMA/FIFO corner cases
+- [ ] Broader validation against demanding hardware demos and VDP-focused test ROMs
 
 ### Audio subsystem
 
@@ -35,8 +37,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] SN76489 PSG with chip-accurate emulation, reachable from both Z80 and M68K paths
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, timers, and die-accurate ROM tables
 - [x] Audio filtering with low-pass on YM2612 output and DC-blocking on the final mix
-- [ ] YM2612 accuracy
-- [ ] Audio fidelity
+- [ ] Reduce remaining YM2612 mismatches against reference output and hardware edge cases
+- [ ] Improve final mix, filtering, and resampling to better match console output character
 
 ### Input and interaction
 
@@ -46,8 +48,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Configurable input mapping via a config file with keyboard, gamepad, and analog threshold settings
 - [x] Resizable window and fullscreen toggle
 - [x] GIF animation recording support
-- [ ] Input management polish
-- [ ] Controller I/O edge cases and broader device coverage
+- [ ] Rebinding and device-management UX improvements with clearer runtime feedback
+- [ ] More controller I/O edge-case coverage and broader peripheral support
 
 ### Compatibility and tooling
 
@@ -56,12 +58,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Boot smoke test with ROM startup progression check
 - [x] Test ROM collection in `tests/testroms/`
 - [x] Deliberate public and testing facades that keep SDL frontend code out of the core runtime path
-- [ ] Timing accuracy
+- [ ] Reduce remaining scheduler, bus, and VDP timing mismatches exposed by hardware test ROMs and stress demos
 - [ ] Debugger with single stepping, breakpoints, and register/memory inspection
-- [ ] Compatibility test suite against broad external test ROM suites
+- [ ] Expand compatibility regression coverage with broader external ROM and test-ROM suites
 
 ### Future goals
 
-- [ ] Sega CD/32X support
-- [ ] WebAssembly build target
-- [ ] Libretro core integration
+- [ ] Sega CD and 32X subsystem support
+- [ ] Browser/WebAssembly build and frontend path
+- [ ] Libretro core packaging and integration

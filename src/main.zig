@@ -580,12 +580,14 @@ const rom_dialog_filters = [_]SdlDialogFileFilter{
 const CliOptions = struct {
     rom_path: ?[]const u8 = null,
     audio_mode: AudioOutput.RenderMode = .normal,
+    renderer_name: ?[]const u8 = null,
     show_help: bool = false,
 };
 
 const ParseCliError = error{
     InvalidAudioMode,
     MissingAudioModeValue,
+    MissingRendererValue,
     MultipleRomPaths,
     UnknownOption,
 };
@@ -611,6 +613,7 @@ fn cliErrorMessage(err: ParseCliError) []const u8 {
     return switch (err) {
         error.InvalidAudioMode => "invalid --audio-mode value",
         error.MissingAudioModeValue => "--audio-mode requires a value",
+        error.MissingRendererValue => "--renderer requires a value",
         error.MultipleRomPaths => "only one ROM path may be provided",
         error.UnknownOption => "unknown option",
     };
@@ -754,6 +757,8 @@ fn printUsage() void {
     std.debug.print("Options:\n", .{});
     std.debug.print("  --audio-mode <mode>   Audio render mode: normal, ym-only, psg-only, unfiltered-mix\n", .{});
     std.debug.print("  --audio-mode=<mode>   Same as above\n", .{});
+    std.debug.print("  --renderer <name>     SDL render driver override (for example: software, opengl)\n", .{});
+    std.debug.print("  --renderer=<name>     Same as above\n", .{});
     std.debug.print("  -h, --help            Show this help text\n", .{});
 }
 
@@ -776,11 +781,44 @@ fn parseCliArgs(args: []const []const u8) ParseCliError!CliOptions {
             options.audio_mode = try parseAudioRenderMode(arg["--audio-mode=".len..]);
             continue;
         }
+        if (std.mem.eql(u8, arg, "--renderer")) {
+            index += 1;
+            if (index >= args.len) return error.MissingRendererValue;
+            options.renderer_name = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--renderer=")) {
+            options.renderer_name = arg["--renderer=".len..];
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
         if (options.rom_path != null) return error.MultipleRomPaths;
         options.rom_path = arg;
     }
     return options;
+}
+
+fn currentRendererName(renderer: *zsdl3.Renderer) ?[]const u8 {
+    const raw = SDL_GetRendererName(renderer);
+    if (raw == null) return null;
+    return std.mem.span(raw);
+}
+
+fn logAvailableRenderDrivers() void {
+    const count = zsdl3.getNumRenderDrivers();
+    if (count <= 0) {
+        std.debug.print("Available SDL render drivers: none\n", .{});
+        return;
+    }
+
+    std.debug.print("Available SDL render drivers:", .{});
+    var index: c_int = 0;
+    while (index < count) : (index += 1) {
+        if (zsdl3.getRenderDriver(index)) |name| {
+            std.debug.print(" {s}", .{name});
+        }
+    }
+    std.debug.print("\n", .{});
 }
 
 fn formatName(format: zsdl3.AudioFormat) []const u8 {
@@ -2094,12 +2132,29 @@ pub fn main() !void {
         "Sandopolis Emulator (v" ++ build_options.version ++ ")",
         800,
         600,
-        .{ .opengl = true, .resizable = true },
+        .{ .resizable = true },
     );
     defer window.destroy();
 
-    const renderer = try zsdl3.Renderer.create(window, null);
+    const requested_renderer_name_z = if (cli.renderer_name) |name| try allocator.dupeZ(u8, name) else null;
+    defer if (requested_renderer_name_z) |name| allocator.free(name);
+
+    const renderer = zsdl3.Renderer.create(window, if (requested_renderer_name_z) |name| name else null) catch |err| {
+        if (cli.renderer_name) |name| {
+            std.debug.print("Renderer request failed: {s}\n", .{name});
+        } else {
+            std.debug.print("Renderer creation failed for auto selection\n", .{});
+        }
+        logAvailableRenderDrivers();
+        return err;
+    };
     defer renderer.destroy();
+    if (cli.renderer_name) |name| {
+        std.debug.print("Renderer request: {s}\n", .{name});
+    }
+    if (currentRendererName(renderer)) |name| {
+        std.debug.print("Renderer backend: {s}\n", .{name});
+    }
 
     var audio_userdata: u8 = 0;
     var audio: ?AudioInit = tryInitAudio(&audio_userdata);
@@ -2494,7 +2549,7 @@ pub fn main() !void {
                     if (sample_core_counters) core_counters else null,
                 );
                 core_profile_frames_remaining = nextCoreBurstFramesRemaining(sample_core_counters, core_profile_frames_remaining, &performance_hud);
-                if (frontend_ui.show_performance_hud and frame_counter > uncapped_boot_frames) {
+                if (frame_counter > uncapped_boot_frames) {
                     const spike_update = performance_spike_log.noteFrame(frame_counter, &performance_hud);
                     if (spike_update.log_frame) {
                         var spike_buffer: [256]u8 = undefined;
@@ -3166,6 +3221,19 @@ test "cli parser accepts audio mode before rom path" {
     try std.testing.expect(!options.show_help);
 }
 
+test "cli parser accepts renderer override before rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--renderer=software",
+        "roms/test.bin",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqualStrings("software", options.renderer_name.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
+}
+
 test "cli parser accepts spaced audio mode after rom path" {
     const args = [_][]const u8{
         "sandopolis",
@@ -3179,6 +3247,19 @@ test "cli parser accepts spaced audio mode after rom path" {
     try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, options.audio_mode);
 }
 
+test "cli parser accepts spaced renderer override after rom path" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "roms/test.bin",
+        "--renderer",
+        "opengl",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqualStrings("opengl", options.renderer_name.?);
+}
+
 test "cli parser handles help without a rom path" {
     const args = [_][]const u8{
         "sandopolis",
@@ -3189,6 +3270,7 @@ test "cli parser handles help without a rom path" {
     try std.testing.expect(options.show_help);
     try std.testing.expect(options.rom_path == null);
     try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
+    try std.testing.expect(options.renderer_name == null);
 }
 
 test "cli parser rejects invalid audio mode values" {
@@ -3199,6 +3281,15 @@ test "cli parser rejects invalid audio mode values" {
     };
 
     try std.testing.expectError(error.InvalidAudioMode, parseCliArgs(&args));
+}
+
+test "cli parser rejects missing renderer value" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--renderer",
+    };
+
+    try std.testing.expectError(error.MissingRendererValue, parseCliArgs(&args));
 }
 
 fn gifOutputPath() [48]u8 {
@@ -3237,5 +3328,6 @@ extern fn SDL_ShowOpenFileDialog(
 ) void;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
 extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;
+extern fn SDL_GetRendererName(renderer: *zsdl3.Renderer) [*c]const u8;
 extern fn SDL_SetWindowFullscreen(window: *zsdl3.Window, fullscreen: bool) bool;
 extern fn SDL_GetWindowFlags(window: *zsdl3.Window) u64;

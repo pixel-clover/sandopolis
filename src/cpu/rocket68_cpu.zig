@@ -272,7 +272,9 @@ pub const Cpu = struct {
         runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
         c.m68k_reset(&self.core);
 
-        if (self.core.a_regs[7].l == 0 or self.core.a_regs[7].l > 0x0100_0000) {
+        // A zero reset SSP is valid on the Genesis: stack accesses wrap onto the
+        // 24-bit bus and land at the top of work RAM. Some ROMs rely on that.
+        if (self.core.a_regs[7].l > 0x0100_0000) {
             c.m68k_set_ar(&self.core, 7, default_stack_pointer);
             self.core.ssp = default_stack_pointer;
         }

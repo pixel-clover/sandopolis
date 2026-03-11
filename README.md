@@ -18,7 +18,7 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 
 ---
 
-Demos of Sandopolis running a few games:
+Footage of Sandopolis running a few games:
 
 <div align="center">
 
@@ -38,8 +38,9 @@ Demos of Sandopolis running a few games:
 ### Key Features
 
 - Accurate Sega Genesis/Mega Drive emulation
-- Very portable; can be built and run on any platform that Zig supports
-- Very configurable input and rendering settings, with runtime ROM loading, quick states, persistent state slots, and keyboard rebinding
+- Very portable; can be built and run on any platform that Zig supports including WASM
+- Configurable input (keyboard and controllers) and rendering settings
+- Supports ROM loading at runtime, quick state save/load, persistent state slots, and keyboard rebinding
 - Has a permissive license that allows commercial use
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
@@ -64,9 +65,14 @@ Alternatively, you can build the emulator from source by following the steps bel
 ##### 1. Clone the repository
 
 ```bash
-git clone --recursive --depth=1 https://github.com/pixel-clover/sandopolis.git
+git clone --depth=1 https://github.com/pixel-clover/sandopolis.git
 cd sandopolis
 ```
+
+> [!NOTE]
+> If you want to run the tests and develop Sandopolis further, you may want to clone the repository with
+> `git clone --recursive https://github.com/pixel-clover/sandopolis.git`.
+> Note that you also need to have `git-lfs` installed to download some of the files like test ROMs. 
 
 ##### 2. Build the Sandopolis binary
 
@@ -104,8 +110,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
-    * [SDL3](https://www.libsdl.org/) for the rendering and input (via [zsdl](https://github.com/zig-gamedev/zsdl)
-      and [SDL](https://github.com/castholm/SDL))
+    * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl) and [SDL](https://github.com/castholm/SDL))
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)
     * [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
 

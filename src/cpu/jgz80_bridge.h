@@ -141,9 +141,11 @@ typedef struct Jgz80State {
 
 typedef uint8_t (*Jgz80HostReadFunc)(void *userdata, uint32_t addr);
 
+typedef uint8_t (*Jgz80HostPeekFunc)(void *userdata, uint32_t addr);
+
 typedef void (*Jgz80HostWriteFunc)(void *userdata, uint32_t addr, uint8_t val);
 
-typedef void (*Jgz80M68kBusAccessFunc)(void *userdata);
+typedef void (*Jgz80M68kBusAccessFunc)(void *userdata, uint32_t pre_access_master_cycles);
 
 Jgz80Handle *jgz80_create(void);
 
@@ -168,6 +170,7 @@ void jgz80_write_byte(Jgz80Handle *handle, uint16_t addr, uint8_t val);
 void jgz80_set_host_callbacks(
     Jgz80Handle *handle,
     Jgz80HostReadFunc host_read,
+    Jgz80HostPeekFunc host_peek,
     Jgz80HostWriteFunc host_write,
     Jgz80M68kBusAccessFunc host_m68k_bus_access,
     void *userdata

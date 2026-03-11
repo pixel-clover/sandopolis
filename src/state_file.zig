@@ -9,7 +9,7 @@ const Cpu = @import("cpu/cpu.zig").Cpu;
 const Z80 = @import("cpu/z80.zig").Z80;
 
 const save_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
-const save_state_version: u16 = 1;
+const save_state_version: u16 = 2;
 const default_state_name = "sandopolis.state";
 pub const default_persistent_state_slot: u8 = 1;
 pub const persistent_state_slot_count: u8 = 3;
@@ -30,6 +30,7 @@ const BusState = struct {
     audio_timing: AudioTiming,
     io_master_remainder: u8,
     z80_master_credit: i64,
+    z80_stall_master_debt: u32,
     z80_wait_master_cycles: u32,
     z80_odd_access: bool,
     m68k_wait_master_cycles: u32,
@@ -224,6 +225,7 @@ fn captureBusState(machine: *const Machine) BusState {
         .audio_timing = machine.bus.audio_timing,
         .io_master_remainder = machine.bus.io_master_remainder,
         .z80_master_credit = machine.bus.z80_master_credit,
+        .z80_stall_master_debt = machine.bus.z80_stall_master_debt,
         .z80_wait_master_cycles = machine.bus.z80_wait_master_cycles,
         .z80_odd_access = machine.bus.z80_odd_access,
         .m68k_wait_master_cycles = machine.bus.m68k_wait_master_cycles,
@@ -318,6 +320,7 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
     machine.bus.audio_timing = bus_state.audio_timing;
     machine.bus.io_master_remainder = bus_state.io_master_remainder;
     machine.bus.z80_master_credit = bus_state.z80_master_credit;
+    machine.bus.z80_stall_master_debt = bus_state.z80_stall_master_debt;
     machine.bus.z80_wait_master_cycles = bus_state.z80_wait_master_cycles;
     machine.bus.z80_odd_access = bus_state.z80_odd_access;
     machine.bus.m68k_wait_master_cycles = bus_state.m68k_wait_master_cycles;
@@ -431,6 +434,10 @@ test "save-state files round-trip machine state" {
     machine.bus.ram[0x1234] = 0x56;
     machine.bus.vdp.regs[1] = 0x40;
     machine.bus.audio_timing.consumeMaster(1234);
+    machine.bus.z80_stall_master_debt = 49;
+    machine.bus.z80_wait_master_cycles = 50;
+    machine.bus.z80_odd_access = true;
+    machine.bus.m68k_wait_master_cycles = 33;
     machine.bus.z80.writeByte(0x0000, 0x9A);
     machine.bus.cartridge.ram.data.?[3] = 0xC7;
     machine.bus.cartridge.ram.dirty = true;
@@ -454,6 +461,10 @@ test "save-state files round-trip machine state" {
     try testing.expectEqual(@as(u32, 0x0000_1234), @as(u32, restored.cpu.core.pc));
     try testing.expectEqual(@as(u16, 0x2700), @as(u16, restored.cpu.core.sr));
     try testing.expectEqual(@as(u64, 777), restored.m68k_sync.master_cycles);
+    try testing.expectEqual(@as(u32, 49), restored.bus.z80_stall_master_debt);
+    try testing.expectEqual(@as(u32, 50), restored.bus.z80_wait_master_cycles);
+    try testing.expect(restored.bus.z80_odd_access);
+    try testing.expectEqual(@as(u32, 33), restored.bus.m68k_wait_master_cycles);
     try testing.expectEqualStrings("saves/test.sav", restored.bus.cartridge.save_path.?);
     try testing.expectEqualStrings("roms/test.md", restored.bus.cartridge.source_path.?);
 
