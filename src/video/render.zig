@@ -15,6 +15,20 @@ const LAYER_PLANE_B_HIGH: u8 = 4;
 const LAYER_PLANE_A_HIGH: u8 = 5;
 const LAYER_SPRITE_HIGH: u8 = 6;
 
+const Span = struct {
+    start_x: u16 = 0,
+    end_x: u16 = 0,
+
+    fn enabled(self: Span) bool {
+        return self.start_x < self.end_x;
+    }
+};
+
+const WindowLineLayout = struct {
+    plane_a: Span = .{},
+    window: Span = .{},
+};
+
 pub fn layerOrder(source_id: u8, high_pri: bool) u8 {
     return switch (source_id) {
         1 => if (high_pri) LAYER_PLANE_B_HIGH else LAYER_PLANE_B_LOW,
@@ -24,11 +38,72 @@ pub fn layerOrder(source_id: u8, high_pri: bool) u8 {
     };
 }
 
-pub fn getPaletteColor(self: *const Vdp, index: u8) u32 {
+fn paletteColorWord(self: *const Vdp, index: u8) u16 {
     const offset = @as(usize, index & 0x3F) * 2;
     const val_hi = self.cram[offset];
     const val_lo = self.cram[offset + 1];
-    const color = (@as(u16, val_hi) << 8) | val_lo;
+    var color = (@as(u16, val_hi) << 8) | val_lo;
+
+    // With palette mode disabled, only the lowest bit of each Mode 5 channel is visible.
+    if ((self.regs[0] & 0x04) == 0) {
+        color &= 0x0222;
+    }
+
+    return color;
+}
+
+fn windowBaseAddress(self: *const Vdp) u32 {
+    return if (self.isH40())
+        (@as(u32, self.regs[3]) << 10) & 0xF000
+    else
+        (@as(u32, self.regs[3]) << 10) & 0xF800;
+}
+
+fn windowHorizontalLayout(self: *const Vdp, screen_w: u16) WindowLineLayout {
+    const split_cells = @as(u16, self.regs[17] & 0x1F);
+    const window_right = (self.regs[17] & 0x80) != 0;
+    const screen_cells: u16 = if (self.isH40()) 20 else 16;
+
+    if (split_cells == 0) {
+        return if (window_right)
+            .{ .window = .{ .start_x = 0, .end_x = screen_w } }
+        else
+            .{ .plane_a = .{ .start_x = 0, .end_x = screen_w } };
+    }
+
+    if (split_cells > screen_cells) {
+        return if (window_right)
+            .{ .plane_a = .{ .start_x = 0, .end_x = screen_w } }
+        else
+            .{ .window = .{ .start_x = 0, .end_x = screen_w } };
+    }
+
+    const split_x = @min(split_cells * 16, screen_w);
+    return if (window_right)
+        .{
+            .plane_a = .{ .start_x = 0, .end_x = split_x },
+            .window = .{ .start_x = split_x, .end_x = screen_w },
+        }
+    else
+        .{
+            .window = .{ .start_x = 0, .end_x = split_x },
+            .plane_a = .{ .start_x = split_x, .end_x = screen_w },
+        };
+}
+
+fn windowLayoutForLine(self: *const Vdp, line: u16, screen_w: u16) WindowLineLayout {
+    const window_down = (self.regs[18] & 0x80) != 0;
+    const vertical_boundary = @as(u16, self.regs[18] & 0x1F) * 8;
+
+    if (window_down == (line >= vertical_boundary)) {
+        return .{ .window = .{ .start_x = 0, .end_x = screen_w } };
+    }
+
+    return windowHorizontalLayout(self, screen_w);
+}
+
+pub fn getPaletteColor(self: *const Vdp, index: u8) u32 {
+    const color = paletteColorWord(self, index);
 
     const b3: u3 = @intCast((color >> 9) & 0x7);
     const g3: u3 = @intCast((color >> 5) & 0x7);
@@ -59,18 +134,13 @@ pub fn getPaletteColorHighlight(self: *const Vdp, index: u8) u32 {
 
 pub fn readHScroll(self: *const Vdp, table_base: u16, line: u16, plane_a: bool) i32 {
     const hmode = self.regs[11] & 0x3;
-    var offset: u16 = if (plane_a) @as(u16, 0) else @as(u16, 2);
-    switch (hmode) {
-        2 => {
-            const cell_row = (line / 8) * 4;
-            offset = cell_row + (if (plane_a) @as(u16, 0) else @as(u16, 2));
-        },
-        3 => {
-            const line_index = (line & 0xFF) * 4;
-            offset = line_index + (if (plane_a) @as(u16, 0) else @as(u16, 2));
-        },
-        else => {},
-    }
+    const line_mask: u16 = switch (hmode) {
+        0 => 0x00,
+        1 => 0x07,
+        2 => 0xF8,
+        else => 0xFF,
+    };
+    const offset = ((line & line_mask) * 4) + (if (plane_a) @as(u16, 0) else @as(u16, 2));
     const word = (@as(u16, self.vramReadByte(table_base +% offset)) << 8) | self.vramReadByte(table_base +% offset +% 1);
     return @as(i16, @bitCast(word));
 }
@@ -81,6 +151,41 @@ pub fn readVScroll(self: *const Vdp, plane_a: bool) i32 {
     const lo = self.vsram[offset + 1];
     const raw = (@as(u16, hi) << 8) | lo;
     return @as(i16, @bitCast(raw & 0x07FF));
+}
+
+fn readVScrollColumnRaw(self: *const Vdp, column_pair: u16, plane_a: bool) ?u16 {
+    const base_offset = @as(u16, if (plane_a) 0 else 2);
+    const offset = column_pair * 4 + base_offset;
+    if (offset + 1 >= self.vsram.len) return null;
+
+    const hi = self.vsram[offset];
+    const lo = self.vsram[offset + 1];
+    return ((@as(u16, hi) << 8) | lo) & 0x07FF;
+}
+
+fn readVScrollColumn(self: *const Vdp, column_pair: u16, plane_a: bool) i32 {
+    const raw = readVScrollColumnRaw(self, column_pair, plane_a) orelse {
+        return readVScroll(self, plane_a);
+    };
+    return @as(i32, raw);
+}
+
+fn planeVScrollForPixel(self: *const Vdp, x: u16, hscroll_shift: u4, plane_a: bool) i32 {
+    if (((self.regs[11] >> 2) & 1) == 0) return readVScroll(self, plane_a);
+
+    if (hscroll_shift != 0 and x < hscroll_shift) {
+        if (!self.isH40()) return 0;
+
+        const plane_a_raw = readVScrollColumnRaw(self, 19, true) orelse 0;
+        const plane_b_raw = readVScrollColumnRaw(self, 19, false) orelse 0;
+        return @as(i32, plane_a_raw & plane_b_raw);
+    }
+
+    const column_pair: u16 = if (hscroll_shift != 0)
+        @intCast((@as(u32, x) - hscroll_shift) / 16)
+    else
+        x / 16;
+    return readVScrollColumn(self, column_pair, plane_a);
 }
 
 pub fn renderScanline(self: *Vdp, line: u16) void {
@@ -133,28 +238,15 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         @memset(&sh_buf, SH_NORMAL);
     }
 
-    const win_h_pos = self.regs[17];
-    const win_v_pos = self.regs[18];
-    const win_right = (win_h_pos & 0x80) != 0;
-    const win_h_cell = @as(u16, win_h_pos & 0x1F) * 2;
-    const win_down = (win_v_pos & 0x80) != 0;
-    const win_v_cell = @as(u16, win_v_pos & 0x1F) * 8;
-    const line_in_win_v: bool = if (win_down) (line >= win_v_cell) else (line < win_v_cell);
-    const win_left_px: u16 = if (win_right) @min(win_h_cell * 8, screen_w) else 0;
-    const win_right_px: u16 = if (win_right) screen_w else @min(win_h_cell * 8, screen_w);
+    const window_layout = windowLayoutForLine(self, line, screen_w);
 
     renderPlaneToBuffer(self, line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 1, 0, screen_w);
 
-    if (line_in_win_v and win_left_px < win_right_px) {
-        if (win_left_px > 0) {
-            renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, 0, win_left_px);
-        }
-        if (win_right_px < screen_w) {
-            renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, win_right_px, screen_w);
-        }
-        renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, win_left_px, win_right_px);
-    } else {
-        renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, 0, screen_w);
+    if (window_layout.plane_a.enabled()) {
+        renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, window_layout.plane_a.start_x, window_layout.plane_a.end_x);
+    }
+    if (window_layout.window.enabled()) {
+        renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, window_layout.window.start_x, window_layout.window.end_x);
     }
 
     renderSpritesToBuffer(self, line, tile_h, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode);
@@ -185,6 +277,14 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             self.framebuffer[line_start + x] = backdrop;
         }
     }
+
+    if ((self.regs[0] & 0x20) != 0) {
+        const clipped_backdrop = getPaletteColor(self, backdrop_idx);
+        const clip_width = @min(@as(usize, 8), @as(usize, screen_w));
+        for (0..clip_width) |x| {
+            self.framebuffer[line_start + x] = clipped_backdrop;
+        }
+    }
 }
 
 fn renderPlaneToBuffer(
@@ -209,23 +309,17 @@ fn renderPlaneToBuffer(
     end_x: u16,
 ) void {
     const hscroll = readHScroll(self, hscroll_base, line, is_plane_a);
-    const vscroll_mode = (self.regs[11] >> 2) & 1;
+    const hscroll_shift: u4 = @truncate(@as(u16, @bitCast(@as(i16, @intCast(hscroll)))));
     _ = tile_h;
 
-    var x: u16 = start_x;
+    const render_start_x: u16 = if (is_plane_a and start_x != 0 and hscroll_shift != 0)
+        @min(end_x, start_x + hscroll_shift)
+    else
+        start_x;
+
+    var x: u16 = render_start_x;
     while (x < end_x) : (x += 1) {
-        const vscroll_val: i32 = if (vscroll_mode != 0) blk: {
-            const col_pair = x / 16;
-            const vs_offset: u16 = if (is_plane_a) col_pair * 4 else col_pair * 4 + 2;
-            if (vs_offset + 1 < 80) {
-                const hi = self.vsram[vs_offset];
-                const lo = self.vsram[vs_offset + 1];
-                const raw = (@as(u16, hi) << 8) | lo;
-                break :blk @as(i32, @as(i16, @bitCast(raw & 0x07FF)));
-            } else {
-                break :blk readVScroll(self, is_plane_a);
-            }
-        } else readVScroll(self, is_plane_a);
+        const vscroll_val = planeVScrollForPixel(self, x, hscroll_shift, is_plane_a);
 
         const x_scrolled = @as(i32, @intCast(x)) - hscroll;
         const y_scrolled = @as(i32, line) + vscroll_val;
@@ -280,10 +374,7 @@ fn renderWindowToBuffer(
     start_x: u16,
     end_x: u16,
 ) void {
-    const win_base: u32 = if (self.isH40())
-        @as(u32, self.regs[3] & 0x3E) << 10
-    else
-        @as(u32, self.regs[3] & 0x3F) << 10;
+    const win_base = windowBaseAddress(self);
     const win_width: u32 = if (self.isH40()) 64 else 32;
     const tile_row: u32 = @as(u32, line) >> tile_h_shift;
     const fine_y: u8 = @intCast(@as(u32, line) & tile_h_mask);
@@ -325,6 +416,234 @@ fn renderWindowToBuffer(
     }
 }
 
+test "window base address masks ignored bits in h32 and h40 modes" {
+    var h32 = Vdp.init();
+    h32.regs[12] = 0x00;
+    h32.regs[3] = 0x01;
+    try std.testing.expectEqual(@as(u32, 0x0000), windowBaseAddress(&h32));
+
+    var h40 = Vdp.init();
+    h40.regs[12] = 0x01;
+    h40.regs[3] = 0x02;
+    try std.testing.expectEqual(@as(u32, 0x0000), windowBaseAddress(&h40));
+
+    h32.regs[3] = 0x3F;
+    try std.testing.expectEqual(@as(u32, 0xF800), windowBaseAddress(&h32));
+
+    h40.regs[3] = 0x3F;
+    try std.testing.expectEqual(@as(u32, 0xF000), windowBaseAddress(&h40));
+}
+
+test "window layout matches hardware full-line and split behavior" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x01;
+    vdp.regs[17] = 0x81;
+    vdp.regs[18] = 0x01;
+
+    const top_layout = windowLayoutForLine(&vdp, 0, 320);
+    try std.testing.expect(!top_layout.plane_a.enabled());
+    try std.testing.expectEqual(@as(u16, 0), top_layout.window.start_x);
+    try std.testing.expectEqual(@as(u16, 320), top_layout.window.end_x);
+
+    const lower_layout = windowLayoutForLine(&vdp, 8, 320);
+    try std.testing.expectEqual(@as(u16, 0), lower_layout.plane_a.start_x);
+    try std.testing.expectEqual(@as(u16, 16), lower_layout.plane_a.end_x);
+    try std.testing.expectEqual(@as(u16, 16), lower_layout.window.start_x);
+    try std.testing.expectEqual(@as(u16, 320), lower_layout.window.end_x);
+}
+
+test "window renderer uses masked base address bits" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x04;
+    vdp.regs[1] = 0x40;
+    vdp.regs[3] = 0x06;
+    vdp.regs[7] = 0x00;
+    vdp.regs[12] = 0x01;
+    vdp.regs[17] = 0x80;
+    vdp.regs[18] = 0x80;
+
+    // Palette 0 color 1 = red, color 2 = green.
+    vdp.cram[2] = 0x00;
+    vdp.cram[3] = 0x0E;
+    vdp.cram[4] = 0x00;
+    vdp.cram[5] = 0xE0;
+
+    // Tile 0 uses color 1, tile 1 uses color 2.
+    vdp.vramWriteByte(0x0000, 0x11);
+    vdp.vramWriteByte(0x0001, 0x11);
+    vdp.vramWriteByte(0x0002, 0x11);
+    vdp.vramWriteByte(0x0003, 0x11);
+    vdp.vramWriteByte(0x0020, 0x22);
+    vdp.vramWriteByte(0x0021, 0x22);
+    vdp.vramWriteByte(0x0022, 0x22);
+    vdp.vramWriteByte(0x0023, 0x22);
+
+    // Correct base in H40 masks register 3 to 0x1000.
+    vdp.vramWriteWord(0x1000, 0x0000);
+    // Old decode would incorrectly fetch the window tile from 0x1800.
+    vdp.vramWriteWord(0x1800, 0x0001);
+
+    vdp.renderScanline(0);
+
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[0]);
+    try std.testing.expect(vdp.framebuffer[0] != @as(u32, 0xFF00FF00));
+}
+
+test "per-column vscroll follows shifted visible columns and special leftmost partial column" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x04;
+    vdp.regs[1] = 0x40;
+    vdp.regs[4] = 0x01;
+    vdp.regs[7] = 0x00;
+    vdp.regs[11] = 0x04;
+    vdp.regs[12] = 0x01;
+    vdp.regs[13] = 0x01;
+
+    // Palette 0 colors: 1 = red, 2 = green, 3 = blue, 4 = yellow.
+    vdp.cram[2] = 0x00;
+    vdp.cram[3] = 0x0E;
+    vdp.cram[4] = 0x00;
+    vdp.cram[5] = 0xE0;
+    vdp.cram[6] = 0x0E;
+    vdp.cram[7] = 0x00;
+    vdp.cram[8] = 0x0E;
+    vdp.cram[9] = 0xEE;
+
+    // Tiles 1-4 are solid colors 1-4.
+    for (0..4) |row| {
+        const row_offset: u16 = @intCast(row * 4);
+        vdp.vramWriteByte(0x0020 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0021 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0022 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0023 + row_offset, 0x11);
+
+        vdp.vramWriteByte(0x0040 + row_offset, 0x22);
+        vdp.vramWriteByte(0x0041 + row_offset, 0x22);
+        vdp.vramWriteByte(0x0042 + row_offset, 0x22);
+        vdp.vramWriteByte(0x0043 + row_offset, 0x22);
+
+        vdp.vramWriteByte(0x0060 + row_offset, 0x33);
+        vdp.vramWriteByte(0x0061 + row_offset, 0x33);
+        vdp.vramWriteByte(0x0062 + row_offset, 0x33);
+        vdp.vramWriteByte(0x0063 + row_offset, 0x33);
+
+        vdp.vramWriteByte(0x0080 + row_offset, 0x44);
+        vdp.vramWriteByte(0x0081 + row_offset, 0x44);
+        vdp.vramWriteByte(0x0082 + row_offset, 0x44);
+        vdp.vramWriteByte(0x0083 + row_offset, 0x44);
+    }
+
+    // HScroll plane B word: shift by 4 pixels.
+    vdp.vramWriteWord(0x0402, 0x0004);
+
+    // Plane B name table at 0x2000.
+    vdp.vramWriteWord(0x2000, 0x0001); // row 0, col 0 => red
+    vdp.vramWriteWord(0x2040, 0x0004); // row 1, col 0 => yellow
+    vdp.vramWriteWord(0x203E, 0x0003); // row 0, col 31 => blue
+    vdp.vramWriteWord(0x207E, 0x0002); // row 1, col 31 => green
+
+    // Special H40 partial-column value comes from column 19 and is shared.
+    vdp.vsram[76] = 0x00;
+    vdp.vsram[77] = 0x08;
+    vdp.vsram[78] = 0x00;
+    vdp.vsram[79] = 0x08;
+
+    vdp.renderScanline(0);
+
+    try std.testing.expectEqual(@as(u32, 0xFF00FF00), vdp.framebuffer[0]);
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[4]);
+}
+
+test "8-line hscroll mode uses the masked line index spacing from hardware" {
+    var vdp = Vdp.init();
+    vdp.regs[11] = 0x02;
+
+    vdp.vramWriteWord(0x0400, 0x0011);
+    vdp.vramWriteWord(0x0402, 0x0022);
+    vdp.vramWriteWord(0x0420, 0x0033);
+    vdp.vramWriteWord(0x0422, 0x0044);
+
+    try std.testing.expectEqual(@as(i32, 0x0011), readHScroll(&vdp, 0x0400, 0, true));
+    try std.testing.expectEqual(@as(i32, 0x0022), readHScroll(&vdp, 0x0400, 0, false));
+    try std.testing.expectEqual(@as(i32, 0x0033), readHScroll(&vdp, 0x0400, 8, true));
+    try std.testing.expectEqual(@as(i32, 0x0044), readHScroll(&vdp, 0x0400, 8, false));
+}
+
+test "reg 0 left-column blanking forces the first 8 pixels to backdrop" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x24;
+    vdp.regs[1] = 0x40;
+    vdp.regs[4] = 0x01;
+    vdp.regs[7] = 0x00;
+
+    vdp.cram[0] = 0x00;
+    vdp.cram[1] = 0x00;
+    vdp.cram[2] = 0x00;
+    vdp.cram[3] = 0x0E;
+
+    for (0..4) |row| {
+        const row_offset: u16 = @intCast(row * 4);
+        vdp.vramWriteByte(0x0020 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0021 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0022 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0023 + row_offset, 0x11);
+    }
+
+    vdp.vramWriteWord(0x2000, 0x0001);
+    vdp.vramWriteWord(0x2002, 0x0001);
+    vdp.renderScanline(0);
+
+    for (0..8) |x| {
+        try std.testing.expectEqual(@as(u32, 0xFF000000), vdp.framebuffer[x]);
+    }
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[8]);
+}
+
+test "plane A window split honors the shifted left-edge gap" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x04;
+    vdp.regs[1] = 0x40;
+    vdp.regs[2] = 0x30;
+    vdp.regs[4] = 0x01;
+    vdp.regs[7] = 0x00;
+    vdp.regs[12] = 0x01;
+    vdp.regs[13] = 0x01;
+    vdp.regs[17] = 0x01;
+    vdp.regs[18] = 0x81;
+
+    vdp.cram[2] = 0x00;
+    vdp.cram[3] = 0x0E;
+    vdp.cram[4] = 0x0E;
+    vdp.cram[5] = 0x00;
+
+    for (0..4) |row| {
+        const row_offset: u16 = @intCast(row * 4);
+        vdp.vramWriteByte(0x0020 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0021 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0022 + row_offset, 0x11);
+        vdp.vramWriteByte(0x0023 + row_offset, 0x11);
+
+        vdp.vramWriteByte(0x0040 + row_offset, 0x22);
+        vdp.vramWriteByte(0x0041 + row_offset, 0x22);
+        vdp.vramWriteByte(0x0042 + row_offset, 0x22);
+        vdp.vramWriteByte(0x0043 + row_offset, 0x22);
+    }
+
+    vdp.vramWriteWord(0x0400, 0x0004);
+
+    vdp.vramWriteWord(0x2000, 0x0002);
+    vdp.vramWriteWord(0x2002, 0x0002);
+    vdp.vramWriteWord(0x2004, 0x0002);
+    vdp.vramWriteWord(0xC000, 0x0001);
+    vdp.vramWriteWord(0xC002, 0x0001);
+    vdp.vramWriteWord(0xC004, 0x0001);
+
+    vdp.renderScanline(0);
+
+    try std.testing.expectEqual(@as(u32, 0xFF0000FF), vdp.framebuffer[16]);
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[20]);
+}
+
 fn renderSpritesToBuffer(
     self: *Vdp,
     line: u16,
@@ -347,10 +666,10 @@ fn renderSpritesToBuffer(
     self.ensureSpriteCache();
 
     var sprites_on_line: u8 = 0;
-    var pixels_drawn: u16 = 0;
+    var pixel_budget_used: u16 = 0;
     var sprite_masked = false;
     var had_nonzero_x = false;
-    var dot_overflow = false;
+    var next_line_mask = false;
 
     var sprite_index: u8 = 0;
     var count: u8 = 0;
@@ -370,6 +689,14 @@ fn renderSpritesToBuffer(
                 break;
             }
 
+            const sprite_width_px: u16 = @as(u16, entry.h_size) * 8;
+            const new_pixel_budget = pixel_budget_used + sprite_width_px;
+            var draw_width_px = sprite_width_px;
+            if (new_pixel_budget > max_pixels) {
+                draw_width_px -= new_pixel_budget - max_pixels;
+            }
+            pixel_budget_used = new_pixel_budget;
+
             if (entry.x_pos_raw == 0) {
                 if (had_nonzero_x or self.sprite_dot_overflow) {
                     sprite_masked = true;
@@ -384,6 +711,7 @@ fn renderSpritesToBuffer(
                 const fine_y: u8 = @intCast(@as(u32, @intCast(y_in_sprite)) & tile_h_mask);
                 const h_size_u16 = @as(u16, entry.h_size);
                 const v_size_u16 = @as(u16, entry.v_size);
+                var sprite_limit_hit = false;
 
                 var screen_tile_x: u16 = 0;
                 while (screen_tile_x < h_size_u16) : (screen_tile_x += 1) {
@@ -403,17 +731,16 @@ fn renderSpritesToBuffer(
                     };
 
                     while (screen_x < tile_screen_end) : (screen_x += 1) {
-                        if (self.active_execution_counters) |counters| {
-                            counters.render_sprite_pixels += 1;
-                        }
-
-                        pixels_drawn += 1;
-                        if (pixels_drawn > max_pixels) {
-                            dot_overflow = true;
+                        const offset_in_tile: u8 = @intCast(screen_x - tile_screen_start);
+                        const sprite_px = (screen_tile_x * 8) + offset_in_tile;
+                        if (sprite_px >= draw_width_px) {
+                            sprite_limit_hit = true;
                             break;
                         }
 
-                        const offset_in_tile: u8 = @intCast(screen_x - tile_screen_start);
+                        if (self.active_execution_counters) |counters| {
+                            counters.render_sprite_pixels += 1;
+                        }
                         const fine_x: u8 = if (entry.x_flip) @as(u8, 7) - offset_in_tile else offset_in_tile;
                         const pattern_byte = pattern_row[fine_x >> 1];
                         const color_idx: u8 = if ((fine_x & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
@@ -452,9 +779,13 @@ fn renderSpritesToBuffer(
                             }
                         }
                     }
-                    if (dot_overflow) break;
+                    if (sprite_limit_hit) break;
                 }
-                if (dot_overflow) break;
+            }
+
+            if (pixel_budget_used >= max_pixels) {
+                next_line_mask = true;
+                break;
             }
         }
 
@@ -462,7 +793,7 @@ fn renderSpritesToBuffer(
         sprite_index = entry.link;
     }
 
-    self.sprite_dot_overflow = dot_overflow;
+    self.sprite_dot_overflow = next_line_mask;
 }
 
 fn seedAscendingSpritePattern(vdp: *Vdp, tile_index: u16) void {
@@ -473,12 +804,16 @@ fn seedAscendingSpritePattern(vdp: *Vdp, tile_index: u16) void {
     vdp.vramWriteByte(@intCast((pattern_addr + 3) & 0xFFFF), 0x78);
 }
 
-fn writeTestSpriteEntry(vdp: *Vdp, sprite_base: u16, attr: u16, x: u16) void {
-    vdp.vramWriteWord(sprite_base, 128);
-    vdp.vramWriteByte(sprite_base + 2, 0x00);
-    vdp.vramWriteByte(sprite_base + 3, 0x00);
+fn writeTestSpriteEntryFull(vdp: *Vdp, sprite_base: u16, y: u16, size: u8, link: u8, attr: u16, x: u16) void {
+    vdp.vramWriteWord(sprite_base, y);
+    vdp.vramWriteByte(sprite_base + 2, size);
+    vdp.vramWriteByte(sprite_base + 3, link);
     vdp.vramWriteWord(sprite_base + 4, attr);
     vdp.vramWriteWord(sprite_base + 6, x);
+}
+
+fn writeTestSpriteEntry(vdp: *Vdp, sprite_base: u16, attr: u16, x: u16) void {
+    writeTestSpriteEntryFull(vdp, sprite_base, 128, 0x00, 0x00, attr, x);
 }
 
 fn clearSpriteBuffers(
@@ -586,6 +921,38 @@ test "sprite renderer invalidates cached sprite entries on SAT writes" {
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[8..16]);
 }
 
+test "off-screen sprite widths still trigger next-line sprite masking" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x02;
+    vdp.regs[12] = 0x01;
+
+    seedAscendingSpritePattern(&vdp, 0);
+
+    const sprite_base: u16 = 0x0400;
+    for (0..10) |i| {
+        const entry_base = sprite_base + @as(u16, @intCast(i * 8));
+        const next_link: u8 = if (i == 9) 0 else @intCast(i + 1);
+        writeTestSpriteEntryFull(&vdp, entry_base, 128, 0x0C, next_link, 0x0000, 96);
+    }
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+    try std.testing.expect(vdp.sprite_dot_overflow);
+
+    clearSpriteBuffers(&pixel_buf, &layer_buf, &source_buf, &sh_buf);
+    writeTestSpriteEntryFull(&vdp, sprite_base, 128, 0x00, 1, 0x0000, 0);
+    writeTestSpriteEntryFull(&vdp, sprite_base + 8, 128, 0x00, 0, 0x0000, 128);
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
+}
+
 test "sprite renderer rebuilds cache when the SAT base changes" {
     var vdp = Vdp.init();
     vdp.regs[1] = 0x40;
@@ -610,4 +977,22 @@ test "sprite renderer rebuilds cache when the SAT base changes" {
 
     try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[8..16]);
+}
+
+test "palette mode off masks mode 5 CRAM channel bits" {
+    var masked = Vdp.init();
+    masked.regs[0] = 0x00;
+    masked.cram[0] = 0x0E;
+    masked.cram[1] = 0xEE;
+
+    var unmasked = masked;
+    unmasked.regs[0] = 0x04;
+
+    var reference = Vdp.init();
+    reference.regs[0] = 0x04;
+    reference.cram[0] = 0x02;
+    reference.cram[1] = 0x22;
+
+    try std.testing.expect(masked.getPaletteColor(0) != unmasked.getPaletteColor(0));
+    try std.testing.expectEqual(reference.getPaletteColor(0), masked.getPaletteColor(0));
 }

@@ -198,6 +198,14 @@ pub const Machine = struct {
             return self.machine.bus.z80.getPc();
         }
 
+        pub fn z80BusAckWord(self: *const TestingConstView) u16 {
+            return self.machine.bus.z80.readBusReq();
+        }
+
+        pub fn z80ResetControlWord(self: *const TestingConstView) u16 {
+            return self.machine.bus.z80.readReset();
+        }
+
         pub fn pendingM68kWaitMasterCycles(self: *const TestingConstView) u32 {
             return self.machine.bus.pendingM68kWaitMasterCycles();
         }

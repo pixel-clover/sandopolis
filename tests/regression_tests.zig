@@ -411,7 +411,7 @@ test "frame scheduler interleaves z80 vdp-window writes within a master slice" {
     try testing.expect(contended.z80ProgramCounter() >= 0x0005);
 }
 
-test "read16 routes full io window range through io handler" {
+test "read16 routes only the primary io window through io handler" {
     const rom = try seedResetNopsRom(testing.allocator, 1);
     defer testing.allocator.free(rom);
 
@@ -420,10 +420,14 @@ test "read16 routes full io window range through io handler" {
     emulator.reset();
 
     const base = emulator.read16(0xA10000);
-    try testing.expect(base != 0);
+    try testing.expectEqual(@as(u16, 0xA0A0), base);
 
-    const mirrored = emulator.read16(0xA10020);
-    try testing.expectEqual(base, mirrored);
+    emulator.write16(0xE00000, 0x5A3C);
+    _ = emulator.read16(0xE00000);
+
+    const open_bus = emulator.read16(0xA10020);
+    try testing.expectEqual(@as(u16, 0x5A3C), open_bus);
+    try testing.expect(open_bus != base);
 }
 
 test "pal 240-line mode exposes and renders the extra visible scanlines" {
@@ -435,6 +439,7 @@ test "pal 240-line mode exposes and renders the extra visible scanlines" {
     emulator.reset();
 
     emulator.setPalMode(true);
+    emulator.setVdpRegister(0, 0x04);
     emulator.setVdpRegister(1, 0x48);
     emulator.configureVdpDataPort(0x03, 0x0000, 2);
     emulator.writeVdpData(0x000E);
@@ -476,6 +481,7 @@ test "window plane uses tile height shift for interlace mode 2 tile row" {
     defer emulator.deinit(testing.allocator);
     emulator.reset();
 
+    emulator.setVdpRegister(0, 0x04);
     emulator.setVdpRegister(1, 0x40);
     emulator.setVdpRegister(3, 0x04);
     emulator.setVdpRegister(12, 0x06);

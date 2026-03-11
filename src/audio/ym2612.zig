@@ -957,7 +957,14 @@ const Opn2Core = struct {
             next_level |= @as(i16, self.eg_tl[1]) << 3;
         }
 
-        if (!kon_event and self.eg_ssg_hold_up_latch[slot] == 0 and current_state != .attack and eg_off) {
+        // SSG-EG: Force level to MAX on Key OFF if inverted level >= 0x200.
+        // This must happen regardless of current state (including attack phase).
+        // See Genesis-Plus-GX changelog 11-05-2021: "fixed potential issue with
+        // SSG-EG inverted attenuation level on Key OFF"
+        if (koff_event and self.eg_ssg_enable[slot] != 0 and eg_off) {
+            next_state = .release;
+            next_level = 0x03FF;
+        } else if (!kon_event and self.eg_ssg_hold_up_latch[slot] == 0 and current_state != .attack and eg_off) {
             next_state = .release;
             next_level = 0x03FF;
         }
@@ -1701,6 +1708,41 @@ test "ym ssg-eg repeat type latches repeat when the envelope wraps" {
     try std.testing.expectEqual(@as(u8, 0), normal.eg_ssg_repeat_latch[0]);
     try std.testing.expectEqual(@as(u8, 1), repeat.eg_ssg_enable[0]);
     try std.testing.expectEqual(@as(u8, 1), repeat.eg_ssg_repeat_latch[0]);
+}
+
+test "ym ssg-eg key off during attack forces level to max when inverted level exceeds threshold" {
+    // This test validates the fix for the SSG-EG key-off bug where inverted attenuation
+    // level >= 0x200 should be forced to MAX (0x3FF) regardless of current envelope state.
+    // See Genesis-Plus-GX changelog 11-05-2021.
+    var core = Opn2Core{};
+
+    const slot = 0;
+    core.cycles = (slot + 2) % 24; // envelopeAdsr uses (cycles + 22) % 24
+
+    // Set up SSG-EG enabled with inversion
+    core.ssg_eg[slot] = 0x0C; // SSG-EG enabled (bit 3) + attack direction (bit 2)
+    core.eg_ssg_enable[slot] = 1;
+    core.eg_ssg_inv[slot] = 1; // Inversion active
+
+    // Key is currently ON in attack state
+    core.eg_kon[slot] = 1;
+    core.eg_kon_latch[slot] = 0; // Key OFF event pending
+    core.eg_state[slot] = @intFromEnum(EgState.attack);
+
+    // Level that when inverted (512 - level) will be >= 0x200
+    // If level = 0x100 (256), inverted = 512 - 256 = 256 (0x100) - NOT over threshold
+    // If level = 0x050 (80), inverted = 512 - 80 = 432 (0x1B0) - NOT over threshold
+    // If level = 0x010 (16), inverted = 512 - 16 = 496 (0x1F0) - NOT over threshold
+    // If level = 0x000 (0), inverted = 512 - 0 = 512 (0x200) - AT threshold!
+    core.eg_level[slot] = 0x000;
+
+    core.envelopeSsgEg();
+    core.envelopeAdsr();
+
+    // After key-off with SSG-EG, since inverted level (0x200) >= 0x200,
+    // the level should be forced to maximum (0x3FF)
+    try std.testing.expectEqual(@as(u16, 0x3FF), core.eg_level[slot]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.release)), core.eg_state[slot]);
 }
 
 test "ym dac output appears when enabled" {

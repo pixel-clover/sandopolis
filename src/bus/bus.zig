@@ -77,6 +77,16 @@ pub const Bus = struct {
         return addr >= 0xA00000 and addr < 0xA10000;
     }
 
+    fn isZ80BusAckPage(address: u32) bool {
+        const addr = address & 0xFFFFFF;
+        return addr >= 0xA11100 and addr < 0xA11200;
+    }
+
+    fn isZ80ResetPage(address: u32) bool {
+        const addr = address & 0xFFFFFF;
+        return addr >= 0xA11200 and addr < 0xA11300;
+    }
+
     fn hasZ80BusFor68k(self: *Bus) bool {
         return self.z80.readBusReq() == 0x0000;
     }
@@ -128,6 +138,13 @@ pub const Bus = struct {
     fn latchOpenBus(self: *Bus, value: u16) u16 {
         self.open_bus = value;
         return value;
+    }
+
+    fn openBusByte(self: *const Bus, address: u32) u8 {
+        return if ((address & 1) == 0)
+            @truncate((self.open_bus >> 8) & 0xFF)
+        else
+            @truncate(self.open_bus & 0xFF);
     }
 
     fn readMirroredZ80ControlRegister(self: *Bus, control_word: u16) u16 {
@@ -320,10 +337,11 @@ pub const Bus = struct {
             return value;
         }
 
-        if (addr == 0xA11100) return @truncate((self.readZ80BusAckRegister() >> 8) & 0xFF);
-        if (addr == 0xA11101) return @truncate(self.readZ80BusAckRegister() & 0xFF);
-        if (addr == 0xA11200) return @truncate((self.readZ80ResetRegister() >> 8) & 0xFF);
-        if (addr == 0xA11201) return @truncate(self.readZ80ResetRegister() & 0xFF);
+        if (isZ80BusAckPage(addr)) {
+            if ((addr & 1) == 0) return @truncate((self.readZ80BusAckRegister() >> 8) & 0xFF);
+            return self.openBusByte(addr);
+        }
+        if (isZ80ResetPage(addr)) return self.openBusByte(addr);
 
         if (addr < 0xA00000) {
             return self.cartridge.readRomByte(addr);
@@ -337,8 +355,10 @@ pub const Bus = struct {
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             return vdp_ports.readByte(&self.vdp, &self.open_bus, addr);
-        } else if (addr >= 0xA10000 and addr < 0xA10100) {
+        } else if (addr >= 0xA10000 and addr < 0xA10020) {
             return io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr);
+        } else if (addr >= 0xA10020 and addr < 0xA10100) {
+            return self.openBusByte(addr);
         }
 
         return 0;
@@ -362,14 +382,15 @@ pub const Bus = struct {
         if (self.cartridge.readWord(addr)) |value| {
             return self.latchOpenBus(value);
         }
-        if (addr == 0xA11100) {
+        if (isZ80BusAckPage(addr)) {
             return self.readZ80BusAckRegister();
-        } else if (addr == 0xA11200) {
-            return self.readZ80ResetRegister();
+        } else if (isZ80ResetPage(addr)) {
+            return self.latchOpenBus(self.open_bus);
         } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
             return self.latchOpenBus(self.open_bus & 0xFF00);
-        } else if (addr >= 0xA10000 and addr < 0xA10100) {
-            return self.latchOpenBus(io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr));
+        } else if (addr >= 0xA10000 and addr < 0xA10020) {
+            const value = io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr);
+            return self.latchOpenBus((@as(u16, value) << 8) | value);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             return vdp_ports.readWord(&self.vdp, &self.open_bus, addr);
         }
@@ -392,16 +413,16 @@ pub const Bus = struct {
         if (self.cartridge.writeRegisterByte(addr, value)) return;
         if (self.cartridge.writeByte(addr, value)) return;
 
-        if (addr == 0xA11100) {
-            self.z80.writeBusReq(@as(u16, value) << 8);
+        if (isZ80BusAckPage(addr)) {
+            if ((addr & 1) == 0) {
+                self.z80.writeBusReq(@as(u16, value) << 8);
+            }
             return;
-        } else if (addr == 0xA11101) {
-            return;
-        } else if (addr == 0xA11200) {
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
-            self.z80.writeReset(@as(u16, value) << 8);
-            return;
-        } else if (addr == 0xA11201) {
+        } else if (isZ80ResetPage(addr)) {
+            if ((addr & 1) == 0) {
+                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+                self.z80.writeReset(@as(u16, value) << 8);
+            }
             return;
         }
 
@@ -416,8 +437,10 @@ pub const Bus = struct {
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             self.z80.writeByte(zaddr, value);
             return;
-        } else if (addr >= 0xA10000 and addr < 0xA10100) {
-            io_window.writeRegisterByte(&self.io, addr, value);
+        } else if (addr >= 0xA10000 and addr < 0xA10020) {
+            if ((addr & 1) != 0) {
+                io_window.writeRegisterByte(&self.io, addr, value);
+            }
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             const port = addr & 0x1F;
             if (port >= 0x11 and port < 0x18 and (port & 1) == 1) {
@@ -448,10 +471,10 @@ pub const Bus = struct {
             return;
         }
 
-        if (addr == 0xA11100) {
+        if (isZ80BusAckPage(addr)) {
             self.z80.writeBusReq(value);
             return;
-        } else if (addr == 0xA11200) {
+        } else if (isZ80ResetPage(addr)) {
             self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
             self.z80.writeReset(value);
             return;
@@ -820,7 +843,7 @@ test "z80 bus request does not grant bus while reset is held" {
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A0_0010));
 }
 
-test "z80 busack and reset reads preserve open-bus bits" {
+test "z80 busack read preserves open-bus bits and reset page reads stay open bus" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -837,7 +860,7 @@ test "z80 busack and reset reads preserve open-bus bits" {
 
     bus.write16(0x00A1_1200, 0x0100);
     bus.open_bus = 0xB600;
-    try testing.expectEqual(@as(u16, 0xB700), bus.read16(0x00A1_1200));
+    try testing.expectEqual(@as(u16, 0xB600), bus.read16(0x00A1_1200));
 }
 
 test "z80 control registers support byte reads and writes on even address" {
@@ -846,8 +869,9 @@ test "z80 control registers support byte reads and writes on even address" {
 
     try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1100));
     try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1101));
-    try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1200));
-    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1201));
+    bus.open_bus = 0xCAFE;
+    try testing.expectEqual(@as(u8, 0xCA), bus.read8(0x00A1_1200));
+    try testing.expectEqual(@as(u8, 0xFE), bus.read8(0x00A1_1201));
 
     bus.write8(0x00A1_1100, 0x01);
     try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1100));
@@ -857,26 +881,77 @@ test "z80 control registers support byte reads and writes on even address" {
     try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1100));
 
     bus.write8(0x00A1_1200, 0x00);
-    try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1200));
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
     try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1200));
 
     bus.write8(0x00A1_1201, 0x01);
-    try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1200));
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
 
     bus.write8(0x00A1_1200, 0x01);
     bus.write8(0x00A1_1100, 0x00);
-    try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1200));
+    try testing.expectEqual(@as(u16, 0x0100), bus.z80.readReset());
     try testing.expectEqual(@as(u16, 0x0100), bus.read16(0x00A1_1100));
-    try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1200));
+    bus.open_bus = 0;
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_1200));
     try testing.expectEqual(@as(u8, 0x01), bus.read8(0x00A1_1100));
 }
 
-test "unused vdp port reads return ff" {
+test "z80 reset control only latches the high-byte low bit" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00C0_0011));
-    try testing.expectEqual(@as(u16, 0xFFFF), bus.read16(0x00C0_0010));
+    bus.write16(0x00A1_1200, 0x0001);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
+
+    bus.write16(0x00A1_1200, 0x00FF);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
+
+    bus.write16(0x00A1_1200, 0x0200);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
+
+    bus.write16(0x00A1_1200, 0x0101);
+    try testing.expectEqual(@as(u16, 0x0100), bus.z80.readReset());
+
+    bus.write8(0x00A1_1200, 0x02);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
+
+    bus.write8(0x00A1_1200, 0x03);
+    try testing.expectEqual(@as(u16, 0x0100), bus.z80.readReset());
+}
+
+test "z80 control register pages mirror across a111xx and a112xx" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.write8(0x00A1_11FE, 0x01);
+    try testing.expectEqual(@as(u16, 0x0001), bus.read16(0x00A1_1100));
+
+    bus.write8(0x00A1_11FF, 0x00);
+    try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_1100));
+
+    bus.write8(0x00A1_12FE, 0x00);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
+
+    bus.write8(0x00A1_12FF, 0x01);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.readReset());
+
+    bus.write16(0x00A1_12F0, 0x0100);
+    try testing.expectEqual(@as(u16, 0x0100), bus.z80.readReset());
+}
+
+test "unused vdp ports 0x18 and 0x1c return open bus" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.open_bus = 0xA5C3;
+    try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00C0_0018));
+    try testing.expectEqual(@as(u8, 0xC3), bus.read8(0x00C0_0019));
+    try testing.expectEqual(@as(u16, 0xA5C3), bus.read16(0x00C0_0018));
+
+    bus.open_bus = 0x5AA7;
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00C0_001C));
+    try testing.expectEqual(@as(u8, 0xA7), bus.read8(0x00C0_001D));
+    try testing.expectEqual(@as(u16, 0x5AA7), bus.read16(0x00C0_001C));
 }
 
 test "io version register reflects region and pal bits and word reads use byte value" {
@@ -885,37 +960,49 @@ test "io version register reflects region and pal bits and word reads use byte v
 
     try testing.expectEqual(@as(u8, 0xA0), bus.read8(0x00A1_0000));
     try testing.expectEqual(@as(u8, 0xA0), bus.read8(0x00A1_0001));
-    try testing.expectEqual(@as(u16, 0x00A0), bus.read16(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0xA0A0), bus.read16(0x00A1_0000));
 
     bus.io.setVersionIsOverseas(false);
     try testing.expectEqual(@as(u8, 0x20), bus.read8(0x00A1_0000));
-    try testing.expectEqual(@as(u16, 0x0020), bus.read16(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0x2020), bus.read16(0x00A1_0000));
 
     bus.vdp.pal_mode = true;
     try testing.expectEqual(@as(u8, 0x60), bus.read8(0x00A1_0000));
-    try testing.expectEqual(@as(u16, 0x0060), bus.read16(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0x6060), bus.read16(0x00A1_0000));
 
     bus.io.setVersionIsOverseas(true);
     try testing.expectEqual(@as(u8, 0xE0), bus.read8(0x00A1_0000));
-    try testing.expectEqual(@as(u16, 0x00E0), bus.read16(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0xE0E0), bus.read16(0x00A1_0000));
 }
 
-test "io register pairs mirror byte registers and tx data defaults high" {
+test "io register pairs mirror byte registers and serial defaults follow hardware reset state" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
     try testing.expectEqual(@as(u8, 0x7F), bus.read8(0x00A1_0002));
     try testing.expectEqual(@as(u8, 0x7F), bus.read8(0x00A1_0003));
-    try testing.expectEqual(@as(u16, 0x007F), bus.read16(0x00A1_0002));
+    try testing.expectEqual(@as(u16, 0x7F7F), bus.read16(0x00A1_0002));
 
     bus.io.write(0x09, 0x40);
     try testing.expectEqual(@as(u8, 0x40), bus.read8(0x00A1_0008));
     try testing.expectEqual(@as(u8, 0x40), bus.read8(0x00A1_0009));
-    try testing.expectEqual(@as(u16, 0x0040), bus.read16(0x00A1_0008));
+    try testing.expectEqual(@as(u16, 0x4040), bus.read16(0x00A1_0008));
 
     try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00A1_000E));
     try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00A1_000F));
-    try testing.expectEqual(@as(u16, 0x00FF), bus.read16(0x00A1_000E));
+    try testing.expectEqual(@as(u16, 0xFFFF), bus.read16(0x00A1_000E));
+
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_0012));
+    try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_0012));
+
+    try testing.expectEqual(@as(u8, 0xFF), bus.read8(0x00A1_0014));
+    try testing.expectEqual(@as(u16, 0xFFFF), bus.read16(0x00A1_0014));
+
+    try testing.expectEqual(@as(u8, 0xFB), bus.read8(0x00A1_001A));
+    try testing.expectEqual(@as(u16, 0xFBFB), bus.read16(0x00A1_001A));
+
+    try testing.expectEqual(@as(u8, 0x00), bus.read8(0x00A1_001E));
+    try testing.expectEqual(@as(u16, 0x0000), bus.read16(0x00A1_001E));
 }
 
 test "io port c data and control registers are exposed" {
@@ -927,28 +1014,80 @@ test "io port c data and control registers are exposed" {
 
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A1_0006));
     try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A1_0007));
-    try testing.expectEqual(@as(u16, 0x005A), bus.read16(0x00A1_0006));
+    try testing.expectEqual(@as(u16, 0x5A5A), bus.read16(0x00A1_0006));
 
     try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A1_000C));
     try testing.expectEqual(@as(u8, 0xA5), bus.read8(0x00A1_000D));
-    try testing.expectEqual(@as(u16, 0x00A5), bus.read16(0x00A1_000C));
+    try testing.expectEqual(@as(u16, 0xA5A5), bus.read16(0x00A1_000C));
 }
 
-test "io register writes mirror even and odd addresses" {
+test "io register byte writes require odd address strobes and word writes use the low byte" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
     bus.write8(0x00A1_0002, 0x40);
+    try testing.expectEqual(@as(u8, 0x00), bus.io.data[0]);
+
+    bus.write8(0x00A1_0003, 0x40);
     try testing.expectEqual(@as(u8, 0x40), bus.io.data[0]);
 
     bus.write8(0x00A1_0008, 0x55);
+    try testing.expectEqual(@as(u8, 0x00), bus.io.read(0x09));
+
+    bus.write8(0x00A1_0009, 0x55);
     try testing.expectEqual(@as(u8, 0x55), bus.io.read(0x09));
 
     bus.write8(0x00A1_0006, 0xAA);
+    try testing.expectEqual(@as(u8, 0x00), bus.io.read(0x07));
+
+    bus.write8(0x00A1_0007, 0xAA);
     try testing.expectEqual(@as(u8, 0xAA), bus.io.read(0x07));
 
     bus.write8(0x00A1_000C, 0x11);
+    try testing.expectEqual(@as(u8, 0x00), bus.io.read(0x0D));
+
+    bus.write8(0x00A1_000D, 0x11);
     try testing.expectEqual(@as(u8, 0x11), bus.io.read(0x0D));
+
+    bus.write16(0x00A1_0008, 0xAA77);
+    try testing.expectEqual(@as(u8, 0x77), bus.io.read(0x09));
+
+    bus.write8(0x00A1_000E, 0x12);
+    try testing.expectEqual(@as(u8, 0xFF), bus.io.tx_data[0]);
+
+    bus.write8(0x00A1_000F, 0x12);
+    try testing.expectEqual(@as(u8, 0x12), bus.io.tx_data[0]);
+
+    bus.write8(0x00A1_0012, 0xA7);
+    try testing.expectEqual(@as(u8, 0x00), bus.io.serial_ctrl[0]);
+
+    bus.write8(0x00A1_0013, 0xA7);
+    try testing.expectEqual(@as(u8, 0xA0), bus.io.serial_ctrl[0]);
+
+    bus.write16(0x00A1_001E, 0x005F);
+    try testing.expectEqual(@as(u8, 0x58), bus.io.serial_ctrl[2]);
+
+    bus.write16(0x00A1_001E, 0xAA5F);
+    try testing.expectEqual(@as(u8, 0x58), bus.io.serial_ctrl[2]);
+}
+
+test "io window decode stops at a1001f and higher addresses fall back to open bus" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.open_bus = 0x5A3C;
+    try testing.expectEqual(@as(u8, 0x5A), bus.read8(0x00A1_0020));
+    try testing.expectEqual(@as(u8, 0x3C), bus.read8(0x00A1_0021));
+    try testing.expectEqual(@as(u16, 0x5A3C), bus.read16(0x00A1_0020));
+
+    bus.write8(0x00A1_0023, 0x12);
+    try testing.expectEqual(@as(u8, 0x00), bus.io.data[0]);
+
+    bus.write16(0x00A1_001E, 0xA0F8);
+    try testing.expectEqual(@as(u8, 0xF8), bus.io.serial_ctrl[2]);
+
+    bus.write16(0x00A1_0020, 0x0000);
+    try testing.expectEqual(@as(u8, 0xF8), bus.io.serial_ctrl[2]);
 }
 
 test "bus stepping advances controller timing" {
@@ -1113,16 +1252,20 @@ test "z80 reset clears ym2612 register shadow state" {
     try testing.expectEqual(@as(u8, 0x00), bus.z80.getYmKeyMask());
 }
 
-test "z80 reset writes carry the current audio master offset into ym reset events" {
+test "z80 reset line edges carry the current audio master offset into ym reset events" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
     bus.audio_timing.consumeMaster(4321);
     bus.write16(0x00A1_1200, 0x0000);
 
-    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
-    try testing.expectEqual(@as(usize, 1), bus.z80.takeYmResets(ym_reset_events[0..]));
+    bus.audio_timing.consumeMaster(321);
+    bus.write16(0x00A1_1200, 0x0100);
+
+    var ym_reset_events: [2]Z80.YmResetEvent = undefined;
+    try testing.expectEqual(@as(usize, 2), bus.z80.takeYmResets(ym_reset_events[0..]));
     try testing.expectEqual(@as(u32, 4321), ym_reset_events[0].master_offset);
+    try testing.expectEqual(@as(u32, 4642), ym_reset_events[1].master_offset);
 }
 
 test "z80 reset preserves uploaded z80 ram" {

@@ -4,6 +4,7 @@ const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
 const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
 const AudioOutput = @import("audio/output.zig").AudioOutput;
+const Z80 = @import("cpu/z80.zig").Z80;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 const Machine = @import("machine.zig").Machine;
@@ -15,8 +16,24 @@ const StateFile = @import("state_file.zig");
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
     output: AudioOutput,
+    startup_mute_active: bool = true,
 
-    pub fn canAcceptPending(self: *AudioInit) bool {
+    pub fn handlePending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
+        if (self.startupMuteActive()) {
+            const saw_audible_activity = z80.hasPendingAudibleEvents();
+            try self.output.discardPending(pending, z80, is_pal);
+            if (saw_audible_activity) self.clearStartupMute();
+            return;
+        }
+
+        if (self.queueHasRoom()) {
+            try self.pushPending(pending, z80, is_pal);
+        } else {
+            try self.output.discardPending(pending, z80, is_pal);
+        }
+    }
+
+    fn queueHasRoom(self: *const AudioInit) bool {
         const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return false;
         return queued_bytes < AudioOutput.max_queued_bytes;
     }
@@ -34,8 +51,16 @@ const AudioInit = struct {
         try self.output.renderPending(pending, z80, is_pal, &sink);
     }
 
-    pub fn discardPending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
-        try self.output.discardPending(pending, z80, is_pal);
+    fn startupMuteActive(self: *const AudioInit) bool {
+        return self.startup_mute_active;
+    }
+
+    fn armStartupMute(self: *AudioInit) void {
+        self.startup_mute_active = true;
+    }
+
+    fn clearStartupMute(self: *AudioInit) void {
+        self.startup_mute_active = false;
     }
 };
 
@@ -808,6 +833,7 @@ fn resetAudioOutput(audio: *AudioInit) void {
         std.debug.print("Failed to clear queued audio on ROM load: {}\n", .{err});
     };
     audio.output.reset();
+    audio.armStartupMute();
 }
 
 fn queuedAudioBytes(audio: ?*AudioInit) ?usize {
@@ -1744,7 +1770,7 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
                 std.debug.print("Audio enabled: {s} {d}Hz\n", .{ formatName(format), freq });
                 return .{
                     .stream = stream,
-                    .output = .{},
+                    .output = AudioOutput.init(),
                 };
             }
         }
@@ -2842,7 +2868,8 @@ pub fn main() !void {
         }
         if (audio) |*a| {
             const audio_start = std.time.Instant.now() catch frame_timer;
-            try machine.drainPendingAudio(a);
+            const pending = machine.takePendingAudio();
+            try a.handlePending(pending, &machine.bus.z80, machine.palMode());
             frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
         } else {
             const audio_start = std.time.Instant.now() catch frame_timer;
@@ -3550,6 +3577,30 @@ test "hard reset helper reloads the current rom path" {
     try std.testing.expectEqual(@as(u8, 0x00), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
     try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
+}
+
+test "audio init stays muted until it sees audible startup activity" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    var audio = AudioInit{
+        .stream = @ptrFromInt(1),
+        .output = AudioOutput.init(),
+        .startup_mute_active = false,
+    };
+
+    audio.armStartupMute();
+    try std.testing.expect(audio.startupMuteActive());
+
+    try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false);
+    try std.testing.expect(audio.startupMuteActive());
+
+    z80.writeByte(0x7F11, 0x90);
+    try std.testing.expect(z80.hasPendingAudibleEvents());
+
+    try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false);
+    try std.testing.expect(!audio.startupMuteActive());
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
 }
 
 test "quick state helper saves and restores machine state" {

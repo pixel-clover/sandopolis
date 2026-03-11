@@ -91,7 +91,7 @@ pub const Emulator = struct {
     }
 
     pub fn runFramesProcessingAudio(self: *Emulator, frames: usize) !void {
-        var output = AudioOutput{};
+        var output = AudioOutput.init();
         for (0..frames) |_| {
             self.handle.machine.runFrame();
             const pending = self.handle.machine.takePendingAudio();
@@ -281,6 +281,16 @@ pub const Emulator = struct {
     pub fn z80ProgramCounter(self: *const Emulator) u16 {
         const machine = self.handle.machine.testingConst();
         return machine.z80ProgramCounter();
+    }
+
+    pub fn z80BusAckWord(self: *const Emulator) u16 {
+        const machine = self.handle.machine.testingConst();
+        return machine.z80BusAckWord();
+    }
+
+    pub fn z80ResetControlWord(self: *const Emulator) u16 {
+        const machine = self.handle.machine.testingConst();
+        return machine.z80ResetControlWord();
     }
 
     pub fn setZ80BusRequest(self: *Emulator, value: u16) void {

@@ -219,15 +219,32 @@ fn vintFlagForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) bool 
     return !current.vblank and adjusted.vblank;
 }
 
+fn fifoEmptyFlagForAdjustedState(self: *const Vdp, adjustment_master_cycles: u32) bool {
+    const drain_wait = fifo.dataPortReadWaitMasterCycles(self);
+    return drain_wait == 0 or drain_wait <= adjustment_master_cycles;
+}
+
+fn fifoFullFlagForAdjustedState(self: *const Vdp, adjustment_master_cycles: u32) bool {
+    if (!fifo.fifoIsFull(self)) return false;
+
+    const open_wait = fifo.dataPortWriteWaitMasterCycles(self);
+    return open_wait > adjustment_master_cycles;
+}
+
+fn dmaBusyFlagForAdjustedState(self: *const Vdp, adjustment_master_cycles: u32) bool {
+    return fifo.dmaBusyAfterMasterCycles(self, adjustment_master_cycles);
+}
+
 fn statusWordForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) u16 {
     var status: u16 = 0;
+    const adjustment_master_cycles = lineMasterCycleDelta(self, self.scanline, self.line_master_cycle, adjusted.scanline, adjusted.line_master_cycle);
 
-    if (fifo.fifoIsEmpty(self)) status |= 0x0200;
-    if (fifo.fifoIsFull(self)) status |= 0x0100;
+    if (fifoEmptyFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0200;
+    if (fifoFullFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0100;
 
     if (adjusted.vblank or !self.isDisplayEnabled()) status |= 0x0008;
     if (adjusted.hblank) status |= 0x0004;
-    if (self.dma_active) status |= 0x0002;
+    if (dmaBusyFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0002;
     if (self.pal_mode) status |= 0x0001;
     if (self.odd_frame) status |= 0x0010;
     if (self.sprite_collision) status |= 0x0020;
@@ -259,6 +276,24 @@ fn statusReadAdjustmentMasterCycles(opcode: u16) u32 {
     }
 
     return clock.m68kCyclesToMaster(8);
+}
+
+fn lineMasterCycleDelta(
+    self: *const Vdp,
+    from_scanline: u16,
+    from_line_master_cycle: u16,
+    to_scanline: u16,
+    to_line_master_cycle: u16,
+) u32 {
+    const total_lines = totalLinesForCurrentFrame(self);
+    const from_total =
+        (@as(u32, from_scanline) * clock.ntsc_master_cycles_per_line) + from_line_master_cycle;
+    var to_total =
+        (@as(u32, to_scanline) * clock.ntsc_master_cycles_per_line) + to_line_master_cycle;
+    if (to_total < from_total) {
+        to_total += @as(u32, total_lines) * clock.ntsc_master_cycles_per_line;
+    }
+    return to_total - from_total;
 }
 
 pub fn readControl(self: *Vdp) u16 {
@@ -383,6 +418,117 @@ test "H40 status hblank flag turns on after the external hblank edge" {
 
     vdp.line_master_cycle = hblank_signal_start + 96;
     try testing.expectEqual(@as(u16, 0x0004), vdp.readControl() & 0x0004);
+}
+
+test "status read adjustment can observe fifo empty after the next access slot" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x3;
+    vdp.addr = 0x0000;
+    vdp.scanline = 12;
+    vdp.line_master_cycle = vdp.hblankStartMasterCycles() - 1;
+    vdp.transfer_line_master_cycle = vdp.line_master_cycle;
+
+    vdp.writeData(0x1234);
+    vdp.fifo[vdp.fifo_head].latency = 0;
+
+    const drain_wait = vdp.dataPortReadWaitMasterCycles();
+    try testing.expect(drain_wait > 0);
+    try testing.expect(drain_wait <= clock.m68kCyclesToMaster(8));
+
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0200);
+    try testing.expectEqual(@as(u16, 0x0200), vdp.readControlAdjusted(0x4E71) & 0x0200);
+}
+
+test "status read adjustment can observe fifo no longer full after the next access slot" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x3;
+    vdp.addr = 0x0000;
+    vdp.scanline = 12;
+    vdp.line_master_cycle = vdp.hblankStartMasterCycles() - 1;
+    vdp.transfer_line_master_cycle = vdp.line_master_cycle;
+
+    for (0..4) |i| {
+        vdp.writeData(@intCast(0x2000 + i));
+    }
+
+    var i: usize = 0;
+    while (i < @as(usize, vdp.fifo_len)) : (i += 1) {
+        const idx = (@as(usize, vdp.fifo_head) + i) % vdp.fifo.len;
+        vdp.fifo[idx].latency = 0;
+    }
+
+    const open_wait = vdp.dataPortWriteWaitMasterCycles();
+    try testing.expect(open_wait > 0);
+    try testing.expect(open_wait <= clock.m68kCyclesToMaster(8));
+
+    try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & 0x0100);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0100);
+}
+
+test "status read adjustment can observe dma copy complete after the next access slot" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.scanline = 12;
+    vdp.dma_active = true;
+    vdp.dma_copy = true;
+    vdp.dma_fill = false;
+    vdp.dma_remaining = 1;
+    vdp.dma_length = 1;
+
+    const status_window = clock.m68kCyclesToMaster(8);
+    var completion_wait: u32 = 0;
+    var found_phase = false;
+    var line_master_cycle: u16 = 0;
+    while (line_master_cycle < vdp.hblankStartMasterCycles()) : (line_master_cycle += 1) {
+        vdp.line_master_cycle = line_master_cycle;
+        vdp.transfer_line_master_cycle = line_master_cycle;
+        completion_wait = vdp.nextTransferStepMasterCycles();
+        if (completion_wait > 0 and completion_wait <= status_window) {
+            found_phase = true;
+            break;
+        }
+    }
+
+    try testing.expect(found_phase);
+
+    try testing.expectEqual(@as(u16, 0x0002), vdp.readControl() & 0x0002);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0002);
+}
+
+test "status read adjustment can observe dma fill complete after the next access slot" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.scanline = 12;
+    vdp.code = 0x1;
+    vdp.addr = 0x0020;
+    vdp.dma_active = true;
+    vdp.dma_fill = true;
+    vdp.dma_copy = false;
+    vdp.dma_fill_ready = true;
+    vdp.dma_fill_word = 0xABCD;
+    vdp.dma_length = 1;
+    vdp.dma_remaining = 1;
+
+    const status_window = clock.m68kCyclesToMaster(8);
+    var completion_wait: u32 = 0;
+    var found_phase = false;
+    var line_master_cycle: u16 = 0;
+    while (line_master_cycle < vdp.hblankStartMasterCycles()) : (line_master_cycle += 1) {
+        vdp.line_master_cycle = line_master_cycle;
+        vdp.transfer_line_master_cycle = line_master_cycle;
+        completion_wait = vdp.nextTransferStepMasterCycles();
+        if (completion_wait > 0 and completion_wait <= status_window) {
+            found_phase = true;
+            break;
+        }
+    }
+
+    try testing.expect(found_phase);
+
+    try testing.expectEqual(@as(u16, 0x0002), vdp.readControl() & 0x0002);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0002);
 }
 
 test "HV counter advances to the next scanline at the H interrupt boundary" {

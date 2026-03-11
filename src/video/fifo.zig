@@ -298,6 +298,19 @@ const TransferEvent = struct {
     wait_master_cycles: u32,
 };
 
+const ProjectedDmaTransferState = struct {
+    fifo_entries: [4]Vdp.ProjectedFifoEntry = [_]Vdp.ProjectedFifoEntry{.{}} ** 4,
+    fifo_len: u8 = 0,
+    pending_fifo_entries: [16]Vdp.ProjectedFifoEntry = [_]Vdp.ProjectedFifoEntry{.{}} ** 16,
+    pending_fifo_len: u8 = 0,
+    dma_active: bool = false,
+    dma_fill: bool = false,
+    dma_copy: bool = false,
+    dma_fill_ready: bool = false,
+    dma_remaining: u32 = 0,
+    dma_start_delay_slots: u8 = 0,
+};
+
 fn nextTransferEventForState(self: *const Vdp, line_master_cycle: u16, blanking: bool, needs_non_refresh: bool, needs_access_only: bool) ?TransferEvent {
     var slot_idx: u16 = 0;
     while (slot_idx < transferSlotCount(self)) : (slot_idx += 1) {
@@ -323,7 +336,7 @@ fn nextTransferStepForState(self: *const Vdp, line_master_cycle: u16, blanking: 
     const needs_non_refresh = (self.dma_active and !self.dma_fill and !self.dma_copy) or
         !fifoIsEmpty(self) or
         !pendingFifoIsEmpty(self);
-    const needs_access_only = self.dma_copy;
+    const needs_access_only = self.dma_copy or (self.dma_fill and self.dma_fill_ready);
     const event = nextTransferEventForState(self, normalized_line_master_cycle, blanking, needs_non_refresh, needs_access_only) orelse
         return clock.ntsc_master_cycles_per_line - normalized_line_master_cycle;
     return event.wait_master_cycles;
@@ -431,6 +444,147 @@ fn snapshotSimFifos(self: *const Vdp, fifo_entries: []Vdp.ProjectedFifoEntry, fi
         pending_entries[i] = makeProjectedFifoEntry(self.pending_fifo[idx]);
         pending_len.* += 1;
     }
+}
+
+fn snapshotProjectedDmaTransferState(self: *const Vdp) ProjectedDmaTransferState {
+    var projected = ProjectedDmaTransferState{
+        .dma_active = self.dma_active,
+        .dma_fill = self.dma_fill,
+        .dma_copy = self.dma_copy,
+        .dma_fill_ready = self.dma_fill_ready,
+        .dma_remaining = self.dma_remaining,
+        .dma_start_delay_slots = self.dma_start_delay_slots,
+    };
+    snapshotSimFifos(
+        self,
+        projected.fifo_entries[0..],
+        &projected.fifo_len,
+        projected.pending_fifo_entries[0..],
+        &projected.pending_fifo_len,
+    );
+    return projected;
+}
+
+fn projectedFinishDmaIfIdle(projected: *ProjectedDmaTransferState) void {
+    if (projected.dma_remaining != 0 or projected.fifo_len != 0) return;
+
+    projected.dma_active = false;
+    projected.dma_fill = false;
+    projected.dma_copy = false;
+    projected.dma_fill_ready = false;
+    projected.dma_start_delay_slots = 0;
+}
+
+fn projectedProgressMemoryToVramDmaReadSlot(self: *const Vdp, slot_idx: u16, projected: *ProjectedDmaTransferState) void {
+    var can_transfer = true;
+    if (projected.dma_start_delay_slots != 0) {
+        projected.dma_start_delay_slots -= 1;
+        can_transfer = projected.dma_start_delay_slots == 0;
+    }
+
+    if (!can_transfer or @as(usize, projected.fifo_len) >= projected.fifo_entries.len or projected.dma_remaining == 0) return;
+    if (slot_idx != 0 and transferSlotIsRefresh(self, slot_idx - 1)) return;
+
+    projected.fifo_entries[@as(usize, projected.fifo_len)] = .{
+        .latency = dma_fifo_latency_slots,
+        .requires_second_service = entryRequiresSecondService(self.code),
+        .second_service_pending = false,
+    };
+    projected.fifo_len += 1;
+    projected.dma_remaining -= 1;
+}
+
+fn projectedProgressVramCopyDma(projected: *ProjectedDmaTransferState) void {
+    if (projected.dma_remaining == 0) {
+        projectedFinishDmaIfIdle(projected);
+        return;
+    }
+
+    projected.dma_remaining -= 1;
+    projectedFinishDmaIfIdle(projected);
+}
+
+fn projectedProgressDmaFill(projected: *ProjectedDmaTransferState) void {
+    if (!projected.dma_fill_ready or projected.dma_remaining == 0) {
+        projectedFinishDmaIfIdle(projected);
+        return;
+    }
+
+    projected.dma_remaining -= 1;
+    projectedFinishDmaIfIdle(projected);
+}
+
+fn projectedServiceAccessSlot(projected: *ProjectedDmaTransferState) void {
+    if (projected.fifo_len != 0) {
+        processSimAccessSlot(
+            projected.fifo_entries[0..],
+            &projected.fifo_len,
+            projected.pending_fifo_entries[0..],
+            &projected.pending_fifo_len,
+        );
+        return;
+    }
+
+    if (projected.dma_active and projected.dma_copy) {
+        projectedProgressVramCopyDma(projected);
+        return;
+    }
+
+    if (projected.dma_active and projected.dma_fill) {
+        projectedProgressDmaFill(projected);
+    }
+}
+
+pub fn dmaBusyAfterMasterCycles(self: *const Vdp, master_cycles: u32) bool {
+    if (!self.dma_active) return false;
+    if (master_cycles == 0) return self.dma_active;
+
+    var projected = snapshotProjectedDmaTransferState(self);
+    var phase = currentTransferPhase(self);
+    var remaining = master_cycles;
+
+    while (remaining != 0 and projected.dma_active) {
+        const boundary = nextTransferPhaseBoundary(self, phase);
+        const needs_non_refresh = (projected.dma_active and !projected.dma_fill and !projected.dma_copy) or
+            projected.fifo_len != 0 or projected.pending_fifo_len != 0;
+        const needs_access_only = projected.dma_active and (projected.dma_copy or (projected.dma_fill and projected.dma_fill_ready));
+        const event =
+            nextTransferEventForState(self, phase.line_master_cycle, phaseIsBlanking(self, phase), needs_non_refresh, needs_access_only);
+
+        if (event) |slot_event| {
+            if (slot_event.wait_master_cycles <= remaining and slot_event.wait_master_cycles <= boundary.wait_master_cycles) {
+                remaining -= slot_event.wait_master_cycles;
+                phase.line_master_cycle += @intCast(slot_event.wait_master_cycles);
+
+                if (!transferSlotIsRefresh(self, slot_event.slot_idx)) {
+                    if (projected.dma_active and !projected.dma_fill and !projected.dma_copy) {
+                        projectedProgressMemoryToVramDmaReadSlot(self, slot_event.slot_idx, &projected);
+                    }
+                    tickSimLatency(projected.fifo_entries[0..], projected.fifo_len);
+                }
+
+                if (transferSlotIsAccess(self, slot_event.slot_idx, phaseIsBlanking(self, phase))) {
+                    projectedServiceAccessSlot(&projected);
+                    projectedFinishDmaIfIdle(&projected);
+                }
+
+                if (slot_event.wait_master_cycles == boundary.wait_master_cycles) {
+                    applyTransferPhaseBoundary(self, &phase, boundary.kind);
+                }
+                continue;
+            }
+        }
+
+        const step = @min(remaining, boundary.wait_master_cycles);
+        remaining -= step;
+        if (step == boundary.wait_master_cycles) {
+            applyTransferPhaseBoundary(self, &phase, boundary.kind);
+        } else {
+            phase.line_master_cycle += @intCast(step);
+        }
+    }
+
+    return projected.dma_active;
 }
 
 fn syncProjectedDataPortWriteWait(self: *Vdp) void {
@@ -648,17 +802,26 @@ fn currentDataPortReadWord(self: *const Vdp, code: u8, addr: u16) ?u16 {
 fn applyQueuedWriteToDataPortReadTarget(target: Vdp.DataPortReadTarget, high: *u8, low: *u8, write_storage: Vdp.DataPortReadStorage, write_base: u16, value: u16) void {
     if (target.storage != write_storage) return;
 
-    const write_high: u8 = @intCast((value >> 8) & 0xFF);
-    const write_low: u8 = @intCast(value & 0xFF);
-    const write_next = write_base +% 1;
+    var write_high: u8 = @intCast((value >> 8) & 0xFF);
+    var write_low: u8 = @intCast(value & 0xFF);
+    var write_addr = write_base;
+    if (write_storage == .vram) {
+        write_addr &= 0xFFFE;
+        if ((write_base & 1) != 0) {
+            const swapped_high = write_low;
+            write_low = write_high;
+            write_high = swapped_high;
+        }
+    }
+    const write_next = write_addr +% 1;
 
-    if (target.high_index == write_base) {
+    if (target.high_index == write_addr) {
         high.* = write_high;
     } else if (target.high_index == write_next) {
         high.* = write_low;
     }
 
-    if (target.low_index == write_base) {
+    if (target.low_index == write_addr) {
         low.* = write_high;
     } else if (target.low_index == write_next) {
         low.* = write_low;
@@ -714,8 +877,16 @@ fn writeTargetWord(self: *Vdp, code: u8, addr: u16, value: u16) void {
     switch (code & 0xF) {
         0x1 => {
             self.dbg_vram_writes += 1;
-            self.vramWriteByte(addr, @intCast((value >> 8) & 0xFF));
-            self.vramWriteByte(addr +% 1, @intCast(value & 0xFF));
+            const base = addr & 0xFFFE;
+            const high: u8 = @intCast((value >> 8) & 0xFF);
+            const low: u8 = @intCast(value & 0xFF);
+            if ((addr & 1) == 0) {
+                self.vramWriteByte(base, high);
+                self.vramWriteByte(base +% 1, low);
+            } else {
+                self.vramWriteByte(base, low);
+                self.vramWriteByte(base +% 1, high);
+            }
         },
         0x3 => {
             self.dbg_cram_writes += 1;
@@ -736,49 +907,14 @@ fn writeTargetWord(self: *Vdp, code: u8, addr: u16, value: u16) void {
 }
 
 pub fn writeData(self: *Vdp, value: u16) void {
+    const dma_fill_start = self.dma_active and self.dma_fill and !self.dma_fill_ready;
+
     if (shouldBufferPortWrite(self)) {
         pushPendingPortWrite(self, .{ .data = value });
         return;
     }
 
     self.pending_command = false;
-
-    if (self.dma_active and self.dma_fill) {
-        var len: u32 = self.dma_length;
-        if (len == 0) len = 0x10000;
-        const target = self.code & 0xF;
-        if (target == 0x1) {
-            const fill_byte: u8 = @intCast((value >> 8) & 0xFF);
-            while (len > 0) : (len -= 1) {
-                self.vramWriteByte(self.addr ^ 1, fill_byte);
-                advanceAddr(self);
-            }
-        } else if (target == 0x3) {
-            while (len > 0) : (len -= 1) {
-                const idx = self.addr & 0x7E;
-                self.cram[idx] = @intCast((value >> 8) & 0xFF);
-                self.cram[idx + 1] = @intCast(value & 0xFF);
-                advanceAddr(self);
-            }
-        } else if (target == 0x5) {
-            while (len > 0) : (len -= 1) {
-                const idx: u16 = (self.addr >> 1) % 40 * 2;
-                self.vsram[idx] = @intCast((value >> 8) & 0xFF);
-                self.vsram[idx + 1] = @intCast(value & 0xFF);
-                advanceAddr(self);
-            }
-        }
-        self.dma_length = 0;
-        self.dma_remaining = 0;
-        self.dma_fill = false;
-        self.dma_active = false;
-        self.dma_start_delay_slots = 0;
-        self.fifo_head = 0;
-        self.fifo_len = 0;
-        self.pending_fifo_head = 0;
-        self.pending_fifo_len = 0;
-        return;
-    }
 
     const entry = makeWriteFifoEntry(self, value, dma_fifo_latency_slots);
     if (fifoIsFull(self)) {
@@ -787,6 +923,11 @@ pub fn writeData(self: *Vdp, value: u16) void {
         fifoPush(self, entry);
     }
     advanceAddr(self);
+
+    if (dma_fill_start) {
+        self.dma_fill_word = value;
+        self.dma_fill_ready = true;
+    }
 }
 
 pub fn advanceAddr(self: *Vdp) void {
@@ -801,6 +942,8 @@ fn finishDmaIfIdle(self: *Vdp) void {
     self.dma_active = false;
     self.dma_fill = false;
     self.dma_copy = false;
+    self.dma_fill_ready = false;
+    self.dma_fill_word = 0;
     self.dma_start_delay_slots = 0;
     if (!pendingPortWritesIsEmpty(self)) {
         self.pending_port_write_delay_master_cycles = pendingPortWriteReplayDelayMasterCycles(self);
@@ -838,14 +981,58 @@ fn progressVramCopyDma(self: *Vdp, access_slots: u32) void {
     var copied: u32 = 0;
     while (copied < budget) : (copied += 1) {
         const src_addr: u16 = @truncate(self.dma_source_addr);
-        const byte = self.vram[@as(usize, src_addr)];
-        self.vramWriteByte(self.addr, byte);
+        const byte = self.vramReadByte(src_addr ^ 1);
+        self.vramWriteByte(self.addr ^ 1, byte);
         self.dma_source_addr +%= 1;
         advanceAddr(self);
     }
 
     self.dma_remaining -= copied;
     if (self.active_execution_counters) |counters| counters.dma_words += copied;
+    finishDmaIfIdle(self);
+}
+
+fn progressDmaFill(self: *Vdp, access_slots: u32) void {
+    if (!self.dma_fill_ready or self.dma_remaining == 0) {
+        finishDmaIfIdle(self);
+        return;
+    }
+
+    var budget = access_slots;
+    if (budget > self.dma_remaining) budget = self.dma_remaining;
+
+    const target = self.code & 0xF;
+    const fill_word = self.dma_fill_word;
+    const fill_byte: u8 = @intCast((fill_word >> 8) & 0xFF);
+
+    var filled: u32 = 0;
+    while (filled < budget) : (filled += 1) {
+        switch (target) {
+            0x1 => {
+                self.dbg_vram_writes += 1;
+                self.vramWriteByte(self.addr ^ 1, fill_byte);
+            },
+            0x3 => {
+                self.dbg_cram_writes += 1;
+                const idx = self.addr & 0x7E;
+                self.cram[idx] = @intCast((fill_word >> 8) & 0xFF);
+                self.cram[idx + 1] = @intCast(fill_word & 0xFF);
+            },
+            0x5 => {
+                self.dbg_vsram_writes += 1;
+                const idx: u16 = (self.addr >> 1) % 40 * 2;
+                self.vsram[idx] = @intCast((fill_word >> 8) & 0xFF);
+                self.vsram[idx + 1] = @intCast(fill_word & 0xFF);
+            },
+            else => {
+                self.dbg_unknown_writes += 1;
+            },
+        }
+        advanceAddr(self);
+    }
+
+    self.dma_remaining -= filled;
+    if (self.active_execution_counters) |counters| counters.dma_words += filled;
     finishDmaIfIdle(self);
 }
 
@@ -862,6 +1049,11 @@ fn serviceAccessSlot(self: *Vdp) void {
 
     if (self.dma_active and self.dma_copy) {
         progressVramCopyDma(self, 1);
+        return;
+    }
+
+    if (self.dma_active and self.dma_fill) {
+        progressDmaFill(self, 1);
     }
 }
 
@@ -944,8 +1136,6 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
 }
 
 pub fn dataPortWriteWaitMasterCycles(self: *const Vdp) u32 {
-    if (self.dma_active and self.dma_fill) return 0;
-
     const pending_ahead = self.pending_fifo_len;
     const blocked = pending_ahead != 0 or fifoIsFull(self);
     if (!blocked) return 0;
@@ -954,12 +1144,10 @@ pub fn dataPortWriteWaitMasterCycles(self: *const Vdp) u32 {
 }
 
 pub fn reserveDataPortWriteWaitMasterCycles(self: *Vdp) u32 {
-    if (self.dma_active and self.dma_fill) return 0;
     return reserveProjectedDataPortWriteWait(self);
 }
 
 pub fn dataPortReadWaitMasterCycles(self: *const Vdp) u32 {
-    if (self.dma_active and self.dma_fill) return 0;
     if (fifoIsEmpty(self) and pendingFifoIsEmpty(self)) return 0;
 
     return fifoWaitUntilDrained(self);
@@ -1027,17 +1215,23 @@ pub fn writeControl(self: *Vdp, value: u16) void {
             if (dma_mode <= 1) {
                 self.dma_fill = false;
                 self.dma_copy = false;
+                self.dma_fill_ready = false;
+                self.dma_fill_word = 0;
                 self.dma_active = true;
                 self.dma_start_delay_slots = memoryToVramDmaStartDelaySlots(self);
             } else if (dma_mode == 2) {
                 self.dma_fill = true;
                 self.dma_copy = false;
+                self.dma_fill_ready = false;
+                self.dma_fill_word = 0;
                 self.dma_active = true;
                 self.dma_start_delay_slots = 0;
             } else {
                 self.dma_source_addr = (@as(u32, self.regs[22]) << 8) | @as(u32, self.regs[21]);
                 self.dma_copy = true;
                 self.dma_fill = false;
+                self.dma_fill_ready = false;
+                self.dma_fill_word = 0;
                 self.dma_active = true;
                 self.dma_start_delay_slots = 0;
             }
@@ -1121,6 +1315,44 @@ test "data port waits account for partial transfer remainder" {
     try testing.expectEqual(progressed_write.dataPortWriteWaitMasterCycles(), progressed_write.reserveDataPortWriteWaitMasterCycles());
 }
 
+test "dma fill begins after the initiating fifo-backed data write" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0020;
+    vdp.dma_active = true;
+    vdp.dma_fill = true;
+    vdp.dma_copy = false;
+    vdp.dma_fill_ready = false;
+    vdp.dma_fill_word = 0;
+    vdp.dma_length = 2;
+    vdp.dma_remaining = 2;
+
+    vdp.writeData(0xABCD);
+
+    try testing.expect(vdp.dma_active);
+    try testing.expect(vdp.dma_fill_ready);
+    try testing.expectEqual(@as(u16, 0xABCD), vdp.dma_fill_word);
+    try testing.expectEqual(@as(u8, 1), vdp.fifo_len);
+    try testing.expectEqual(@as(u8, 0), vdp.vramReadByte(0x0020));
+    try testing.expectEqual(@as(u8, 0), vdp.vramReadByte(0x0021));
+    try testing.expectEqual(@as(u8, 0), vdp.vramReadByte(0x0023));
+
+    var iterations: usize = 0;
+    while (vdp.dma_active and iterations < 64) : (iterations += 1) {
+        const step = vdp.nextTransferStepMasterCycles();
+        try testing.expect(step > 0);
+        vdp.progressTransfers(step, null, null);
+    }
+
+    try testing.expect(!vdp.dma_active);
+    try testing.expectEqual(@as(u8, 0xAB), vdp.vramReadByte(0x0020));
+    try testing.expectEqual(@as(u8, 0xCD), vdp.vramReadByte(0x0021));
+    try testing.expectEqual(@as(u8, 0xAB), vdp.vramReadByte(0x0023));
+    try testing.expectEqual(@as(u8, 0xAB), vdp.vramReadByte(0x0025));
+}
+
 test "VRAM fifo entries commit before their second service slot" {
     var vdp = Vdp.init();
     vdp.regs[12] = 0x81;
@@ -1147,6 +1379,47 @@ test "VRAM fifo entries commit before their second service slot" {
 
     vdp.progressTransfers(remaining_wait, null, null);
     try testing.expectEqual(@as(u8, 0), vdp.fifo_len);
+}
+
+test "odd-address VRAM fifo writes swap byte lanes" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x1;
+    vdp.addr = 0x0021;
+
+    vdp.writeData(0xABCD);
+
+    var committed = false;
+    var iterations: usize = 0;
+    while (!committed and iterations < 32) : (iterations += 1) {
+        const step = vdp.nextTransferStepMasterCycles();
+        try testing.expect(step > 0);
+        vdp.progressTransfers(step, null, null);
+        committed = vdp.vramReadByte(0x0020) == 0xCD and vdp.vramReadByte(0x0021) == 0xAB;
+    }
+
+    try testing.expect(committed);
+    try testing.expectEqual(@as(u8, 0xCD), vdp.vramReadByte(0x0020));
+    try testing.expectEqual(@as(u8, 0xAB), vdp.vramReadByte(0x0021));
+}
+
+test "VRAM copy DMA uses adjacent byte addressing" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 1;
+    vdp.addr = 0x0041;
+    vdp.dma_active = true;
+    vdp.dma_copy = true;
+    vdp.dma_fill = false;
+    vdp.dma_remaining = 1;
+    vdp.dma_source_addr = 0x0020;
+
+    vdp.vramWriteByte(0x0020, 0x12);
+    vdp.vramWriteByte(0x0021, 0x34);
+
+    progressVramCopyDma(&vdp, 1);
+
+    try testing.expectEqual(@as(u8, 0x34), vdp.vramReadByte(0x0040));
+    try testing.expectEqual(@as(u8, 0x00), vdp.vramReadByte(0x0041));
 }
 
 test "CRAM fifo entries still drain in a single service slot" {

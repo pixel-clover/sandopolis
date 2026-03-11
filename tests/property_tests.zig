@@ -61,7 +61,8 @@ const Z80WindowCase = struct {
 };
 
 const UnusedVdpPortCase = struct {
-    even_offset: u8,
+    base_offset: u8,
+    open_bus: u16,
 };
 
 const VdpStateCase = struct {
@@ -236,7 +237,8 @@ const unused_vdp_port_gen = minish.gen.Generator(UnusedVdpPortCase){
     .generateFn = struct {
         fn generate(tc: *minish.TestCase) minish.GenError!UnusedVdpPortCase {
             return .{
-                .even_offset = @as(u8, @intCast(0x10 + (try tc.choiceInRange(u8, 0, 7)) * 2)),
+                .base_offset = if ((try tc.choiceInRange(u8, 0, 1)) != 0) 0x18 else 0x1C,
+                .open_bus = try tc.choiceInRange(u16, 0, std.math.maxInt(u16)),
             };
         }
     }.generate,
@@ -533,10 +535,8 @@ fn busControlRegisterMirrorProperty(input: BusControlCase) !void {
     const expected_bus_ack_bit: u16 = if (input.request_bus and !input.reset_asserted) 0x0000 else 0x0100;
     try testing.expectEqual((input.open_bus & ~@as(u16, 0x0100)) | expected_bus_ack_bit, bus_ack);
 
-    seedOpenBus(&emulator, input.open_bus);
-    const reset = emulator.read16(0x00A1_1200);
     const expected_reset_bit: u16 = if (input.reset_asserted) 0x0000 else 0x0100;
-    try testing.expectEqual((input.open_bus & ~@as(u16, 0x0100)) | expected_reset_bit, reset);
+    try testing.expectEqual(expected_reset_bit, emulator.z80ResetControlWord());
 }
 
 fn vdpStatusOpenBusHighBitsProperty(input: OpenBusStatusCase) !void {
@@ -562,10 +562,11 @@ fn unusedVdpPortReadProperty(input: UnusedVdpPortCase) !void {
     var emulator = try initEmptyEmulator();
     defer emulator.deinit(testing.allocator);
 
-    const address = 0x00C0_0000 + @as(u32, input.even_offset);
-    try testing.expectEqual(@as(u8, 0xFF), emulator.read8(address));
-    try testing.expectEqual(@as(u8, 0xFF), emulator.read8(address + 1));
-    try testing.expectEqual(@as(u16, 0xFFFF), emulator.read16(address));
+    seedOpenBus(&emulator, input.open_bus);
+    const address = 0x00C0_0000 + @as(u32, input.base_offset);
+    try testing.expectEqual(@as(u8, @truncate(input.open_bus >> 8)), emulator.read8(address));
+    try testing.expectEqual(@as(u8, @truncate(input.open_bus)), emulator.read8(address + 1));
+    try testing.expectEqual(input.open_bus, emulator.read16(address));
 }
 
 fn vdpMoveAdjustedHvProperty(input: VdpStateCase) !void {
@@ -702,13 +703,13 @@ fn z80ControlLowByteNoOpProperty(input: Z80ControlByteCase) !void {
     emulator.write8(0x00A1_1100, if (input.request_bus) 0x01 else 0x00);
 
     const busreq_before = emulator.read16(0x00A1_1100) & 0x0100;
-    const reset_before = emulator.read16(0x00A1_1200) & 0x0100;
+    const reset_before = emulator.z80ResetControlWord() & 0x0100;
 
     emulator.write8(0x00A1_1101, input.low_busreq_value);
     emulator.write8(0x00A1_1201, input.low_reset_value);
 
     try testing.expectEqual(busreq_before, emulator.read16(0x00A1_1100) & 0x0100);
-    try testing.expectEqual(reset_before, emulator.read16(0x00A1_1200) & 0x0100);
+    try testing.expectEqual(reset_before, emulator.z80ResetControlWord() & 0x0100);
 }
 
 test "property: audio timing is chunk-invariant" {

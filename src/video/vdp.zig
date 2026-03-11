@@ -57,6 +57,8 @@ pub const Vdp = struct {
 
     dma_fill: bool,
     dma_copy: bool,
+    dma_fill_ready: bool,
+    dma_fill_word: u16,
     dma_source_addr: u32,
     dma_length: u16,
     dma_remaining: u32,
@@ -165,6 +167,8 @@ pub const Vdp = struct {
             .sprite_collision = false,
             .dma_fill = false,
             .dma_copy = false,
+            .dma_fill_ready = false,
+            .dma_fill_word = 0,
             .dma_source_addr = 0,
             .dma_length = 0,
             .dma_remaining = 0,
@@ -204,7 +208,7 @@ pub const Vdp = struct {
     }
 
     pub fn isH40(self: *const Vdp) bool {
-        return (self.regs[12] & 0x81) != 0;
+        return (self.regs[12] & 0x01) != 0;
     }
 
     pub fn screenWidth(self: *const Vdp) u16 {
@@ -391,3 +395,20 @@ pub const Vdp = struct {
         std.debug.print("VDP Code: {X} Addr: {X:0>4} Reg[1]: {X} Reg[15]: {X}\n", .{ self.code, self.addr, self.regs[1], self.regs[15] });
     }
 };
+
+test "H40-derived geometry depends only on reg 12 bit 0" {
+    var vdp = Vdp.init();
+    vdp.regs[5] = 0x7F;
+
+    vdp.regs[12] = 0x80;
+    try std.testing.expect(!vdp.isH40());
+    try std.testing.expectEqual(@as(u16, 256), vdp.screenWidth());
+    try std.testing.expectEqual(@as(u8, 64), vdp.maxSpritesTotal());
+    try std.testing.expectEqual(@as(u16, 0xFE00), vdp.spriteAttributeTableBase());
+
+    vdp.regs[12] = 0x01;
+    try std.testing.expect(vdp.isH40());
+    try std.testing.expectEqual(@as(u16, 320), vdp.screenWidth());
+    try std.testing.expectEqual(@as(u8, 80), vdp.maxSpritesTotal());
+    try std.testing.expectEqual(@as(u16, 0xFC00), vdp.spriteAttributeTableBase());
+}

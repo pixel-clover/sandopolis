@@ -1,22 +1,22 @@
 const std = @import("std");
 
-const psg_volumes: [16][2]i16 = .{
-    .{ 0x1FFF, -0x1FFF },
-    .{ 0x196A, -0x196A },
-    .{ 0x1430, -0x1430 },
-    .{ 0x1009, -0x1009 },
-    .{ 0x0CBD, -0x0CBD },
-    .{ 0x0A1E, -0x0A1E },
-    .{ 0x0809, -0x0809 },
-    .{ 0x0662, -0x0662 },
-    .{ 0x0512, -0x0512 },
-    .{ 0x0407, -0x0407 },
-    .{ 0x0333, -0x0333 },
-    .{ 0x028A, -0x028A },
-    .{ 0x0204, -0x0204 },
-    .{ 0x019A, -0x019A },
-    .{ 0x0146, -0x0146 },
-    .{ 0x0000, 0 },
+const psg_levels: [16]i16 = .{
+    0x1FFF,
+    0x196A,
+    0x1430,
+    0x1009,
+    0x0CBD,
+    0x0A1E,
+    0x0809,
+    0x0662,
+    0x0512,
+    0x0407,
+    0x0333,
+    0x028A,
+    0x0204,
+    0x019A,
+    0x0146,
+    0x0000,
 };
 
 const NoiseType = enum { periodic, white };
@@ -65,18 +65,25 @@ pub const Psg = struct {
         return if (period == 0) 1 else period;
     }
 
-    fn nextToneSample(tone: *ToneState) i16 {
+    fn toneLevel(tone: *const ToneState) i16 {
+        // The integrated PSG core is a unipolar pulse generator. Board-side filtering centers it later.
+        return if (tone.output_bit == 0) psg_levels[tone.attenuation] else 0;
+    }
+
+    fn stepTone(tone: *ToneState) void {
         if (tone.countdown != 0) tone.countdown -= 1;
 
         if (tone.countdown == 0) {
             tone.countdown = effectiveTonePeriod(tone.countdown_master);
             tone.output_bit = ~tone.output_bit;
         }
-
-        return psg_volumes[tone.attenuation][tone.output_bit];
     }
 
-    fn nextNoiseSample(noise: *NoiseState, tone2_period: u16) i16 {
+    fn noiseLevel(noise: *const NoiseState) i16 {
+        return if (noise.real_output_bit != 0) psg_levels[noise.attenuation] else 0;
+    }
+
+    fn stepNoise(noise: *NoiseState, tone2_period: u16) void {
         if (noise.countdown != 0) noise.countdown -= 1;
 
         if (noise.countdown == 0) {
@@ -99,7 +106,6 @@ pub const Psg = struct {
             }
         }
 
-        return psg_volumes[noise.attenuation][noise.real_output_bit];
     }
 
     pub fn doCommand(self: *Psg, command: u8) void {
@@ -139,14 +145,34 @@ pub const Psg = struct {
         }
     }
 
-    pub fn nextSample(self: *Psg) i16 {
+    pub fn currentSample(self: *const Psg) i16 {
         var sample: i16 = 0;
 
         for (&self.tones) |*tone| {
-            sample +|= nextToneSample(tone);
+            sample +|= toneLevel(tone);
         }
 
-        sample +|= nextNoiseSample(&self.noise, self.tones[2].countdown_master);
+        sample +|= noiseLevel(&self.noise);
+        return sample;
+    }
+
+    pub fn advanceOneSample(self: *Psg) void {
+        for (&self.tones) |*tone| {
+            stepTone(tone);
+        }
+
+        stepNoise(&self.noise, self.tones[2].countdown_master);
+    }
+
+    pub fn nextSample(self: *Psg) i16 {
+        self.advanceOneSample();
+        var sample: i16 = 0;
+
+        for (&self.tones) |*tone| {
+            sample +|= toneLevel(tone);
+        }
+
+        sample +|= noiseLevel(&self.noise);
         return sample;
     }
 
@@ -192,8 +218,9 @@ test "psg noise produces output" {
     psg.doCommand(0xF0);
     psg.doCommand(0xE4);
 
-    var buf: [128]i16 = [_]i16{0} ** 128;
-    psg.update(&buf, 128);
+    // The integrated noise LFSR starts low and needs several shifts before the first high pulse appears.
+    var buf: [1024]i16 = [_]i16{0} ** 1024;
+    psg.update(&buf, buf.len);
 
     var nonzero: usize = 0;
     for (buf) |s| {
@@ -230,15 +257,37 @@ test "psg zero tone period behaves like period one" {
     var buf: [8]i16 = [_]i16{0} ** 8;
     psg.update(&buf, buf.len);
 
-    var saw_positive = false;
-    var saw_negative = false;
+    var saw_high = false;
+    var saw_low = false;
     for (buf) |sample| {
-        if (sample > 0) saw_positive = true;
-        if (sample < 0) saw_negative = true;
+        if (sample > 0) saw_high = true;
+        if (sample == 0) saw_low = true;
     }
 
-    try std.testing.expect(saw_positive);
-    try std.testing.expect(saw_negative);
+    try std.testing.expect(saw_high);
+    try std.testing.expect(saw_low);
+}
+
+test "psg tone output is unipolar before board filtering" {
+    var psg = Psg{};
+
+    psg.doCommand(0x90);
+    psg.doCommand(0x81);
+    psg.doCommand(0x00);
+
+    var buf: [16]i16 = [_]i16{0} ** 16;
+    psg.update(&buf, buf.len);
+
+    var saw_high = false;
+    var saw_low = false;
+    for (buf) |sample| {
+        try std.testing.expect(sample >= 0);
+        if (sample > 0) saw_high = true;
+        if (sample == 0) saw_low = true;
+    }
+
+    try std.testing.expect(saw_high);
+    try std.testing.expect(saw_low);
 }
 
 test "psg noise mode write reseeds lfsr without resetting divider phase" {
@@ -278,7 +327,7 @@ fn expectNoiseBitSequence(noise_type: NoiseType, expected: []const u8) !void {
 
     for (expected) |bit_char| {
         psg.noise.countdown = 1;
-        _ = Psg.nextNoiseSample(&psg.noise, psg.tones[2].countdown_master);
+        Psg.stepNoise(&psg.noise, psg.tones[2].countdown_master);
         const expected_bit: u1 = @intCast(bit_char - '0');
         try std.testing.expectEqual(expected_bit, psg.noise.real_output_bit);
     }

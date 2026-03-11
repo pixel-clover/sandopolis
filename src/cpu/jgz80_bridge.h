@@ -188,6 +188,12 @@ uint8_t jgz80_get_ym_register(Jgz80Handle *handle, uint8_t port, uint8_t reg);
 
 uint8_t jgz80_get_ym_key_mask(Jgz80Handle *handle);
 
+uint16_t jgz80_peek_ym_write_count(const Jgz80Handle *handle);
+
+uint16_t jgz80_peek_ym_dac_count(const Jgz80Handle *handle);
+
+uint16_t jgz80_peek_psg_command_count(const Jgz80Handle *handle);
+
 uint16_t jgz80_take_ym_writes(Jgz80Handle *handle, Jgz80YmWriteEvent *dest, uint16_t max_events);
 
 uint16_t jgz80_take_ym_dac_samples(Jgz80Handle *handle, Jgz80YmDacSampleEvent *dest, uint16_t max_samples);

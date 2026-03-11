@@ -160,6 +160,27 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn pendingYmWriteCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_ym_write_count(h);
+        return 0;
+    }
+
+    pub fn pendingYmDacCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_ym_dac_count(h);
+        return 0;
+    }
+
+    pub fn pendingPsgCommandCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_psg_command_count(h);
+        return 0;
+    }
+
+    pub fn hasPendingAudibleEvents(self: *const Z80) bool {
+        return self.pendingYmWriteCount() != 0 or
+            self.pendingYmDacCount() != 0 or
+            self.pendingPsgCommandCount() != 0;
+    }
+
     pub fn takeYmWrites(self: *Z80, dest: []YmWriteEvent) usize {
         if (dest.len == 0) return 0;
         if (self.handle) |h| return c.jgz80_take_ym_writes(h, dest.ptr, @intCast(dest.len));
@@ -261,7 +282,7 @@ test "z80 clone preserves and decouples RAM contents" {
     try std.testing.expectEqual(@as(u8, 0xAB), cloned.readByte(0x0000));
 }
 
-test "z80 audio events retain scheduler master offsets" {
+test "direct z80 audio writes retain explicit master offsets" {
     var z80 = Z80.init();
     defer z80.deinit();
 
@@ -289,6 +310,71 @@ test "z80 audio events retain scheduler master offsets" {
     try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
 }
 
+test "z80 pending audible event helper ignores reset-only events" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+
+    z80.writeReset(0);
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+
+    z80.writeByte(0x7F11, 0x90);
+    try std.testing.expect(z80.hasPendingAudibleEvents());
+
+    var psg_events: [1]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+
+    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
+}
+
+test "z80 instruction writes stamp ym events at the in-instruction access time" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x0000, 0x32);
+    z80.writeByte(0x0001, 0x01);
+    z80.writeByte(0x0002, 0x40);
+
+    var state = z80.captureState();
+    state.pc = 0x0000;
+    state.af = 0x5600;
+    z80.restoreState(&state);
+
+    try std.testing.expectEqual(@as(u32, 13), z80.stepInstruction());
+
+    var ym_events: [1]Z80.YmWriteEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12 + (10 * clock.z80_divider)), ym_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x22), ym_events[0].reg);
+    try std.testing.expectEqual(@as(u8, 0x56), ym_events[0].value);
+}
+
+test "z80 instruction writes stamp psg events at the in-instruction access time" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x0000, 0x77);
+
+    var state = z80.captureState();
+    state.pc = 0x0000;
+    state.hl = 0x7F11;
+    state.af = 0x9000;
+    z80.restoreState(&state);
+
+    try std.testing.expectEqual(@as(u32, 7), z80.stepInstruction());
+
+    var psg_events: [1]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12 + (4 * clock.z80_divider)), psg_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
+}
+
 test "z80 hard reset restores integrated psg power-on latch and attenuation" {
     var z80 = Z80.init();
     defer z80.deinit();
@@ -312,16 +398,25 @@ test "z80 hard reset restores integrated psg power-on latch and attenuation" {
     try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
     try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
 
+    var psg_events: [2]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_events[0..]));
+
     z80.writeByte(0x7F11, 0x05);
     try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
     try std.testing.expectEqual(@as(u8, 5), z80.getPsgVolume(1));
     try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
     try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expectEqual(@as(u8, 0x05), psg_events[0].value);
 }
 
-test "z80 reset emits a timed ym reset event without dropping earlier ym audio events" {
+test "z80 reset line edges emit timed ym reset events without dropping earlier ym audio events" {
     var z80 = Z80.init();
     defer z80.deinit();
+
+    var state = z80.captureState();
+    state.pc = 0x0042;
+    z80.restoreState(&state);
 
     z80.setAudioMasterOffset(9);
     z80.writeByte(0x4000, 0x2A);
@@ -331,18 +426,24 @@ test "z80 reset emits a timed ym reset event without dropping earlier ym audio e
 
     z80.setAudioMasterOffset(27);
     z80.writeReset(0);
+    try std.testing.expectEqual(@as(u16, 0x0042), z80.getPc());
 
-    var ym_events: [1]Z80.YmWriteEvent = undefined;
+    z80.setAudioMasterOffset(45);
+    z80.writeReset(0x0100);
+    try std.testing.expectEqual(@as(u16, 0x0000), z80.getPc());
+
+    var ym_events: [2]Z80.YmWriteEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
     try std.testing.expectEqual(@as(u32, 9), ym_events[0].master_offset);
 
-    var ym_dac_events: [1]Z80.YmDacSampleEvent = undefined;
+    var ym_dac_events: [2]Z80.YmDacSampleEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmDacSamples(ym_dac_events[0..]));
     try std.testing.expectEqual(@as(u32, 9), ym_dac_events[0].master_offset);
 
-    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
-    try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
+    var ym_reset_events: [2]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 2), z80.takeYmResets(ym_reset_events[0..]));
     try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
+    try std.testing.expectEqual(@as(u32, 45), ym_reset_events[1].master_offset);
 }
 
 test "z80 soft reset preserves ram and psg state while resetting ym and bank state" {
