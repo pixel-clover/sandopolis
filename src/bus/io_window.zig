@@ -1,10 +1,7 @@
 const Io = @import("../input/io.zig").Io;
 
 pub fn readVersionRegister(io: *const Io, pal_mode: bool) u8 {
-    _ = io;
-    var value: u8 = 0x20 | 0x80;
-    if (pal_mode) value |= 0x40;
-    return value;
+    return io.readVersionRegister(pal_mode);
 }
 
 pub fn readRegisterByte(io: *Io, pal_mode: bool, address: u32) u8 {

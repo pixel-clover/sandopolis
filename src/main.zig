@@ -581,6 +581,7 @@ const CliOptions = struct {
     rom_path: ?[]const u8 = null,
     audio_mode: AudioOutput.RenderMode = .normal,
     renderer_name: ?[]const u8 = null,
+    timing_mode: TimingModeOption = .auto,
     show_help: bool = false,
 };
 
@@ -590,6 +591,12 @@ const ParseCliError = error{
     MissingRendererValue,
     MultipleRomPaths,
     UnknownOption,
+};
+
+const TimingModeOption = enum {
+    auto,
+    pal,
+    ntsc,
 };
 
 fn audioRenderModeName(mode: AudioOutput.RenderMode) []const u8 {
@@ -722,6 +729,7 @@ fn loadRomIntoMachine(
     allocator: std.mem.Allocator,
     machine: *Machine,
     input_bindings: *const InputBindings.Bindings,
+    timing_mode: TimingModeOption,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
     frame_counter: *u32,
@@ -731,8 +739,14 @@ fn loadRomIntoMachine(
     errdefer next_machine.deinit(allocator);
 
     logLoadedRomMetadata(&next_machine, rom_path);
+    const resolved_timing = resolveTimingMode(next_machine.romMetadata(), timing_mode);
+    const resolved_region = resolveConsoleRegion(next_machine.romMetadata());
     next_machine.reset();
+    next_machine.setPalMode(resolved_timing.pal_mode);
+    next_machine.setConsoleIsOverseas(resolved_region.overseas);
     next_machine.applyControllerTypes(input_bindings);
+    std.debug.print("Timing mode: {s}\n", .{resolved_timing.description});
+    std.debug.print("Console region: {s}\n", .{resolved_region.description});
     std.debug.print("CPU Reset complete.\n", .{});
     next_machine.debugDump();
 
@@ -759,6 +773,8 @@ fn printUsage() void {
     std.debug.print("  --audio-mode=<mode>   Same as above\n", .{});
     std.debug.print("  --renderer <name>     SDL render driver override (for example: software, opengl)\n", .{});
     std.debug.print("  --renderer=<name>     Same as above\n", .{});
+    std.debug.print("  --pal                 Force PAL/50Hz timing and version bits\n", .{});
+    std.debug.print("  --ntsc                Force NTSC/60Hz timing and version bits\n", .{});
     std.debug.print("  -h, --help            Show this help text\n", .{});
 }
 
@@ -791,6 +807,14 @@ fn parseCliArgs(args: []const []const u8) ParseCliError!CliOptions {
             options.renderer_name = arg["--renderer=".len..];
             continue;
         }
+        if (std.mem.eql(u8, arg, "--pal")) {
+            options.timing_mode = .pal;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ntsc")) {
+            options.timing_mode = .ntsc;
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
         if (options.rom_path != null) return error.MultipleRomPaths;
         options.rom_path = arg;
@@ -819,6 +843,130 @@ fn logAvailableRenderDrivers() void {
         }
     }
     std.debug.print("\n", .{});
+}
+
+const ResolvedTimingMode = struct {
+    pal_mode: bool,
+    description: []const u8,
+};
+
+const ResolvedConsoleRegion = struct {
+    overseas: bool,
+    description: []const u8,
+};
+
+fn inferPalModeFromCountryCodes(country_codes: ?[]const u8) ?bool {
+    const codes = country_codes orelse return null;
+
+    var uses_letter_codes = false;
+    for (codes) |raw| {
+        switch (std.ascii.toUpper(raw)) {
+            'E', 'U', 'J' => {
+                uses_letter_codes = true;
+                break;
+            },
+            else => {},
+        }
+    }
+
+    var pal_compatible = false;
+    var ntsc_compatible = false;
+    for (codes) |raw| {
+        const ch = std.ascii.toUpper(raw);
+        if (uses_letter_codes) {
+            switch (ch) {
+                0, ' ' => {},
+                'E' => pal_compatible = true,
+                'U', 'J' => ntsc_compatible = true,
+                else => {},
+            }
+            continue;
+        }
+
+        switch (ch) {
+            0, ' ' => {},
+            '0'...'9', 'A'...'F' => {
+                const nibble = std.fmt.charToDigit(ch, 16) catch continue;
+                if ((nibble & 0x8) != 0) pal_compatible = true;
+                if ((nibble & 0x5) != 0) ntsc_compatible = true;
+            },
+            else => {},
+        }
+    }
+
+    if (pal_compatible and !ntsc_compatible) return true;
+    if (ntsc_compatible and !pal_compatible) return false;
+    return null;
+}
+
+fn inferConsoleIsOverseasFromCountryCodes(country_codes: ?[]const u8) ?bool {
+    const codes = country_codes orelse return null;
+
+    var uses_letter_codes = false;
+    for (codes) |raw| {
+        switch (std.ascii.toUpper(raw)) {
+            'E', 'U', 'J' => {
+                uses_letter_codes = true;
+                break;
+            },
+            else => {},
+        }
+    }
+
+    var domestic_compatible = false;
+    var overseas_compatible = false;
+    for (codes) |raw| {
+        const ch = std.ascii.toUpper(raw);
+        if (uses_letter_codes) {
+            switch (ch) {
+                0, ' ' => {},
+                'J' => domestic_compatible = true,
+                'E', 'U' => overseas_compatible = true,
+                else => {},
+            }
+            continue;
+        }
+
+        switch (ch) {
+            0, ' ' => {},
+            '0'...'9', 'A'...'F' => {
+                const nibble = std.fmt.charToDigit(ch, 16) catch continue;
+                if ((nibble & 0x1) != 0) domestic_compatible = true;
+                if ((nibble & 0xC) != 0) overseas_compatible = true;
+            },
+            else => {},
+        }
+    }
+
+    if (domestic_compatible and !overseas_compatible) return false;
+    if (overseas_compatible and !domestic_compatible) return true;
+    return null;
+}
+
+fn resolveTimingMode(metadata: Machine.RomMetadata, timing_mode: TimingModeOption) ResolvedTimingMode {
+    return switch (timing_mode) {
+        .pal => .{ .pal_mode = true, .description = "PAL/50Hz (forced)" },
+        .ntsc => .{ .pal_mode = false, .description = "NTSC/60Hz (forced)" },
+        .auto => {
+            if (inferPalModeFromCountryCodes(metadata.country_codes)) |pal_mode| {
+                return .{
+                    .pal_mode = pal_mode,
+                    .description = if (pal_mode) "PAL/50Hz (auto)" else "NTSC/60Hz (auto)",
+                };
+            }
+            return .{ .pal_mode = false, .description = "NTSC/60Hz (auto default)" };
+        },
+    };
+}
+
+fn resolveConsoleRegion(metadata: Machine.RomMetadata) ResolvedConsoleRegion {
+    if (inferConsoleIsOverseasFromCountryCodes(metadata.country_codes)) |overseas| {
+        return .{
+            .overseas = overseas,
+            .description = if (overseas) "Overseas/export (auto)" else "Domestic/Japan (auto)",
+        };
+    }
+    return .{ .overseas = true, .description = "Overseas/export (auto default)" };
 }
 
 fn formatName(format: zsdl3.AudioFormat) []const u8 {
@@ -2236,7 +2384,13 @@ pub fn main() !void {
         logLoadedRomMetadata(&machine, rom_path.?);
     }
 
+    const resolved_timing = resolveTimingMode(machine.romMetadata(), cli.timing_mode);
+    const resolved_region = resolveConsoleRegion(machine.romMetadata());
     machine.reset();
+    machine.setPalMode(resolved_timing.pal_mode);
+    machine.setConsoleIsOverseas(resolved_region.overseas);
+    std.debug.print("Timing mode: {s}\n", .{resolved_timing.description});
+    std.debug.print("Console region: {s}\n", .{resolved_region.description});
     std.debug.print("CPU Reset complete.\n", .{});
     machine.debugDump();
     var frame_counter: u32 = 0;
@@ -2438,6 +2592,7 @@ pub fn main() !void {
                     allocator,
                     &machine,
                     &input_bindings,
+                    cli.timing_mode,
                     if (audio) |*a| a else null,
                     &gif_recorder,
                     &frame_counter,
@@ -3234,6 +3389,30 @@ test "cli parser accepts renderer override before rom path" {
     try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
 }
 
+test "cli parser accepts pal timing override" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--pal",
+        "roms/test.bin",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqual(TimingModeOption.pal, options.timing_mode);
+}
+
+test "cli parser accepts ntsc timing override" {
+    const args = [_][]const u8{
+        "sandopolis",
+        "--ntsc",
+        "roms/test.bin",
+    };
+
+    const options = try parseCliArgs(&args);
+    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
+    try std.testing.expectEqual(TimingModeOption.ntsc, options.timing_mode);
+}
+
 test "cli parser accepts spaced audio mode after rom path" {
     const args = [_][]const u8{
         "sandopolis",
@@ -3271,6 +3450,7 @@ test "cli parser handles help without a rom path" {
     try std.testing.expect(options.rom_path == null);
     try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
     try std.testing.expect(options.renderer_name == null);
+    try std.testing.expectEqual(TimingModeOption.auto, options.timing_mode);
 }
 
 test "cli parser rejects invalid audio mode values" {
@@ -3290,6 +3470,62 @@ test "cli parser rejects missing renderer value" {
     };
 
     try std.testing.expectError(error.MissingRendererValue, parseCliArgs(&args));
+}
+
+test "timing auto-detection chooses pal for europe-only country code" {
+    const metadata = Machine.RomMetadata{
+        .console = null,
+        .title = null,
+        .country_codes = "E               ",
+        .reset_stack_pointer = 0,
+        .reset_program_counter = 0,
+    };
+
+    const resolved = resolveTimingMode(metadata, .auto);
+    try std.testing.expect(resolved.pal_mode);
+    try std.testing.expectEqualStrings("PAL/50Hz (auto)", resolved.description);
+}
+
+test "timing auto-detection defaults to ntsc for multi-region country code" {
+    const metadata = Machine.RomMetadata{
+        .console = null,
+        .title = null,
+        .country_codes = "JUE             ",
+        .reset_stack_pointer = 0,
+        .reset_program_counter = 0,
+    };
+
+    const resolved = resolveTimingMode(metadata, .auto);
+    try std.testing.expect(!resolved.pal_mode);
+    try std.testing.expectEqualStrings("NTSC/60Hz (auto default)", resolved.description);
+}
+
+test "console region auto-detection chooses domestic for japan-only country code" {
+    const metadata = Machine.RomMetadata{
+        .console = null,
+        .title = null,
+        .country_codes = "J               ",
+        .reset_stack_pointer = 0,
+        .reset_program_counter = 0,
+    };
+
+    const resolved = resolveConsoleRegion(metadata);
+    try std.testing.expect(!resolved.overseas);
+    try std.testing.expectEqualStrings("Domestic/Japan (auto)", resolved.description);
+}
+
+test "console region auto-detection defaults to overseas for multi-region country code" {
+    const metadata = Machine.RomMetadata{
+        .console = null,
+        .title = null,
+        .country_codes = "JUE             ",
+        .reset_stack_pointer = 0,
+        .reset_program_counter = 0,
+    };
+
+    const resolved = resolveConsoleRegion(metadata);
+    try std.testing.expect(resolved.overseas);
+    try std.testing.expectEqualStrings("Overseas/export (auto default)", resolved.description);
 }
 
 fn gifOutputPath() [48]u8 {

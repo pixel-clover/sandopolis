@@ -87,6 +87,19 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/sandopolis <path-to-rom>
 ```
 
+If the default SDL renderer is unstable on your system, try:
+
+```bash
+./zig-out/bin/sandopolis --renderer software <path-to-rom>
+```
+
+Sandopolis now auto-selects PAL/NTSC timing and the console region bits from the ROM header when the region is clear. You can still override timing manually:
+
+```bash
+./zig-out/bin/sandopolis --pal <path-to-rom>
+./zig-out/bin/sandopolis --ntsc <path-to-rom>
+```
+
 > [!NOTE]
 > To build from source, you mainly need to have Zig and Git installed.
 > The current version of the emulator is developed and tested using Zig 0.15.2.

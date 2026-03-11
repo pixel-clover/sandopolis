@@ -23,6 +23,7 @@ pub const Machine = struct {
     pub const RomMetadata = struct {
         console: ?[]const u8,
         title: ?[]const u8,
+        country_codes: ?[]const u8,
         reset_stack_pointer: u32,
         reset_program_counter: u32,
     };
@@ -369,6 +370,7 @@ pub const Machine = struct {
         return .{
             .console = if (self.bus.rom.len >= 0x200) self.bus.rom[0x100..0x110] else null,
             .title = if (self.bus.rom.len >= 0x200) self.bus.rom[0x150..0x180] else null,
+            .country_codes = if (self.bus.rom.len >= 0x200) self.bus.rom[0x1F0..0x200] else null,
             .reset_stack_pointer = readBeU32(self.bus.rom[0..], 0),
             .reset_program_counter = readBeU32(self.bus.rom[0..], 4),
         };
@@ -391,6 +393,18 @@ pub const Machine = struct {
 
     pub fn palMode(self: *const Machine) bool {
         return self.bus.vdp.pal_mode;
+    }
+
+    pub fn setPalMode(self: *Machine, pal_mode: bool) void {
+        self.bus.vdp.pal_mode = pal_mode;
+    }
+
+    pub fn consoleIsOverseas(self: *const Machine) bool {
+        return self.bus.io.versionIsOverseas();
+    }
+
+    pub fn setConsoleIsOverseas(self: *Machine, overseas: bool) void {
+        self.bus.io.setVersionIsOverseas(overseas);
     }
 
     pub fn takePendingAudio(self: *Machine) PendingAudioFrames {

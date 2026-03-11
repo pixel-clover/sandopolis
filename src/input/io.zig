@@ -20,6 +20,7 @@ pub const Io = struct {
     cycles_until_th_high: [2]u32,
     controller_th: [2]bool,
     controller_types: [2]ControllerType,
+    version_is_overseas: bool,
 
     pub fn init() Io {
         return Io{
@@ -31,12 +32,13 @@ pub const Io = struct {
             .cycles_until_th_high = [_]u32{0} ** 2,
             .controller_th = [_]bool{true} ** 2,
             .controller_types = [_]ControllerType{.six_button} ** 2,
+            .version_is_overseas = true,
         };
     }
 
     pub fn read(self: *Io, address: u32) u8 {
         switch (address & 0xFF) {
-            0x01 => return 0xA0,
+            0x01 => return self.readVersionRegister(false),
             0x03 => return self.readData(0),
             0x05 => return self.readData(1),
             0x07 => return self.data[2],
@@ -57,6 +59,21 @@ pub const Io = struct {
             0x0D => self.ctrl[2] = value,
             else => {},
         }
+    }
+
+    pub fn readVersionRegister(self: *const Io, pal_mode: bool) u8 {
+        var value: u8 = 0x20;
+        if (self.version_is_overseas) value |= 0x80;
+        if (pal_mode) value |= 0x40;
+        return value;
+    }
+
+    pub fn versionIsOverseas(self: *const Io) bool {
+        return self.version_is_overseas;
+    }
+
+    pub fn setVersionIsOverseas(self: *Io, overseas: bool) void {
+        self.version_is_overseas = overseas;
     }
 
     fn readData(self: *const Io, port: usize) u8 {

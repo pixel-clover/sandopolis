@@ -833,7 +833,7 @@ test "unused vdp port reads return ff" {
     try testing.expectEqual(@as(u16, 0xFFFF), bus.read16(0x00C0_0010));
 }
 
-test "io version register reflects pal bit and word reads use byte value" {
+test "io version register reflects region and pal bits and word reads use byte value" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -841,7 +841,15 @@ test "io version register reflects pal bit and word reads use byte value" {
     try testing.expectEqual(@as(u8, 0xA0), bus.read8(0x00A1_0001));
     try testing.expectEqual(@as(u16, 0x00A0), bus.read16(0x00A1_0000));
 
+    bus.io.setVersionIsOverseas(false);
+    try testing.expectEqual(@as(u8, 0x20), bus.read8(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0x0020), bus.read16(0x00A1_0000));
+
     bus.vdp.pal_mode = true;
+    try testing.expectEqual(@as(u8, 0x60), bus.read8(0x00A1_0000));
+    try testing.expectEqual(@as(u16, 0x0060), bus.read16(0x00A1_0000));
+
+    bus.io.setVersionIsOverseas(true);
     try testing.expectEqual(@as(u8, 0xE0), bus.read8(0x00A1_0000));
     try testing.expectEqual(@as(u16, 0x00E0), bus.read16(0x00A1_0000));
 }
