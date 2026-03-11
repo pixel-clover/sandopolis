@@ -364,12 +364,55 @@ fn isThresholdSlowFrame(perf: *const PerformanceHudState) bool {
     return perf.last_overrun_ns >= performance_spike_log_threshold_ns;
 }
 
-const FrontendShortcut = enum {
-    toggle_help,
-    toggle_pause,
-    toggle_performance_hud,
-    reset_performance_hud,
-    open_rom,
+const OverlayLine = union(enum) {
+    hotkey: struct {
+        action: InputBindings.HotkeyAction,
+        label: []const u8,
+    },
+    text: []const u8,
+    blank,
+    state_file_slot,
+    active_state_slot,
+};
+
+const pause_overlay_lines = [_]OverlayLine{
+    .state_file_slot,
+    .{ .hotkey = .{ .action = .toggle_pause, .label = "RESUME" } },
+    .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM" } },
+    .{ .hotkey = .{ .action = .restart_rom, .label = "RESTART ROM" } },
+    .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD EDITOR" } },
+    .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERF HUD" } },
+    .{ .hotkey = .{ .action = .reset_performance_hud, .label = "RESET PERF HUD" } },
+    .{ .hotkey = .{ .action = .save_quick_state, .label = "SAVE QUICK STATE" } },
+    .{ .hotkey = .{ .action = .load_quick_state, .label = "LOAD QUICK STATE" } },
+    .{ .hotkey = .{ .action = .save_state_file, .label = "SAVE STATE FILE" } },
+    .{ .hotkey = .{ .action = .load_state_file, .label = "LOAD STATE FILE" } },
+    .{ .hotkey = .{ .action = .next_state_slot, .label = "NEXT STATE SLOT" } },
+    .{ .hotkey = .{ .action = .toggle_help, .label = "HELP" } },
+};
+
+const help_overlay_lines = [_]OverlayLine{
+    .{ .hotkey = .{ .action = .toggle_help, .label = "CLOSE HELP" } },
+    .{ .hotkey = .{ .action = .toggle_pause, .label = "PAUSE OR RESUME" } },
+    .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM DIALOG" } },
+    .{ .hotkey = .{ .action = .restart_rom, .label = "RESTART CURRENT ROM" } },
+    .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD EDITOR" } },
+    .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "TOGGLE PERF HUD" } },
+    .{ .hotkey = .{ .action = .reset_performance_hud, .label = "RESET PERF HUD" } },
+    .{ .hotkey = .{ .action = .save_quick_state, .label = "SAVE QUICK STATE" } },
+    .{ .hotkey = .{ .action = .load_quick_state, .label = "LOAD QUICK STATE" } },
+    .{ .hotkey = .{ .action = .save_state_file, .label = "SAVE STATE FILE" } },
+    .{ .hotkey = .{ .action = .load_state_file, .label = "LOAD STATE FILE" } },
+    .{ .hotkey = .{ .action = .next_state_slot, .label = "NEXT STATE SLOT" } },
+    .blank,
+    .{ .hotkey = .{ .action = .step, .label = "STEP CPU" } },
+    .{ .hotkey = .{ .action = .registers, .label = "REGISTER DUMP" } },
+    .{ .hotkey = .{ .action = .record_gif, .label = "START OR STOP GIF" } },
+    .{ .hotkey = .{ .action = .toggle_fullscreen, .label = "TOGGLE FULLSCREEN" } },
+    .{ .hotkey = .{ .action = .quit, .label = "QUIT" } },
+    .blank,
+    .active_state_slot,
+    .{ .text = "HELP PAUSE AND MENUS FREEZE EMULATION" },
 };
 
 const max_dialog_message_bytes: usize = 256;
@@ -380,6 +423,13 @@ const DialogPathCopy = struct {
 
     fn slice(self: *const DialogPathCopy) []const u8 {
         return self.bytes[0..self.len];
+    }
+
+    fn set(self: *DialogPathCopy, path: []const u8) void {
+        std.debug.assert(path.len <= self.bytes.len);
+        self.* = .{};
+        @memcpy(self.bytes[0..path.len], path);
+        self.len = path.len;
     }
 };
 
@@ -511,7 +561,7 @@ const BindingEditorState = struct {
 
     fn beginCapture(self: *BindingEditorState) void {
         self.capture_mode = true;
-        self.setStatus(.neutral, "PRESS A KEY  ESC CANCEL  F12 CLEAR");
+        self.setStatus(.neutral, "PRESS A KEY  ESC CANCEL  DEL CLEAR");
     }
 
     fn cancelCapture(self: *BindingEditorState) void {
@@ -523,6 +573,15 @@ const BindingEditorState = struct {
         switch (self.currentTarget()) {
             .player_action => |target| bindings.setKeyboardForPort(target.port, target.action, input),
             .hotkey => |action| bindings.setHotkey(action, input),
+        }
+        self.capture_mode = false;
+        self.setStatus(.success, "BINDING UPDATED");
+    }
+
+    fn assignHotkey(self: *BindingEditorState, bindings: *InputBindings.Bindings, binding: InputBindings.HotkeyBinding) void {
+        switch (self.currentTarget()) {
+            .player_action => unreachable,
+            .hotkey => |action| bindings.setHotkeyWithModifiers(action, binding.input, binding.modifiers),
         }
         self.capture_mode = false;
         self.setStatus(.success, "BINDING UPDATED");
@@ -626,28 +685,80 @@ fn cliErrorMessage(err: ParseCliError) []const u8 {
     };
 }
 
-fn frontendShortcutForKey(scancode: zsdl3.Scancode, pressed: bool) ?FrontendShortcut {
-    if (!pressed) return null;
-    return switch (scancode) {
-        .f1 => .toggle_help,
-        .f2 => .toggle_pause,
-        .f5 => .toggle_performance_hud,
-        .f12 => .reset_performance_hud,
-        .f3 => .open_rom,
-        else => null,
+fn keyboardStatePressed(state: []const bool, scancode: zsdl3.Scancode) bool {
+    const index: usize = @intFromEnum(scancode);
+    return index < state.len and state[index];
+}
+
+fn hotkeyModifiersFromKeyboardState(state: []const bool) InputBindings.HotkeyModifiers {
+    return .{
+        .shift = keyboardStatePressed(state, .lshift) or keyboardStatePressed(state, .rshift),
+        .ctrl = keyboardStatePressed(state, .lctrl) or keyboardStatePressed(state, .rctrl),
+        .alt = keyboardStatePressed(state, .lalt) or keyboardStatePressed(state, .ralt),
+        .gui = keyboardStatePressed(state, .lgui) or keyboardStatePressed(state, .rgui),
     };
 }
 
-fn applyFrontendShortcut(ui: *FrontendUi, scancode: zsdl3.Scancode, pressed: bool) bool {
-    const shortcut = frontendShortcutForKey(scancode, pressed) orelse return false;
-    switch (shortcut) {
-        .toggle_help => ui.show_help = !ui.show_help,
-        .toggle_pause => ui.paused = !ui.paused,
-        .toggle_performance_hud => ui.show_performance_hud = !ui.show_performance_hud,
-        .reset_performance_hud => {},
-        .open_rom => {},
-    }
-    return true;
+fn isHotkeyModifierScancode(scancode: zsdl3.Scancode) bool {
+    return switch (scancode) {
+        .lshift, .rshift, .lctrl, .rctrl, .lalt, .ralt, .lgui, .rgui => true,
+        else => false,
+    };
+}
+
+fn hotkeyBindingFromScancode(scancode: zsdl3.Scancode, keyboard_state: []const bool) ?InputBindings.HotkeyBinding {
+    const input = keyboardInputFromScancode(scancode) orelse return null;
+    return .{
+        .input = input,
+        .modifiers = hotkeyModifiersFromKeyboardState(keyboard_state),
+    };
+}
+
+fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
+    return switch (action) {
+        .toggle_help => "HELP",
+        .toggle_pause => "PAUSE",
+        .open_rom => "OPEN ROM",
+        .restart_rom => "RESTART ROM",
+        .open_keyboard_editor => "KEYBOARD EDITOR",
+        .toggle_performance_hud => "PERF HUD",
+        .reset_performance_hud => "RESET PERF HUD",
+        .save_quick_state => "SAVE QUICK STATE",
+        .load_quick_state => "LOAD QUICK STATE",
+        .save_state_file => "SAVE STATE FILE",
+        .load_state_file => "LOAD STATE FILE",
+        .next_state_slot => "NEXT STATE SLOT",
+        .step => "STEP CPU",
+        .registers => "REGISTER DUMP",
+        .record_gif => "RECORD GIF",
+        .toggle_fullscreen => "FULLSCREEN",
+        .quit => "QUIT",
+    };
+}
+
+fn formatOverlayLine(
+    buffer: []u8,
+    bindings: *const InputBindings.Bindings,
+    line: OverlayLine,
+    persistent_state_slot: u8,
+) ![]const u8 {
+    return switch (line) {
+        .blank => "",
+        .text => |text| text,
+        .state_file_slot => std.fmt.bufPrint(buffer, "STATE FILE SLOT {d}/{d}", .{
+            persistent_state_slot,
+            StateFile.persistent_state_slot_count,
+        }),
+        .active_state_slot => std.fmt.bufPrint(buffer, "ACTIVE STATE SLOT {d}/{d}", .{
+            persistent_state_slot,
+            StateFile.persistent_state_slot_count,
+        }),
+        .hotkey => |item| {
+            var binding_buffer: [48]u8 = undefined;
+            const binding = try InputBindings.hotkeyBindingDisplayName(binding_buffer[0..], bindings.hotkeyBinding(item.action));
+            return std.fmt.bufPrint(buffer, "{s} {s}", .{ binding, item.label });
+        },
+    };
 }
 
 fn openRomDialogCallback(
@@ -764,6 +875,48 @@ fn loadRomIntoMachine(
     machine.rebindRuntimePointers();
     old_machine.deinit(allocator);
     frame_counter.* = 0;
+}
+
+fn restartCurrentMachine(
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    input_bindings: *const InputBindings.Bindings,
+    timing_mode: TimingModeOption,
+    audio: ?*AudioInit,
+    gif_recorder: *?GifRecorder,
+    frame_counter: *u32,
+    rom_path: ?[]const u8,
+) !void {
+    if (rom_path) |path| {
+        try loadRomIntoMachine(
+            allocator,
+            machine,
+            input_bindings,
+            timing_mode,
+            audio,
+            gif_recorder,
+            frame_counter,
+            path,
+        );
+        return;
+    }
+
+    stopGifRecording(gif_recorder, "GIF recording stopped for restart");
+    if (audio) |a| {
+        resetAudioOutput(a);
+    }
+
+    const resolved_timing = resolveTimingMode(machine.romMetadata(), timing_mode);
+    const resolved_region = resolveConsoleRegion(machine.romMetadata());
+    machine.reset();
+    machine.setPalMode(resolved_timing.pal_mode);
+    machine.setConsoleIsOverseas(resolved_region.overseas);
+    machine.applyControllerTypes(input_bindings);
+    frame_counter.* = 0;
+    std.debug.print("Timing mode: {s}\n", .{resolved_timing.description});
+    std.debug.print("Console region: {s}\n", .{resolved_region.description});
+    std.debug.print("CPU Reset complete.\n", .{});
+    machine.debugDump();
 }
 
 fn printUsage() void {
@@ -1012,6 +1165,7 @@ fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardIn
         .backspace => .backspace,
         .space => .space,
         .escape => .escape,
+        .delete => .delete,
         .lshift => .lshift,
         .rshift => .rshift,
         .semicolon => .semicolon,
@@ -1019,7 +1173,18 @@ fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardIn
         .comma => .comma,
         .period => .period,
         .slash => .slash,
+        .f1 => .f1,
+        .f2 => .f2,
+        .f3 => .f3,
+        .f4 => .f4,
+        .f5 => .f5,
+        .f6 => .f6,
+        .f7 => .f7,
+        .f8 => .f8,
+        .f9 => .f9,
+        .f10 => .f10,
         .f11 => .f11,
+        .f12 => .f12,
         else => null,
     };
 }
@@ -1036,7 +1201,7 @@ fn bindingEditorOpen(ui: *FrontendUi, editor: *BindingEditorState, bindings: *co
     ui.show_keyboard_editor = true;
     ui.show_help = false;
     editor.capture_mode = false;
-    editor.setStatus(.neutral, "UP DOWN MOVE  ENTER REBIND  F5 SAVE  F4 CLOSE");
+    editor.setStatus(.neutral, "UP DOWN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE");
     machine.releaseKeyboardBindings(bindings);
 }
 
@@ -1057,10 +1222,14 @@ fn bindingEditorRowText(
             InputBindings.actionName(item.action),
             bindingName(bindings.keyboardBinding(item.port, item.action)),
         }),
-        .hotkey => |action| std.fmt.bufPrint(buffer, "HOTKEY {s} = {s}", .{
-            InputBindings.hotkeyActionName(action),
-            bindingName(bindings.hotkeyBinding(action)),
-        }),
+        .hotkey => |action| {
+            var binding_buffer: [48]u8 = undefined;
+            const binding = try InputBindings.hotkeyBindingDisplayName(binding_buffer[0..], bindings.hotkeyBinding(action));
+            return std.fmt.bufPrint(buffer, "HOTKEY {s} = {s}", .{
+                hotkeyActionDescription(action),
+                binding,
+            });
+        },
     };
 }
 
@@ -1071,10 +1240,13 @@ fn handleBindingEditorKey(
     machine: *Machine,
     input_config_path: ?[]const u8,
     scancode: zsdl3.Scancode,
+    hotkey_binding: ?InputBindings.HotkeyBinding,
     pressed: bool,
 ) bool {
     if (!ui.show_keyboard_editor) {
-        if (!pressed or scancode != .f4) return false;
+        if (!pressed) return false;
+        const binding = hotkey_binding orelse return false;
+        if (bindings.hotkeyForBinding(binding) != .open_keyboard_editor) return false;
         bindingEditorOpen(ui, editor, bindings, machine);
         return true;
     }
@@ -1084,10 +1256,15 @@ fn handleBindingEditorKey(
     if (editor.capture_mode) {
         switch (scancode) {
             .escape => editor.cancelCapture(),
-            .f12 => editor.clearSelected(bindings),
+            .delete => editor.clearSelected(bindings),
             else => {
-                if (keyboardInputFromScancode(scancode)) |input| {
-                    editor.assign(bindings, input);
+                if (editor.currentTarget() == .hotkey and isHotkeyModifierScancode(scancode)) {
+                    editor.setStatus(.failed, "PRESS A NON-MODIFIER KEY");
+                } else if (keyboardInputFromScancode(scancode)) |input| {
+                    switch (editor.currentTarget()) {
+                        .player_action => editor.assign(bindings, input),
+                        .hotkey => editor.assignHotkey(bindings, hotkey_binding orelse .{ .input = input }),
+                    }
                 } else {
                     editor.setStatus(.failed, "KEY NOT SUPPORTED");
                 }
@@ -1096,8 +1273,18 @@ fn handleBindingEditorKey(
         return true;
     }
 
+    if (scancode == .escape) {
+        bindingEditorClose(ui, editor);
+        return true;
+    }
+    if (hotkey_binding) |binding| {
+        if (bindings.hotkeyForBinding(binding) == .open_keyboard_editor) {
+            bindingEditorClose(ui, editor);
+            return true;
+        }
+    }
+
     switch (scancode) {
-        .f4, .escape => bindingEditorClose(ui, editor),
         .up => editor.move(-1),
         .down => editor.move(1),
         .@"return" => editor.beginCapture(),
@@ -1116,20 +1303,17 @@ fn handleBindingEditorKey(
     return true;
 }
 
-fn handleQuickStateKey(
+fn handleQuickStateAction(
     allocator: std.mem.Allocator,
-    scancode: zsdl3.Scancode,
-    pressed: bool,
+    action: InputBindings.HotkeyAction,
     machine: *Machine,
     quick_state: *?Machine.Snapshot,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
     frame_counter: *u32,
 ) bool {
-    if (!pressed) return false;
-
-    switch (scancode) {
-        .f6 => {
+    switch (action) {
+        .save_quick_state => {
             const snapshot = machine.captureSnapshot(allocator) catch |err| {
                 std.debug.print("Failed to save quick state: {}\n", .{err});
                 return true;
@@ -1141,7 +1325,7 @@ fn handleQuickStateKey(
             std.debug.print("Quick state saved.\n", .{});
             return true;
         },
-        .f7 => {
+        .load_quick_state => {
             if (quick_state.*) |*saved| {
                 machine.restoreSnapshot(allocator, saved) catch |err| {
                     std.debug.print("Failed to load quick state: {}\n", .{err});
@@ -1174,10 +1358,9 @@ fn resolvePersistentStatePath(
     return StateFile.pathForMachineSlot(allocator, machine, persistent_state_slot);
 }
 
-fn handlePersistentStateKey(
+fn handlePersistentStateAction(
     allocator: std.mem.Allocator,
-    scancode: zsdl3.Scancode,
-    pressed: bool,
+    action: InputBindings.HotkeyAction,
     machine: *Machine,
     explicit_state_path: ?[]const u8,
     persistent_state_slot: *u8,
@@ -1185,10 +1368,8 @@ fn handlePersistentStateKey(
     gif_recorder: *?GifRecorder,
     frame_counter: *u32,
 ) bool {
-    if (!pressed) return false;
-
     persistent_state_slot.* = StateFile.normalizePersistentStateSlot(persistent_state_slot.*);
-    if (scancode == .f10) {
+    if (action == .next_state_slot) {
         persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
 
         const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
@@ -1214,8 +1395,8 @@ fn handlePersistentStateKey(
     };
     const state_path = owned_state_path.?;
 
-    switch (scancode) {
-        .f8 => {
+    switch (action) {
+        .save_state_file => {
             StateFile.saveToFile(machine, state_path) catch |err| {
                 std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
                 return true;
@@ -1223,7 +1404,7 @@ fn handlePersistentStateKey(
             std.debug.print("Saved state file: {s}\n", .{state_path});
             return true;
         },
-        .f9 => {
+        .load_state_file => {
             var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
                 std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
                 return true;
@@ -1792,32 +1973,23 @@ fn renderOverlayPanel(
     });
 }
 
-fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent_state_slot: u8) !void {
+fn renderPauseOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    bindings: *const InputBindings.Bindings,
+    persistent_state_slot: u8,
+) !void {
     const title = "PAUSED";
-    var slot_line_buffer: [32]u8 = undefined;
-    const slot_line = try std.fmt.bufPrint(&slot_line_buffer, "STATE FILE SLOT {d}/{d}", .{
-        persistent_state_slot,
-        StateFile.persistent_state_slot_count,
-    });
-    const lines = [_][]const u8{
-        slot_line,
-        "F2 RESUME",
-        "F3 OPEN ROM",
-        "F4 KEYBOARD EDITOR",
-        "F5 PERF HUD",
-        "F12 RESET PERF HUD",
-        "F6 SAVE QUICK STATE",
-        "F7 LOAD QUICK STATE",
-        "F8 SAVE STATE FILE",
-        "F9 LOAD STATE FILE",
-        "F10 NEXT STATE SLOT",
-        "F1 HELP",
-    };
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
     const line_height = 9.0 * scale;
 
+    var line_buffers: [pause_overlay_lines.len][80]u8 = undefined;
+    var lines: [pause_overlay_lines.len][]const u8 = undefined;
     var max_width = overlayTextWidth(title, scale);
+    for (pause_overlay_lines, 0..) |line, i| {
+        lines[i] = try formatOverlayLine(line_buffers[i][0..], bindings, line, persistent_state_slot);
+    }
     for (lines) |line| {
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
@@ -1860,40 +2032,23 @@ fn renderPauseOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persisten
     }
 }
 
-fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent_state_slot: u8) !void {
+fn renderHelpOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    bindings: *const InputBindings.Bindings,
+    persistent_state_slot: u8,
+) !void {
     const title = "SANDOPOLIS HELP";
-    var slot_line_buffer: [32]u8 = undefined;
-    const slot_line = try std.fmt.bufPrint(&slot_line_buffer, "ACTIVE STATE SLOT {d}/{d}", .{
-        persistent_state_slot,
-        StateFile.persistent_state_slot_count,
-    });
-    const lines = [_][]const u8{
-        "F1 CLOSE HELP",
-        "F2 PAUSE OR RESUME",
-        "F3 OPEN ROM DIALOG",
-        "F4 KEYBOARD EDITOR",
-        "F5 TOGGLE PERF HUD",
-        "F12 RESET PERF HUD",
-        "F6 SAVE QUICK STATE",
-        "F7 LOAD QUICK STATE",
-        "F8 SAVE STATE FILE",
-        "F9 LOAD STATE FILE",
-        "F10 NEXT STATE SLOT",
-        "",
-        "SPACE STEP CPU",
-        "BACKSPACE REGISTER DUMP",
-        "R START OR STOP GIF",
-        "F11 TOGGLE FULLSCREEN",
-        "ESC QUIT",
-        "",
-        slot_line,
-        "HELP PAUSE AND MENUS FREEZE EMULATION",
-    };
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
     const line_height = 9.0 * scale;
 
+    var line_buffers: [help_overlay_lines.len][96]u8 = undefined;
+    var lines: [help_overlay_lines.len][]const u8 = undefined;
     var max_width = overlayTextWidth(title, scale);
+    for (help_overlay_lines, 0..) |line, i| {
+        lines[i] = try formatOverlayLine(line_buffers[i][0..], bindings, line, persistent_state_slot);
+    }
     for (lines) |line| {
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
@@ -1923,15 +2078,16 @@ fn renderHelpOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, persistent
     );
 
     var y = panel.y + padding + 12.0 * scale;
-    for (lines) |line| {
-        const color: zsdl3.Color = if (line.len == 0)
-            .{ .r = 0, .g = 0, .b = 0, .a = 0 }
-        else if (line.len >= 2 and line[0] == 'F' and std.ascii.isDigit(line[1]))
-            .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
-        else if (std.mem.startsWith(u8, line, "HELP"))
-            .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
-        else
-            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF };
+    for (help_overlay_lines, lines) |line_spec, line| {
+        const color: zsdl3.Color = switch (line_spec) {
+            .blank => .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+            .hotkey => .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
+            .text => |text| if (std.mem.startsWith(u8, text, "HELP"))
+                .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
+            else
+                .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+            else => .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+        };
 
         if (line.len != 0) {
             try drawOverlayText(
@@ -2126,9 +2282,9 @@ fn renderKeyboardEditorOverlay(
 ) !void {
     const title = "KEYBOARD EDITOR";
     const controls = if (editor.capture_mode)
-        "PRESS A KEY  ESC CANCEL  F12 CLEAR"
+        "PRESS A KEY  ESC CANCEL  DEL CLEAR"
     else
-        "UP DOWN MOVE  ENTER REBIND  F5 SAVE  F4 CLOSE";
+        "UP DOWN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE";
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
     const row_height = 10.0 * scale;
@@ -2246,9 +2402,9 @@ fn renderFrontendOverlay(
     } else if (ui.show_keyboard_editor) {
         try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings);
     } else if (ui.show_help) {
-        try renderHelpOverlay(renderer, viewport, persistent_state_slot);
+        try renderHelpOverlay(renderer, viewport, bindings, persistent_state_slot);
     } else {
-        try renderPauseOverlay(renderer, viewport, persistent_state_slot);
+        try renderPauseOverlay(renderer, viewport, bindings, persistent_state_slot);
     }
 }
 
@@ -2393,6 +2549,8 @@ pub fn main() !void {
     std.debug.print("Console region: {s}\n", .{resolved_region.description});
     std.debug.print("CPU Reset complete.\n", .{});
     machine.debugDump();
+    var current_rom_path = DialogPathCopy{};
+    if (rom_path) |path| current_rom_path.set(path);
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
@@ -2476,6 +2634,8 @@ pub fn main() !void {
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
                     const pressed = (event.type == zsdl3.EventType.key_down);
                     const scancode = event.key.scancode;
+                    const keyboard_state = zsdl3.getKeyboardState();
+                    const hotkey_binding = hotkeyBindingFromScancode(scancode, keyboard_state);
                     if (handleBindingEditorKey(
                         &frontend_ui,
                         &binding_editor,
@@ -2483,95 +2643,119 @@ pub fn main() !void {
                         &machine,
                         input_config_path,
                         scancode,
+                        hotkey_binding,
                         pressed,
                     )) {
                         continue;
                     }
-                    if (handleQuickStateKey(
-                        allocator,
-                        scancode,
-                        pressed,
-                        &machine,
-                        &quick_state,
-                        if (audio) |*a| a else null,
-                        &gif_recorder,
-                        &frame_counter,
-                    )) {
-                        continue;
-                    }
-                    if (handlePersistentStateKey(
-                        allocator,
-                        scancode,
-                        pressed,
-                        &machine,
-                        null,
-                        &persistent_state_slot,
-                        if (audio) |*a| a else null,
-                        &gif_recorder,
-                        &frame_counter,
-                    )) {
-                        continue;
-                    }
-                    if (frontendShortcutForKey(scancode, pressed)) |shortcut| {
-                        _ = applyFrontendShortcut(&frontend_ui, scancode, pressed);
-                        if (shortcut == .toggle_performance_hud and !frontend_ui.show_performance_hud) {
-                            core_profile_frames_remaining = 0;
-                        }
-                        if (shortcut == .toggle_performance_hud and frontend_ui.show_performance_hud) {
-                            performance_hud.reset();
-                            performance_spike_log.reset();
-                            core_profile_frames_remaining = 0;
-                        }
-                        if (shortcut == .reset_performance_hud) {
-                            performance_hud.reset();
-                            performance_spike_log.reset();
-                            core_profile_frames_remaining = 0;
-                        }
-                        if (shortcut == .open_rom) {
-                            _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window);
-                        }
-                        continue;
-                    }
-                    if (keyboardInputFromScancode(scancode)) |mapped_key| {
-                        _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
+                    if (pressed) {
+                        if (hotkey_binding) |binding| {
+                            if (input_bindings.hotkeyForBinding(binding)) |action| {
+                                if (handleQuickStateAction(
+                                    allocator,
+                                    action,
+                                    &machine,
+                                    &quick_state,
+                                    if (audio) |*a| a else null,
+                                    &gif_recorder,
+                                    &frame_counter,
+                                )) {
+                                    continue;
+                                }
+                                if (handlePersistentStateAction(
+                                    allocator,
+                                    action,
+                                    &machine,
+                                    null,
+                                    &persistent_state_slot,
+                                    if (audio) |*a| a else null,
+                                    &gif_recorder,
+                                    &frame_counter,
+                                )) {
+                                    continue;
+                                }
 
-                        if (pressed) {
-                            switch (input_bindings.hotkeyForKeyboard(mapped_key) orelse continue) {
-                                .step => {
-                                    if (frontend_ui.show_help) continue;
-                                    machine.runMasterSlice(clock.m68k_divider);
-                                    machine.debugDump();
-                                },
-                                .registers => {
-                                    if (frontend_ui.show_help) continue;
-                                    machine.debugDump();
-                                },
-                                .record_gif => {
-                                    if (frontend_ui.show_help) continue;
-                                    if (gif_recorder) |*rec| {
-                                        const frames = rec.frame_count;
-                                        rec.finish();
-                                        gif_recorder = null;
-                                        std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
-                                    } else {
-                                        const fps: u16 = if (machine.palMode()) 25 else 30;
-                                        const path = gifOutputPath();
-                                        const path_str = std.mem.sliceTo(&path, 0);
-                                        const framebuffer_height: u16 = @intCast(machine.framebuffer().len / Vdp.framebuffer_width);
-                                        gif_recorder = GifRecorder.start(path_str, fps, framebuffer_height) catch |err| {
-                                            std.debug.print("Failed to start GIF recording: {}\n", .{err});
-                                            continue;
+                                switch (action) {
+                                    .toggle_help => frontend_ui.show_help = !frontend_ui.show_help,
+                                    .toggle_pause => frontend_ui.paused = !frontend_ui.paused,
+                                    .open_rom => _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window),
+                                    .restart_rom => {
+                                        restartCurrentMachine(
+                                            allocator,
+                                            &machine,
+                                            &input_bindings,
+                                            cli.timing_mode,
+                                            if (audio) |*a| a else null,
+                                            &gif_recorder,
+                                            &frame_counter,
+                                            if (current_rom_path.len != 0) current_rom_path.slice() else null,
+                                        ) catch |err| {
+                                            std.debug.print("Failed to restart current ROM: {}\n", .{err});
                                         };
-                                        std.debug.print("GIF recording started: {s}\n", .{path_str});
-                                    }
-                                },
-                                .toggle_fullscreen => {
-                                    const flags = SDL_GetWindowFlags(window);
-                                    _ = SDL_SetWindowFullscreen(window, flags & 1 == 0);
-                                },
-                                .quit => break :mainLoop,
+                                    },
+                                    .toggle_performance_hud => {
+                                        frontend_ui.show_performance_hud = !frontend_ui.show_performance_hud;
+                                        if (!frontend_ui.show_performance_hud) {
+                                            core_profile_frames_remaining = 0;
+                                        } else {
+                                            performance_hud.reset();
+                                            performance_spike_log.reset();
+                                            core_profile_frames_remaining = 0;
+                                        }
+                                    },
+                                    .reset_performance_hud => {
+                                        performance_hud.reset();
+                                        performance_spike_log.reset();
+                                        core_profile_frames_remaining = 0;
+                                    },
+                                    .step => {
+                                        if (frontend_ui.show_help) continue;
+                                        machine.runMasterSlice(clock.m68k_divider);
+                                        machine.debugDump();
+                                    },
+                                    .registers => {
+                                        if (frontend_ui.show_help) continue;
+                                        machine.debugDump();
+                                    },
+                                    .record_gif => {
+                                        if (frontend_ui.show_help) continue;
+                                        if (gif_recorder) |*rec| {
+                                            const frames = rec.frame_count;
+                                            rec.finish();
+                                            gif_recorder = null;
+                                            std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
+                                        } else {
+                                            const fps: u16 = if (machine.palMode()) 25 else 30;
+                                            const path = gifOutputPath();
+                                            const path_str = std.mem.sliceTo(&path, 0);
+                                            const framebuffer_height: u16 = @intCast(machine.framebuffer().len / Vdp.framebuffer_width);
+                                            gif_recorder = GifRecorder.start(path_str, fps, framebuffer_height) catch |err| {
+                                                std.debug.print("Failed to start GIF recording: {}\n", .{err});
+                                                continue;
+                                            };
+                                            std.debug.print("GIF recording started: {s}\n", .{path_str});
+                                        }
+                                    },
+                                    .toggle_fullscreen => {
+                                        const flags = SDL_GetWindowFlags(window);
+                                        _ = SDL_SetWindowFullscreen(window, flags & 1 == 0);
+                                    },
+                                    .quit => break :mainLoop,
+                                    .open_keyboard_editor,
+                                    .save_quick_state,
+                                    .load_quick_state,
+                                    .save_state_file,
+                                    .load_state_file,
+                                    .next_state_slot,
+                                    => {},
+                                }
+                                continue;
                             }
                         }
+                    }
+                    if (hotkey_binding) |binding| {
+                        const mapped_key = binding.input orelse continue;
+                        _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
                     }
                 },
                 else => {},
@@ -2599,7 +2783,9 @@ pub fn main() !void {
                     path.slice(),
                 ) catch |err| {
                     std.debug.print("Failed to load ROM {s}: {}\n", .{ path.slice(), err });
+                    continue;
                 };
+                current_rom_path = path;
             },
         }
 
@@ -2825,45 +3011,26 @@ test "joystick button fallback maps conventional start and face buttons" {
     try std.testing.expect(joystickInputFromButton(8) == null);
 }
 
-test "frontend shortcuts toggle help and pause only on key down" {
-    var ui = FrontendUi{};
+test "default hotkeys include frontend commands and modifiers" {
+    const bindings = InputBindings.Bindings.defaults();
 
-    try std.testing.expect(applyFrontendShortcut(&ui, .f1, true));
-    try std.testing.expect(ui.show_help);
-    try std.testing.expect(ui.emulationPaused());
-
-    try std.testing.expect(!applyFrontendShortcut(&ui, .f1, false));
-    try std.testing.expect(ui.show_help);
-
-    try std.testing.expect(applyFrontendShortcut(&ui, .f2, true));
-    try std.testing.expect(ui.paused);
-
-    try std.testing.expect(applyFrontendShortcut(&ui, .f1, true));
-    try std.testing.expect(!ui.show_help);
-    try std.testing.expect(ui.emulationPaused());
-
-    try std.testing.expect(applyFrontendShortcut(&ui, .f2, true));
-    try std.testing.expect(!ui.emulationPaused());
-
-    try std.testing.expect(applyFrontendShortcut(&ui, .f5, true));
-    try std.testing.expect(ui.show_performance_hud);
-    try std.testing.expect(!ui.emulationPaused());
-
-    try std.testing.expect(applyFrontendShortcut(&ui, .f12, true));
-    try std.testing.expect(ui.show_performance_hud);
-}
-
-test "frontend shortcut helper ignores unrelated keys" {
-    var ui = FrontendUi{};
-    try std.testing.expect(!applyFrontendShortcut(&ui, .f11, true));
-    try std.testing.expect(!ui.emulationPaused());
-}
-
-test "frontend shortcut helper exposes open rom key" {
-    var ui = FrontendUi{};
-    try std.testing.expectEqual(FrontendShortcut.open_rom, frontendShortcutForKey(.f3, true).?);
-    try std.testing.expect(applyFrontendShortcut(&ui, .f3, true));
-    try std.testing.expect(!ui.emulationPaused());
+    try std.testing.expectEqual(
+        InputBindings.HotkeyBinding{ .input = .f1 },
+        bindings.hotkeyBinding(.toggle_help),
+    );
+    try std.testing.expectEqual(
+        InputBindings.HotkeyBinding{ .input = .f3 },
+        bindings.hotkeyBinding(.open_rom),
+    );
+    try std.testing.expectEqual(
+        InputBindings.HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true } },
+        bindings.hotkeyBinding(.restart_rom),
+    );
+    try std.testing.expectEqual(
+        InputBindings.HotkeyAction.restart_rom,
+        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .shift = true } }).?,
+    );
+    try std.testing.expect(bindings.hotkeyForBinding(.{ .input = .f3 }) == .open_rom);
 }
 
 test "duration formatter rounds to tenths of a millisecond" {
@@ -3181,18 +3348,36 @@ test "binding editor opens releases inputs and rebinds selected action" {
     _ = machine.applyKeyboardBindings(&bindings, .a, true);
     try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f4, true));
+    try std.testing.expect(handleBindingEditorKey(
+        &ui,
+        &editor,
+        &bindings,
+        &machine,
+        null,
+        .f4,
+        .{ .input = .f4 },
+        true,
+    ));
     try std.testing.expect(ui.show_keyboard_editor);
     try std.testing.expect(ui.emulationPaused());
     try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(editor.capture_mode);
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .v, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .v, .{ .input = .v }, true));
     try std.testing.expect(!editor.capture_mode);
     try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, .v), bindings.keyboardBinding(0, .up));
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f4, true));
+    try std.testing.expect(handleBindingEditorKey(
+        &ui,
+        &editor,
+        &bindings,
+        &machine,
+        null,
+        .f4,
+        .{ .input = .f4 },
+        true,
+    ));
     try std.testing.expect(!ui.show_keyboard_editor);
 }
 
@@ -3205,11 +3390,111 @@ test "binding editor clears hotkeys during capture" {
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f4, true));
+    try std.testing.expect(handleBindingEditorKey(
+        &ui,
+        &editor,
+        &bindings,
+        &machine,
+        null,
+        .f4,
+        .{ .input = .f4 },
+        true,
+    ));
     editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len;
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", true));
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .f12, true));
-    try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, null), bindings.hotkeyBinding(.step));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .delete, .{ .input = .delete }, true));
+    try std.testing.expectEqual(InputBindings.HotkeyBinding{}, bindings.hotkeyBinding(.toggle_help));
+}
+
+test "binding editor captures modifier hotkeys" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
+    var ui = FrontendUi{};
+    var editor = BindingEditorState{};
+    var bindings = InputBindings.Bindings.defaults();
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    try std.testing.expect(handleBindingEditorKey(
+        &ui,
+        &editor,
+        &bindings,
+        &machine,
+        null,
+        .f4,
+        .{ .input = .f4 },
+        true,
+    ));
+    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len + @intFromEnum(InputBindings.HotkeyAction.restart_rom);
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
+    try std.testing.expect(handleBindingEditorKey(
+        &ui,
+        &editor,
+        &bindings,
+        &machine,
+        null,
+        .f3,
+        .{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
+        true,
+    ));
+    try std.testing.expectEqual(
+        InputBindings.HotkeyBinding{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
+        bindings.hotkeyBinding(.restart_rom),
+    );
+}
+
+fn makeFrontendTestRom(allocator: std.mem.Allocator) ![]u8 {
+    var rom = try allocator.alloc(u8, 0x400);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    std.mem.writeInt(u32, rom[0x000..0x004], 0x00FF_FE00, .big);
+    std.mem.writeInt(u32, rom[0x004..0x008], 0x0000_0200, .big);
+    rom[0x200] = 0x4E;
+    rom[0x201] = 0x71;
+    return rom;
+}
+
+test "restart helper reloads the current rom path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = try makeFrontendTestRom(allocator);
+    defer allocator.free(rom);
+    try tmp.dir.writeFile(.{ .sub_path = "restart.bin", .data = rom });
+
+    const rom_path = try tmp.dir.realpathAlloc(allocator, "restart.bin");
+    defer allocator.free(rom_path);
+
+    var machine = try Machine.init(allocator, rom_path);
+    defer machine.deinit(allocator);
+
+    var bindings = InputBindings.Bindings.defaults();
+    machine.applyControllerTypes(&bindings);
+    const resolved_timing = resolveTimingMode(machine.romMetadata(), .auto);
+    const resolved_region = resolveConsoleRegion(machine.romMetadata());
+    machine.reset();
+    machine.setPalMode(resolved_timing.pal_mode);
+    machine.setConsoleIsOverseas(resolved_region.overseas);
+
+    machine.writeWorkRamByte(0x20, 0x5A);
+    var gif_recorder: ?GifRecorder = null;
+    var frame_counter: u32 = 42;
+
+    try restartCurrentMachine(
+        allocator,
+        &machine,
+        &bindings,
+        .auto,
+        null,
+        &gif_recorder,
+        &frame_counter,
+        rom_path,
+    );
+
+    try std.testing.expectEqual(@as(u8, 0x00), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u32, 0), frame_counter);
+    try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
 }
 
 test "quick state helper saves and restores machine state" {
@@ -3225,11 +3510,11 @@ test "quick state helper saves and restores machine state" {
     var frame_counter: u32 = 42;
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handleQuickStateKey(allocator, .f6, true, &machine, &quick_state, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &frame_counter));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handleQuickStateKey(allocator, .f7, true, &machine, &quick_state, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &frame_counter));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -3256,13 +3541,13 @@ test "persistent state helper saves and restores machine state" {
     defer allocator.free(slot1_state_path);
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(state_path, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -3287,28 +3572,28 @@ test "persistent state helper cycles slots and keeps files separate" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
-    try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateKey(allocator, .f8, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
-    try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
-    try std.testing.expect(handlePersistentStateKey(allocator, .f10, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
-    try std.testing.expect(handlePersistentStateKey(allocator, .f9, true, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
