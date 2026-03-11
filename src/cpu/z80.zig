@@ -289,6 +289,36 @@ test "z80 audio events retain scheduler master offsets" {
     try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
 }
 
+test "z80 hard reset restores integrated psg power-on latch and attenuation" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+
+    z80.writeByte(0x7F11, 0x07);
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 7), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+
+    z80.writeByte(0x7F11, 0x9F);
+    z80.reset();
+
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+
+    z80.writeByte(0x7F11, 0x05);
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 5), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+}
+
 test "z80 reset emits a timed ym reset event without dropping earlier ym audio events" {
     var z80 = Z80.init();
     defer z80.deinit();

@@ -717,6 +717,16 @@ static void push_ym_reset_event(Jgz80Handle *h) {
     ++h->ym_reset_count;
 }
 
+static void reset_psg_shadow_state(Jgz80Handle *h) {
+    h->psg_last = 0;
+    memset(h->psg_tone, 0, sizeof(h->psg_tone));
+    memset(h->psg_volume, 0, sizeof(h->psg_volume));
+    h->psg_noise = 0;
+    /* Integrated Mega Drive PSG powers on with tone channel 2 attenuation latched. */
+    h->psg_latched_channel = 1;
+    h->psg_latched_is_volume = true;
+}
+
 static void ym_do_timer_a(Jgz80Handle *h) {
     uint8_t load = h->ym_timer_a_overflow;
     if (h->ym_cycle == 2u) {
@@ -1020,12 +1030,7 @@ Jgz80Handle *jgz80_create(void) {
     h->audio_master_offset = 0;
     h->audio_event_sequence = 0;
     reset_ym2612_state(h);
-    h->psg_last = 0;
-    memset(h->psg_tone, 0, sizeof(h->psg_tone));
-    memset(h->psg_volume, 0x0F, sizeof(h->psg_volume));
-    h->psg_noise = 0;
-    h->psg_latched_channel = 0;
-    h->psg_latched_is_volume = false;
+    reset_psg_shadow_state(h);
     h->m68k_bus_access_count = 0;
     return h;
 }
@@ -1233,12 +1238,7 @@ void jgz80_reset(Jgz80Handle *handle) {
     handle->audio_master_offset = 0;
     handle->audio_event_sequence = 0;
     reset_ym2612_state(handle);
-    handle->psg_last = 0;
-    memset(handle->psg_tone, 0, sizeof(handle->psg_tone));
-    memset(handle->psg_volume, 0x0F, sizeof(handle->psg_volume));
-    handle->psg_noise = 0;
-    handle->psg_latched_channel = 0;
-    handle->psg_latched_is_volume = false;
+    reset_psg_shadow_state(handle);
     handle->m68k_bus_access_count = 0;
     z80_reset(&handle->core);
 }
