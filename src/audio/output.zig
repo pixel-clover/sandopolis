@@ -6,7 +6,9 @@ const YmWriteEvent = Z80.YmWriteEvent;
 const YmDacSampleEvent = Z80.YmDacSampleEvent;
 const YmResetEvent = Z80.YmResetEvent;
 const PsgCommandEvent = Z80.PsgCommandEvent;
-const Psg = @import("psg.zig").Psg;
+const psg_mod = @import("psg.zig");
+const Psg = psg_mod.Psg;
+const PsgStereoSample = psg_mod.PsgStereoSample;
 const ym2612 = @import("ym2612.zig");
 const Ym2612Synth = ym2612.Ym2612Synth;
 const YmStereoSample = ym2612.StereoSample;
@@ -80,11 +82,17 @@ const BoardOutputLpf = struct {
     }
 };
 
-// Genesis Plus GX's default low-pass filter uses lp_range = 0x9999 in 16.16 fixed point.
+// Board output low-pass filter matching Genesis Plus GX's default lp_range = 0x9999.
+// This is the ONLY filter that Genesis Plus GX applies (they use blip_buffer for
+// band-limited resampling which doesn't need pre-filtering). The coefficient 0x9999
+// in 16.16 fixed point = 0.6, giving a gentle 6 dB/octave rolloff.
 const board_output_history_factor: f32 = @as(f32, 0x9999) / 65536.0;
 const board_output_input_factor: f32 = 1.0 - board_output_history_factor;
-// Approximate the VA4 board's PSG RC network before downsampling to the host output rate.
-const psg_native_cutoff_hz: f32 = 2842.0;
+// PSG low-pass filter before downsampling. Genesis Plus GX doesn't apply any PSG
+// filtering (blip_buffer handles anti-aliasing). Setting this very high (22 kHz)
+// essentially passes through all audible content, preserving the bright, buzzy
+// character of real Genesis PSG square waves. Only ultrasonic content is attenuated.
+const psg_native_cutoff_hz: f32 = 22000.0;
 const resample_scaling_factor: u64 = 1_000_000_000;
 const resample_buffer_len: usize = 6;
 const resample_output_queue_capacity: usize = 8192;
@@ -295,8 +303,9 @@ pub const AudioOutput = struct {
     ym_synth: Ym2612Synth = .{},
     psg: Psg = Psg{},
     ym_resampler: StereoResampler = StereoResampler.init(ntscYmNativeSampleRate(), output_rate),
-    psg_resampler: MonoResampler = MonoResampler.init(ntscPsgNativeSampleRate(), output_rate),
-    psg_native_lpf: FirstOrderLpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntscPsgNativeSampleRate()),
+    psg_resampler: StereoResampler = StereoResampler.init(ntscPsgNativeSampleRate(), output_rate),
+    psg_native_lpf_l: FirstOrderLpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntscPsgNativeSampleRate()),
+    psg_native_lpf_r: FirstOrderLpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntscPsgNativeSampleRate()),
     dc_left: DcBlocker = .{},
     dc_right: DcBlocker = .{},
     board_lpf: BoardOutputLpf = BoardOutputLpf.init(),
@@ -307,13 +316,17 @@ pub const AudioOutput = struct {
     ym_partial_internal_clocks: u8 = 0,
     last_ym_resampled_left: f32 = 0.0,
     last_ym_resampled_right: f32 = 0.0,
-    last_psg_resampled: f32 = 0.0,
+    last_psg_resampled_left: f32 = 0.0,
+    last_psg_resampled_right: f32 = 0.0,
     last_ym_left: f32 = 0.0,
     last_ym_right: f32 = 0.0,
-    last_psg_sample: i16 = 0,
-    last_psg_filtered_sample: f32 = 0.0,
+    last_psg_sample_left: i16 = 0,
+    last_psg_sample_right: i16 = 0,
+    last_psg_filtered_left: f32 = 0.0,
+    last_psg_filtered_right: f32 = 0.0,
     psg_partial_master_cycles: u16 = 0,
-    psg_partial_sum: i64 = 0,
+    psg_partial_sum_left: i64 = 0,
+    psg_partial_sum_right: i64 = 0,
 
     pub fn init() AudioOutput {
         var output: AudioOutput = .{};
@@ -360,11 +373,14 @@ pub const AudioOutput = struct {
             @as(f64, @floatFromInt(clock.psg_master_cycles_per_sample));
     }
 
-    fn pushFilteredPsgNativeSample(self: *AudioOutput, sample: i16) void {
-        const normalized = @as(f32, @floatFromInt(sample)) / 32768.0;
-        const filtered = self.psg_native_lpf.process(normalized);
-        self.last_psg_filtered_sample = filtered;
-        self.psg_resampler.collectSample(.{filtered});
+    fn pushFilteredPsgNativeSample(self: *AudioOutput, sample: PsgStereoSample) void {
+        const normalized_l = @as(f32, @floatFromInt(sample.left)) / 32768.0;
+        const normalized_r = @as(f32, @floatFromInt(sample.right)) / 32768.0;
+        const filtered_l = self.psg_native_lpf_l.process(normalized_l);
+        const filtered_r = self.psg_native_lpf_r.process(normalized_r);
+        self.last_psg_filtered_left = filtered_l;
+        self.last_psg_filtered_right = filtered_r;
+        self.psg_resampler.collectSample(.{ filtered_l, filtered_r });
     }
 
     fn nativeFramesBeforeMaster(start_remainder: u16, master_offset: u32, master_cycles_per_sample: u16) u32 {
@@ -700,17 +716,21 @@ pub const AudioOutput = struct {
             const segment_master_cycles = segment_end - master_cursor;
 
             std.debug.assert(segment_master_cycles != 0);
-            const current_sample = self.psg.currentSample();
-            self.psg_partial_sum += @as(i64, current_sample) * @as(i64, @intCast(segment_master_cycles));
+            const current_sample = self.psg.currentStereoSample();
+            const segment_weight: i64 = @intCast(segment_master_cycles);
+            self.psg_partial_sum_left += @as(i64, current_sample.left) * segment_weight;
+            self.psg_partial_sum_right += @as(i64, current_sample.right) * segment_weight;
             self.psg_partial_master_cycles += @intCast(segment_master_cycles);
             master_cursor = segment_end;
 
             if (self.psg_partial_master_cycles == sample_master_cycles) {
-                self.last_psg_sample = @intCast(@divTrunc(self.psg_partial_sum, sample_master_cycles));
-                self.pushFilteredPsgNativeSample(self.last_psg_sample);
+                self.last_psg_sample_left = @intCast(@divTrunc(self.psg_partial_sum_left, sample_master_cycles));
+                self.last_psg_sample_right = @intCast(@divTrunc(self.psg_partial_sum_right, sample_master_cycles));
+                self.pushFilteredPsgNativeSample(.{ .left = self.last_psg_sample_left, .right = self.last_psg_sample_right });
                 produced_count += 1;
                 self.psg_partial_master_cycles = 0;
-                self.psg_partial_sum = 0;
+                self.psg_partial_sum_left = 0;
+                self.psg_partial_sum_right = 0;
             }
 
             if (self.psg_partial_master_cycles != 0) {
@@ -735,10 +755,11 @@ pub const AudioOutput = struct {
                 break :blk sample;
             } else .{ self.last_ym_resampled_left, self.last_ym_resampled_right };
             const psg_raw = if (self.psg_resampler.outputBufferPopFront()) |sample| blk: {
-                self.last_psg_resampled = sample[0];
+                self.last_psg_resampled_left = sample[0];
+                self.last_psg_resampled_right = sample[1];
                 break :blk sample;
-            } else .{self.last_psg_resampled};
-            const psg = self.postPsgSample(psg_raw[0]);
+            } else .{ self.last_psg_resampled_left, self.last_psg_resampled_right };
+            const psg = self.postPsgSampleStereo(psg_raw);
 
             const mixed = self.mixSources(ym, psg);
             const finished = self.finishMixedFrame(mixed[0], mixed[1]);
@@ -755,15 +776,18 @@ pub const AudioOutput = struct {
         }
     }
 
+    const StereoWeightedSum = struct { left: i64, right: i64 };
+
     fn advancePsgMasterRange(
         self: *AudioOutput,
         psg_commands: []const PsgCommandEvent,
         psg_cmd_cursor: *usize,
         master_cursor: *u32,
         master_target: u32,
-    ) i64 {
+    ) StereoWeightedSum {
         const sample_master_cycles: u32 = clock.psg_master_cycles_per_sample;
-        var weighted_sum: i64 = 0;
+        var weighted_sum_left: i64 = 0;
+        var weighted_sum_right: i64 = 0;
 
         while (master_cursor.* < master_target) {
             if (self.psg_partial_master_cycles == 0) {
@@ -786,17 +810,23 @@ pub const AudioOutput = struct {
             const segment_master_cycles = segment_end - master_cursor.*;
 
             std.debug.assert(segment_master_cycles != 0);
-            const current_sample = self.psg.currentSample();
-            const weighted_segment = @as(i64, current_sample) * @as(i64, @intCast(segment_master_cycles));
-            weighted_sum += weighted_segment;
-            self.psg_partial_sum += weighted_segment;
+            const current_sample = self.psg.currentStereoSample();
+            const segment_weight: i64 = @intCast(segment_master_cycles);
+            const weighted_segment_left = @as(i64, current_sample.left) * segment_weight;
+            const weighted_segment_right = @as(i64, current_sample.right) * segment_weight;
+            weighted_sum_left += weighted_segment_left;
+            weighted_sum_right += weighted_segment_right;
+            self.psg_partial_sum_left += weighted_segment_left;
+            self.psg_partial_sum_right += weighted_segment_right;
             self.psg_partial_master_cycles += @intCast(segment_master_cycles);
             master_cursor.* = segment_end;
 
             if (self.psg_partial_master_cycles == sample_master_cycles) {
-                self.last_psg_sample = @intCast(@divTrunc(self.psg_partial_sum, sample_master_cycles));
+                self.last_psg_sample_left = @intCast(@divTrunc(self.psg_partial_sum_left, sample_master_cycles));
+                self.last_psg_sample_right = @intCast(@divTrunc(self.psg_partial_sum_right, sample_master_cycles));
                 self.psg_partial_master_cycles = 0;
-                self.psg_partial_sum = 0;
+                self.psg_partial_sum_left = 0;
+                self.psg_partial_sum_right = 0;
             }
 
             if (self.psg_partial_master_cycles != 0) {
@@ -806,7 +836,7 @@ pub const AudioOutput = struct {
             }
         }
 
-        return weighted_sum;
+        return .{ .left = weighted_sum_left, .right = weighted_sum_right };
     }
 
     fn renderChunk(
@@ -839,12 +869,17 @@ pub const AudioOutput = struct {
         if (master_start == 0 and self.psg_partial_master_cycles == 0 and pending.psg_start_remainder != 0) {
             self.psg.advanceOneSample();
             self.psg_partial_master_cycles = pending.psg_start_remainder;
-            self.psg_partial_sum = @as(i64, self.psg.currentSample()) * @as(i64, pending.psg_start_remainder);
-            self.last_psg_sample = self.psg.currentSample();
+            const init_sample = self.psg.currentStereoSample();
+            const init_weight: i64 = @intCast(pending.psg_start_remainder);
+            self.psg_partial_sum_left = @as(i64, init_sample.left) * init_weight;
+            self.psg_partial_sum_right = @as(i64, init_sample.right) * init_weight;
+            self.last_psg_sample_left = init_sample.left;
+            self.last_psg_sample_right = init_sample.right;
         }
 
         var psg_master_cursor: u32 = master_start;
-        var last_psg_sample = self.last_psg_sample;
+        var last_psg_sample_left = self.last_psg_sample_left;
+        var last_psg_sample_right = self.last_psg_sample_right;
         var ym_native_cursor: usize = 0;
         var last_ym_left = self.last_ym_left;
         var last_ym_right = self.last_ym_right;
@@ -881,7 +916,7 @@ pub const AudioOutput = struct {
                 r += last_ym_right;
             }
 
-            var psg_sample: f32 = 0.0;
+            var psg_sample: [2]f32 = .{ 0.0, 0.0 };
             if (psg_master_cursor < global_master_target) {
                 const weighted_sum = self.advancePsgMasterRange(
                     psg_commands,
@@ -890,12 +925,16 @@ pub const AudioOutput = struct {
                     global_master_target,
                 );
                 const master_cycles_to_mix = global_master_target - outputFrameToMaster(pending, output_frame_start + @as(u32, @intCast(i)), total_output_frames);
-                psg_sample = @as(f32, @floatFromInt(weighted_sum)) / @as(f32, @floatFromInt(master_cycles_to_mix)) / 32768.0;
-                last_psg_sample = self.last_psg_sample;
+                const cycles_f: f32 = @floatFromInt(master_cycles_to_mix);
+                psg_sample[0] = @as(f32, @floatFromInt(weighted_sum.left)) / cycles_f / 32768.0;
+                psg_sample[1] = @as(f32, @floatFromInt(weighted_sum.right)) / cycles_f / 32768.0;
+                last_psg_sample_left = self.last_psg_sample_left;
+                last_psg_sample_right = self.last_psg_sample_right;
             } else {
-                psg_sample = @as(f32, @floatFromInt(last_psg_sample)) / 32768.0;
+                psg_sample[0] = @as(f32, @floatFromInt(last_psg_sample_left)) / 32768.0;
+                psg_sample[1] = @as(f32, @floatFromInt(last_psg_sample_right)) / 32768.0;
             }
-            psg_sample = self.postPsgSample(psg_sample);
+            psg_sample = self.postPsgSampleStereo(psg_sample);
             const mixed = self.mixSources(.{ l, r }, psg_sample);
             const finished = self.finishMixedFrame(mixed[0], mixed[1]);
             self.sample_chunk[i * channels] = finished[0];
@@ -916,7 +955,8 @@ pub const AudioOutput = struct {
 
         self.last_ym_left = last_ym_left;
         self.last_ym_right = last_ym_right;
-        self.last_psg_sample = last_psg_sample;
+        self.last_psg_sample_left = last_psg_sample_left;
+        self.last_psg_sample_right = last_psg_sample_right;
 
         return self.sample_chunk[0 .. frames * channels];
     }
@@ -927,7 +967,13 @@ pub const AudioOutput = struct {
         return sample;
     }
 
-    fn mixSources(self: *const AudioOutput, ym: [2]f32, psg: f32) [2]f32 {
+    fn postPsgSampleStereo(self: *AudioOutput, sample: [2]f32) [2]f32 {
+        _ = self;
+        // Genesis Plus GX's Mega Drive path relies on band-limited PSG generation plus the final board filter.
+        return sample;
+    }
+
+    fn mixSources(self: *const AudioOutput, ym: [2]f32, psg: [2]f32) [2]f32 {
         var l: f32 = 0.0;
         var r: f32 = 0.0;
 
@@ -937,8 +983,8 @@ pub const AudioOutput = struct {
         }
 
         if (self.render_mode != .ym_only) {
-            l += psg * psg_mix_gain;
-            r += psg * psg_mix_gain;
+            l += psg[0] * psg_mix_gain;
+            r += psg[1] * psg_mix_gain;
         }
 
         return .{ l, r };
@@ -1001,7 +1047,9 @@ pub const AudioOutput = struct {
             }
 
             while (psg_native_cursor < next_psg_command_frame) : (psg_native_cursor += 1) {
-                self.last_psg_sample = self.psg.nextSample();
+                const sample = self.psg.nextStereoSample();
+                self.last_psg_sample_left = sample.left;
+                self.last_psg_sample_right = sample.right;
             }
         }
         self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, std.math.maxInt(u32));
@@ -1085,19 +1133,21 @@ pub const AudioOutput = struct {
         self.ym_synth.setTimingMode(is_pal);
         self.ym_resampler.reset(if (is_pal) palYmNativeSampleRate() else ntscYmNativeSampleRate(), output_rate);
         self.psg_resampler.reset(if (is_pal) palPsgNativeSampleRate() else ntscPsgNativeSampleRate(), output_rate);
-        self.psg_native_lpf = FirstOrderLpf.init(
-            psg_native_cutoff_hz,
-            if (is_pal) palPsgNativeSampleRate() else ntscPsgNativeSampleRate(),
-        );
+        const psg_rate = if (is_pal) palPsgNativeSampleRate() else ntscPsgNativeSampleRate();
+        self.psg_native_lpf_l = FirstOrderLpf.init(psg_native_cutoff_hz, psg_rate);
+        self.psg_native_lpf_r = FirstOrderLpf.init(psg_native_cutoff_hz, psg_rate);
         self.dc_left = .{};
         self.dc_right = .{};
         self.board_lpf = BoardOutputLpf.init();
         self.last_ym_resampled_left = 0.0;
         self.last_ym_resampled_right = 0.0;
-        self.last_psg_resampled = 0.0;
-        self.last_psg_filtered_sample = 0.0;
+        self.last_psg_resampled_left = 0.0;
+        self.last_psg_resampled_right = 0.0;
+        self.last_psg_filtered_left = 0.0;
+        self.last_psg_filtered_right = 0.0;
         self.psg_partial_master_cycles = 0;
-        self.psg_partial_sum = 0;
+        self.psg_partial_sum_left = 0;
+        self.psg_partial_sum_right = 0;
     }
 
     pub fn setRenderMode(self: *AudioOutput, mode: RenderMode) void {
@@ -1653,8 +1703,10 @@ test "audio output reset preserves mode and clears render-side state" {
     output.render_mode = .psg_only;
     output.timing_is_pal = true;
     output.ym_synth.core.dacen = 1;
-    output.last_psg_sample = 99;
-    output.last_psg_filtered_sample = 0.25;
+    output.last_psg_sample_left = 99;
+    output.last_psg_sample_right = 99;
+    output.last_psg_filtered_left = 0.25;
+    output.last_psg_filtered_right = 0.25;
     output.last_ym_resampled_left = 0.5;
 
     output.reset();
@@ -1662,8 +1714,10 @@ test "audio output reset preserves mode and clears render-side state" {
     try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, output.render_mode);
     try std.testing.expect(output.timing_is_pal);
     try std.testing.expectEqual(@as(u8, 0), output.ym_synth.core.dacen);
-    try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample);
-    try std.testing.expectEqual(@as(f32, 0.0), output.last_psg_filtered_sample);
+    try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample_left);
+    try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample_right);
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_psg_filtered_left);
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_psg_filtered_right);
     try std.testing.expectEqual(@as(f32, 0.0), output.last_ym_resampled_left);
     try std.testing.expectEqual(@as(u4, 0), output.psg.tones[0].attenuation);
     try std.testing.expectEqual(@as(u4, 0), output.psg.tones[1].attenuation);
@@ -1969,7 +2023,7 @@ test "unfiltered mix preserves more high-frequency psg energy than the filtered 
 
 test "default board mix applies the reference PSG preamp ratio" {
     var output = AudioOutput.init();
-    const mixed = output.mixSources(.{ 0.25, -0.125 }, 0.5);
+    const mixed = output.mixSources(.{ 0.25, -0.125 }, .{ 0.5, 0.5 });
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.25) + 0.5 * psg_mix_gain, mixed[0], 0.000001);
     try std.testing.expectApproxEqAbs(@as(f32, -0.125) + 0.5 * psg_mix_gain, mixed[1], 0.000001);
@@ -2122,13 +2176,13 @@ test "runtime psg mid-sample mute preserves earlier sample energy" {
     var full = AudioOutput.init();
     const full_count = full.generatePsgNativeSamples(pending, full_commands[0..]);
     try std.testing.expectEqual(@as(usize, 1), full_count);
-    try std.testing.expect(full.last_psg_sample > 0);
+    try std.testing.expect(full.last_psg_sample_left > 0);
 
     var half_muted = AudioOutput.init();
     const half_muted_count = half_muted.generatePsgNativeSamples(pending, half_muted_commands[0..]);
     try std.testing.expectEqual(@as(usize, 1), half_muted_count);
-    try std.testing.expect(half_muted.last_psg_sample > 0);
-    try std.testing.expect(half_muted.last_psg_sample < full.last_psg_sample);
+    try std.testing.expect(half_muted.last_psg_sample_left > 0);
+    try std.testing.expect(half_muted.last_psg_sample_left < full.last_psg_sample_left);
 }
 
 test "runtime psg window-start commands apply cleanly while a sample is already in progress" {
@@ -2147,12 +2201,14 @@ test "runtime psg window-start commands apply cleanly while a sample is already 
     output.psg.doCommand(0x00);
     output.psg.advanceOneSample();
     output.psg_partial_master_cycles = half_sample;
-    output.psg_partial_sum = @as(i64, output.psg.currentSample()) * @as(i64, half_sample);
+    const init_sample = output.psg.currentStereoSample();
+    output.psg_partial_sum_left = @as(i64, init_sample.left) * @as(i64, half_sample);
+    output.psg_partial_sum_right = @as(i64, init_sample.right) * @as(i64, half_sample);
 
     const produced = output.generatePsgNativeSamples(pending, mute_command[0..]);
     try std.testing.expectEqual(@as(usize, 1), produced);
-    try std.testing.expect(output.last_psg_sample > 0);
-    try std.testing.expect(output.last_psg_sample < output.psg.currentSample() or output.psg.currentSample() == 0);
+    try std.testing.expect(output.last_psg_sample_left > 0);
+    try std.testing.expect(output.last_psg_sample_left < output.psg.currentSample() or output.psg.currentSample() == 0);
 }
 
 test "runtime board filtering is applied after resampling" {
@@ -2298,9 +2354,10 @@ test "psg post-resample path does not apply an extra low-pass stage" {
     try std.testing.expectApproxEqAbs(@as(f32, -0.5), output.postPsgSample(-0.5), 0.000001);
 }
 
-test "native psg lpf preserves audible fundamentals while rolling off ultrasonic content" {
+test "native psg lpf preserves audible content with minimal filtering" {
     const ntsc_psg_rate = AudioOutput.ntscPsgNativeSampleRate();
 
+    // 1 kHz fundamental - should pass through with virtually no attenuation
     var low_lpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntsc_psg_rate);
     var low_peak: f32 = 0.0;
     for (0..4096) |i| {
@@ -2309,6 +2366,8 @@ test "native psg lpf preserves audible fundamentals while rolling off ultrasonic
         if (i > 2048) low_peak = @max(low_peak, @abs(out));
     }
 
+    // 20 kHz - with 22 kHz cutoff, this should also pass through mostly unattenuated
+    // (Genesis Plus GX doesn't filter PSG at all - we set cutoff very high to match)
     var high_lpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntsc_psg_rate);
     var high_peak: f32 = 0.0;
     for (0..4096) |i| {
@@ -2317,8 +2376,9 @@ test "native psg lpf preserves audible fundamentals while rolling off ultrasonic
         if (i > 2048) high_peak = @max(high_peak, @abs(out));
     }
 
-    try std.testing.expect(low_peak > 0.85);
-    try std.testing.expect(high_peak < 0.2);
+    // Both audible frequencies should pass through with minimal loss
+    try std.testing.expect(low_peak > 0.95);
+    try std.testing.expect(high_peak > 0.7); // 20 kHz near but below 22 kHz cutoff
 }
 
 test "board output lpf matches the Genesis Plus GX default recurrence" {

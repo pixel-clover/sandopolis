@@ -1,5 +1,10 @@
 const std = @import("std");
 
+pub const PsgStereoSample = struct {
+    left: i16,
+    right: i16,
+};
+
 const psg_levels: [16]i16 = .{
     0x1FFF,
     0x196A,
@@ -48,6 +53,15 @@ pub const Psg = struct {
     noise: NoiseState = NoiseState{},
     // Power-on latch targets tone channel 2 attenuation on the integrated MD PSG.
     latched: LatchedCommand = .{ .channel = 1, .is_volume = true },
+    /// Per-channel stereo panning. Each element is [left_enable, right_enable].
+    /// Default: all channels output to both speakers.
+    /// This is compatible with Game Gear stereo and can be used for custom panning.
+    channel_pan: [4][2]bool = .{
+        .{ true, true }, // Tone 0
+        .{ true, true }, // Tone 1
+        .{ true, true }, // Tone 2
+        .{ true, true }, // Noise
+    },
 
     pub fn powerOn() Psg {
         var psg = Psg{};
@@ -179,6 +193,51 @@ pub const Psg = struct {
     pub fn update(self: *Psg, sample_buffer: []i16, total_frames: usize) void {
         for (0..total_frames) |j| {
             sample_buffer[j] +|= self.nextSample();
+        }
+    }
+
+    /// Set stereo panning from an 8-bit Game Gear compatible panning register.
+    /// Bits 4-7: Left channel enable for channels 0-3 (tone0, tone1, tone2, noise)
+    /// Bits 0-3: Right channel enable for channels 0-3
+    /// Default value 0xFF enables all channels on both speakers.
+    pub fn setPanning(self: *Psg, panning: u8) void {
+        for (0..4) |ch| {
+            self.channel_pan[ch][0] = ((panning >> @intCast(ch + 4)) & 1) != 0; // Left
+            self.channel_pan[ch][1] = ((panning >> @intCast(ch)) & 1) != 0; // Right
+        }
+    }
+
+    /// Get the current stereo sample without advancing the PSG state.
+    pub fn currentStereoSample(self: *const Psg) PsgStereoSample {
+        var left: i16 = 0;
+        var right: i16 = 0;
+
+        for (0..3) |ch| {
+            const level = toneLevel(&self.tones[ch]);
+            if (self.channel_pan[ch][0]) left +|= level;
+            if (self.channel_pan[ch][1]) right +|= level;
+        }
+
+        const noise_level = noiseLevel(&self.noise);
+        if (self.channel_pan[3][0]) left +|= noise_level;
+        if (self.channel_pan[3][1]) right +|= noise_level;
+
+        return .{ .left = left, .right = right };
+    }
+
+    /// Advance the PSG state and return the new stereo sample.
+    pub fn nextStereoSample(self: *Psg) PsgStereoSample {
+        self.advanceOneSample();
+        return self.currentStereoSample();
+    }
+
+    /// Update a stereo sample buffer with PSG output.
+    /// Buffer format: interleaved stereo (left, right, left, right, ...)
+    pub fn updateStereo(self: *Psg, sample_buffer: []i16, total_frames: usize) void {
+        for (0..total_frames) |j| {
+            const sample = self.nextStereoSample();
+            sample_buffer[j * 2] +|= sample.left;
+            sample_buffer[j * 2 + 1] +|= sample.right;
         }
     }
 };
@@ -339,4 +398,87 @@ test "psg periodic noise startup sequence matches integrated reference" {
 
 test "psg white noise startup sequence matches integrated reference" {
     try expectNoiseBitSequence(.white, "0000000000000000000000000000110000000000000000000000001100001100");
+}
+
+test "psg stereo sample outputs same value to both channels by default" {
+    var psg = Psg{};
+
+    psg.doCommand(0x90); // Tone 0 attenuation = 0
+    psg.doCommand(0x81); // Tone 0 period low
+    psg.doCommand(0x00); // Tone 0 period high
+
+    const sample = psg.nextStereoSample();
+
+    try std.testing.expectEqual(sample.left, sample.right);
+}
+
+test "psg stereo panning isolates channels to left or right" {
+    var psg = Psg{};
+
+    psg.doCommand(0x90); // Tone 0 attenuation = 0
+    psg.doCommand(0x81); // Tone 0 period low
+    psg.doCommand(0x00); // Tone 0 period high
+
+    // Pan tone 0 to left only
+    psg.channel_pan[0][0] = true; // Left enabled
+    psg.channel_pan[0][1] = false; // Right disabled
+
+    // Get a sample when tone is high
+    var found_asymmetric = false;
+    for (0..16) |_| {
+        const sample = psg.nextStereoSample();
+        if (sample.left != sample.right) {
+            found_asymmetric = true;
+            try std.testing.expect(sample.left > sample.right);
+            break;
+        }
+    }
+    try std.testing.expect(found_asymmetric);
+}
+
+test "psg set panning from Game Gear compatible register" {
+    var psg = Psg{};
+
+    // 0xF0 = all channels to left only (bits 4-7 = 1, bits 0-3 = 0)
+    psg.setPanning(0xF0);
+
+    try std.testing.expect(psg.channel_pan[0][0]); // Tone 0 left
+    try std.testing.expect(!psg.channel_pan[0][1]); // Tone 0 right (disabled)
+    try std.testing.expect(psg.channel_pan[1][0]); // Tone 1 left
+    try std.testing.expect(!psg.channel_pan[1][1]); // Tone 1 right (disabled)
+    try std.testing.expect(psg.channel_pan[2][0]); // Tone 2 left
+    try std.testing.expect(!psg.channel_pan[2][1]); // Tone 2 right (disabled)
+    try std.testing.expect(psg.channel_pan[3][0]); // Noise left
+    try std.testing.expect(!psg.channel_pan[3][1]); // Noise right (disabled)
+
+    // 0x0F = all channels to right only
+    psg.setPanning(0x0F);
+
+    try std.testing.expect(!psg.channel_pan[0][0]); // Tone 0 left (disabled)
+    try std.testing.expect(psg.channel_pan[0][1]); // Tone 0 right
+}
+
+test "psg stereo update buffer writes interleaved samples" {
+    var psg = Psg{};
+
+    psg.doCommand(0x90); // Tone 0 attenuation = 0
+    psg.doCommand(0x81); // Tone 0 period low
+    psg.doCommand(0x00); // Tone 0 period high
+
+    // Pan to left only
+    psg.channel_pan[0][0] = true;
+    psg.channel_pan[0][1] = false;
+
+    var buf: [32]i16 = [_]i16{0} ** 32;
+    psg.updateStereo(&buf, 16);
+
+    // Should have some non-zero left samples and zero right samples
+    var has_left = false;
+    var right_is_zero = true;
+    for (0..16) |i| {
+        if (buf[i * 2] != 0) has_left = true;
+        if (buf[i * 2 + 1] != 0) right_is_zero = false;
+    }
+    try std.testing.expect(has_left);
+    try std.testing.expect(right_is_zero);
 }

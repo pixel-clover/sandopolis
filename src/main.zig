@@ -11,6 +11,7 @@ const Machine = @import("machine.zig").Machine;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
+const WavRecorder = @import("recording/wav.zig").WavRecorder;
 const StateFile = @import("state_file.zig");
 
 const AudioInit = struct {
@@ -18,7 +19,7 @@ const AudioInit = struct {
     output: AudioOutput,
     startup_mute_active: bool = true,
 
-    pub fn handlePending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
+    pub fn handlePending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool, wav_recorder: ?*WavRecorder) !void {
         if (self.startupMuteActive()) {
             const saw_audible_activity = z80.hasPendingAudibleEvents();
             try self.output.discardPending(pending, z80, is_pal);
@@ -27,7 +28,7 @@ const AudioInit = struct {
         }
 
         if (self.queueHasRoom()) {
-            try self.pushPending(pending, z80, is_pal);
+            try self.pushPending(pending, z80, is_pal, wav_recorder);
         } else {
             try self.output.discardPending(pending, z80, is_pal);
         }
@@ -38,16 +39,21 @@ const AudioInit = struct {
         return queued_bytes < AudioOutput.max_queued_bytes;
     }
 
-    pub fn pushPending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool) !void {
+    pub fn pushPending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool, wav_recorder: ?*WavRecorder) !void {
         const StreamSink = struct {
             stream: *zsdl3.AudioStream,
+            wav_rec: ?*WavRecorder,
 
             pub fn consumeSamples(sink: *@This(), samples: []const i16) !void {
                 try zsdl3.putAudioStreamData(i16, sink.stream, samples);
+                // Also capture samples for WAV recording if active
+                if (sink.wav_rec) |rec| {
+                    rec.addSamples(samples) catch {};
+                }
             }
         };
 
-        var sink = StreamSink{ .stream = self.stream };
+        var sink = StreamSink{ .stream = self.stream, .wav_rec = wav_recorder };
         try self.output.renderPending(pending, z80, is_pal, &sink);
     }
 
@@ -435,6 +441,7 @@ const help_overlay_lines = [_]OverlayLine{
     .{ .hotkey = .{ .action = .step, .label = "STEP CPU" } },
     .{ .hotkey = .{ .action = .registers, .label = "REGISTER DUMP" } },
     .{ .hotkey = .{ .action = .record_gif, .label = "START OR STOP GIF" } },
+    .{ .hotkey = .{ .action = .record_wav, .label = "START OR STOP WAV" } },
     .{ .hotkey = .{ .action = .toggle_fullscreen, .label = "TOGGLE FULLSCREEN" } },
     .{ .hotkey = .{ .action = .quit, .label = "QUIT" } },
     .blank,
@@ -759,6 +766,7 @@ fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
         .step => "STEP CPU",
         .registers => "REGISTER DUMP",
         .record_gif => "RECORD GIF",
+        .record_wav => "RECORD WAV",
         .toggle_fullscreen => "FULLSCREEN",
         .quit => "QUIT",
     };
@@ -850,6 +858,16 @@ fn stopGifRecording(gif_recorder: *?GifRecorder, reason: []const u8) void {
     }
 }
 
+fn stopWavRecording(wav_recorder: *?WavRecorder, reason: []const u8) void {
+    if (wav_recorder.*) |*rec| {
+        const duration = rec.getDurationSeconds();
+        const samples = rec.sample_count;
+        rec.finish();
+        wav_recorder.* = null;
+        std.debug.print("{s} ({d} samples, {d:.2}s)\n", .{ reason, samples, duration });
+    }
+}
+
 fn logLoadedRomMetadata(machine: *Machine, rom_path: []const u8) void {
     const metadata = machine.romMetadata();
     std.debug.print("Loading ROM: {s}\n", .{rom_path});
@@ -872,6 +890,7 @@ fn loadRomIntoMachine(
     timing_mode: TimingModeOption,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
     frame_counter: *u32,
     rom_path: []const u8,
 ) !void {
@@ -891,6 +910,7 @@ fn loadRomIntoMachine(
     next_machine.debugDump();
 
     stopGifRecording(gif_recorder, "GIF recording stopped for ROM switch");
+    stopWavRecording(wav_recorder, "WAV recording stopped for ROM switch");
     if (audio) |a| {
         resetAudioOutput(a);
     }
@@ -920,6 +940,7 @@ fn hardResetCurrentMachine(
     timing_mode: TimingModeOption,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
     frame_counter: *u32,
     rom_path: ?[]const u8,
 ) !void {
@@ -931,6 +952,7 @@ fn hardResetCurrentMachine(
             timing_mode,
             audio,
             gif_recorder,
+            wav_recorder,
             frame_counter,
             path,
         );
@@ -938,6 +960,7 @@ fn hardResetCurrentMachine(
     }
 
     stopGifRecording(gif_recorder, "GIF recording stopped for hard reset");
+    stopWavRecording(wav_recorder, "WAV recording stopped for hard reset");
     if (audio) |a| {
         resetAudioOutput(a);
     }
@@ -1346,6 +1369,7 @@ fn handleQuickStateAction(
     quick_state: *?Machine.Snapshot,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
     frame_counter: *u32,
 ) bool {
     switch (action) {
@@ -1368,6 +1392,7 @@ fn handleQuickStateAction(
                     return true;
                 };
                 stopGifRecording(gif_recorder, "GIF recording stopped for state load");
+                stopWavRecording(wav_recorder, "WAV recording stopped for state load");
                 if (audio) |a| {
                     resetAudioOutput(a);
                 }
@@ -1402,6 +1427,7 @@ fn handlePersistentStateAction(
     persistent_state_slot: *u8,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
     frame_counter: *u32,
 ) bool {
     persistent_state_slot.* = StateFile.normalizePersistentStateSlot(persistent_state_slot.*);
@@ -1448,6 +1474,7 @@ fn handlePersistentStateAction(
             errdefer next_machine.deinit(allocator);
 
             stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
+            stopWavRecording(wav_recorder, "WAV recording stopped for state-file load");
             if (audio) |a| {
                 resetAudioOutput(a);
             }
@@ -2590,6 +2617,7 @@ pub fn main() !void {
     var frame_counter: u32 = 0;
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
     var quick_state: ?Machine.Snapshot = null;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     defer if (quick_state) |*state| state.deinit(allocator);
@@ -2694,6 +2722,7 @@ pub fn main() !void {
                                     &quick_state,
                                     if (audio) |*a| a else null,
                                     &gif_recorder,
+                                    &wav_recorder,
                                     &frame_counter,
                                 )) {
                                     continue;
@@ -2706,6 +2735,7 @@ pub fn main() !void {
                                     &persistent_state_slot,
                                     if (audio) |*a| a else null,
                                     &gif_recorder,
+                                    &wav_recorder,
                                     &frame_counter,
                                 )) {
                                     continue;
@@ -2724,6 +2754,7 @@ pub fn main() !void {
                                             cli.timing_mode,
                                             if (audio) |*a| a else null,
                                             &gif_recorder,
+                                            &wav_recorder,
                                             &frame_counter,
                                             if (current_rom_path.len != 0) current_rom_path.slice() else null,
                                         ) catch |err| {
@@ -2773,6 +2804,24 @@ pub fn main() !void {
                                             std.debug.print("GIF recording started: {s}\n", .{path_str});
                                         }
                                     },
+                                    .record_wav => {
+                                        if (frontend_ui.show_help) continue;
+                                        if (wav_recorder) |*rec| {
+                                            const duration = rec.getDurationSeconds();
+                                            const samples = rec.sample_count;
+                                            rec.finish();
+                                            wav_recorder = null;
+                                            std.debug.print("WAV recording stopped ({d} samples, {d:.2}s)\n", .{ samples, duration });
+                                        } else {
+                                            const path = wavOutputPath();
+                                            const path_str = std.mem.sliceTo(&path, 0);
+                                            wav_recorder = WavRecorder.start(path_str, AudioOutput.output_rate, AudioOutput.channels) catch |err| {
+                                                std.debug.print("Failed to start WAV recording: {}\n", .{err});
+                                                continue;
+                                            };
+                                            std.debug.print("WAV recording started: {s}\n", .{path_str});
+                                        }
+                                    },
                                     .toggle_fullscreen => {
                                         const flags = SDL_GetWindowFlags(window);
                                         _ = SDL_SetWindowFullscreen(window, flags & 1 == 0);
@@ -2816,6 +2865,7 @@ pub fn main() !void {
                     cli.timing_mode,
                     if (audio) |*a| a else null,
                     &gif_recorder,
+                    &wav_recorder,
                     &frame_counter,
                     path.slice(),
                 ) catch |err| {
@@ -2869,7 +2919,8 @@ pub fn main() !void {
         if (audio) |*a| {
             const audio_start = std.time.Instant.now() catch frame_timer;
             const pending = machine.takePendingAudio();
-            try a.handlePending(pending, &machine.bus.z80, machine.palMode());
+            const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
+            try a.handlePending(pending, &machine.bus.z80, machine.palMode(), wav_rec_ptr);
             frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
         } else {
             const audio_start = std.time.Instant.now() catch frame_timer;
@@ -2947,6 +2998,11 @@ pub fn main() !void {
 
     if (gif_recorder) |*rec| {
         std.debug.print("GIF recording stopped on exit ({d} frames)\n", .{rec.frame_count});
+        rec.finish();
+    }
+    if (wav_recorder) |*rec| {
+        const duration = rec.getDurationSeconds();
+        std.debug.print("WAV recording stopped on exit ({d} samples, {d:.2}s)\n", .{ rec.sample_count, duration });
         rec.finish();
     }
 }
@@ -3561,6 +3617,7 @@ test "hard reset helper reloads the current rom path" {
 
     machine.writeWorkRamByte(0x20, 0x5A);
     var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
 
     try hardResetCurrentMachine(
@@ -3570,6 +3627,7 @@ test "hard reset helper reloads the current rom path" {
         .auto,
         null,
         &gif_recorder,
+        &wav_recorder,
         &frame_counter,
         rom_path,
     );
@@ -3592,13 +3650,13 @@ test "audio init stays muted until it sees audible startup activity" {
     audio.armStartupMute();
     try std.testing.expect(audio.startupMuteActive());
 
-    try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false);
+    try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false, null);
     try std.testing.expect(audio.startupMuteActive());
 
     z80.writeByte(0x7F11, 0x90);
     try std.testing.expect(z80.hasPendingAudibleEvents());
 
-    try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false);
+    try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false, null);
     try std.testing.expect(!audio.startupMuteActive());
     try std.testing.expect(!z80.hasPendingAudibleEvents());
 }
@@ -3613,14 +3671,15 @@ test "quick state helper saves and restores machine state" {
     var quick_state: ?Machine.Snapshot = null;
     defer if (quick_state) |*state| state.deinit(allocator);
     var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -3641,19 +3700,20 @@ test "persistent state helper saves and restores machine state" {
     defer machine.deinit(allocator);
 
     var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, persistent_state_slot);
     defer allocator.free(slot1_state_path);
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(state_path, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -3674,32 +3734,33 @@ test "persistent state helper cycles slots and keeps files separate" {
     defer machine.deinit(allocator);
 
     var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 17;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
     try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
@@ -3924,6 +3985,20 @@ fn gifOutputPath() [48]u8 {
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch break;
+        buf[name.len] = 0;
+        std.fs.cwd().access(name, .{}) catch {
+            return buf;
+        };
+    }
+
+    return buf;
+}
+
+fn wavOutputPath() [48]u8 {
+    var buf: [48]u8 = [_]u8{0} ** 48;
+    var i: u32 = 1;
+    while (i <= 999) : (i += 1) {
+        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{i}) catch break;
         buf[name.len] = 0;
         std.fs.cwd().access(name, .{}) catch {
             return buf;

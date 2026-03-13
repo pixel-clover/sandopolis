@@ -41,6 +41,7 @@ pub const HotkeyAction = enum(u8) {
     step,
     registers,
     record_gif,
+    record_wav,
     toggle_fullscreen,
     quit,
 };
@@ -164,6 +165,7 @@ pub const all_hotkey_actions = [_]HotkeyAction{
     .step,
     .registers,
     .record_gif,
+    .record_wav,
     .toggle_fullscreen,
     .quit,
 };
@@ -248,6 +250,7 @@ pub const Bindings = struct {
         bindings.setHotkey(.step, .space);
         bindings.setHotkey(.registers, .backspace);
         bindings.setHotkey(.record_gif, .r);
+        bindings.setHotkeyWithModifiers(.record_wav, .r, .{ .shift = true });
         bindings.setHotkey(.toggle_fullscreen, .f11);
         bindings.setHotkey(.quit, .escape);
 
