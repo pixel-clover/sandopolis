@@ -1,10 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
+const bus_save_state = @import("bus/save_state.zig");
 const clock = @import("clock.zig");
 const Machine = @import("machine.zig").Machine;
-const Vdp = @import("video/vdp.zig").Vdp;
-const Io = @import("input/io.zig").Io;
-const AudioTiming = @import("audio/timing.zig").AudioTiming;
 const Cpu = @import("cpu/cpu.zig").Cpu;
 const Z80 = @import("cpu/z80.zig").Z80;
 
@@ -24,23 +22,7 @@ const Header = struct {
 };
 
 const BusState = struct {
-    ram: [64 * 1024]u8,
-    vdp: Vdp,
-    io: Io,
-    audio_timing: AudioTiming,
-    io_master_remainder: u8,
-    z80_master_credit: i64,
-    z80_stall_master_debt: u32,
-    z80_wait_master_cycles: u32,
-    z80_odd_access: bool,
-    m68k_wait_master_cycles: u32,
-    open_bus: u16,
-    cartridge_ram_type: u8,
-    cartridge_ram_persistent: bool,
-    cartridge_ram_dirty: bool,
-    cartridge_ram_mapped: bool,
-    cartridge_ram_start_address: u32,
-    cartridge_ram_end_address: u32,
+    bus: bus_save_state.State,
     m68k_sync: clock.M68kSync,
 };
 
@@ -219,29 +201,13 @@ pub fn pathForSlot(allocator: std.mem.Allocator, path: []const u8, slot: u8) ![]
 
 fn captureBusState(machine: *const Machine) BusState {
     return .{
-        .ram = machine.bus.ram,
-        .vdp = machine.bus.vdp,
-        .io = machine.bus.io,
-        .audio_timing = machine.bus.audio_timing,
-        .io_master_remainder = machine.bus.io_master_remainder,
-        .z80_master_credit = machine.bus.z80_master_credit,
-        .z80_stall_master_debt = machine.bus.z80_stall_master_debt,
-        .z80_wait_master_cycles = machine.bus.z80_wait_master_cycles,
-        .z80_odd_access = machine.bus.z80_odd_access,
-        .m68k_wait_master_cycles = machine.bus.m68k_wait_master_cycles,
-        .open_bus = machine.bus.open_bus,
-        .cartridge_ram_type = @intFromEnum(machine.bus.cartridge.ram.ram_type),
-        .cartridge_ram_persistent = machine.bus.cartridge.ram.persistent,
-        .cartridge_ram_dirty = machine.bus.cartridge.ram.dirty,
-        .cartridge_ram_mapped = machine.bus.cartridge.ram.mapped,
-        .cartridge_ram_start_address = machine.bus.cartridge.ram.start_address,
-        .cartridge_ram_end_address = machine.bus.cartridge.ram.end_address,
+        .bus = machine.bus.captureSaveState(),
         .m68k_sync = machine.m68k_sync,
     };
 }
 
 pub fn defaultPathForMachine(allocator: std.mem.Allocator, machine: *const Machine) ![]u8 {
-    if (machine.bus.cartridge.sourcePath()) |source_path| {
+    if (machine.bus.sourcePath()) |source_path| {
         return replaceExtension(allocator, source_path, ".state");
     }
     return allocator.dupe(u8, default_state_name);
@@ -255,11 +221,14 @@ pub fn pathForMachineSlot(allocator: std.mem.Allocator, machine: *const Machine,
 }
 
 pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
-    const rom_len: u32 = @intCast(machine.bus.cartridge.rom.len);
-    const cartridge_ram = machine.bus.cartridge.ram.data;
+    const rom = machine.bus.romBytes();
+    const cartridge_ram = machine.bus.cartridgeRamBytes();
+    const save_path = machine.bus.persistentSavePath();
+    const source_path = machine.bus.sourcePath();
+    const rom_len: u32 = @intCast(rom.len);
     const cartridge_ram_len: u32 = @intCast(if (cartridge_ram) |bytes| bytes.len else 0);
-    const save_path_len: u32 = @intCast(if (machine.bus.cartridge.save_path) |bytes| bytes.len else 0);
-    const source_path_len: u32 = @intCast(if (machine.bus.cartridge.source_path) |bytes| bytes.len else 0);
+    const save_path_len: u32 = @intCast(if (save_path) |bytes| bytes.len else 0);
+    const source_path_len: u32 = @intCast(if (source_path) |bytes| bytes.len else 0);
 
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
@@ -279,10 +248,10 @@ pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
     try writeValue(writer, captureBusState(machine));
     try writeValue(writer, machine.cpu.captureState());
     try writeValue(writer, machine.bus.z80.captureState());
-    try writer.writeAll(machine.bus.cartridge.rom);
+    try writer.writeAll(rom);
     if (cartridge_ram) |bytes| try writer.writeAll(bytes);
-    if (machine.bus.cartridge.save_path) |bytes| try writer.writeAll(bytes);
-    if (machine.bus.cartridge.source_path) |bytes| try writer.writeAll(bytes);
+    if (save_path) |bytes| try writer.writeAll(bytes);
+    if (source_path) |bytes| try writer.writeAll(bytes);
     try writer.flush();
 }
 
@@ -308,44 +277,19 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
     const cartridge_ram = try readOwnedBytes(allocator, reader, header.cartridge_ram_len);
     defer if (cartridge_ram) |bytes| allocator.free(bytes);
 
-    const save_path_bytes = try readOwnedBytes(allocator, reader, header.save_path_len);
-    const source_path_bytes = try readOwnedBytes(allocator, reader, header.source_path_len);
+    var save_path_bytes = try readOwnedBytes(allocator, reader, header.save_path_len);
+    defer if (save_path_bytes) |bytes| allocator.free(bytes);
+    var source_path_bytes = try readOwnedBytes(allocator, reader, header.source_path_len);
+    defer if (source_path_bytes) |bytes| allocator.free(bytes);
 
     var machine = try Machine.initFromRomBytes(allocator, rom);
     errdefer machine.deinit(allocator);
 
-    machine.bus.ram = bus_state.ram;
-    machine.bus.vdp = bus_state.vdp;
-    machine.bus.io = bus_state.io;
-    machine.bus.audio_timing = bus_state.audio_timing;
-    machine.bus.io_master_remainder = bus_state.io_master_remainder;
-    machine.bus.z80_master_credit = bus_state.z80_master_credit;
-    machine.bus.z80_stall_master_debt = bus_state.z80_stall_master_debt;
-    machine.bus.z80_wait_master_cycles = bus_state.z80_wait_master_cycles;
-    machine.bus.z80_odd_access = bus_state.z80_odd_access;
-    machine.bus.m68k_wait_master_cycles = bus_state.m68k_wait_master_cycles;
-    machine.bus.open_bus = bus_state.open_bus;
+    try machine.bus.restoreSaveState(bus_state.bus, cartridge_ram);
     machine.m68k_sync = bus_state.m68k_sync;
-
-    const next_ram = machine.bus.cartridge.ram.data;
-    if ((cartridge_ram != null) != (next_ram != null)) return error.InvalidSaveState;
-    if (cartridge_ram) |saved_ram| {
-        const next_ram_bytes = next_ram orelse return error.InvalidSaveState;
-        if (next_ram_bytes.len != saved_ram.len) return error.InvalidSaveState;
-        if (@intFromEnum(machine.bus.cartridge.ram.ram_type) != bus_state.cartridge_ram_type) return error.InvalidSaveState;
-        std.mem.copyForwards(u8, next_ram_bytes, saved_ram);
-    }
-
-    machine.bus.cartridge.ram.persistent = bus_state.cartridge_ram_persistent;
-    machine.bus.cartridge.ram.dirty = bus_state.cartridge_ram_dirty;
-    machine.bus.cartridge.ram.mapped = bus_state.cartridge_ram_mapped;
-    machine.bus.cartridge.ram.start_address = bus_state.cartridge_ram_start_address;
-    machine.bus.cartridge.ram.end_address = bus_state.cartridge_ram_end_address;
-
-    if (machine.bus.cartridge.save_path) |existing| allocator.free(existing);
-    machine.bus.cartridge.save_path = save_path_bytes;
-    if (machine.bus.cartridge.source_path) |existing| allocator.free(existing);
-    machine.bus.cartridge.source_path = source_path_bytes;
+    machine.bus.replaceStoragePaths(allocator, save_path_bytes, source_path_bytes);
+    save_path_bytes = null;
+    source_path_bytes = null;
 
     machine.cpu.restoreState(&cpu_state);
     machine.bus.z80.restoreState(&z80_state);
@@ -398,7 +342,7 @@ test "default state path derives from ROM source path, numbered slots, and fallb
     defer allocator.free(fallback_slot2_path);
     try testing.expectEqualStrings("sandopolis.slot2.state", fallback_slot2_path);
 
-    machine.bus.cartridge.source_path = try allocator.dupe(u8, "roms/test.bin");
+    machine.bus.replaceStoragePaths(allocator, null, try allocator.dupe(u8, "roms/test.bin"));
 
     const derived_path = try defaultPathForMachine(allocator, &machine);
     defer allocator.free(derived_path);
@@ -434,16 +378,19 @@ test "save-state files round-trip machine state" {
     machine.bus.ram[0x1234] = 0x56;
     machine.bus.vdp.regs[1] = 0x40;
     machine.bus.audio_timing.consumeMaster(1234);
-    machine.bus.z80_stall_master_debt = 49;
-    machine.bus.z80_wait_master_cycles = 50;
-    machine.bus.z80_odd_access = true;
-    machine.bus.m68k_wait_master_cycles = 33;
+    var timing_state = machine.bus.captureTimingState();
+    timing_state.z80_stall_master_debt = 49;
+    timing_state.z80_wait_master_cycles = 50;
+    timing_state.z80_odd_access = true;
+    timing_state.m68k_wait_master_cycles = 33;
+    machine.bus.restoreTimingState(timing_state);
     machine.bus.z80.writeByte(0x0000, 0x9A);
-    machine.bus.cartridge.ram.data.?[3] = 0xC7;
-    machine.bus.cartridge.ram.dirty = true;
-    machine.bus.cartridge.ram.mapped = true;
-    machine.bus.cartridge.save_path = try allocator.dupe(u8, "saves/test.sav");
-    machine.bus.cartridge.source_path = try allocator.dupe(u8, "roms/test.md");
+    machine.bus.write8(0x0020_0007, 0xC7);
+    machine.bus.replaceStoragePaths(
+        allocator,
+        try allocator.dupe(u8, "saves/test.sav"),
+        try allocator.dupe(u8, "roms/test.md"),
+    );
     machine.cpu.core.pc = 0x0000_1234;
     machine.cpu.core.sr = 0x2700;
     machine.m68k_sync.master_cycles = 777;
@@ -457,16 +404,17 @@ test "save-state files round-trip machine state" {
     try testing.expectEqual(@as(u8, 0x56), restored.bus.ram[0x1234]);
     try testing.expectEqual(@as(u8, 0x40), restored.bus.vdp.regs[1]);
     try testing.expectEqual(@as(u8, 0x9A), restored.bus.z80.readByte(0x0000));
-    try testing.expectEqual(@as(u8, 0xC7), restored.bus.cartridge.ram.data.?[3]);
+    try testing.expectEqual(@as(u8, 0xC7), restored.bus.read8(0x0020_0007));
     try testing.expectEqual(@as(u32, 0x0000_1234), @as(u32, restored.cpu.core.pc));
     try testing.expectEqual(@as(u16, 0x2700), @as(u16, restored.cpu.core.sr));
     try testing.expectEqual(@as(u64, 777), restored.m68k_sync.master_cycles);
-    try testing.expectEqual(@as(u32, 49), restored.bus.z80_stall_master_debt);
-    try testing.expectEqual(@as(u32, 50), restored.bus.z80_wait_master_cycles);
-    try testing.expect(restored.bus.z80_odd_access);
-    try testing.expectEqual(@as(u32, 33), restored.bus.m68k_wait_master_cycles);
-    try testing.expectEqualStrings("saves/test.sav", restored.bus.cartridge.save_path.?);
-    try testing.expectEqualStrings("roms/test.md", restored.bus.cartridge.source_path.?);
+    const restored_timing_state = restored.bus.captureTimingState();
+    try testing.expectEqual(@as(u32, 49), restored_timing_state.z80_stall_master_debt);
+    try testing.expectEqual(@as(u32, 50), restored_timing_state.z80_wait_master_cycles);
+    try testing.expect(restored_timing_state.z80_odd_access);
+    try testing.expectEqual(@as(u32, 33), restored_timing_state.m68k_wait_master_cycles);
+    try testing.expectEqualStrings("saves/test.sav", restored.bus.persistentSavePath().?);
+    try testing.expectEqualStrings("roms/test.md", restored.bus.sourcePath().?);
 
     const pending = restored.bus.audio_timing.takePending();
     try testing.expectEqual(@as(u32, 1234), pending.master_cycles);

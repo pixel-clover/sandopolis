@@ -71,6 +71,7 @@ const TimingProbe = struct {
     access_times: [8]u32 = [_]u32{0} ** 8,
     access_addresses: [8]u32 = [_]u32{0} ** 8,
     memory: [8]u8 = [_]u8{0xFF} ** 8,
+    high_memory: [8]u8 = [_]u8{0xFF} ** 8,
     window_memory: [32]u8 = [_]u8{0xFF} ** 32,
 
     fn memoryIndex(self: *const TimingProbe, address: u32) ?usize {
@@ -81,6 +82,9 @@ const TimingProbe = struct {
 
     fn rawHostByte(self: *const TimingProbe, address: u32) u8 {
         if (self.memoryIndex(address)) |index| return self.memory[index];
+        if (address >= 0x8000 and address < 0x8000 + self.high_memory.len) {
+            return self.high_memory[address - 0x8000];
+        }
         if (address >= 0xC00000 and address < 0xC00000 + self.window_memory.len) {
             return self.window_memory[address - 0xC00000];
         }
@@ -296,6 +300,28 @@ test "banked z80 read-modify-write can advance host timing between accesses" {
     try std.testing.expectEqual(@as(u8, 0x11), probe.last_write_value);
     try std.testing.expectEqual(@as(u32, 169), probe.time);
     try std.testing.expectEqual(@as(u32, 50), probe.pending_wait);
+}
+
+test "z80 bank register selects the bound host rom window" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    var probe = TimingProbe{
+        .memory = .{ 0x12, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
+        .high_memory = .{ 0x34, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
+    };
+    var bridge = HostBridge.init(TimingProbe.readHostByte, TimingProbe.peekHostByte, TimingProbe.writeHostByte, TimingProbe.onM68kBusAccess);
+    bridge.bind(&z80, &probe);
+
+    try std.testing.expectEqual(@as(u8, 0x12), z80.readByte(0x8000));
+
+    z80.writeByte(0x6000, 1);
+    for (0..8) |_| {
+        z80.writeByte(0x6000, 0);
+    }
+
+    try std.testing.expectEqual(@as(u16, 1), z80.getBank());
+    try std.testing.expectEqual(@as(u8, 0x34), z80.readByte(0x8000));
 }
 
 test "banked z80 instruction fetches can still decode host access offsets" {

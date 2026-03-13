@@ -138,7 +138,7 @@ pub const Machine = struct {
         }
 
         pub fn setPendingM68kWaitMasterCycles(self: *TestingView, master_cycles: u32) void {
-            self.machine.bus.m68k_wait_master_cycles = master_cycles;
+            self.machine.bus.setPendingM68kWaitMasterCycles(master_cycles);
         }
     };
 

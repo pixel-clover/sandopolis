@@ -4,7 +4,6 @@ const MemoryInterface = @import("memory_interface.zig").MemoryInterface;
 const runtime_state = @import("runtime_state.zig");
 const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 const SchedulerCpu = @import("../scheduler/runtime.zig").SchedulerCpu;
-const SchedulerInstructionStep = @import("../scheduler/runtime.zig").InstructionStep;
 
 const c = @cImport({
     @cInclude("disasm.h");
@@ -405,23 +404,8 @@ pub const Cpu = struct {
         return consumed;
     }
 
-    fn schedulerStepInstruction(ctx: ?*anyopaque, memory: *MemoryInterface) SchedulerInstructionStep {
-        const self: *Cpu = @ptrCast(@alignCast(ctx orelse unreachable));
-        const instruction = self.stepInstruction(memory);
-        return .{
-            .m68k_cycles = instruction.m68k_cycles,
-            .wait = .{
-                .m68k_cycles = instruction.wait.m68k_cycles,
-                .master_cycles = instruction.wait.master_cycles,
-            },
-        };
-    }
-
     pub fn schedulerRuntime(self: *Cpu) SchedulerCpu {
-        return .{
-            .ctx = self,
-            .step_instruction_fn = schedulerStepInstruction,
-        };
+        return SchedulerCpu.bind(Cpu, self);
     }
 
     pub fn takeWaitAccounting(self: *Cpu) WaitAccounting {
