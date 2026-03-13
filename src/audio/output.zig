@@ -1192,6 +1192,16 @@ pub const AudioOutput = struct {
         return self.pendingOutputFrames();
     }
 
+    fn drainPreparedOutput(self: *AudioOutput, out_frames: u32, sink: anytype) !void {
+        var remaining = out_frames;
+        const max_frames_per_push = self.sample_chunk.len / channels;
+        while (remaining != 0) {
+            const chunk_frames: usize = @min(@as(usize, @intCast(remaining)), max_frames_per_push);
+            try sink.consumeSamples(self.popMixedFrames(chunk_frames));
+            remaining -= @as(u32, @intCast(chunk_frames));
+        }
+    }
+
     fn renderPendingEvents(self: *AudioOutput, pending: PendingAudioFrames, events: PendingAudioEvents, sink: anytype) !void {
         const out_frames = self.takeOutputFramesForPending(pending);
         if (out_frames == 0) {
@@ -1264,9 +1274,9 @@ pub const AudioOutput = struct {
     }
 
     pub fn renderPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool, sink: anytype) !void {
-        self.setTimingMode(is_pal);
-        const events = self.takePendingEvents(z80);
-        try self.renderPendingEvents(pending, events, sink);
+        const out_frames = self.preparePending(pending, z80, is_pal);
+        if (out_frames == 0) return;
+        try self.drainPreparedOutput(out_frames, sink);
     }
 
     pub fn discardPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
@@ -1274,10 +1284,10 @@ pub const AudioOutput = struct {
             fn consumeSamples(_: *@This(), _: []const i16) !void {}
         };
 
-        self.setTimingMode(is_pal);
-        const events = self.takePendingEvents(z80);
         var sink = DiscardSink{};
-        try self.renderPendingEvents(pending, events, &sink);
+        const out_frames = self.preparePending(pending, z80, is_pal);
+        if (out_frames == 0) return;
+        try self.drainPreparedOutput(out_frames, &sink);
     }
 };
 
@@ -2267,7 +2277,7 @@ test "runtime board filtering is applied after resampling" {
     try std.testing.expect(sampleEnergy(unfiltered_sink.samples[0..unfiltered_sink.len]) > sampleEnergy(normal_sink.samples[0..normal_sink.len]));
 }
 
-test "runtime pending render matches chunked master-clock rendering for mixed audio" {
+test "runtime pending render matches prepared resampler output for mixed audio" {
     const pending = pendingWindow(@as(u32, 96) * clock.fm_master_cycles_per_sample);
 
     var runtime = AudioOutput{};
@@ -2302,47 +2312,45 @@ test "runtime pending render matches chunked master-clock rendering for mixed au
     var runtime_sink = CollectSink{};
     try runtime.renderPending(pending, &runtime_z80, false, &runtime_sink);
 
-    var chunked = AudioOutput{};
-    chunked.setTimingMode(false);
-    var chunked_z80 = Z80.init();
-    defer chunked_z80.deinit();
-    chunked_z80.setAudioMasterOffset(0);
-    chunked_z80.writeByte(0x4000, 0x2B);
-    chunked_z80.writeByte(0x4001, 0x80);
-    chunked_z80.writeByte(0x4002, 0xB6);
-    chunked_z80.writeByte(0x4003, 0xC0);
-    chunked_z80.writeByte(0x4000, 0x2A);
-    chunked_z80.writeByte(0x4001, 0x20);
-    chunked_z80.setAudioMasterOffset(32 * clock.fm_master_cycles_per_sample);
-    chunked_z80.writeByte(0x4001, 0xF0);
-    chunked_z80.writeByte(0x7F11, 0x90);
-    chunked_z80.writeByte(0x7F11, 0x81);
-    chunked_z80.writeByte(0x7F11, 0x00);
-    chunked_z80.setAudioMasterOffset(48 * clock.psg_master_cycles_per_sample);
-    chunked_z80.writeByte(0x7F11, 0x9F);
+    var prepared = AudioOutput{};
+    var prepared_z80 = Z80.init();
+    defer prepared_z80.deinit();
+    prepared_z80.setAudioMasterOffset(0);
+    prepared_z80.writeByte(0x4000, 0x2B);
+    prepared_z80.writeByte(0x4001, 0x80);
+    prepared_z80.writeByte(0x4002, 0xB6);
+    prepared_z80.writeByte(0x4003, 0xC0);
+    prepared_z80.writeByte(0x4000, 0x2A);
+    prepared_z80.writeByte(0x4001, 0x20);
+    prepared_z80.setAudioMasterOffset(32 * clock.fm_master_cycles_per_sample);
+    prepared_z80.writeByte(0x4001, 0xF0);
+    prepared_z80.writeByte(0x7F11, 0x90);
+    prepared_z80.writeByte(0x7F11, 0x81);
+    prepared_z80.writeByte(0x7F11, 0x00);
+    prepared_z80.setAudioMasterOffset(48 * clock.psg_master_cycles_per_sample);
+    prepared_z80.writeByte(0x7F11, 0x9F);
 
-    const events = chunked.takePendingEvents(&chunked_z80);
-    const out_frames = chunked.takeOutputFramesForPending(pending);
-    try std.testing.expect(out_frames > 48);
+    const prepared_frames = prepared.preparePending(pending, &prepared_z80, false);
+    try std.testing.expect(prepared_frames > 48);
 
-    var chunk_frames = [_]u32{ 17, 31, out_frames - 48 };
-    var chunked_samples: [1024]i16 = undefined;
-    renderChunkedForTest(
-        &chunked,
-        pending,
-        out_frames,
-        chunk_frames[0..],
-        events.ym_writes,
-        events.ym_dac_samples,
-        events.ym_reset_events,
-        events.psg_commands,
-        chunked_samples[0 .. @as(usize, @intCast(out_frames)) * AudioOutput.channels],
-    );
+    var prepared_sink = CollectSink{};
+    var prepared_remaining = prepared_frames;
+    var prepared_chunk_index: u2 = 0;
+    while (prepared_remaining != 0) {
+        const chunk_frames: usize = switch (prepared_chunk_index) {
+            0 => @min(@as(usize, @intCast(prepared_remaining)), 17),
+            1 => @min(@as(usize, @intCast(prepared_remaining)), 31),
+            else => @as(usize, @intCast(prepared_remaining)),
+        };
+        try prepared_sink.consumeSamples(prepared.popMixedFrames(chunk_frames));
+        prepared_remaining -= @as(u32, @intCast(chunk_frames));
+        prepared_chunk_index +%= 1;
+    }
 
-    try std.testing.expectEqual(@as(usize, @intCast(out_frames)) * AudioOutput.channels, runtime_sink.len);
+    try std.testing.expectEqual(@as(usize, @intCast(prepared_frames)) * AudioOutput.channels, runtime_sink.len);
     try std.testing.expectEqualSlices(
         i16,
-        chunked_samples[0 .. @as(usize, @intCast(out_frames)) * AudioOutput.channels],
+        prepared_sink.samples[0..prepared_sink.len],
         runtime_sink.samples[0..runtime_sink.len],
     );
 }

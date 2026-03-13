@@ -222,9 +222,15 @@ void jgz80_write_bus_req(Jgz80Handle *handle, uint16_t val);
 
 uint16_t jgz80_read_bus_req(Jgz80Handle *handle);
 
+uint8_t jgz80_bus_req_asserted(Jgz80Handle *handle);
+
 void jgz80_write_reset(Jgz80Handle *handle, uint16_t val);
 
 uint16_t jgz80_read_reset(Jgz80Handle *handle);
+
+uint8_t jgz80_reset_line_asserted(Jgz80Handle *handle);
+
+void jgz80_set_reset_line_asserted(Jgz80Handle *handle, uint8_t asserted);
 
 #ifdef __cplusplus
 }

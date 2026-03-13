@@ -283,8 +283,20 @@ pub const Cpu = struct {
         self.clearInterrupt();
     }
 
+    fn currentAccessElapsedMasterCyclesFromCpu(ctx: ?*anyopaque) u32 {
+        const self: *Cpu = @ptrCast(@alignCast(ctx orelse return 0));
+        const elapsed_m68k_cycles_raw = c.m68k_cycles_run(&self.core);
+        const elapsed_m68k_cycles: u32 = if (elapsed_m68k_cycles_raw > 0) @intCast(elapsed_m68k_cycles_raw) else 0;
+        return clock.m68kCyclesToMaster(elapsed_m68k_cycles) + self.pending_wait_master_cycles;
+    }
+
     fn runtimeState(self: *Cpu) runtime_state.RuntimeState {
-        return runtime_state.RuntimeState.init(self, currentOpcodeFromCpu, clearInterruptFromCpu);
+        return runtime_state.RuntimeState.init(
+            self,
+            currentOpcodeFromCpu,
+            clearInterruptFromCpu,
+            currentAccessElapsedMasterCyclesFromCpu,
+        );
     }
 
     fn beginExecution(self: *Cpu, memory: *MemoryInterface) void {

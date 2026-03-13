@@ -51,6 +51,10 @@ pub const View = struct {
         self.ensure_z80_host_window_fn(self.ensure_z80_host_window_ctx);
     }
 
+    fn currentCpuAccessAudioMasterOffset(self: *const View) u32 {
+        return self.audio_timing.pending_master_cycles + self.runtime_state.currentAccessElapsedMasterCycles();
+    }
+
     fn isZ80WindowAddress(address: u32) bool {
         const addr = address & 0xFFFFFF;
         return addr >= 0xA00000 and addr < 0xA10000;
@@ -215,7 +219,7 @@ pub const View = struct {
             return;
         } else if (isZ80ResetPage(addr)) {
             if ((addr & 1) == 0) {
-                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+                self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeReset(@as(u16, value) << 8);
             }
             return;
@@ -270,7 +274,7 @@ pub const View = struct {
             self.z80.writeBusReq(value);
             return;
         } else if (isZ80ResetPage(addr)) {
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+            self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             self.z80.writeReset(value);
             return;
         }
@@ -360,7 +364,7 @@ test "cpu memory runtime hooks and z80 wait logic stay local to the view" {
     var view = fixture.view();
 
     var callback_ctx = CallbackCtx{ .opcode = 0x4E71 };
-    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt));
+    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt, null));
     try testing.expectEqual(@as(u16, 0x4E71), fixture.runtime.currentOpcode());
 
     fixture.z80.writeBusReq(0x0100);

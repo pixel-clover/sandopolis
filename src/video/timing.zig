@@ -225,8 +225,6 @@ fn fifoEmptyFlagForAdjustedState(self: *const Vdp, adjustment_master_cycles: u32
 }
 
 fn fifoFullFlagForAdjustedState(self: *const Vdp, adjustment_master_cycles: u32) bool {
-    if (!fifo.fifoIsFull(self)) return false;
-
     const open_wait = fifo.dataPortWriteWaitMasterCycles(self);
     return open_wait > adjustment_master_cycles;
 }
@@ -462,6 +460,25 @@ test "status read adjustment can observe fifo no longer full after the next acce
     const open_wait = vdp.dataPortWriteWaitMasterCycles();
     try testing.expect(open_wait > 0);
     try testing.expect(open_wait <= clock.m68kCyclesToMaster(8));
+
+    try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & 0x0100);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0100);
+}
+
+test "status read adjustment can observe buffered replay delay ending before the next instruction completes" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.scanline = 12;
+    vdp.line_master_cycle = 0;
+    vdp.transfer_line_master_cycle = 0;
+    vdp.pending_port_write_delay_master_cycles = 5 * 8;
+    vdp.pending_port_writes[0] = .{ .data = 0x1234 };
+    vdp.pending_port_write_len = 1;
+
+    try testing.expect(vdp.dataPortWriteWaitMasterCycles() > 0);
+    try testing.expect(vdp.dataPortWriteWaitMasterCycles() <= clock.m68kCyclesToMaster(8));
 
     try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & 0x0100);
     try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0100);

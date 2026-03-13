@@ -9,6 +9,7 @@ const Z80 = @import("../cpu/z80.zig").Z80;
 pub const State = struct {
     io_master_remainder: u8 = 0,
     m68k_master_phase: u3 = 0,
+    z80_master_phase: u4 = 0,
     z80_master_credit: i64 = 0,
     z80_stall_master_debt: u32 = 0,
     z80_wait_master_cycles: u32 = 0,
@@ -118,11 +119,33 @@ pub const View = struct {
         const phase_total = @as(u32, self.state.m68k_master_phase) + (master_cycles % @as(u32, clock.m68k_divider));
         self.state.m68k_master_phase = @intCast(phase_total % @as(u32, clock.m68k_divider));
 
+        const z80_phase_total = @as(u32, self.state.z80_master_phase) + (master_cycles % @as(u32, clock.z80_divider));
+        self.state.z80_master_phase = @intCast(z80_phase_total % @as(u32, clock.z80_divider));
+
         const io_total = @as(u32, self.state.io_master_remainder) + master_cycles;
         self.io.tick(io_total / clock.m68k_divider);
         self.state.io_master_remainder = @intCast(io_total % clock.m68k_divider);
 
         self.vdp.progressTransfers(master_cycles, self.dma_read_ctx, self.dma_read_word_fn);
+    }
+
+    pub fn noteZ80RunnableStateTransition(self: *View, was_can_run: bool) void {
+        const can_run = self.z80.canRun();
+        if (was_can_run == can_run) return;
+
+        if (!can_run) {
+            self.state.z80_wait_master_cycles = 0;
+            return;
+        }
+
+        self.state.z80_master_credit = self.state.z80_master_phase;
+    }
+
+    pub fn stepMasterEarly(self: *View, master_cycles: u32) void {
+        if (master_cycles == 0) return;
+
+        self.stepMaster(master_cycles);
+        self.state.z80_stall_master_debt += master_cycles;
     }
 
     pub fn stepMaster(self: *View, master_cycles: u32) void {
@@ -356,4 +379,46 @@ test "z80 timing carries instruction overshoot across stepMaster slices" {
     view.stepMaster(clock.z80_divider);
     try testing.expectEqual(@as(u16, 0x0002), z80.getPc());
     try testing.expectEqual(@as(i64, -45), state.z80_master_credit);
+}
+
+test "z80 timing resumes on the current 15-master phase after control-line release" {
+    const testing = std.testing;
+
+    const TestHooks = struct {
+        fn ensureZ80HostWindow(_: ?*anyopaque) void {}
+    };
+
+    var vdp = Vdp.init();
+    var z80 = Z80.init();
+    defer z80.deinit();
+    var audio_timing: AudioTiming = .{};
+    var io = Io.init();
+    var state: State = .{ .z80_master_phase = 14 };
+
+    var view = View.init(
+        &vdp,
+        &z80,
+        &audio_timing,
+        &io,
+        &state,
+        null,
+        null,
+        TestHooks.ensureZ80HostWindow,
+        null,
+        null,
+    );
+
+    z80.reset();
+    z80.setResetLineAsserted(true);
+    z80.writeByte(0x0000, 0x00);
+
+    view.noteZ80RunnableStateTransition(true);
+    try testing.expectEqual(@as(u32, 0), z80.stepInstruction());
+
+    const was_can_run = z80.canRun();
+    z80.setResetLineAsserted(false);
+    view.noteZ80RunnableStateTransition(was_can_run);
+
+    view.stepMaster(1);
+    try testing.expectEqual(@as(u16, 0x0001), z80.getPc());
 }

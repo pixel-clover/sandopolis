@@ -239,7 +239,7 @@ test "memory interface bind forwards reads writes waits and runtime hooks" {
     try testing.expectEqual(@as(u32, 33), memory.controlPortWriteWaitMasterCycles());
 
     var callback_ctx = CallbackCtx{ .opcode = 0x4E71 };
-    memory.setCpuRuntimeState(runtime_state.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt));
+    memory.setCpuRuntimeState(runtime_state.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt, null));
     try testing.expectEqual(@as(u16, 0x4E71), probe.runtime.currentOpcode());
 
     memory.clearCpuRuntimeState();

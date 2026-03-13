@@ -262,6 +262,7 @@ test "cpu z80-window accesses accrue wait accounting only when bus is granted" {
     try testing.expectEqual(@as(u32, 0), wait.m68k_cycles);
     try testing.expectEqual(@as(u32, 0), wait.master_cycles);
 
+    emulator.setZ80ResetControl(0x0100);
     emulator.setZ80BusRequest(0x0100);
 
     emulator.noteCpuBusAccessWait(0x00A0_4000, 1, false);

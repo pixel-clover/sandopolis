@@ -1563,9 +1563,25 @@ uint16_t jgz80_read_bus_req(Jgz80Handle *handle) {
     return handle->bus_ack ? 0x0000u : 0x0100u;
 }
 
+uint8_t jgz80_bus_req_asserted(Jgz80Handle *handle) {
+    if (!handle) return 0u;
+    return handle->bus_req ? 1u : 0u;
+}
+
 uint16_t jgz80_read_reset(Jgz80Handle *handle) {
     if (!handle) return 0x0100u;
     return handle->reset_line ? 0x0000u : 0x0100u;
+}
+
+uint8_t jgz80_reset_line_asserted(Jgz80Handle *handle) {
+    if (!handle) return 0u;
+    return handle->reset_line ? 1u : 0u;
+}
+
+void jgz80_set_reset_line_asserted(Jgz80Handle *handle, uint8_t asserted) {
+    if (!handle) return;
+    handle->reset_line = asserted != 0u;
+    handle->bus_ack = handle->bus_req && !handle->reset_line;
 }
 
 void jgz80_write_reset(Jgz80Handle *handle, uint16_t val) {

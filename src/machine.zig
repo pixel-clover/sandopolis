@@ -735,6 +735,8 @@ test "machine reset seeds the reference power-on phase and setPalMode retargets 
     try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .hard_reset), machine.pending_frame_phase);
     try std.testing.expectEqual(@as(u16, 159), machine.bus.vdp.scanline);
     try std.testing.expectEqual(@as(u16, 522), machine.bus.vdp.line_master_cycle);
+    try std.testing.expectEqual(@as(u16, 0x0000), machine.bus.z80.readReset());
+    try std.testing.expect(!machine.bus.z80.canRun());
 
     machine.setPalMode(true);
     try std.testing.expectEqual(@as(@TypeOf(machine.pending_frame_phase), .hard_reset), machine.pending_frame_phase);
@@ -780,6 +782,8 @@ test "machine soft reset preserves runtime memory and phase while resetting cpu 
     try std.testing.expectEqual(@as(u16, 1234), machine.bus.vdp.line_master_cycle);
     try std.testing.expect(machine.bus.vdp.odd_frame);
     try std.testing.expectEqual(@as(u8, 0x12), machine.bus.z80.readByte(0x0000));
+    try std.testing.expectEqual(@as(u16, 0x0000), machine.bus.z80.readReset());
+    try std.testing.expect(!machine.bus.z80.canRun());
     try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
 
     machine.setPalMode(true);

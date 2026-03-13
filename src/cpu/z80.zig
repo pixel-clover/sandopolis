@@ -238,6 +238,11 @@ pub const Z80 = struct {
         return 0x0100;
     }
 
+    pub fn isBusReqAsserted(self: *const Z80) bool {
+        if (self.handle) |h| return c.jgz80_bus_req_asserted(@constCast(h)) != 0;
+        return false;
+    }
+
     pub fn canRun(self: *const Z80) bool {
         return self.readBusReq() != 0x0000 and self.readReset() != 0x0000;
     }
@@ -249,6 +254,15 @@ pub const Z80 = struct {
     pub fn readReset(self: *const Z80) u16 {
         if (self.handle) |h| return c.jgz80_read_reset(@constCast(h));
         return 0x0100;
+    }
+
+    pub fn isResetLineAsserted(self: *const Z80) bool {
+        if (self.handle) |h| return c.jgz80_reset_line_asserted(@constCast(h)) != 0;
+        return false;
+    }
+
+    pub fn setResetLineAsserted(self: *Z80, asserted: bool) void {
+        if (self.handle) |h| c.jgz80_set_reset_line_asserted(h, @intFromBool(asserted));
     }
 };
 
@@ -481,6 +495,27 @@ test "z80 soft reset preserves ram and psg state while resetting ym and bank sta
     var ym_reset_events: [1]Z80.YmResetEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
     try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
+}
+
+test "z80 external reset line gate blocks execution until released" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.writeByte(0x0000, 0x00);
+    z80.reset();
+    z80.setResetLineAsserted(true);
+
+    try std.testing.expectEqual(@as(u16, 0x0000), z80.readReset());
+    try std.testing.expectEqual(@as(u32, 0), z80.stepInstruction());
+
+    z80.setResetLineAsserted(false);
+    try std.testing.expectEqual(@as(u16, 0x0100), z80.readReset());
+    try std.testing.expectEqual(@as(u32, 4), z80.stepInstruction());
+
+    z80.softReset();
+    z80.setResetLineAsserted(true);
+    try std.testing.expectEqual(@as(u16, 0x0000), z80.readReset());
+    try std.testing.expectEqual(@as(u32, 0), z80.stepInstruction());
 }
 
 test "z80 ym status read exposes busy on data writes" {

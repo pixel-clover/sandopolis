@@ -10,6 +10,7 @@ const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounter
 const AudioTiming = @import("../audio/timing.zig").AudioTiming;
 const Vdp = @import("../video/vdp.zig").Vdp;
 const Io = @import("../input/io.zig").Io;
+const Cpu = @import("../cpu/cpu.zig").Cpu;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const MemoryInterface = @import("../cpu/memory_interface.zig").MemoryInterface;
 const cpu_runtime = @import("../cpu/runtime_state.zig");
@@ -28,6 +29,16 @@ pub const Bus = struct {
     open_bus: u16,
     cpu_runtime_state: cpu_runtime.RuntimeState,
     active_execution_counters: ?*CoreFrameCounters,
+
+    const Z80ControlLines = struct {
+        bus_req_asserted: bool,
+        reset_asserted: bool,
+
+        fn canRun(self: @This()) bool {
+            return !self.bus_req_asserted and !self.reset_asserted;
+        }
+    };
+
     fn initWithCartridge(cartridge: Cartridge) Bus {
         const bus = Bus{
             .rom = cartridge.rom,
@@ -157,6 +168,106 @@ pub const Bus = struct {
         self.z80_host_bridge.bind(&self.z80, self);
     }
 
+    fn isZ80ControlPage(address: u32) bool {
+        const addr = address & 0xFFFFFF;
+        return (addr >= 0xA11100 and addr < 0xA11200) or (addr >= 0xA11200 and addr < 0xA11300);
+    }
+
+    fn isZ80ResetPage(address: u32) bool {
+        const addr = address & 0xFFFFFF;
+        return addr >= 0xA11200 and addr < 0xA11300;
+    }
+
+    fn captureZ80ControlLines(self: *const Bus) Z80ControlLines {
+        return .{
+            .bus_req_asserted = self.z80.isBusReqAsserted(),
+            .reset_asserted = self.z80.isResetLineAsserted(),
+        };
+    }
+
+    fn applyZ80ControlLines(self: *Bus, lines: Z80ControlLines) void {
+        self.z80.writeBusReq(if (lines.bus_req_asserted) 0x0100 else 0x0000);
+        self.z80.setResetLineAsserted(lines.reset_asserted);
+    }
+
+    fn restoreZ80PostControlAudioState(self: *Bus, after_state: Z80.State) void {
+        var merged = self.z80.captureState();
+        merged.audio_master_offset = after_state.audio_master_offset;
+        merged.ym_addr = after_state.ym_addr;
+        merged.ym_regs = after_state.ym_regs;
+        merged.ym_key_mask = after_state.ym_key_mask;
+        merged.ym_offset_cursor = after_state.ym_offset_cursor;
+        merged.ym_internal_master_remainder = after_state.ym_internal_master_remainder;
+        merged.ym_cycle = after_state.ym_cycle;
+        merged.ym_busy = after_state.ym_busy;
+        merged.ym_busy_cycles_remaining = after_state.ym_busy_cycles_remaining;
+        merged.ym_last_status_read = after_state.ym_last_status_read;
+        merged.ym_timer_a_cnt = after_state.ym_timer_a_cnt;
+        merged.ym_timer_a_reg = after_state.ym_timer_a_reg;
+        merged.ym_timer_a_load_lock = after_state.ym_timer_a_load_lock;
+        merged.ym_timer_a_load = after_state.ym_timer_a_load;
+        merged.ym_timer_a_enable = after_state.ym_timer_a_enable;
+        merged.ym_timer_a_reset = after_state.ym_timer_a_reset;
+        merged.ym_timer_a_load_latch = after_state.ym_timer_a_load_latch;
+        merged.ym_timer_a_overflow_flag = after_state.ym_timer_a_overflow_flag;
+        merged.ym_timer_a_overflow = after_state.ym_timer_a_overflow;
+        merged.ym_timer_b_cnt = after_state.ym_timer_b_cnt;
+        merged.ym_timer_b_subcnt = after_state.ym_timer_b_subcnt;
+        merged.ym_timer_b_reg = after_state.ym_timer_b_reg;
+        merged.ym_timer_b_load_lock = after_state.ym_timer_b_load_lock;
+        merged.ym_timer_b_load = after_state.ym_timer_b_load;
+        merged.ym_timer_b_enable = after_state.ym_timer_b_enable;
+        merged.ym_timer_b_reset = after_state.ym_timer_b_reset;
+        merged.ym_timer_b_load_latch = after_state.ym_timer_b_load_latch;
+        merged.ym_timer_b_overflow_flag = after_state.ym_timer_b_overflow_flag;
+        merged.ym_timer_b_overflow = after_state.ym_timer_b_overflow;
+        merged.audio_event_sequence = after_state.audio_event_sequence;
+        merged.ym_write_events = after_state.ym_write_events;
+        merged.ym_write_write_index = after_state.ym_write_write_index;
+        merged.ym_write_read_index = after_state.ym_write_read_index;
+        merged.ym_write_count = after_state.ym_write_count;
+        merged.ym_dac_samples = after_state.ym_dac_samples;
+        merged.ym_dac_write_index = after_state.ym_dac_write_index;
+        merged.ym_dac_read_index = after_state.ym_dac_read_index;
+        merged.ym_dac_count = after_state.ym_dac_count;
+        merged.ym_reset_events = after_state.ym_reset_events;
+        merged.ym_reset_write_index = after_state.ym_reset_write_index;
+        merged.ym_reset_read_index = after_state.ym_reset_read_index;
+        merged.ym_reset_count = after_state.ym_reset_count;
+        merged.psg_commands = after_state.psg_commands;
+        merged.psg_command_write_index = after_state.psg_command_write_index;
+        merged.psg_command_read_index = after_state.psg_command_read_index;
+        merged.psg_command_count = after_state.psg_command_count;
+        merged.psg_last = after_state.psg_last;
+        merged.psg_tone = after_state.psg_tone;
+        merged.psg_volume = after_state.psg_volume;
+        merged.psg_noise = after_state.psg_noise;
+        merged.psg_latched_channel = after_state.psg_latched_channel;
+        merged.psg_latched_is_volume = after_state.psg_latched_is_volume;
+        self.z80.restoreState(&merged);
+    }
+
+    fn currentCpuAccessElapsedMasterCycles(self: *const Bus) u32 {
+        return self.cpu_runtime_state.currentAccessElapsedMasterCycles();
+    }
+
+    fn noteZ80ControlStateTransition(self: *Bus, before: Z80ControlLines, address: u32) void {
+        if (!isZ80ControlPage(address)) return;
+        if (before.canRun() == self.z80.canRun()) return;
+
+        var timing = self.z80TimingView();
+        const pre_access_master_cycles = self.currentCpuAccessElapsedMasterCycles();
+        if (pre_access_master_cycles != 0) {
+            const after = self.captureZ80ControlLines();
+            const after_state = if (isZ80ResetPage(address)) self.z80.captureState() else null;
+            self.applyZ80ControlLines(before);
+            timing.stepMasterEarly(pre_access_master_cycles);
+            self.applyZ80ControlLines(after);
+            if (after_state) |state| self.restoreZ80PostControlAudioState(state);
+        }
+        timing.noteZ80RunnableStateTransition(before.canRun());
+    }
+
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
         const cartridge = try Cartridge.init(allocator, rom_path);
         return initWithCartridge(cartridge);
@@ -232,6 +343,7 @@ pub const Bus = struct {
         self.io.setVersionIsOverseas(version_is_overseas);
 
         self.z80.reset();
+        self.z80.setResetLineAsserted(true);
         self.audio_timing = .{};
         self.timing_state = .{};
         self.open_bus = 0;
@@ -243,6 +355,7 @@ pub const Bus = struct {
         self.cartridge.resetHardwareState();
         self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
         self.z80.softReset();
+        self.z80.setResetLineAsserted(true);
         self.timing_state = .{};
         self.open_bus = 0;
         self.cpu_runtime_state = .{};
@@ -274,13 +387,17 @@ pub const Bus = struct {
     }
 
     pub fn write8(self: *Bus, address: u32, value: u8) void {
+        const control_before = if (isZ80ControlPage(address)) self.captureZ80ControlLines() else null;
         var memory = self.cpuMemoryView();
         memory.write8(address, value);
+        if (control_before) |before| self.noteZ80ControlStateTransition(before, address);
     }
 
     pub fn write16(self: *Bus, address: u32, value: u16) void {
+        const control_before = if (isZ80ControlPage(address)) self.captureZ80ControlLines() else null;
         var memory = self.cpuMemoryView();
         memory.write16(address, value);
+        if (control_before) |before| self.noteZ80ControlStateTransition(before, address);
     }
 
     pub fn write32(self: *Bus, address: u32, value: u32) void {
@@ -385,6 +502,130 @@ pub const Bus = struct {
     }
 };
 
+const control_reset_address: u32 = 0x00A1_1200;
+const move_word_immediate_abs_long_opcode: u16 = 0x33FC;
+const test_program_start: usize = 0x0200;
+const test_reset_stack_pointer: u32 = 0x00FF_FE00;
+const nop_master_cycles: u32 = 4 * clock.z80_divider;
+
+const ControlTransitionTiming = struct {
+    pre_access_master_cycles: u32,
+    total_master_cycles: u32,
+};
+
+const ControlWriteTimingProbe = struct {
+    rom: [0x0400]u8 = [_]u8{0} ** 0x0400,
+    runtime: cpu_runtime.RuntimeState = .{},
+    last_write_address: u32 = std.math.maxInt(u32),
+    last_write_value: u16 = 0,
+    pre_access_master_cycles: u32 = 0,
+
+    pub fn read8(self: *@This(), address: u32) u8 {
+        const addr: usize = @intCast(address);
+        if (addr >= self.rom.len) return 0;
+        return self.rom[addr];
+    }
+
+    pub fn read16(self: *@This(), address: u32) u16 {
+        return (@as(u16, self.read8(address)) << 8) | @as(u16, self.read8(address + 1));
+    }
+
+    pub fn read32(self: *@This(), address: u32) u32 {
+        return (@as(u32, self.read16(address)) << 16) | @as(u32, self.read16(address + 2));
+    }
+
+    pub fn write8(self: *@This(), address: u32, value: u8) void {
+        self.last_write_address = address;
+        self.last_write_value = (@as(u16, value) << 8) | value;
+        self.pre_access_master_cycles = self.runtime.currentAccessElapsedMasterCycles();
+    }
+
+    pub fn write16(self: *@This(), address: u32, value: u16) void {
+        self.last_write_address = address;
+        self.last_write_value = value;
+        self.pre_access_master_cycles = self.runtime.currentAccessElapsedMasterCycles();
+    }
+
+    pub fn write32(self: *@This(), address: u32, value: u32) void {
+        self.last_write_address = address;
+        self.last_write_value = @intCast(value & 0xFFFF);
+        self.pre_access_master_cycles = self.runtime.currentAccessElapsedMasterCycles();
+    }
+
+    pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
+        return 0;
+    }
+
+    pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
+        return 0;
+    }
+
+    pub fn reserveDataPortWriteWaitMasterCycles(_: *@This()) u32 {
+        return 0;
+    }
+
+    pub fn controlPortWriteWaitMasterCycles(_: *@This()) u32 {
+        return 0;
+    }
+
+    pub fn setCpuRuntimeState(self: *@This(), state: cpu_runtime.RuntimeState) void {
+        self.runtime = state;
+    }
+
+    pub fn clearCpuRuntimeState(self: *@This()) void {
+        self.runtime.clear();
+    }
+};
+
+fn writeBe16(bytes: []u8, offset: usize, value: u16) void {
+    bytes[offset] = @intCast((value >> 8) & 0xFF);
+    bytes[offset + 1] = @intCast(value & 0xFF);
+}
+
+fn writeBe32(bytes: []u8, offset: usize, value: u32) void {
+    writeBe16(bytes, offset, @intCast((value >> 16) & 0xFFFF));
+    writeBe16(bytes, offset + 2, @intCast(value & 0xFFFF));
+}
+
+fn installResetVector(rom: []u8) void {
+    writeBe32(rom, 0x0000, test_reset_stack_pointer);
+    writeBe32(rom, 0x0004, test_program_start);
+}
+
+fn installResetControlProgram(rom: []u8, value: u16) void {
+    installResetVector(rom);
+    writeBe16(rom, test_program_start + 0, move_word_immediate_abs_long_opcode);
+    writeBe16(rom, test_program_start + 2, value);
+    writeBe16(rom, test_program_start + 4, 0x00A1);
+    writeBe16(rom, test_program_start + 6, 0x1200);
+}
+
+fn captureResetControlTiming(value: u16) !ControlTransitionTiming {
+    var probe = ControlWriteTimingProbe{};
+    installResetControlProgram(&probe.rom, value);
+
+    var cpu = Cpu.init();
+    var memory = MemoryInterface.bind(ControlWriteTimingProbe, &probe);
+    cpu.reset(&memory);
+    const step = cpu.stepInstruction(&memory);
+
+    try testing.expectEqual(control_reset_address, probe.last_write_address);
+    try testing.expectEqual(value, probe.last_write_value);
+
+    return .{
+        .pre_access_master_cycles = probe.pre_access_master_cycles,
+        .total_master_cycles = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles,
+    };
+}
+
+fn expectBusMatchesControlTransitionOracle(actual: *Bus, oracle: *Bus) !void {
+    try testing.expectEqualDeep(oracle.captureTimingState(), actual.captureTimingState());
+    try testing.expectEqualDeep(oracle.z80.captureState(), actual.z80.captureState());
+    try testing.expectEqual(oracle.audio_timing.pending_master_cycles, actual.audio_timing.pending_master_cycles);
+    try testing.expectEqual(oracle.vdp.scanline, actual.vdp.scanline);
+    try testing.expectEqual(oracle.vdp.line_master_cycle, actual.vdp.line_master_cycle);
+}
+
 test "bus stepping advances controller timing" {
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
@@ -467,6 +708,88 @@ test "mid-instruction z80 stall flush is charged against later master slices" {
     timing_state = bus.captureTimingState();
     try testing.expectEqual(@as(u32, 0), timing_state.z80_wait_master_cycles);
     try testing.expectEqual(@as(u32, clock.z80_divider + 219), bus.audio_timing.pending_master_cycles);
+}
+
+test "z80 reset release aligns the first instruction to the current z80 phase" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.reset();
+    bus.z80.writeByte(0x0000, 0x00);
+
+    bus.stepMaster(clock.z80_divider - 1);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.getPc());
+
+    bus.write16(0x00A1_1200, 0x0100);
+    bus.stepMaster(1);
+
+    try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
+}
+
+test "m68k reset release is applied at the control write phase" {
+    const timing = try captureResetControlTiming(0x0100);
+    try testing.expect(timing.pre_access_master_cycles < timing.total_master_cycles);
+    try testing.expect(timing.total_master_cycles - timing.pre_access_master_cycles < nop_master_cycles);
+
+    var actual = try Bus.init(testing.allocator, null);
+    defer actual.deinit(testing.allocator);
+    var oracle = try Bus.init(testing.allocator, null);
+    defer oracle.deinit(testing.allocator);
+
+    actual.reset();
+    oracle.reset();
+    actual.z80.writeByte(0x0000, 0x00);
+    oracle.z80.writeByte(0x0000, 0x00);
+    installResetControlProgram(actual.rom, 0x0100);
+
+    var cpu = Cpu.init();
+    var memory = actual.cpuMemory();
+    cpu.reset(&memory);
+    const step = cpu.stepInstruction(&memory);
+    const actual_total_master = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles;
+    try testing.expectEqual(timing.total_master_cycles, actual_total_master);
+    actual.stepMaster(actual_total_master);
+
+    oracle.stepMaster(timing.pre_access_master_cycles);
+    oracle.write16(control_reset_address, 0x0100);
+    oracle.stepMaster(timing.total_master_cycles - timing.pre_access_master_cycles);
+
+    try expectBusMatchesControlTransitionOracle(&actual, &oracle);
+}
+
+test "m68k reset assert is applied at the control write phase" {
+    const timing = try captureResetControlTiming(0x0000);
+    try testing.expect(timing.pre_access_master_cycles >= nop_master_cycles);
+    try testing.expect(timing.total_master_cycles - timing.pre_access_master_cycles < nop_master_cycles);
+
+    var actual = try Bus.init(testing.allocator, null);
+    defer actual.deinit(testing.allocator);
+    var oracle = try Bus.init(testing.allocator, null);
+    defer oracle.deinit(testing.allocator);
+
+    actual.reset();
+    oracle.reset();
+    actual.write16(control_reset_address, 0x0100);
+    oracle.write16(control_reset_address, 0x0100);
+    actual.z80.writeByte(0x0000, 0x00);
+    actual.z80.writeByte(0x0001, 0x00);
+    oracle.z80.writeByte(0x0000, 0x00);
+    oracle.z80.writeByte(0x0001, 0x00);
+    installResetControlProgram(actual.rom, 0x0000);
+
+    var cpu = Cpu.init();
+    var memory = actual.cpuMemory();
+    cpu.reset(&memory);
+    const step = cpu.stepInstruction(&memory);
+    const actual_total_master = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles;
+    try testing.expectEqual(timing.total_master_cycles, actual_total_master);
+    actual.stepMaster(actual_total_master);
+
+    oracle.stepMaster(timing.pre_access_master_cycles);
+    oracle.write16(control_reset_address, 0x0000);
+    oracle.stepMaster(timing.total_master_cycles - timing.pre_access_master_cycles);
+
+    try expectBusMatchesControlTransitionOracle(&actual, &oracle);
 }
 
 test "banked access offsets advance vdp state before the first z80 host read" {

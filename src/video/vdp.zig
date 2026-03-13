@@ -143,6 +143,19 @@ pub const Vdp = struct {
         transfer_hblank: bool = false,
         transfer_odd_frame: bool = false,
         pending_port_write_delay_master_cycles: u16 = 0,
+        replay_pending_port_writes: [8]PendingPortWrite = [_]PendingPortWrite{.{ .data = 0 }} ** 8,
+        replay_pending_port_write_len: u8 = 0,
+        projected_code: u8 = 0,
+        projected_addr: u16 = 0,
+        projected_pending_command: bool = false,
+        projected_command_word: u32 = 0,
+        projected_regs: [32]u8 = [_]u8{0} ** 32,
+        projected_dma_active: bool = false,
+        projected_dma_fill: bool = false,
+        projected_dma_copy: bool = false,
+        projected_dma_fill_ready: bool = false,
+        projected_dma_remaining: u32 = 0,
+        projected_dma_start_delay_slots: u8 = 0,
     };
 
     pub fn init() Vdp {

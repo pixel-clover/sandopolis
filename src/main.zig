@@ -18,6 +18,10 @@ const AudioInit = struct {
     stream: *zsdl3.AudioStream,
     output: AudioOutput,
     startup_mute_active: bool = true,
+    playback_shadow: [playback_shadow_capacity]i16 = undefined,
+    playback_shadow_len: usize = 0,
+
+    const playback_shadow_capacity = (AudioOutput.max_queued_bytes / @sizeOf(i16)) + 4096;
 
     pub fn handlePending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool, wav_recorder: ?*WavRecorder) !void {
         if (self.startupMuteActive()) {
@@ -27,33 +31,41 @@ const AudioInit = struct {
             return;
         }
 
+        self.syncRecordedPlayback(wav_recorder);
         if (self.queueHasRoom()) {
             try self.pushPending(pending, z80, is_pal, wav_recorder);
         } else {
-            try self.output.discardPending(pending, z80, is_pal);
+            try self.recoverBackloggedQueue(pending, z80, is_pal, wav_recorder);
         }
     }
 
     fn queueHasRoom(self: *const AudioInit) bool {
         const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return false;
-        return queued_bytes < AudioOutput.max_queued_bytes;
+        return !queueIsBacklogged(@intCast(queued_bytes));
+    }
+
+    fn recoverBackloggedQueue(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool, wav_recorder: ?*WavRecorder) !void {
+        zsdl3.clearAudioStream(self.stream) catch {
+            try self.output.discardPending(pending, z80, is_pal);
+            return;
+        };
+        self.clearPlaybackShadow();
+        try self.pushPending(pending, z80, is_pal, wav_recorder);
     }
 
     pub fn pushPending(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool, wav_recorder: ?*WavRecorder) !void {
         const StreamSink = struct {
             stream: *zsdl3.AudioStream,
-            wav_rec: ?*WavRecorder,
+            audio: *AudioInit,
 
             pub fn consumeSamples(sink: *@This(), samples: []const i16) !void {
                 try zsdl3.putAudioStreamData(i16, sink.stream, samples);
-                // Also capture samples for WAV recording if active
-                if (sink.wav_rec) |rec| {
-                    rec.addSamples(samples) catch {};
-                }
+                sink.audio.appendPlaybackShadow(samples);
             }
         };
 
-        var sink = StreamSink{ .stream = self.stream, .wav_rec = wav_recorder };
+        _ = wav_recorder;
+        var sink = StreamSink{ .stream = self.stream, .audio = self };
         try self.output.renderPending(pending, z80, is_pal, &sink);
     }
 
@@ -67,6 +79,43 @@ const AudioInit = struct {
 
     fn clearStartupMute(self: *AudioInit) void {
         self.startup_mute_active = false;
+    }
+
+    fn appendPlaybackShadow(self: *AudioInit, samples: []const i16) void {
+        if (samples.len == 0) return;
+        std.debug.assert(self.playback_shadow_len + samples.len <= self.playback_shadow.len);
+        @memcpy(
+            self.playback_shadow[self.playback_shadow_len .. self.playback_shadow_len + samples.len],
+            samples,
+        );
+        self.playback_shadow_len += samples.len;
+    }
+
+    fn reconcilePlaybackShadow(self: *AudioInit, queued_bytes: usize, wav_recorder: ?*WavRecorder) void {
+        const queued_samples = queued_bytes / @sizeOf(i16);
+        if (queued_samples >= self.playback_shadow_len) return;
+
+        const consumed_samples = self.playback_shadow_len - queued_samples;
+        if (wav_recorder) |rec| {
+            rec.addSamples(self.playback_shadow[0..consumed_samples]) catch {};
+        }
+        if (queued_samples != 0) {
+            std.mem.copyForwards(
+                i16,
+                self.playback_shadow[0..queued_samples],
+                self.playback_shadow[consumed_samples .. consumed_samples + queued_samples],
+            );
+        }
+        self.playback_shadow_len = queued_samples;
+    }
+
+    fn syncRecordedPlayback(self: *AudioInit, wav_recorder: ?*WavRecorder) void {
+        const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return;
+        self.reconcilePlaybackShadow(@intCast(queued_bytes), wav_recorder);
+    }
+
+    fn clearPlaybackShadow(self: *AudioInit) void {
+        self.playback_shadow_len = 0;
     }
 };
 
@@ -141,6 +190,10 @@ const performance_core_burst_frames: u32 = 8;
 fn queuedAudioNsFromBytes(queued_bytes: usize) u64 {
     return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
         (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
+}
+
+fn queueIsBacklogged(queued_bytes: usize) bool {
+    return queued_bytes >= AudioOutput.max_queued_bytes;
 }
 
 const PerformanceStageSample = struct {
@@ -836,10 +889,12 @@ fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: 
     return true;
 }
 
-fn resetAudioOutput(audio: *AudioInit) void {
+fn resetAudioOutput(audio: *AudioInit, wav_recorder: ?*WavRecorder) void {
+    audio.syncRecordedPlayback(wav_recorder);
     zsdl3.clearAudioStream(audio.stream) catch |err| {
         std.debug.print("Failed to clear queued audio on ROM load: {}\n", .{err});
     };
+    audio.clearPlaybackShadow();
     audio.output.reset();
     audio.armStartupMute();
 }
@@ -858,8 +913,11 @@ fn stopGifRecording(gif_recorder: *?GifRecorder, reason: []const u8) void {
     }
 }
 
-fn stopWavRecording(wav_recorder: *?WavRecorder, reason: []const u8) void {
+fn stopWavRecording(audio: ?*AudioInit, wav_recorder: *?WavRecorder, reason: []const u8) void {
     if (wav_recorder.*) |*rec| {
+        if (audio) |a| {
+            a.syncRecordedPlayback(rec);
+        }
         const duration = rec.getDurationSeconds();
         const samples = rec.sample_count;
         rec.finish();
@@ -910,9 +968,9 @@ fn loadRomIntoMachine(
     next_machine.debugDump();
 
     stopGifRecording(gif_recorder, "GIF recording stopped for ROM switch");
-    stopWavRecording(wav_recorder, "WAV recording stopped for ROM switch");
+    stopWavRecording(audio, wav_recorder, "WAV recording stopped for ROM switch");
     if (audio) |a| {
-        resetAudioOutput(a);
+        resetAudioOutput(a, null);
     }
 
     machine.flushPersistentStorage() catch |err| {
@@ -960,9 +1018,9 @@ fn hardResetCurrentMachine(
     }
 
     stopGifRecording(gif_recorder, "GIF recording stopped for hard reset");
-    stopWavRecording(wav_recorder, "WAV recording stopped for hard reset");
+    stopWavRecording(audio, wav_recorder, "WAV recording stopped for hard reset");
     if (audio) |a| {
-        resetAudioOutput(a);
+        resetAudioOutput(a, null);
     }
 
     const resolved_timing = resolveTimingMode(machine.romMetadata(), timing_mode);
@@ -1392,9 +1450,9 @@ fn handleQuickStateAction(
                     return true;
                 };
                 stopGifRecording(gif_recorder, "GIF recording stopped for state load");
-                stopWavRecording(wav_recorder, "WAV recording stopped for state load");
+                stopWavRecording(audio, wav_recorder, "WAV recording stopped for state load");
                 if (audio) |a| {
-                    resetAudioOutput(a);
+                    resetAudioOutput(a, null);
                 }
                 frame_counter.* = 0;
                 std.debug.print("Quick state loaded.\n", .{});
@@ -1474,9 +1532,9 @@ fn handlePersistentStateAction(
             errdefer next_machine.deinit(allocator);
 
             stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
-            stopWavRecording(wav_recorder, "WAV recording stopped for state-file load");
+            stopWavRecording(audio, wav_recorder, "WAV recording stopped for state-file load");
             if (audio) |a| {
-                resetAudioOutput(a);
+                resetAudioOutput(a, null);
             }
 
             var old_machine = machine.*;
@@ -2807,12 +2865,18 @@ pub fn main() !void {
                                     .record_wav => {
                                         if (frontend_ui.show_help) continue;
                                         if (wav_recorder) |*rec| {
+                                            if (audio) |*a| {
+                                                a.syncRecordedPlayback(rec);
+                                            }
                                             const duration = rec.getDurationSeconds();
                                             const samples = rec.sample_count;
                                             rec.finish();
                                             wav_recorder = null;
                                             std.debug.print("WAV recording stopped ({d} samples, {d:.2}s)\n", .{ samples, duration });
                                         } else {
+                                            if (audio) |*a| {
+                                                a.syncRecordedPlayback(null);
+                                            }
                                             const path = wavOutputPath();
                                             const path_str = std.mem.sliceTo(&path, 0);
                                             wav_recorder = WavRecorder.start(path_str, AudioOutput.output_rate, AudioOutput.channels) catch |err| {
@@ -3001,6 +3065,9 @@ pub fn main() !void {
         rec.finish();
     }
     if (wav_recorder) |*rec| {
+        if (audio) |*a| {
+            a.syncRecordedPlayback(rec);
+        }
         const duration = rec.getDurationSeconds();
         std.debug.print("WAV recording stopped on exit ({d} samples, {d:.2}s)\n", .{ rec.sample_count, duration });
         rec.finish();
@@ -3659,6 +3726,42 @@ test "audio init stays muted until it sees audible startup activity" {
     try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false, null);
     try std.testing.expect(!audio.startupMuteActive());
     try std.testing.expect(!z80.hasPendingAudibleEvents());
+}
+
+test "audio backlog threshold trips at the queued audio budget" {
+    try std.testing.expect(!queueIsBacklogged(AudioOutput.max_queued_bytes - 1));
+    try std.testing.expect(queueIsBacklogged(AudioOutput.max_queued_bytes));
+    try std.testing.expect(queueIsBacklogged(AudioOutput.max_queued_bytes + AudioOutput.channels * @sizeOf(i16)));
+}
+
+test "audio playback shadow only records samples that have actually drained" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_dir_path);
+    const wav_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_dir_path, "shadow.wav" });
+    defer std.testing.allocator.free(wav_path);
+
+    var recorder = try WavRecorder.start(wav_path, AudioOutput.output_rate, AudioOutput.channels);
+    var audio = AudioInit{
+        .stream = @ptrFromInt(1),
+        .output = AudioOutput.init(),
+    };
+    const queued = [_]i16{ 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    audio.appendPlaybackShadow(queued[0..]);
+    audio.reconcilePlaybackShadow(4 * @sizeOf(i16), &recorder);
+
+    try std.testing.expectEqual(@as(u32, 2), recorder.sample_count);
+    try std.testing.expectEqual(@as(usize, 4), audio.playback_shadow_len);
+    try std.testing.expectEqualSlices(i16, queued[4..], audio.playback_shadow[0..audio.playback_shadow_len]);
+
+    audio.reconcilePlaybackShadow(0, &recorder);
+    try std.testing.expectEqual(@as(u32, 4), recorder.sample_count);
+    try std.testing.expectEqual(@as(usize, 0), audio.playback_shadow_len);
+
+    recorder.finish();
 }
 
 test "quick state helper saves and restores machine state" {
