@@ -11,9 +11,12 @@ const c = @cImport({
     @cInclude("m68k.h");
 });
 
-var active_memory: ?*MemoryInterface = null;
-var active_cpu: ?*Cpu = null;
 var fallback_memory = [_]u8{0} ** 8;
+
+const DisasmCpu = struct {
+    core: c.M68kCpu,
+    memory: *MemoryInterface,
+};
 
 fn isVdpDataPortAddress(address: u32) bool {
     const addr = address & 0xFFFFFF;
@@ -26,44 +29,55 @@ fn isVdpControlPortAddress(address: u32) bool {
     return addr >= 0xC00000 and addr <= 0xDFFFFF and port >= 0x04 and port < 0x08;
 }
 
-fn cpuRead8(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
-    const memory = active_memory orelse return 0;
-    const cpu = active_cpu orelse return 0;
+fn ownerFromCore(core: ?*c.M68kCpu) ?*Cpu {
+    const core_ptr = core orelse return null;
+    return @fieldParentPtr("core", core_ptr);
+}
+
+fn disasmMemoryFromCore(core: ?*c.M68kCpu) ?*MemoryInterface {
+    const core_ptr = core orelse return null;
+    const shadow: *const DisasmCpu = @fieldParentPtr("core", core_ptr);
+    return shadow.memory;
+}
+
+fn cpuRead8(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
+    const cpu = ownerFromCore(core) orelse return 0;
+    const memory = cpu.active_memory orelse return 0;
     cpu.noteBusAccessWait(memory, address, 1, false);
     return @intCast(memory.read8(address));
 }
 
-fn cpuRead16(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u16 {
-    const memory = active_memory orelse return 0;
-    const cpu = active_cpu orelse return 0;
+fn cpuRead16(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u16 {
+    const cpu = ownerFromCore(core) orelse return 0;
+    const memory = cpu.active_memory orelse return 0;
     cpu.noteBusAccessWait(memory, address, 2, false);
     return @intCast(memory.read16(address));
 }
 
-fn cpuRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
-    const memory = active_memory orelse return 0;
-    const cpu = active_cpu orelse return 0;
+fn cpuRead32(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
+    const cpu = ownerFromCore(core) orelse return 0;
+    const memory = cpu.active_memory orelse return 0;
     cpu.noteBusAccessWait(memory, address, 4, false);
     return @intCast(memory.read32(address));
 }
 
-fn cpuWrite8(_: ?*c.M68kCpu, address: c.u32, value: c.u8) callconv(.c) void {
-    const memory = active_memory orelse return;
-    const cpu = active_cpu orelse return;
+fn cpuWrite8(core: ?*c.M68kCpu, address: c.u32, value: c.u8) callconv(.c) void {
+    const cpu = ownerFromCore(core) orelse return;
+    const memory = cpu.active_memory orelse return;
     cpu.noteBusAccessWait(memory, address, 1, true);
     memory.write8(address, value);
 }
 
-fn cpuWrite16(_: ?*c.M68kCpu, address: c.u32, value: c.u16) callconv(.c) void {
-    const memory = active_memory orelse return;
-    const cpu = active_cpu orelse return;
+fn cpuWrite16(core: ?*c.M68kCpu, address: c.u32, value: c.u16) callconv(.c) void {
+    const cpu = ownerFromCore(core) orelse return;
+    const memory = cpu.active_memory orelse return;
     cpu.noteBusAccessWait(memory, address, 2, true);
     memory.write16(address, value);
 }
 
-fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
-    const memory = active_memory orelse return;
-    const cpu = active_cpu orelse return;
+fn cpuWrite32(core: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
+    const cpu = ownerFromCore(core) orelse return;
+    const memory = cpu.active_memory orelse return;
     cpu.noteBusAccessWait(memory, address, 4, true);
     if (isVdpDataPortAddress(address)) {
         memory.write16(address, @intCast((value >> 16) & 0xFFFF));
@@ -74,18 +88,18 @@ fn cpuWrite32(_: ?*c.M68kCpu, address: c.u32, value: c.u32) callconv(.c) void {
     memory.write32(address, value);
 }
 
-fn cpuDisasmRead8(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
-    const memory = active_memory orelse return 0;
+fn cpuDisasmRead8(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u8 {
+    const memory = disasmMemoryFromCore(core) orelse return 0;
     return @intCast(memory.read8(address));
 }
 
-fn cpuDisasmRead16(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u16 {
-    const memory = active_memory orelse return 0;
+fn cpuDisasmRead16(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u16 {
+    const memory = disasmMemoryFromCore(core) orelse return 0;
     return @intCast(memory.read16(address));
 }
 
-fn cpuDisasmRead32(_: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
-    const memory = active_memory orelse return 0;
+fn cpuDisasmRead32(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
+    const memory = disasmMemoryFromCore(core) orelse return 0;
     return @intCast(memory.read32(address));
 }
 
@@ -143,6 +157,7 @@ pub const Cpu = struct {
     halted: bool,
     pending_wait_cycles: u32,
     pending_wait_master_cycles: u32,
+    active_memory: ?*MemoryInterface,
     active_execution_counters: ?*CoreFrameCounters,
 
     pub var trace_enabled: bool = false;
@@ -154,6 +169,7 @@ pub const Cpu = struct {
             .halted = false,
             .pending_wait_cycles = 0,
             .pending_wait_master_cycles = 0,
+            .active_memory = null,
             .active_execution_counters = null,
         };
 
@@ -176,6 +192,7 @@ pub const Cpu = struct {
         copy.halted = self.halted;
         copy.pending_wait_cycles = self.pending_wait_cycles;
         copy.pending_wait_master_cycles = self.pending_wait_master_cycles;
+        copy.active_memory = null;
         copy.active_execution_counters = null;
         copy.core.fault_trap_active = false;
         copy.core.fault_trap = std.mem.zeroes(@TypeOf(copy.core.fault_trap));
@@ -254,6 +271,7 @@ pub const Cpu = struct {
         self.halted = state.halted;
         self.pending_wait_cycles = state.pending_wait_cycles;
         self.pending_wait_master_cycles = state.pending_wait_master_cycles;
+        self.active_memory = null;
     }
 
     fn currentOpcodeFromCpu(ctx: ?*anyopaque) u16 {
@@ -266,10 +284,24 @@ pub const Cpu = struct {
         self.clearInterrupt();
     }
 
+    fn runtimeState(self: *Cpu) runtime_state.RuntimeState {
+        return runtime_state.RuntimeState.init(self, currentOpcodeFromCpu, clearInterruptFromCpu);
+    }
+
+    fn beginExecution(self: *Cpu, memory: *MemoryInterface) void {
+        self.active_memory = memory;
+        memory.setCpuRuntimeState(self.runtimeState());
+    }
+
+    fn endExecution(self: *Cpu) void {
+        const memory = self.active_memory orelse return;
+        memory.clearCpuRuntimeState();
+        self.active_memory = null;
+    }
+
     pub fn reset(self: *Cpu, memory: *MemoryInterface) void {
-        active_memory = memory;
-        active_cpu = self;
-        runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
+        self.beginExecution(memory);
+        defer self.endExecution();
         c.m68k_reset(&self.core);
 
         // A zero reset SSP is valid on the Genesis: stack accesses wrap onto the
@@ -286,9 +318,6 @@ pub const Cpu = struct {
         self.halted = self.core.stopped;
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
-        runtime_state.clearActive();
-        active_memory = null;
-        active_cpu = null;
     }
 
     pub fn setActiveExecutionCounters(self: *Cpu, counters: ?*CoreFrameCounters) void {
@@ -341,9 +370,8 @@ pub const Cpu = struct {
     pub fn stepInstruction(self: *Cpu, memory: *MemoryInterface) InstructionStep {
         _ = trace_enabled;
 
-        active_memory = memory;
-        active_cpu = self;
-        runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
+        self.beginExecution(memory);
+        defer self.endExecution();
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
         self.core.target_cycles = 0;
@@ -357,9 +385,6 @@ pub const Cpu = struct {
         self.core.cycles_remaining = 0;
         self.cycles += ran_cycles;
         self.halted = self.core.stopped;
-        runtime_state.clearActive();
-        active_memory = null;
-        active_cpu = null;
         if (self.active_execution_counters) |counters| counters.m68k_instructions += 1;
 
         return .{
@@ -371,16 +396,12 @@ pub const Cpu = struct {
     pub fn runCycles(self: *Cpu, memory: *MemoryInterface, budget: u32) u32 {
         if (budget == 0) return 0;
 
-        active_memory = memory;
-        active_cpu = self;
-        runtime_state.setActive(self, currentOpcodeFromCpu, clearInterruptFromCpu);
+        self.beginExecution(memory);
+        defer self.endExecution();
         const ran = c.m68k_execute(&self.core, @intCast(budget));
         const consumed: u32 = if (ran > 0) @intCast(ran) else 0;
         self.cycles += consumed;
         self.halted = self.core.stopped;
-        runtime_state.clearActive();
-        active_memory = null;
-        active_cpu = null;
         return consumed;
     }
 
@@ -444,24 +465,18 @@ pub const Cpu = struct {
     pub fn formatInstruction(self: *const Cpu, memory: *MemoryInterface, pc: u32, buffer: []u8) []const u8 {
         if (buffer.len == 0) return buffer[0..0];
 
-        var shadow = std.mem.zeroes(c.M68kCpu);
-        c.m68k_init(&shadow, &fallback_memory[0], fallback_memory.len);
-        c.m68k_set_context(&shadow, &self.core);
-        c.m68k_set_read8_callback(&shadow, cpuDisasmRead8);
-        c.m68k_set_read16_callback(&shadow, cpuDisasmRead16);
-        c.m68k_set_read32_callback(&shadow, cpuDisasmRead32);
-
-        const previous_memory = active_memory;
-        const previous_cpu = active_cpu;
-        active_memory = memory;
-        active_cpu = null;
-        defer {
-            active_memory = previous_memory;
-            active_cpu = previous_cpu;
-        }
+        var shadow = DisasmCpu{
+            .core = std.mem.zeroes(c.M68kCpu),
+            .memory = memory,
+        };
+        c.m68k_init(&shadow.core, &fallback_memory[0], fallback_memory.len);
+        c.m68k_set_context(&shadow.core, &self.core);
+        c.m68k_set_read8_callback(&shadow.core, cpuDisasmRead8);
+        c.m68k_set_read16_callback(&shadow.core, cpuDisasmRead16);
+        c.m68k_set_read32_callback(&shadow.core, cpuDisasmRead32);
 
         buffer[0] = 0;
-        _ = c.m68k_disasm(&shadow, pc, @ptrCast(buffer.ptr), @intCast(buffer.len));
+        _ = c.m68k_disasm(&shadow.core, pc, @ptrCast(buffer.ptr), @intCast(buffer.len));
         const len = std.mem.indexOfScalar(u8, buffer, 0) orelse buffer.len;
         return buffer[0..len];
     }

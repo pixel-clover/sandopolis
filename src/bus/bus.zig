@@ -1,8 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const Cartridge = @import("cartridge.zig").Cartridge;
-const io_window = @import("io_window.zig");
-const vdp_ports = @import("vdp_ports.zig");
+const cpu_memory = @import("cpu_memory.zig");
 const z80_host_bridge = @import("z80_host_bridge.zig");
 const clock = @import("../clock.zig");
 const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
@@ -11,6 +10,7 @@ const Vdp = @import("../video/vdp.zig").Vdp;
 const Io = @import("../input/io.zig").Io;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const MemoryInterface = @import("../cpu/memory_interface.zig").MemoryInterface;
+const cpu_runtime = @import("../cpu/runtime_state.zig");
 const SchedulerBus = @import("../scheduler/runtime.zig").SchedulerBus;
 
 pub const Bus = struct {
@@ -29,6 +29,7 @@ pub const Bus = struct {
     z80_odd_access: bool,
     m68k_wait_master_cycles: u32,
     open_bus: u16,
+    cpu_runtime_state: cpu_runtime.RuntimeState,
     active_execution_counters: ?*CoreFrameCounters,
     fn initWithCartridge(cartridge: Cartridge) Bus {
         const bus = Bus{
@@ -47,6 +48,7 @@ pub const Bus = struct {
             .z80_odd_access = false,
             .m68k_wait_master_cycles = 0,
             .open_bus = 0,
+            .cpu_runtime_state = .{},
             .active_execution_counters = null,
         };
         return bus;
@@ -72,38 +74,9 @@ pub const Bus = struct {
         try self.cartridge.flushPersistentStorage();
     }
 
-    fn isZ80WindowAddress(address: u32) bool {
-        const addr = address & 0xFFFFFF;
-        return addr >= 0xA00000 and addr < 0xA10000;
-    }
-
-    fn isZ80BusAckPage(address: u32) bool {
-        const addr = address & 0xFFFFFF;
-        return addr >= 0xA11100 and addr < 0xA11200;
-    }
-
-    fn isZ80ResetPage(address: u32) bool {
-        const addr = address & 0xFFFFFF;
-        return addr >= 0xA11200 and addr < 0xA11300;
-    }
-
-    fn hasZ80BusFor68k(self: *Bus) bool {
-        return self.z80.readBusReq() == 0x0000;
-    }
-
-    fn singleM68kAccessWaitMasterCycles(self: *Bus, address: u32) u32 {
-        if (!isZ80WindowAddress(address)) return 0;
-        if (!self.hasZ80BusFor68k()) return 0;
-
-        return clock.m68kCyclesToMaster(1);
-    }
-
     pub fn m68kAccessWaitMasterCycles(self: *Bus, address: u32, size_bytes: u8) u32 {
-        var wait = self.singleM68kAccessWaitMasterCycles(address);
-        if (size_bytes >= 4) {
-            wait += self.singleM68kAccessWaitMasterCycles(address + 2);
-        }
-        return wait;
+        var memory = self.cpuMemoryView();
+        return memory.m68kAccessWaitMasterCycles(address, size_bytes);
     }
 
     fn z80HostWindowReadByte(ctx: ?*anyopaque, address: u32) u8 {
@@ -131,33 +104,28 @@ pub const Bus = struct {
         return self.read16(address);
     }
 
+    fn cpuMemoryEnsureZ80HostWindow(ctx: ?*anyopaque) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        self.ensureZ80HostWindow();
+    }
+
+    fn cpuMemoryView(self: *Bus) cpu_memory.View {
+        return cpu_memory.View.init(
+            &self.cartridge,
+            &self.ram,
+            &self.vdp,
+            &self.io,
+            &self.z80,
+            &self.audio_timing,
+            &self.open_bus,
+            &self.cpu_runtime_state,
+            self,
+            cpuMemoryEnsureZ80HostWindow,
+        );
+    }
+
     fn ensureZ80HostWindow(self: *Bus) void {
         self.z80_host_bridge.bind(&self.z80, self);
-    }
-
-    fn latchOpenBus(self: *Bus, value: u16) u16 {
-        self.open_bus = value;
-        return value;
-    }
-
-    fn openBusByte(self: *const Bus, address: u32) u8 {
-        return if ((address & 1) == 0)
-            @truncate((self.open_bus >> 8) & 0xFF)
-        else
-            @truncate(self.open_bus & 0xFF);
-    }
-
-    fn readMirroredZ80ControlRegister(self: *Bus, control_word: u16) u16 {
-        const control_bits: u16 = if ((control_word & 0x0100) != 0) 0x0100 else 0x0000;
-        return self.latchOpenBus((self.open_bus & ~@as(u16, 0x0100)) | control_bits);
-    }
-
-    fn readZ80BusAckRegister(self: *Bus) u16 {
-        return self.readMirroredZ80ControlRegister(self.z80.readBusReq());
-    }
-
-    fn readZ80ResetRegister(self: *Bus) u16 {
-        return self.readMirroredZ80ControlRegister(self.z80.readReset());
     }
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
@@ -205,6 +173,7 @@ pub const Bus = struct {
             .z80_odd_access = self.z80_odd_access,
             .m68k_wait_master_cycles = self.m68k_wait_master_cycles,
             .open_bus = self.open_bus,
+            .cpu_runtime_state = .{},
             .active_execution_counters = null,
         };
     }
@@ -247,6 +216,7 @@ pub const Bus = struct {
         self.z80_odd_access = false;
         self.m68k_wait_master_cycles = 0;
         self.open_bus = 0;
+        self.cpu_runtime_state = .{};
         self.ensureZ80HostWindow();
     }
 
@@ -261,57 +231,80 @@ pub const Bus = struct {
         self.z80_odd_access = false;
         self.m68k_wait_master_cycles = 0;
         self.open_bus = 0;
+        self.cpu_runtime_state = .{};
         self.ensureZ80HostWindow();
     }
 
     fn cpuMemoryRead8(ctx: ?*anyopaque, address: u32) u8 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
-        return self.read8(address);
+        var memory = self.cpuMemoryView();
+        return memory.read8(address);
     }
 
     fn cpuMemoryRead16(ctx: ?*anyopaque, address: u32) u16 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
-        return self.read16(address);
+        var memory = self.cpuMemoryView();
+        return memory.read16(address);
     }
 
     fn cpuMemoryRead32(ctx: ?*anyopaque, address: u32) u32 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
-        return self.read32(address);
+        var memory = self.cpuMemoryView();
+        return memory.read32(address);
     }
 
     fn cpuMemoryWrite8(ctx: ?*anyopaque, address: u32, value: u8) void {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
-        self.write8(address, value);
+        var memory = self.cpuMemoryView();
+        memory.write8(address, value);
     }
 
     fn cpuMemoryWrite16(ctx: ?*anyopaque, address: u32, value: u16) void {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
-        self.write16(address, value);
+        var memory = self.cpuMemoryView();
+        memory.write16(address, value);
     }
 
     fn cpuMemoryWrite32(ctx: ?*anyopaque, address: u32, value: u32) void {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
-        self.write32(address, value);
+        var memory = self.cpuMemoryView();
+        memory.write32(address, value);
     }
 
     fn cpuMemoryM68kAccessWaitMasterCycles(ctx: ?*anyopaque, address: u32, size_bytes: u8) u32 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
-        return self.m68kAccessWaitMasterCycles(address, size_bytes);
+        var memory = self.cpuMemoryView();
+        return memory.m68kAccessWaitMasterCycles(address, size_bytes);
     }
 
     fn cpuMemoryDataPortReadWaitMasterCycles(ctx: ?*anyopaque) u32 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
-        return self.vdp.dataPortReadWaitMasterCycles();
+        var memory = self.cpuMemoryView();
+        return memory.dataPortReadWaitMasterCycles();
     }
 
     fn cpuMemoryReserveDataPortWriteWaitMasterCycles(ctx: ?*anyopaque) u32 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
-        return self.vdp.reserveDataPortWriteWaitMasterCycles();
+        var memory = self.cpuMemoryView();
+        return memory.reserveDataPortWriteWaitMasterCycles();
     }
 
     fn cpuMemoryControlPortWriteWaitMasterCycles(ctx: ?*anyopaque) u32 {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return 0));
-        return self.vdp.controlPortWriteWaitMasterCycles();
+        var memory = self.cpuMemoryView();
+        return memory.controlPortWriteWaitMasterCycles();
+    }
+
+    fn cpuMemorySetCpuRuntimeState(ctx: ?*anyopaque, state: cpu_runtime.RuntimeState) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        var memory = self.cpuMemoryView();
+        memory.setCpuRuntimeState(state);
+    }
+
+    fn cpuMemoryClearCpuRuntimeState(ctx: ?*anyopaque) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        var memory = self.cpuMemoryView();
+        memory.clearCpuRuntimeState();
     }
 
     pub fn cpuMemory(self: *Bus) MemoryInterface {
@@ -327,166 +320,44 @@ pub const Bus = struct {
             .dataPortReadWaitMasterCyclesFn = cpuMemoryDataPortReadWaitMasterCycles,
             .reserveDataPortWriteWaitMasterCyclesFn = cpuMemoryReserveDataPortWriteWaitMasterCycles,
             .controlPortWriteWaitMasterCyclesFn = cpuMemoryControlPortWriteWaitMasterCycles,
+            .setCpuRuntimeStateFn = cpuMemorySetCpuRuntimeState,
+            .clearCpuRuntimeStateFn = cpuMemoryClearCpuRuntimeState,
         };
     }
 
     pub fn read8(self: *Bus, address: u32) u8 {
-        const addr = address & 0xFFFFFF;
-
-        if (self.cartridge.readByte(addr)) |value| {
-            return value;
-        }
-
-        if (isZ80BusAckPage(addr)) {
-            if ((addr & 1) == 0) return @truncate((self.readZ80BusAckRegister() >> 8) & 0xFF);
-            return self.openBusByte(addr);
-        }
-        if (isZ80ResetPage(addr)) return self.openBusByte(addr);
-
-        if (addr < 0xA00000) {
-            return self.cartridge.readRomByte(addr);
-        } else if (addr >= 0xE00000 and addr < 0x1000000) {
-            return self.ram[addr & 0xFFFF];
-        } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            if (!self.hasZ80BusFor68k()) return @truncate((self.open_bus >> 8) & 0xFF);
-            self.ensureZ80HostWindow();
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
-            const zaddr: u16 = @truncate(addr & 0x7FFF);
-            return self.z80.readByte(zaddr);
-        } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            return vdp_ports.readByte(&self.vdp, &self.open_bus, addr);
-        } else if (addr >= 0xA10000 and addr < 0xA10020) {
-            return io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr);
-        } else if (addr >= 0xA10020 and addr < 0xA10100) {
-            return self.openBusByte(addr);
-        }
-
-        return 0;
+        var memory = self.cpuMemoryView();
+        return memory.read8(address);
     }
 
     fn peek8NoSideEffects(self: *Bus, address: u32) u8 {
-        const addr = address & 0xFFFFFF;
-
-        if (self.cartridge.readByte(addr)) |value| {
-            return value;
-        }
-
-        if (addr < 0xA00000) return self.cartridge.readRomByte(addr);
-        if (addr >= 0xE00000 and addr < 0x1000000) return self.ram[addr & 0xFFFF];
-
-        return 0xFF;
+        var memory = self.cpuMemoryView();
+        return memory.peek8NoSideEffects(address);
     }
 
     pub fn read16(self: *Bus, address: u32) u16 {
-        const addr = address & 0xFFFFFF;
-        if (self.cartridge.readWord(addr)) |value| {
-            return self.latchOpenBus(value);
-        }
-        if (isZ80BusAckPage(addr)) {
-            return self.readZ80BusAckRegister();
-        } else if (isZ80ResetPage(addr)) {
-            return self.latchOpenBus(self.open_bus);
-        } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
-            return self.latchOpenBus(self.open_bus & 0xFF00);
-        } else if (addr >= 0xA10000 and addr < 0xA10020) {
-            const value = io_window.readRegisterByte(&self.io, self.vdp.pal_mode, addr);
-            return self.latchOpenBus((@as(u16, value) << 8) | value);
-        } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            return vdp_ports.readWord(&self.vdp, &self.open_bus, addr);
-        }
-
-        const high = self.read8(address);
-        const low = self.read8(address + 1);
-        return self.latchOpenBus((@as(u16, high) << 8) | low);
+        var memory = self.cpuMemoryView();
+        return memory.read16(address);
     }
 
     pub fn read32(self: *Bus, address: u32) u32 {
-        const high = self.read16(address);
-        const low = self.read16(address + 2);
-        return (@as(u32, high) << 16) | low;
+        var memory = self.cpuMemoryView();
+        return memory.read32(address);
     }
 
     pub fn write8(self: *Bus, address: u32, value: u8) void {
-        const addr = address & 0xFFFFFF;
-        self.open_bus = (@as(u16, value) << 8) | value;
-
-        if (self.cartridge.writeRegisterByte(addr, value)) return;
-        if (self.cartridge.writeByte(addr, value)) return;
-
-        if (isZ80BusAckPage(addr)) {
-            if ((addr & 1) == 0) {
-                self.z80.writeBusReq(@as(u16, value) << 8);
-            }
-            return;
-        } else if (isZ80ResetPage(addr)) {
-            if ((addr & 1) == 0) {
-                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
-                self.z80.writeReset(@as(u16, value) << 8);
-            }
-            return;
-        }
-
-        if (addr < 0xA00000) {
-            return;
-        } else if (addr >= 0xE00000 and addr < 0x1000000) {
-            self.ram[addr & 0xFFFF] = value;
-        } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            if (!self.hasZ80BusFor68k()) return;
-            self.ensureZ80HostWindow();
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
-            const zaddr: u16 = @truncate(addr & 0x7FFF);
-            self.z80.writeByte(zaddr, value);
-            return;
-        } else if (addr >= 0xA10000 and addr < 0xA10020) {
-            if ((addr & 1) != 0) {
-                io_window.writeRegisterByte(&self.io, addr, value);
-            }
-        } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            const port = addr & 0x1F;
-            if (port >= 0x11 and port < 0x18 and (port & 1) == 1) {
-                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
-                self.z80.writeByte(0x7F11, value);
-            } else {
-                vdp_ports.writeByte(&self.vdp, addr, value);
-            }
-            return;
-        }
+        var memory = self.cpuMemoryView();
+        memory.write8(address, value);
     }
 
     pub fn write16(self: *Bus, address: u32, value: u16) void {
-        const addr = address & 0xFFFFFF;
-        self.open_bus = value;
-
-        if (self.cartridge.writeRegisterWord(addr, value)) return;
-        if (self.cartridge.writeWord(addr, value)) return;
-
-        if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            const port = addr & 0x1F;
-            if (port >= 0x10 and port < 0x18 and (port & 1) == 0) {
-                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
-                self.z80.writeByte(0x7F11, @intCast(value & 0xFF));
-            } else {
-                vdp_ports.writeWord(&self.vdp, addr, value);
-            }
-            return;
-        }
-
-        if (isZ80BusAckPage(addr)) {
-            self.z80.writeBusReq(value);
-            return;
-        } else if (isZ80ResetPage(addr)) {
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
-            self.z80.writeReset(value);
-            return;
-        }
-
-        self.write8(address, @intCast((value >> 8) & 0xFF));
-        self.write8(address + 1, @intCast(value & 0xFF));
+        var memory = self.cpuMemoryView();
+        memory.write16(address, value);
     }
 
     pub fn write32(self: *Bus, address: u32, value: u32) void {
-        self.write16(address, @intCast((value >> 16) & 0xFFFF));
-        self.write16(address + 2, @intCast(value & 0xFFFF));
+        var memory = self.cpuMemoryView();
+        memory.write32(address, value);
     }
 
     fn recordZ80EarlyAdvancedMaster(self: *Bus, master_cycles: u32, count_toward_z80_credit: bool) void {
