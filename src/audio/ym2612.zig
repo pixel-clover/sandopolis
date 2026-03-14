@@ -1243,15 +1243,22 @@ pub const Ym2612Synth = struct {
                     // The offset is (4 - pan_bit) << 5, scaled by *3 for internal representation.
                     const pan_l: i32 = if (self.core.pan_l[ch] != 0) 1 else 0;
                     const pan_r: i32 = if (self.core.pan_r[ch] != 0) 1 else 0;
-                    adjusted_left -= (4 - pan_l) * 32 * 3;
-                    adjusted_right -= (4 - pan_r) * 32 * 3;
+                    adjusted_left -|= (4 - pan_l) * 32 * 3;
+                    adjusted_right -|= (4 - pan_r) * 32 * 3;
                 } else {
                     // Positive output: +4 offset (regardless of mute) in 9-bit DAC units.
-                    adjusted_left += 4 * 32 * 3;
-                    adjusted_right += 4 * 32 * 3;
+                    adjusted_left +|= 4 * 32 * 3;
+                    adjusted_right +|= 4 * 32 * 3;
                 }
             }
         }
+
+        // Clamp to prevent overflow before float conversion.
+        // Max theoretical value: ~144 clocks * 576 + 6 channels * 384 = ~85,000
+        // This keeps values within safe i32 range for the subsequent division.
+        const max_safe_value: i32 = 100_000;
+        adjusted_left = std.math.clamp(adjusted_left, -max_safe_value, max_safe_value);
+        adjusted_right = std.math.clamp(adjusted_right, -max_safe_value, max_safe_value);
 
         const inv_cycles = 1.0 / @as(f32, @floatFromInt(internal_clocks_per_sample));
         const left = @as(f32, @floatFromInt(adjusted_left)) * inv_cycles * ym_output_scale;

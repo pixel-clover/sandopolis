@@ -38,7 +38,7 @@ Footage of Sandopolis running a few games:
 ### Key Features
 
 - Accurate Sega Genesis/Mega Drive emulation
-- Very portable; can be built and run on any platform that Zig supports including WASM
+- Very portable; can be built and run on any platform that Zig supports
 - Configurable gameplay input, frontend hotkeys, and rendering settings
 - Supports ROM loading at runtime, recent-ROM history, a save-state manager, quick state save/load, persistent state slots, and keyboard rebinding
 - Has a permissive license that allows commercial use

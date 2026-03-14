@@ -41,13 +41,24 @@ const PendingAudioEvents = struct {
 const DcBlocker = struct {
     x_prev: f32 = 0.0,
     y_prev: f32 = 0.0,
+    warmup_samples: u8 = 0,
 
     const alpha: f32 = 0.9974;
+    const warmup_count: u8 = 8;
 
     fn process(self: *DcBlocker, x: f32) f32 {
         const y = alpha * (self.y_prev + x - self.x_prev);
         self.x_prev = x;
         self.y_prev = y;
+
+        // Apply gradual fade-in during warmup to avoid startup click.
+        // The filter needs a few samples to stabilize; blending prevents
+        // the transient from being audible.
+        if (self.warmup_samples < warmup_count) {
+            self.warmup_samples += 1;
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return y * blend;
+        }
         return y;
     }
 };
@@ -220,7 +231,9 @@ fn CubicResampler(comptime channels_count: usize) type {
                 self.cycle_counter_product -= self.scaled_source_frequency;
 
                 while (self.input_len < resample_buffer_len) {
-                    self.pushFrontInputSample(if (self.input_len == 0) [_]f32{0.0} ** channels_count else self.input_samples[0]);
+                    // Use the first available sample for padding instead of zeros to avoid
+                    // startup clicks and discontinuities at buffer boundaries.
+                    self.pushFrontInputSample(self.input_samples[0]);
                 }
 
                 const x = @as(f64, @floatFromInt(self.scaled_x_counter)) / @as(f64, @floatFromInt(scaled_output_frequency));
@@ -304,6 +317,48 @@ pub const AudioOutput = struct {
         ym_only,
         psg_only,
         unfiltered_mix,
+
+        pub fn name(self: RenderMode) []const u8 {
+            return switch (self) {
+                .normal => "normal",
+                .ym_only => "ym-only",
+                .psg_only => "psg-only",
+                .unfiltered_mix => "unfiltered-mix",
+            };
+        }
+
+        pub fn label(self: RenderMode) []const u8 {
+            return switch (self) {
+                .normal => "NORMAL",
+                .ym_only => "YM ONLY",
+                .psg_only => "PSG ONLY",
+                .unfiltered_mix => "UNFILTERED MIX",
+            };
+        }
+
+        pub fn parse(value: []const u8) error{InvalidAudioMode}!RenderMode {
+            if (std.mem.eql(u8, value, "normal")) return .normal;
+            if (std.mem.eql(u8, value, "ym-only") or std.mem.eql(u8, value, "ym_only")) return .ym_only;
+            if (std.mem.eql(u8, value, "psg-only") or std.mem.eql(u8, value, "psg_only")) return .psg_only;
+            if (std.mem.eql(u8, value, "unfiltered-mix") or std.mem.eql(u8, value, "unfiltered_mix")) return .unfiltered_mix;
+            return error.InvalidAudioMode;
+        }
+
+        pub fn cycle(self: RenderMode, delta: isize) RenderMode {
+            const modes = [_]RenderMode{ .normal, .ym_only, .psg_only, .unfiltered_mix };
+            var index: isize = 0;
+            for (modes, 0..) |candidate, i| {
+                if (candidate == self) {
+                    index = @intCast(i);
+                    break;
+                }
+            }
+            index += delta;
+            const count: isize = @intCast(modes.len);
+            while (index < 0) index += count;
+            while (index >= count) index -= count;
+            return modes[@intCast(index)];
+        }
     };
 
     pub const output_rate: u32 = 48_000;
@@ -800,8 +855,8 @@ pub const AudioOutput = struct {
             master_cursor = segment_end;
 
             if (self.psg_partial_master_cycles == sample_master_cycles) {
-                self.last_psg_sample_left = @intCast(@divTrunc(self.psg_partial_sum_left, sample_master_cycles));
-                self.last_psg_sample_right = @intCast(@divTrunc(self.psg_partial_sum_right, sample_master_cycles));
+                self.last_psg_sample_left = @intCast(@divFloor(self.psg_partial_sum_left + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
+                self.last_psg_sample_right = @intCast(@divFloor(self.psg_partial_sum_right + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
                 self.pushFilteredPsgNativeSample(.{ .left = self.last_psg_sample_left, .right = self.last_psg_sample_right });
                 produced_count += 1;
                 self.psg_partial_master_cycles = 0;
@@ -899,8 +954,8 @@ pub const AudioOutput = struct {
             master_cursor.* = segment_end;
 
             if (self.psg_partial_master_cycles == sample_master_cycles) {
-                self.last_psg_sample_left = @intCast(@divTrunc(self.psg_partial_sum_left, sample_master_cycles));
-                self.last_psg_sample_right = @intCast(@divTrunc(self.psg_partial_sum_right, sample_master_cycles));
+                self.last_psg_sample_left = @intCast(@divFloor(self.psg_partial_sum_left + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
+                self.last_psg_sample_right = @intCast(@divFloor(self.psg_partial_sum_right + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
                 self.psg_partial_master_cycles = 0;
                 self.psg_partial_sum_left = 0;
                 self.psg_partial_sum_right = 0;
@@ -1082,8 +1137,8 @@ pub const AudioOutput = struct {
             r = self.dc_right.process(r);
         }
 
-        l = clampMix(l);
-        r = clampMix(r);
+        l = softSaturate(l);
+        r = softSaturate(r);
         return .{
             @as(i16, @intFromFloat(l * 32767.0)),
             @as(i16, @intFromFloat(r * 32767.0)),
@@ -1382,8 +1437,21 @@ pub const AudioOutput = struct {
     }
 };
 
-fn clampMix(x: f32) f32 {
-    return std.math.clamp(x, -1.0, 1.0);
+/// Soft saturation using tanh-like curve to avoid harsh digital clipping.
+/// This provides gentle compression near the limits instead of hard clipping,
+/// which reduces harmonic distortion in loud passages.
+fn softSaturate(x: f32) f32 {
+    // For values within normal range, pass through unchanged
+    if (x >= -0.9 and x <= 0.9) return x;
+    // For values approaching limits, apply soft knee compression
+    // Uses a simplified tanh approximation for efficiency
+    if (x > 0) {
+        const excess = x - 0.9;
+        return 0.9 + 0.1 * (1.0 - @exp(-excess * 10.0));
+    } else {
+        const excess = -x - 0.9;
+        return -0.9 - 0.1 * (1.0 - @exp(-excess * 10.0));
+    }
 }
 
 fn pendingWindow(master_cycles: u32) PendingAudioFrames {
@@ -2515,17 +2583,27 @@ test "board output lpf passes audible content with minimal loss" {
     try std.testing.expect(peak > 0.95);
 }
 
-test "mix clamp leaves in-range samples unchanged" {
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), clampMix(0.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), clampMix(0.5), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -0.3), clampMix(-0.3), 0.001);
+test "soft saturate leaves in-range samples unchanged" {
+    // Values within [-0.9, 0.9] pass through unchanged
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), softSaturate(0.0), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), softSaturate(0.5), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.3), softSaturate(-0.3), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.89), softSaturate(0.89), 0.001);
 }
 
-test "mix clamp saturates out-of-range samples" {
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), clampMix(1.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -1.0), clampMix(-1.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), clampMix(2.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -1.0), clampMix(-2.0), 0.001);
+test "soft saturate applies soft knee compression near limits" {
+    // Values at or near 1.0 get soft compressed, not hard clipped
+    // At exactly 0.9, should pass through
+    try std.testing.expectApproxEqAbs(@as(f32, 0.9), softSaturate(0.9), 0.001);
+    // At 1.0, soft saturation compresses it below 1.0 but above 0.9
+    const sat_1_0 = softSaturate(1.0);
+    try std.testing.expect(sat_1_0 > 0.9 and sat_1_0 < 1.0);
+    // At 2.0, approaches 1.0 asymptotically
+    const sat_2_0 = softSaturate(2.0);
+    try std.testing.expect(sat_2_0 > sat_1_0 and sat_2_0 < 1.0);
+    // Negative values work symmetrically
+    const sat_neg_1_0 = softSaturate(-1.0);
+    try std.testing.expect(sat_neg_1_0 < -0.9 and sat_neg_1_0 > -1.0);
 }
 
 test "runtime resamplers cover requested output frames for a representative window" {

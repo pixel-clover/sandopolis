@@ -35,7 +35,7 @@ Quick examples:
 
 - `src/main.zig`: SDL frontend, event loop, rendering, audio device setup.
 - `src/api.zig`: API/doc entrypoint used for generated documentation.
-- `src/public/`: deliberate public API facade types exposed from `src/api.zig`.
+- `src/public/`: deliberate public API facade type (`Machine`) exposed from `src/api.zig`.
 - `src/testing/`: explicit testing facade used by non-unit suites that need lower-level control than `Machine` alone exposes.
 - `src/testing_root.zig`: root module used for internal testing facades that need broader access than `src/testing/` alone.
 - `src/bus/`: cartridge loading/persistence, memory map, open-bus behavior, Z80 arbitration, and VDP/audio timing coordination.
@@ -102,11 +102,12 @@ Run these checks for any non-trivial change:
 Also run these when relevant:
 
 1. `zig build test-unit` when touching module-local tests, unit-test build wiring, or test-only module behavior during iteration
-2. `zig build docs --prefix .` for docs/API/build-doc changes
-3. `make test` when touching the Makefile or contributor workflow
-4. `make docs` when touching docs generation paths
-5. `zig build run -- <path-to-rom>` or `make run ARGS="<path-to-rom>"` for frontend/manual runtime checks
-6. `zig build compare-ym -- [scenario]` when touching raw YM2612 synthesis behavior, the compare harness, or the Nuked reference integration and the
+2. `zig build test-frontend` when touching frontend helper functions or UI state logic
+3. `zig build docs --prefix .` for docs/API/build-doc changes
+4. `make test` when touching the Makefile or contributor workflow
+5. `make docs` when touching docs generation paths
+6. `zig build run -- <path-to-rom>` or `make run ARGS="<path-to-rom>"` for frontend/manual runtime checks
+7. `zig build compare-ym -- [scenario]` when touching raw YM2612 synthesis behavior, the compare harness, or the Nuked reference integration and the
    submodule is available
 
 ## First Contribution Flow

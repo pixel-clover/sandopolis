@@ -2,6 +2,19 @@ const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const InputBindings = @import("../input/mapping.zig");
 const StateFile = @import("../state_file.zig");
+const toast_module = @import("toast.zig");
+const Toast = toast_module.Toast;
+const config_module = @import("config.zig");
+const FrontendConfig = config_module.FrontendConfig;
+const recent_rom_limit = config_module.recent_rom_limit;
+const menu_module = @import("menu.zig");
+const HomeMenuState = menu_module.HomeMenuState;
+const formatHomeMenuItem = menu_module.formatHomeMenuItem;
+const homeMenuActionForIndex = menu_module.homeMenuActionForIndex;
+const binding_editor = @import("../input/binding_editor.zig");
+const BindingEditorState = binding_editor.State;
+const bindingEditorRowText = binding_editor.rowText;
+const bindingEditorTargetForIndex = binding_editor.targetForIndex;
 
 // Centralized UI color system for consistent theming across overlays
 pub const Colors = struct {
@@ -511,4 +524,309 @@ pub fn renderHelpOverlay(
         Colors.green,
         persistent_state_slot,
     );
+}
+
+/// Render the file dialog overlay
+pub fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
+    const title = "OPEN ROM";
+    const lines = [_][]const u8{
+        "SYSTEM FILE DIALOG ACTIVE",
+        "",
+        "SELECT A ROM OR CANCEL",
+    };
+    const scale = overlayScale(viewport);
+    const padding = 10.0 * scale;
+    const line_height = 9.0 * scale;
+
+    var max_width = textWidth(title, scale);
+    for (lines) |line| {
+        max_width = @max(max_width, textWidth(line, scale));
+    }
+
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
+    };
+
+    try renderPanel(
+        renderer,
+        panel,
+        Colors.panel_primary,
+        Colors.orange,
+        scale,
+    );
+
+    try drawText(
+        renderer,
+        panel.x + (panel.w - textWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        Colors.orange,
+        title,
+    );
+
+    var y = panel.y + padding + 11.0 * scale;
+    for (lines) |line| {
+        if (line.len != 0) {
+            try drawText(
+                renderer,
+                panel.x + (panel.w - textWidth(line, scale)) * 0.5,
+                y,
+                scale,
+                Colors.text_primary,
+                line,
+            );
+        }
+        y += line_height;
+    }
+}
+
+/// Render the toast notification overlay
+pub fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast: *const Toast, frame_number: u64) !void {
+    if (!toast.visible(frame_number)) return;
+
+    const scale = overlayScale(viewport);
+    const padding = 8.0 * scale;
+    const text = toast.slice();
+    const width = textWidth(text, scale);
+    const panel_width = width + padding * 2.0;
+    const panel_height = padding * 2.0 + 7.0 * scale;
+    const panel = zsdl3.FRect{
+        .x = @max(12.0 * scale, @as(f32, @floatFromInt(viewport.w)) - panel_width - 12.0 * scale),
+        .y = 12.0 * scale,
+        .w = panel_width,
+        .h = panel_height,
+    };
+    const ToastPalette = struct {
+        fill: zsdl3.Color,
+        border: zsdl3.Color,
+    };
+    const toast_colors: ToastPalette = switch (toast.style) {
+        .info => .{
+            .fill = Colors.panel_primary,
+            .border = Colors.gold,
+        },
+        .success => .{
+            .fill = .{ .r = 0x0D, .g = 0x18, .b = 0x12, .a = 0xE8 },
+            .border = Colors.green,
+        },
+        .failure => .{
+            .fill = .{ .r = 0x1B, .g = 0x0F, .b = 0x11, .a = 0xEC },
+            .border = Colors.orange,
+        },
+    };
+
+    try renderPanel(
+        renderer,
+        panel,
+        toast_colors.fill,
+        toast_colors.border,
+        scale,
+    );
+    try drawText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding,
+        scale,
+        Colors.text_primary,
+        text,
+    );
+}
+
+/// Render the home screen overlay
+pub fn renderHomeOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    home_menu: *const HomeMenuState,
+    cfg: *const FrontendConfig,
+) !void {
+    const title = "SANDOPOLIS";
+    const subtitle = "OPEN A ROM TO START";
+    const empty_recent_note = "NO RECENT ROMS YET";
+    const footer_a = "DPAD MOVE  A OR START SELECT";
+    const footer_b = "F3 OPEN DIALOG  F1 HELP  ESC QUIT";
+    const scale = overlayScale(viewport);
+    const padding = 12.0 * scale;
+    const line_height = 9.0 * scale;
+    const item_count = HomeMenuState.itemCount(cfg);
+    const note_count: usize = if (cfg.recent_rom_count == 0) 1 else 0;
+
+    var line_buffers: [recent_rom_limit + 3][96]u8 = undefined;
+    var menu_lines: [recent_rom_limit + 3][]const u8 = undefined;
+    var max_width = textWidth(title, scale);
+    max_width = @max(max_width, textWidth(subtitle, scale));
+    max_width = @max(max_width, textWidth(footer_a, scale));
+    max_width = @max(max_width, textWidth(footer_b, scale));
+    if (note_count != 0) {
+        max_width = @max(max_width, textWidth(empty_recent_note, scale));
+    }
+
+    for (0..item_count) |index| {
+        const line = try formatHomeMenuItem(
+            line_buffers[index][0..],
+            cfg,
+            homeMenuActionForIndex(index, cfg),
+            index == home_menu.selected_index,
+        );
+        menu_lines[index] = line;
+        max_width = @max(max_width, textWidth(line, scale));
+    }
+
+    const body_lines = 3 + note_count + item_count;
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)))) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)),
+    };
+
+    try renderPanel(
+        renderer,
+        panel,
+        Colors.panel_secondary,
+        Colors.cyan,
+        scale,
+    );
+
+    try drawText(
+        renderer,
+        panel.x + (panel.w - textWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        Colors.cyan,
+        title,
+    );
+
+    const text_x = panel.x + padding;
+    var y = panel.y + padding + 13.0 * scale;
+    try drawText(renderer, text_x, y, scale, Colors.text_primary, subtitle);
+    y += line_height;
+
+    if (note_count != 0) {
+        try drawText(renderer, text_x, y, scale, Colors.text_muted, empty_recent_note);
+        y += line_height;
+    }
+
+    for (menu_lines[0..item_count], 0..) |line, index| {
+        const color: zsdl3.Color = if (index == home_menu.selected_index)
+            Colors.gold
+        else
+            Colors.text_primary;
+        try drawText(renderer, text_x, y, scale, color, line);
+        y += line_height;
+    }
+
+    try drawText(renderer, text_x, y, scale, Colors.text_muted, footer_a);
+    y += line_height;
+    try drawText(renderer, text_x, y, scale, Colors.text_muted, footer_b);
+}
+
+/// Render the keyboard binding editor overlay
+pub fn renderKeyboardEditorOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    editor: *const BindingEditorState,
+    bindings: *const InputBindings.Bindings,
+) !void {
+    const title = "KEYBOARD EDITOR";
+    const controls = if (editor.capture_mode)
+        "PRESS A KEY  ESC CANCEL  DEL CLEAR"
+    else
+        "UP DOWN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE";
+    const scale = overlayScale(viewport);
+    const padding = 10.0 * scale;
+    const row_height = 10.0 * scale;
+    const header_height = 28.0 * scale;
+    const footer_height = 18.0 * scale;
+    const visible_rows = @min(@as(usize, 11), BindingEditorState.selectionCount());
+
+    const panel = zsdl3.FRect{
+        .x = 12.0 * scale,
+        .y = 12.0 * scale,
+        .w = @as(f32, @floatFromInt(viewport.w)) - 24.0 * scale,
+        .h = header_height + footer_height + @as(f32, @floatFromInt(visible_rows)) * row_height + padding * 2.0,
+    };
+
+    try renderPanel(
+        renderer,
+        panel,
+        Colors.panel_secondary,
+        Colors.blue,
+        scale,
+    );
+
+    try drawText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding,
+        scale,
+        Colors.blue,
+        title,
+    );
+    try drawText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding + 11.0 * scale,
+        scale,
+        Colors.text_muted,
+        controls,
+    );
+
+    const first_visible = if (editor.selected_index < visible_rows / 2)
+        @as(usize, 0)
+    else
+        @min(
+            editor.selected_index - visible_rows / 2,
+            BindingEditorState.selectionCount() - visible_rows,
+        );
+    var y = panel.y + padding + header_height;
+    for (0..visible_rows) |row| {
+        const index = first_visible + row;
+        const selected = index == editor.selected_index;
+        const row_rect = zsdl3.FRect{
+            .x = panel.x + padding - 3.0 * scale,
+            .y = y - 1.0 * scale,
+            .w = panel.w - padding * 2.0 + 6.0 * scale,
+            .h = row_height,
+        };
+        if (selected) {
+            try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 });
+            try zsdl3.renderFillRect(renderer, row_rect);
+            try zsdl3.setRenderDrawColor(renderer, Colors.blue);
+            try zsdl3.renderRect(renderer, row_rect);
+        }
+
+        var line_buffer: [96]u8 = undefined;
+        const line = try bindingEditorRowText(line_buffer[0..], bindings, bindingEditorTargetForIndex(index));
+        try drawText(
+            renderer,
+            panel.x + padding,
+            y,
+            scale,
+            if (selected)
+                Colors.text_selected
+            else
+                Colors.text_primary,
+            line,
+        );
+        y += row_height;
+    }
+
+    const status_color: zsdl3.Color = switch (editor.status) {
+        .neutral => Colors.text_muted,
+        .success => Colors.success,
+        .failed => Colors.failure,
+    };
+    if (editor.status_message.len != 0) {
+        try drawText(
+            renderer,
+            panel.x + padding,
+            panel.y + panel.h - padding - 7.0 * scale,
+            scale,
+            status_color,
+            editor.status_message.slice(),
+        );
+    }
 }

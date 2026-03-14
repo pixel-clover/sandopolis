@@ -7,6 +7,9 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const Z80 = @import("cpu/z80.zig").Z80;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
+const gamepad = @import("input/gamepad.zig");
+const keyboard = @import("input/keyboard.zig");
+const binding_editor_module = @import("input/binding_editor.zig");
 const Machine = @import("machine.zig").Machine;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
@@ -14,6 +17,14 @@ const GifRecorder = @import("recording/gif.zig").GifRecorder;
 const WavRecorder = @import("recording/wav.zig").WavRecorder;
 const StateFile = @import("state_file.zig");
 const ui_render = @import("frontend/ui.zig");
+const perf_monitor = @import("frontend/performance.zig");
+const config_module = @import("frontend/config.zig");
+const saves_module = @import("frontend/saves.zig");
+const toast_module = @import("frontend/toast.zig");
+const dialog_module = @import("frontend/dialog.zig");
+const menu_module = @import("frontend/menu.zig");
+const rom_metadata = @import("rom_metadata.zig");
+const cli_module = @import("cli.zig");
 
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
@@ -149,40 +160,23 @@ const SdlAudioSpecRaw = extern struct {
     freq: c_int,
 };
 
-const GamepadSlot = struct {
-    id: zsdl3.Joystick.Id,
-    handle: *zsdl3.Gamepad,
-};
+// Re-export gamepad types from input/gamepad.zig
+const GamepadSlot = gamepad.GamepadSlot;
+const SdlJoystick = gamepad.SdlJoystick;
+const JoystickSlot = gamepad.JoystickSlot;
+const DirectionState = gamepad.DirectionState;
+const TriggerState = gamepad.TriggerState;
+const GamepadTransition = gamepad.Transition;
+const max_input_transitions = gamepad.max_transitions;
+const joystick_hat_up = gamepad.hat_up;
+const joystick_hat_right = gamepad.hat_right;
+const joystick_hat_down = gamepad.hat_down;
+const joystick_hat_left = gamepad.hat_left;
 
-const SdlJoystick = opaque {};
-
-const JoystickSlot = struct {
-    id: zsdl3.Joystick.Id,
-    handle: *SdlJoystick,
-};
-
-const DirectionState = struct {
-    left: bool = false,
-    right: bool = false,
-    up: bool = false,
-    down: bool = false,
-};
-
-const TriggerState = struct {
-    left: bool = false,
-    right: bool = false,
-};
-
-const GamepadTransition = struct {
-    input: InputBindings.GamepadInput,
-    pressed: bool,
-};
-
-const max_input_transitions: usize = 4;
-const joystick_hat_up: u8 = 0x01;
-const joystick_hat_right: u8 = 0x02;
-const joystick_hat_down: u8 = 0x04;
-const joystick_hat_left: u8 = 0x08;
+// Re-export SDL joystick externs from gamepad module
+const SDL_IsGamepad = gamepad.SDL_IsGamepad;
+const SDL_OpenJoystick = gamepad.SDL_OpenJoystick;
+const SDL_CloseJoystick = gamepad.SDL_CloseJoystick;
 
 fn frameDurationNs(is_pal: bool, master_cycles_per_frame: u32) u64 {
     const master_clock: u32 = if (is_pal) clock.master_clock_pal else clock.master_clock_ntsc;
@@ -193,898 +187,85 @@ fn uncappedBootFrames(audio_enabled: bool) u32 {
     return if (audio_enabled) 0 else 240;
 }
 
-const frontend_config_name = "sandopolis_frontend.cfg";
-const frontend_recent_rom_limit: usize = 8;
-const frontend_toast_duration_frames: u64 = 180;
-const save_state_preview_width: usize = 80;
-const save_state_preview_height: usize = 56;
-const save_state_preview_pixel_count: usize = save_state_preview_width * save_state_preview_height;
-const save_state_preview_magic = [_]u8{ 'S', 'P', 'R', 'V' };
-const save_state_preview_version: u16 = 1;
+// Re-export config types and constants from frontend/config.zig
+const frontend_config_name = config_module.config_file_name;
+const frontend_recent_rom_limit = config_module.recent_rom_limit;
+const DialogPathCopy = config_module.PathCopy;
+const VideoAspectMode = config_module.VideoAspectMode;
+const VideoScaleMode = config_module.VideoScaleMode;
+const FrontendConfig = config_module.FrontendConfig;
+const defaultFrontendConfigPath = config_module.defaultConfigPath;
+const computeVideoDestinationRect = config_module.computeVideoDestinationRect;
 
-const FrontendUi = struct {
-    paused: bool = false,
-    show_home: bool = false,
-    show_save_manager: bool = false,
-    show_settings: bool = false,
-    show_help: bool = false,
-    dialog_active: bool = false,
-    show_keyboard_editor: bool = false,
-    show_performance_hud: bool = false,
+// Re-export toast notification types from frontend/toast.zig
+const max_dialog_message_bytes = toast_module.max_message_bytes;
+const frontend_toast_duration_frames = toast_module.duration_frames;
+const DialogMessageCopy = toast_module.MessageCopy;
+const FrontendToastStyle = toast_module.Style;
+const FrontendToast = toast_module.Toast;
+const FrontendNotifications = toast_module.Notifications;
+const notifyFrontend = toast_module.notify;
 
-    fn emulationPaused(self: *const FrontendUi) bool {
-        return self.paused or self.show_home or self.show_save_manager or self.show_settings or self.show_help or self.dialog_active or self.show_keyboard_editor;
-    }
-};
+// Re-export file dialog types from frontend/dialog.zig
+const FileDialogOutcome = dialog_module.Outcome;
+const FileDialogState = dialog_module.State;
 
-const performance_spike_log_threshold_ns: u64 = 4 * std.time.ns_per_ms;
-const performance_spike_log_burst_delta_ns: u64 = 8 * std.time.ns_per_ms;
-const performance_spike_window_ns: u64 = std.time.ns_per_s;
-const performance_core_sample_period: u64 = 16;
-const performance_core_burst_frames: u32 = 8;
+// Re-export menu types from frontend/menu.zig
+const HomeMenuAction = menu_module.HomeMenuAction;
+const HomeMenuState = menu_module.HomeMenuState;
+const SettingsMenuAction = menu_module.SettingsMenuAction;
+const settings_menu_actions = menu_module.settings_menu_actions;
+const SettingsMenuState = menu_module.SettingsMenuState;
+const HomeScreenCommand = menu_module.HomeScreenCommand;
+const FrontendGamepadCommand = menu_module.FrontendGamepadCommand;
+const FrontendEventDisposition = menu_module.EventDisposition;
+const FrontendUi = menu_module.FrontendUi;
+const formatHomeMenuItem = menu_module.formatHomeMenuItem;
+const homeMenuActionForIndex = menu_module.homeMenuActionForIndex;
+const formatSettingsActionLine = menu_module.formatSettingsActionLine;
+const frontendGamepadCommandFromHome = menu_module.gamepadCommandFromHome;
+const activateHomeMenuSelection = menu_module.activateHomeMenuSelection;
 
-fn queuedAudioNsFromBytes(queued_bytes: usize) u64 {
-    return @intCast((@as(u128, queued_bytes) * std.time.ns_per_s) /
-        (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
-}
+// Re-export save state types and constants from frontend/saves.zig
+const save_state_preview_width = saves_module.preview_width;
+const save_state_preview_height = saves_module.preview_height;
+const save_state_preview_pixel_count = saves_module.preview_pixel_count;
+const SaveStatePreview = saves_module.Preview;
+const SaveManagerSlotMetadata = saves_module.SlotMetadata;
+const SaveManagerState = saves_module.ManagerState;
+const save_manager_slot_count = saves_module.slot_count;
+const previousPersistentStateSlot = saves_module.previousSlot;
+const resolveStatePreviewPath = saves_module.resolvePreviewPath;
+const saveStatePreviewFile = saves_module.savePreviewFile;
+const deleteStatePreviewFile = saves_module.deletePreviewFile;
+const resolvePersistentStatePath = saves_module.resolvePersistentStatePath;
+const formatTimestampUtc = saves_module.formatTimestampUtc;
+const formatSaveManagerSlotLine = saves_module.formatSlotLine;
+const formatSaveManagerPathLine = saves_module.formatPathLine;
 
-fn queueIsBacklogged(queued_bytes: usize) bool {
-    return queued_bytes >= AudioOutput.max_queued_bytes;
-}
-
-const PerformanceStageSample = struct {
-    label: []const u8,
-    ns: u64,
-};
-
-const PerformanceFramePhases = struct {
-    emulation_ns: u64 = 0,
-    audio_ns: u64 = 0,
-    upload_ns: u64 = 0,
-    draw_ns: u64 = 0,
-    present_call_ns: u64 = 0,
-
-    fn hottestStage(self: *const PerformanceFramePhases) PerformanceStageSample {
-        var hottest = PerformanceStageSample{ .label = "EMU", .ns = self.emulation_ns };
-        if (self.audio_ns > hottest.ns) hottest = .{ .label = "AUD", .ns = self.audio_ns };
-        if (self.upload_ns > hottest.ns) hottest = .{ .label = "UPL", .ns = self.upload_ns };
-        if (self.draw_ns > hottest.ns) hottest = .{ .label = "DRAW", .ns = self.draw_ns };
-        if (self.present_call_ns > hottest.ns) hottest = .{ .label = "PRE", .ns = self.present_call_ns };
-        return hottest;
-    }
-};
-
-fn smoothPerformanceMetric(current_avg: u64, sample: u64) u64 {
-    return ((current_avg * 7) + sample + 4) / 8;
-}
-
-const PerformanceHudState = struct {
-    frame_count: u64 = 0,
-    slow_frame_count: u64 = 0,
-    core_sample_count: u64 = 0,
-    last_core_counters_sampled: bool = false,
-    last_work_ns: u64 = 0,
-    average_work_ns: u64 = 0,
-    last_present_ns: u64 = 0,
-    average_present_ns: u64 = 0,
-    last_target_ns: u64 = 0,
-    last_sleep_ns: u64 = 0,
-    last_overrun_ns: u64 = 0,
-    last_other_ns: u64 = 0,
-    average_other_ns: u64 = 0,
-    worst_work_ns: u64 = 0,
-    worst_overrun_ns: u64 = 0,
-    last_audio_queued_bytes: ?usize = null,
-    last_phases: PerformanceFramePhases = .{},
-    average_phases: PerformanceFramePhases = .{},
-    last_core_counters: CoreFrameCounters = .{},
-    average_core_counters: CoreFrameCounters = .{},
-
-    fn reset(self: *PerformanceHudState) void {
-        self.* = .{};
-    }
-
-    fn noteFrame(
-        self: *PerformanceHudState,
-        work_ns: u64,
-        present_ns: u64,
-        target_ns: u64,
-        audio_queued_bytes: ?usize,
-        phases: PerformanceFramePhases,
-        core_counters: ?CoreFrameCounters,
-    ) void {
-        const measured_ns = phases.emulation_ns +| phases.audio_ns +| phases.upload_ns +| phases.draw_ns +| phases.present_call_ns;
-        const other_ns = work_ns -| measured_ns;
-        self.frame_count += 1;
-        self.last_work_ns = work_ns;
-        self.last_present_ns = present_ns;
-        self.last_target_ns = target_ns;
-        self.last_sleep_ns = present_ns -| work_ns;
-        self.last_overrun_ns = if (work_ns > target_ns) work_ns - target_ns else 0;
-        self.last_other_ns = other_ns;
-        self.worst_work_ns = @max(self.worst_work_ns, work_ns);
-        self.worst_overrun_ns = @max(self.worst_overrun_ns, self.last_overrun_ns);
-        self.last_audio_queued_bytes = audio_queued_bytes;
-        self.last_phases = phases;
-        self.last_core_counters_sampled = core_counters != null;
-        if (self.last_overrun_ns != 0) self.slow_frame_count += 1;
-
-        if (self.frame_count == 1) {
-            self.average_work_ns = work_ns;
-            self.average_present_ns = present_ns;
-            self.average_phases = phases;
-            self.average_other_ns = other_ns;
-        } else {
-            self.average_work_ns = smoothPerformanceMetric(self.average_work_ns, work_ns);
-            self.average_present_ns = smoothPerformanceMetric(self.average_present_ns, present_ns);
-            self.average_phases.emulation_ns = smoothPerformanceMetric(self.average_phases.emulation_ns, phases.emulation_ns);
-            self.average_phases.audio_ns = smoothPerformanceMetric(self.average_phases.audio_ns, phases.audio_ns);
-            self.average_phases.upload_ns = smoothPerformanceMetric(self.average_phases.upload_ns, phases.upload_ns);
-            self.average_phases.draw_ns = smoothPerformanceMetric(self.average_phases.draw_ns, phases.draw_ns);
-            self.average_phases.present_call_ns = smoothPerformanceMetric(self.average_phases.present_call_ns, phases.present_call_ns);
-            self.average_other_ns = smoothPerformanceMetric(self.average_other_ns, other_ns);
-        }
-
-        if (core_counters) |sample| {
-            self.last_core_counters = sample;
-            if (self.core_sample_count == 0) {
-                self.average_core_counters = sample;
-            } else {
-                self.average_core_counters.m68k_instructions = smoothPerformanceMetric(self.average_core_counters.m68k_instructions, sample.m68k_instructions);
-                self.average_core_counters.z80_instructions = smoothPerformanceMetric(self.average_core_counters.z80_instructions, sample.z80_instructions);
-                self.average_core_counters.transfer_slots = smoothPerformanceMetric(self.average_core_counters.transfer_slots, sample.transfer_slots);
-                self.average_core_counters.access_slots = smoothPerformanceMetric(self.average_core_counters.access_slots, sample.access_slots);
-                self.average_core_counters.dma_words = smoothPerformanceMetric(self.average_core_counters.dma_words, sample.dma_words);
-                self.average_core_counters.render_scanlines = smoothPerformanceMetric(self.average_core_counters.render_scanlines, sample.render_scanlines);
-                self.average_core_counters.render_sprite_entries = smoothPerformanceMetric(self.average_core_counters.render_sprite_entries, sample.render_sprite_entries);
-                self.average_core_counters.render_sprite_pixels = smoothPerformanceMetric(self.average_core_counters.render_sprite_pixels, sample.render_sprite_pixels);
-                self.average_core_counters.render_sprite_opaque_pixels = smoothPerformanceMetric(self.average_core_counters.render_sprite_opaque_pixels, sample.render_sprite_opaque_pixels);
-            }
-            self.core_sample_count += 1;
-        }
-    }
-
-    fn queuedAudioNs(self: *const PerformanceHudState) ?u64 {
-        const queued_bytes = self.last_audio_queued_bytes orelse return null;
-        return queuedAudioNsFromBytes(queued_bytes);
-    }
-
-    fn slowFramePercentTenths(self: *const PerformanceHudState) u64 {
-        if (self.frame_count == 0) return 0;
-        return @intCast((@as(u128, self.slow_frame_count) * 1000 + @as(u128, self.frame_count) / 2) / @as(u128, self.frame_count));
-    }
-
-    fn hottestStage(self: *const PerformanceHudState) PerformanceStageSample {
-        var hottest = self.last_phases.hottestStage();
-        if (self.last_other_ns > hottest.ns) hottest = .{ .label = "OTH", .ns = self.last_other_ns };
-        return hottest;
-    }
-};
-
-fn shouldSampleCoreCounters(show_hud: bool, frame_number: u64, burst_frames_remaining: u32) bool {
-    return show_hud and (burst_frames_remaining != 0 or frame_number % performance_core_sample_period == 0);
-}
-
-fn nextCoreBurstFramesRemaining(sampled_this_frame: bool, burst_frames_remaining: u32, perf: *const PerformanceHudState) u32 {
-    var remaining = burst_frames_remaining;
-    if (sampled_this_frame and remaining != 0) remaining -= 1;
-    if (isThresholdSlowFrame(perf)) remaining = @max(remaining, performance_core_burst_frames);
-    return remaining;
-}
-
-const PerformanceSpikeWindowSummary = struct {
-    start_frame: u64,
-    end_frame: u64,
-    frame_count: u64,
-    slow_frame_count: u64,
-    average_overrun_ns: u64,
-    max_overrun_ns: u64,
-    audio_queued_bytes: ?usize,
-
-    fn audioQueuedNs(self: *const PerformanceSpikeWindowSummary) ?u64 {
-        const queued_bytes = self.audio_queued_bytes orelse return null;
-        return queuedAudioNsFromBytes(queued_bytes);
-    }
-};
-
-const PerformanceSpikeLogUpdate = struct {
-    log_frame: bool = false,
-    summary: ?PerformanceSpikeWindowSummary = null,
-};
-
-const PerformanceSpikeLogState = struct {
-    burst_frame_count: u64 = 0,
-    burst_last_logged_overrun_ns: u64 = 0,
-    window_start_frame: u64 = 0,
-    window_frame_count: u64 = 0,
-    window_slow_frame_count: u64 = 0,
-    window_overrun_ns_total: u64 = 0,
-    window_max_overrun_ns: u64 = 0,
-    window_target_ns_total: u64 = 0,
-    window_last_audio_queued_bytes: ?usize = null,
-
-    fn reset(self: *PerformanceSpikeLogState) void {
-        self.resetBurst();
-        self.resetWindow();
-    }
-
-    fn resetBurst(self: *PerformanceSpikeLogState) void {
-        self.burst_frame_count = 0;
-        self.burst_last_logged_overrun_ns = 0;
-    }
-
-    fn resetWindow(self: *PerformanceSpikeLogState) void {
-        self.window_start_frame = 0;
-        self.window_frame_count = 0;
-        self.window_slow_frame_count = 0;
-        self.window_overrun_ns_total = 0;
-        self.window_max_overrun_ns = 0;
-        self.window_target_ns_total = 0;
-        self.window_last_audio_queued_bytes = null;
-    }
-
-    fn noteFrame(
-        self: *PerformanceSpikeLogState,
-        frame_number: u64,
-        perf: *const PerformanceHudState,
-    ) PerformanceSpikeLogUpdate {
-        var update = PerformanceSpikeLogUpdate{};
-        const threshold_slow = isThresholdSlowFrame(perf);
-        if (threshold_slow) {
-            if (self.burst_frame_count == 0) {
-                self.burst_frame_count = 1;
-                self.burst_last_logged_overrun_ns = perf.last_overrun_ns;
-                update.log_frame = true;
-            } else {
-                self.burst_frame_count += 1;
-                if (perf.last_overrun_ns >= self.burst_last_logged_overrun_ns + performance_spike_log_burst_delta_ns) {
-                    self.burst_last_logged_overrun_ns = perf.last_overrun_ns;
-                    update.log_frame = true;
-                }
-            }
-        } else {
-            self.resetBurst();
-        }
-
-        if (self.window_frame_count == 0) {
-            self.window_start_frame = frame_number;
-        }
-
-        self.window_frame_count += 1;
-        self.window_target_ns_total += perf.last_target_ns;
-        self.window_last_audio_queued_bytes = perf.last_audio_queued_bytes;
-
-        if (threshold_slow) {
-            self.window_slow_frame_count += 1;
-            self.window_overrun_ns_total += perf.last_overrun_ns;
-            self.window_max_overrun_ns = @max(self.window_max_overrun_ns, perf.last_overrun_ns);
-        }
-
-        if (self.window_target_ns_total < performance_spike_window_ns) return update;
-
-        if (self.window_slow_frame_count != 0) {
-            update.summary = .{
-                .start_frame = self.window_start_frame,
-                .end_frame = frame_number,
-                .frame_count = self.window_frame_count,
-                .slow_frame_count = self.window_slow_frame_count,
-                .average_overrun_ns = @intCast((@as(u128, self.window_overrun_ns_total) +
-                    @as(u128, self.window_slow_frame_count) / 2) / @as(u128, self.window_slow_frame_count)),
-                .max_overrun_ns = self.window_max_overrun_ns,
-                .audio_queued_bytes = self.window_last_audio_queued_bytes,
-            };
-        }
-
-        self.resetWindow();
-        return update;
-    }
-};
-
-fn isThresholdSlowFrame(perf: *const PerformanceHudState) bool {
-    return perf.last_overrun_ns >= performance_spike_log_threshold_ns;
-}
+// Re-export performance monitoring types from frontend/performance.zig
+const performance_spike_log_threshold_ns = perf_monitor.spike_log_threshold_ns;
+const performance_core_sample_period = perf_monitor.core_sample_period;
+const performance_core_burst_frames = perf_monitor.core_burst_frames;
+const PerformanceFramePhases = perf_monitor.FramePhases;
+const PerformanceHudState = perf_monitor.HudState;
+const PerformanceSpikeLogState = perf_monitor.SpikeLogState;
+const PerformanceSpikeWindowSummary = perf_monitor.SpikeWindowSummary;
+const queuedAudioNsFromBytes = perf_monitor.queuedAudioNsFromBytes;
+const queueIsBacklogged = perf_monitor.queueIsBacklogged;
+const shouldSampleCoreCounters = perf_monitor.shouldSampleCoreCounters;
+const nextCoreBurstFramesRemaining = perf_monitor.nextCoreBurstFramesRemaining;
+const isThresholdSlowFrame = perf_monitor.isThresholdSlowFrame;
 
 // Re-export UI types from frontend/ui.zig
 const UiColors = ui_render.Colors;
 const UiSpacing = ui_render.Spacing;
 const OverlayLine = ui_render.OverlayLine;
 
-const max_dialog_message_bytes: usize = 256;
-
-const DialogPathCopy = struct {
-    len: usize = 0,
-    bytes: [std.fs.max_path_bytes]u8 = [_]u8{0} ** std.fs.max_path_bytes,
-
-    fn slice(self: *const DialogPathCopy) []const u8 {
-        return self.bytes[0..self.len];
-    }
-
-    fn set(self: *DialogPathCopy, path: []const u8) void {
-        self.* = .{};
-        const copy_len = @min(path.len, self.bytes.len);
-        @memcpy(self.bytes[0..copy_len], path[0..copy_len]);
-        self.len = copy_len;
-    }
-};
-
-const DialogMessageCopy = struct {
-    len: usize = 0,
-    bytes: [max_dialog_message_bytes]u8 = [_]u8{0} ** max_dialog_message_bytes,
-
-    fn slice(self: *const DialogMessageCopy) []const u8 {
-        return self.bytes[0..self.len];
-    }
-};
-
-const FileDialogOutcome = union(enum) {
-    none,
-    selected: DialogPathCopy,
-    canceled,
-    failed: DialogMessageCopy,
-};
-
-const FileDialogState = struct {
-    mutex: std.Thread.Mutex = .{},
-    in_flight: bool = false,
-    selected_path: DialogPathCopy = .{},
-    failure_message: DialogMessageCopy = .{},
-    default_location_len: usize = 0,
-    default_location_z: [std.fs.max_path_bytes + 1]u8 = [_]u8{0} ** (std.fs.max_path_bytes + 1),
-    outcome: enum {
-        idle,
-        selected,
-        canceled,
-        failed,
-    } = .idle,
-
-    fn begin(self: *FileDialogState, default_location: ?[]const u8) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.in_flight) return false;
-        self.in_flight = true;
-        self.outcome = .idle;
-        self.selected_path = .{};
-        self.failure_message = .{};
-        self.default_location_len = 0;
-        @memset(&self.default_location_z, 0);
-        if (default_location) |path| {
-            const len = @min(path.len, std.fs.max_path_bytes);
-            @memcpy(self.default_location_z[0..len], path[0..len]);
-            self.default_location_len = len;
-        }
-        return true;
-    }
-
-    fn defaultLocation(self: *const FileDialogState) ?[*:0]const u8 {
-        if (self.default_location_len == 0) return null;
-        return self.default_location_z[0..self.default_location_len :0].ptr;
-    }
-
-    fn finishSelected(self: *FileDialogState, path: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (path.len > self.selected_path.bytes.len) {
-            self.writeFailureLocked("SELECTED PATH TOO LONG");
-            return;
-        }
-        self.selected_path = .{};
-        @memcpy(self.selected_path.bytes[0..path.len], path);
-        self.selected_path.len = path.len;
-        self.outcome = .selected;
-        self.in_flight = false;
-    }
-
-    fn finishCanceled(self: *FileDialogState) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.outcome = .canceled;
-        self.in_flight = false;
-    }
-
-    fn finishFailed(self: *FileDialogState, message: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.writeFailureLocked(message);
-    }
-
-    fn take(self: *FileDialogState) FileDialogOutcome {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const result: FileDialogOutcome = switch (self.outcome) {
-            .idle => .none,
-            .selected => .{ .selected = self.selected_path },
-            .canceled => .canceled,
-            .failed => .{ .failed = self.failure_message },
-        };
-        self.outcome = .idle;
-        return result;
-    }
-
-    fn writeFailureLocked(self: *FileDialogState, message: []const u8) void {
-        self.failure_message = .{};
-        const len = @min(message.len, self.failure_message.bytes.len);
-        @memcpy(self.failure_message.bytes[0..len], message[0..len]);
-        self.failure_message.len = len;
-        self.outcome = .failed;
-        self.in_flight = false;
-    }
-};
-
-const FrontendToastStyle = enum {
-    info,
-    success,
-    failure,
-};
-
-const FrontendToast = struct {
-    style: FrontendToastStyle = .info,
-    message: DialogMessageCopy = .{},
-    hide_after_frame: u64 = 0,
-
-    fn visible(self: *const FrontendToast, frame_number: u64) bool {
-        return self.message.len != 0 and frame_number < self.hide_after_frame;
-    }
-
-    fn show(self: *FrontendToast, style: FrontendToastStyle, message: []const u8, frame_number: u64) void {
-        self.style = style;
-        self.message = .{};
-        const len = @min(message.len, self.message.bytes.len);
-        @memcpy(self.message.bytes[0..len], message[0..len]);
-        self.message.len = len;
-        self.hide_after_frame = frame_number + frontend_toast_duration_frames;
-    }
-
-    fn slice(self: *const FrontendToast) []const u8 {
-        return self.message.slice();
-    }
-};
-
-const VideoAspectMode = enum {
-    stretch,
-    four_three,
-    square_pixels,
-};
-
-const VideoScaleMode = enum {
-    fit,
-    whole_pixels,
-};
-
-const FrontendNotifications = struct {
-    toast: ?*FrontendToast = null,
-    frame_number: u64 = 0,
-};
-
-fn notifyFrontend(notifications: FrontendNotifications, style: FrontendToastStyle, comptime fmt: []const u8, args: anytype) void {
-    if (notifications.toast) |toast| {
-        var buffer: [max_dialog_message_bytes]u8 = undefined;
-        const message = std.fmt.bufPrint(buffer[0..], fmt, args) catch "MESSAGE TOO LONG";
-        toast.show(style, message, notifications.frame_number);
-    }
-}
-
-const FrontendConfig = struct {
-    recent_rom_count: usize = 0,
-    recent_roms: [frontend_recent_rom_limit]DialogPathCopy = [_]DialogPathCopy{.{}} ** frontend_recent_rom_limit,
-    last_open_dir: DialogPathCopy = .{},
-    video_aspect_mode: VideoAspectMode = .stretch,
-    video_scale_mode: VideoScaleMode = .fit,
-
-    fn parseContents(contents: []const u8) !FrontendConfig {
-        var config = FrontendConfig{};
-        var line_iter = std.mem.splitScalar(u8, contents, '\n');
-        while (line_iter.next()) |raw_line| {
-            const line = trimFrontendConfigLine(raw_line);
-            if (line.len == 0) continue;
-
-            const separator = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-            const lhs = std.mem.trim(u8, line[0..separator], " \t\r");
-            const rhs = std.mem.trim(u8, line[separator + 1 ..], " \t\r");
-            if (rhs.len == 0) continue;
-
-            if (std.ascii.eqlIgnoreCase(lhs, "last_open_dir")) {
-                config.setLastOpenDir(rhs);
-            } else if (std.ascii.eqlIgnoreCase(lhs, "video_aspect")) {
-                config.video_aspect_mode = parseVideoAspectMode(rhs) catch config.video_aspect_mode;
-            } else if (std.ascii.eqlIgnoreCase(lhs, "video_scale")) {
-                config.video_scale_mode = parseVideoScaleMode(rhs) catch config.video_scale_mode;
-            } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
-                config.appendRecentRom(rhs);
-            }
-        }
-
-        return config;
-    }
-
-    fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !FrontendConfig {
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return .{},
-            else => return err,
-        };
-        defer file.close();
-
-        const contents = try file.readToEndAlloc(allocator, 64 * 1024);
-        defer allocator.free(contents);
-        return try FrontendConfig.parseContents(contents);
-    }
-
-    fn writeContents(self: *const FrontendConfig, writer: *std.Io.Writer) !void {
-        if (self.last_open_dir.len != 0) {
-            try writer.print("last_open_dir = {s}\n", .{self.last_open_dir.slice()});
-        }
-        try writer.print("video_aspect = {s}\n", .{videoAspectModeName(self.video_aspect_mode)});
-        try writer.print("video_scale = {s}\n", .{videoScaleModeName(self.video_scale_mode)});
-        for (self.recent_roms[0..self.recent_rom_count]) |path| {
-            try writer.print("recent_rom = {s}\n", .{path.slice()});
-        }
-    }
-
-    fn saveToFile(self: *const FrontendConfig, path: []const u8) !void {
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-        defer file.close();
-        var buffer: [4096]u8 = undefined;
-        var writer = file.writer(&buffer);
-        try self.writeContents(&writer.interface);
-        try writer.interface.flush();
-    }
-
-    fn recentRom(self: *const FrontendConfig, index: usize) []const u8 {
-        std.debug.assert(index < self.recent_rom_count);
-        return self.recent_roms[index].slice();
-    }
-
-    fn noteLoadedRom(self: *FrontendConfig, path: []const u8) void {
-        self.setLastOpenDirFromPath(path);
-        self.noteRecentRom(path);
-    }
-
-    fn removeRecentRom(self: *FrontendConfig, index: usize) void {
-        if (index >= self.recent_rom_count) return;
-        var next = index;
-        while (next + 1 < self.recent_rom_count) : (next += 1) {
-            self.recent_roms[next] = self.recent_roms[next + 1];
-        }
-        self.recent_rom_count -= 1;
-        self.recent_roms[self.recent_rom_count] = .{};
-    }
-
-    fn noteRecentRom(self: *FrontendConfig, path: []const u8) void {
-        if (path.len == 0 or path.len > std.fs.max_path_bytes) return;
-
-        var target = DialogPathCopy{};
-        target.set(path);
-        const previous_entries = self.recent_roms;
-        const previous_count = self.recent_rom_count;
-        self.recent_roms = [_]DialogPathCopy{.{}} ** frontend_recent_rom_limit;
-        self.recent_roms[0] = target;
-        var next_count: usize = 1;
-        for (previous_entries[0..previous_count]) |entry| {
-            if (std.mem.eql(u8, entry.slice(), path)) continue;
-            if (next_count >= frontend_recent_rom_limit) break;
-            self.recent_roms[next_count] = entry;
-            next_count += 1;
-        }
-        self.recent_rom_count = next_count;
-    }
-
-    fn appendRecentRom(self: *FrontendConfig, path: []const u8) void {
-        if (path.len == 0 or path.len > std.fs.max_path_bytes) return;
-        for (self.recent_roms[0..self.recent_rom_count]) |entry| {
-            if (std.mem.eql(u8, entry.slice(), path)) return;
-        }
-        if (self.recent_rom_count >= frontend_recent_rom_limit) return;
-        self.recent_roms[self.recent_rom_count].set(path);
-        self.recent_rom_count += 1;
-    }
-
-    fn setLastOpenDirFromPath(self: *FrontendConfig, path: []const u8) void {
-        if (std.fs.path.dirname(path)) |dir| {
-            self.setLastOpenDir(dir);
-        } else {
-            self.setLastOpenDir(".");
-        }
-    }
-
-    fn setLastOpenDir(self: *FrontendConfig, path: []const u8) void {
-        if (path.len == 0 or path.len > std.fs.max_path_bytes) return;
-        self.last_open_dir.set(path);
-    }
-};
-
-fn trimFrontendConfigLine(raw_line: []const u8) []const u8 {
-    const line = std.mem.trim(u8, raw_line, " \t\r");
-    if (line.len == 0) return "";
-    if (line[0] == '#' or line[0] == ';') return "";
-    return line;
-}
-
-fn defaultFrontendConfigPath(allocator: std.mem.Allocator) ![]u8 {
-    const env_path = std.process.getEnvVarOwned(allocator, "SANDOPOLIS_FRONTEND_CONFIG") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
-    if (env_path) |path| return path;
-    return try allocator.dupe(u8, frontend_config_name);
-}
-
 fn persistFrontendConfig(frontend_config: *const FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
     frontend_config.saveToFile(frontend_config_path) catch |err| {
         std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
         notifyFrontend(notifications, .failure, "FAILED TO SAVE FRONTEND CONFIG", .{});
-    };
-}
-
-const HomeMenuAction = union(enum) {
-    open_rom,
-    recent_rom: usize,
-    show_settings,
-    show_help,
-    quit,
-};
-
-const HomeMenuState = struct {
-    selected_index: usize = 0,
-
-    fn itemCount(config: *const FrontendConfig) usize {
-        return config.recent_rom_count + 4;
-    }
-
-    fn clamp(self: *HomeMenuState, config: *const FrontendConfig) void {
-        const count = itemCount(config);
-        if (count == 0) {
-            self.selected_index = 0;
-        } else if (self.selected_index >= count) {
-            self.selected_index = count - 1;
-        }
-    }
-
-    fn move(self: *HomeMenuState, delta: isize, config: *const FrontendConfig) void {
-        const count: isize = @intCast(itemCount(config));
-        if (count == 0) {
-            self.selected_index = 0;
-            return;
-        }
-
-        var next: isize = @intCast(self.selected_index);
-        next += delta;
-        while (next < 0) next += count;
-        while (next >= count) next -= count;
-        self.selected_index = @intCast(next);
-    }
-
-    fn currentAction(self: *const HomeMenuState, config: *const FrontendConfig) HomeMenuAction {
-        if (self.selected_index == 0) return .open_rom;
-        const recent_end = 1 + config.recent_rom_count;
-        if (self.selected_index < recent_end) {
-            return .{ .recent_rom = self.selected_index - 1 };
-        }
-        if (self.selected_index == recent_end) return .show_settings;
-        if (self.selected_index == recent_end + 1) return .show_help;
-        return .quit;
-    }
-};
-
-const SettingsMenuAction = enum {
-    video_aspect_mode,
-    video_scale_mode,
-    fullscreen,
-    audio_render_mode,
-    performance_hud,
-    close,
-};
-
-const settings_menu_actions = [_]SettingsMenuAction{
-    .video_aspect_mode,
-    .video_scale_mode,
-    .fullscreen,
-    .audio_render_mode,
-    .performance_hud,
-    .close,
-};
-
-const SettingsMenuState = struct {
-    selected_index: usize = 0,
-
-    fn itemCount() usize {
-        return settings_menu_actions.len;
-    }
-
-    fn clamp(self: *SettingsMenuState) void {
-        if (self.selected_index >= itemCount()) self.selected_index = itemCount() - 1;
-    }
-
-    fn move(self: *SettingsMenuState, delta: isize) void {
-        const count: isize = @intCast(itemCount());
-        var next: isize = @intCast(self.selected_index);
-        next += delta;
-        while (next < 0) next += count;
-        while (next >= count) next -= count;
-        self.selected_index = @intCast(next);
-    }
-
-    fn currentAction(self: *const SettingsMenuState) SettingsMenuAction {
-        return settings_menu_actions[self.selected_index];
-    }
-};
-
-const HomeScreenCommand = union(enum) {
-    none,
-    open_dialog,
-    load_recent: usize,
-    quit,
-};
-
-const FrontendGamepadCommand = union(enum) {
-    ignored,
-    consumed,
-    open_dialog,
-    load_recent: usize,
-    quit,
-};
-
-const save_manager_slot_count: usize = StateFile.persistent_state_slot_count;
-
-const SaveStatePreview = struct {
-    available: bool = false,
-    pixels: [save_state_preview_pixel_count]u32 = [_]u32{0} ** save_state_preview_pixel_count,
-
-    fn captureFromFramebuffer(framebuffer: []const u32) SaveStatePreview {
-        const source_height = framebuffer.len / Vdp.framebuffer_width;
-        if (source_height == 0) return .{};
-
-        var preview = SaveStatePreview{ .available = true };
-        for (0..save_state_preview_height) |preview_y| {
-            const source_y = if (save_state_preview_height == 1)
-                0
-            else
-                (preview_y * (source_height - 1)) / (save_state_preview_height - 1);
-            for (0..save_state_preview_width) |preview_x| {
-                const source_x = if (save_state_preview_width == 1)
-                    0
-                else
-                    (preview_x * (Vdp.framebuffer_width - 1)) / (save_state_preview_width - 1);
-                preview.pixels[preview_y * save_state_preview_width + preview_x] =
-                    framebuffer[source_y * Vdp.framebuffer_width + source_x];
-            }
-        }
-        return preview;
-    }
-
-    fn saveToFile(self: *const SaveStatePreview, path: []const u8) !void {
-        if (!self.available) return;
-
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-        defer file.close();
-
-        var buffer: [4096]u8 = undefined;
-        var file_writer = file.writer(&buffer);
-        const writer = &file_writer.interface;
-        try writer.writeAll(&save_state_preview_magic);
-        try writer.writeInt(u16, save_state_preview_version, .little);
-        try writer.writeInt(u16, @intCast(save_state_preview_width), .little);
-        try writer.writeInt(u16, @intCast(save_state_preview_height), .little);
-        for (self.pixels) |pixel| {
-            try writer.writeInt(u32, pixel, .little);
-        }
-        try writer.flush();
-    }
-
-    fn loadFromFile(path: []const u8) !SaveStatePreview {
-        var file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        var buffer: [4096]u8 = undefined;
-        var file_reader = file.reader(&buffer);
-        const reader = &file_reader.interface;
-        const magic = try reader.takeArray(save_state_preview_magic.len);
-        if (!std.mem.eql(u8, magic, &save_state_preview_magic)) return error.InvalidStatePreview;
-
-        const version = try reader.takeInt(u16, .little);
-        if (version != save_state_preview_version) return error.UnsupportedStatePreviewVersion;
-
-        const width = try reader.takeInt(u16, .little);
-        const height = try reader.takeInt(u16, .little);
-        if (width != save_state_preview_width or height != save_state_preview_height) {
-            return error.InvalidStatePreviewDimensions;
-        }
-
-        var preview = SaveStatePreview{ .available = true };
-        for (0..save_state_preview_pixel_count) |index| {
-            preview.pixels[index] = try reader.takeInt(u32, .little);
-        }
-        return preview;
-    }
-};
-
-const SaveManagerSlotMetadata = struct {
-    path: DialogPathCopy = .{},
-    exists: bool = false,
-    size_bytes: u64 = 0,
-    modified_ns: i128 = 0,
-    preview: SaveStatePreview = .{},
-};
-
-const SaveManagerState = struct {
-    slots: [save_manager_slot_count]SaveManagerSlotMetadata = [_]SaveManagerSlotMetadata{.{}} ** save_manager_slot_count,
-
-    fn refresh(
-        self: *SaveManagerState,
-        allocator: std.mem.Allocator,
-        machine: *const Machine,
-        explicit_state_path: ?[]const u8,
-    ) !void {
-        for (0..save_manager_slot_count) |slot_index| {
-            const slot_number: u8 = @intCast(slot_index + 1);
-            const path = try resolvePersistentStatePath(allocator, machine, explicit_state_path, slot_number);
-            defer allocator.free(path);
-
-            var metadata = SaveManagerSlotMetadata{};
-            metadata.path.set(path);
-
-            const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
-                error.FileNotFound => {
-                    self.slots[slot_index] = metadata;
-                    continue;
-                },
-                else => return err,
-            };
-            defer file.close();
-
-            const stat = try file.stat();
-            metadata.exists = true;
-            metadata.size_bytes = stat.size;
-            metadata.modified_ns = stat.mtime;
-            const preview_path = try resolveStatePreviewPath(allocator, path);
-            defer allocator.free(preview_path);
-            metadata.preview = SaveStatePreview.loadFromFile(preview_path) catch |err| switch (err) {
-                error.FileNotFound => .{},
-                error.EndOfStream,
-                error.InvalidStatePreview,
-                error.InvalidStatePreviewDimensions,
-                error.UnsupportedStatePreviewVersion,
-                => blk: {
-                    std.debug.print("Ignoring invalid state preview {s}: {s}\n", .{ preview_path, @errorName(err) });
-                    break :blk .{};
-                },
-                else => return err,
-            };
-            self.slots[slot_index] = metadata;
-        }
-    }
-
-    fn slotMetadata(self: *const SaveManagerState, slot: u8) *const SaveManagerSlotMetadata {
-        const normalized = StateFile.normalizePersistentStateSlot(slot);
-        return &self.slots[normalized - StateFile.default_persistent_state_slot];
-    }
-};
-
-fn previousPersistentStateSlot(slot: u8) u8 {
-    const normalized = StateFile.normalizePersistentStateSlot(slot);
-    return if (normalized == StateFile.default_persistent_state_slot)
-        StateFile.persistent_state_slot_count
-    else
-        normalized - 1;
-}
-
-fn resolveStatePreviewPath(allocator: std.mem.Allocator, state_path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}.preview", .{state_path});
-}
-
-fn saveStatePreviewFile(allocator: std.mem.Allocator, machine: *const Machine, state_path: []const u8) !void {
-    const preview_path = try resolveStatePreviewPath(allocator, state_path);
-    defer allocator.free(preview_path);
-
-    const preview = SaveStatePreview.captureFromFramebuffer(machine.framebuffer());
-    try preview.saveToFile(preview_path);
-}
-
-fn deleteStatePreviewFile(allocator: std.mem.Allocator, state_path: []const u8) !void {
-    const preview_path = try resolveStatePreviewPath(allocator, state_path);
-    defer allocator.free(preview_path);
-
-    std.fs.cwd().deleteFile(preview_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
     };
 }
 
@@ -1112,28 +293,6 @@ fn openSaveManager(
     ui.show_save_manager = true;
     ui.show_help = false;
     refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
-}
-
-fn closeSaveManager(ui: *FrontendUi) void {
-    ui.show_save_manager = false;
-}
-
-fn openSettings(ui: *FrontendUi, settings: *SettingsMenuState) void {
-    ui.show_settings = true;
-    ui.show_save_manager = false;
-    ui.show_help = false;
-    settings.clamp();
-}
-
-fn closeSettings(ui: *FrontendUi) void {
-    ui.show_settings = false;
-}
-
-fn resumeFrontendGame(ui: *FrontendUi) void {
-    ui.paused = false;
-    ui.show_save_manager = false;
-    ui.show_settings = false;
-    ui.show_help = false;
 }
 
 fn deletePersistentStateFile(
@@ -1190,7 +349,7 @@ fn handlePauseOverlayKey(
             return true;
         },
         .tab => {
-            openSettings(ui, settings);
+            ui.openSettings(settings);
             return true;
         },
         else => return false,
@@ -1217,7 +376,7 @@ fn handleSettingsKey(
 
     switch (scancode) {
         .escape, .tab => {
-            closeSettings(ui);
+            ui.closeSettings();
             return true;
         },
         .up => {
@@ -1307,7 +466,7 @@ fn handleSaveManagerKey(
 
     switch (scancode) {
         .escape => {
-            closeSaveManager(ui);
+            ui.closeSaveManager();
             return true;
         },
         .up => {
@@ -1367,110 +526,6 @@ fn handleSaveManagerKey(
     return true;
 }
 
-const BindingEditorTarget = union(enum) {
-    player_action: struct {
-        port: usize,
-        action: InputBindings.Action,
-    },
-    hotkey: InputBindings.HotkeyAction,
-};
-
-const BindingEditorStatus = enum {
-    neutral,
-    success,
-    failed,
-};
-
-const BindingEditorState = struct {
-    selected_index: usize = 0,
-    capture_mode: bool = false,
-    status: BindingEditorStatus = .neutral,
-    status_message: DialogMessageCopy = .{},
-
-    fn selectionCount() usize {
-        return InputBindings.player_count * InputBindings.all_actions.len + InputBindings.all_hotkey_actions.len;
-    }
-
-    fn currentTarget(self: *const BindingEditorState) BindingEditorTarget {
-        return targetForIndex(self.selected_index);
-    }
-
-    fn move(self: *BindingEditorState, delta: isize) void {
-        const count: isize = @intCast(selectionCount());
-        var next: isize = @intCast(self.selected_index);
-        next += delta;
-        while (next < 0) next += count;
-        while (next >= count) next -= count;
-        self.selected_index = @intCast(next);
-    }
-
-    fn beginCapture(self: *BindingEditorState) void {
-        self.capture_mode = true;
-        self.setStatus(.neutral, "PRESS A KEY  ESC CANCEL  DEL CLEAR");
-    }
-
-    fn cancelCapture(self: *BindingEditorState) void {
-        self.capture_mode = false;
-        self.setStatus(.neutral, "REBIND CANCELED");
-    }
-
-    fn assign(self: *BindingEditorState, bindings: *InputBindings.Bindings, input: InputBindings.KeyboardInput) void {
-        switch (self.currentTarget()) {
-            .player_action => |target| bindings.setKeyboardForPort(target.port, target.action, input),
-            .hotkey => |action| bindings.setHotkey(action, input),
-        }
-        self.capture_mode = false;
-        self.setStatus(.success, "BINDING UPDATED");
-    }
-
-    fn assignHotkey(self: *BindingEditorState, bindings: *InputBindings.Bindings, binding: InputBindings.HotkeyBinding) void {
-        switch (self.currentTarget()) {
-            .player_action => unreachable,
-            .hotkey => |action| bindings.setHotkeyWithModifiers(action, binding.input, binding.modifiers),
-        }
-        self.capture_mode = false;
-        self.setStatus(.success, "BINDING UPDATED");
-    }
-
-    fn clearSelected(self: *BindingEditorState, bindings: *InputBindings.Bindings) void {
-        switch (self.currentTarget()) {
-            .player_action => |target| bindings.setKeyboardForPort(target.port, target.action, null),
-            .hotkey => |action| bindings.setHotkey(action, null),
-        }
-        self.capture_mode = false;
-        self.setStatus(.success, "BINDING CLEARED");
-    }
-
-    fn clearStatus(self: *BindingEditorState) void {
-        self.status = .neutral;
-        self.status_message = .{};
-    }
-
-    fn setStatus(self: *BindingEditorState, status: BindingEditorStatus, message: []const u8) void {
-        self.status = status;
-        self.status_message = .{};
-        const len = @min(message.len, self.status_message.bytes.len);
-        @memcpy(self.status_message.bytes[0..len], message[0..len]);
-        self.status_message.len = len;
-    }
-
-    fn targetForIndex(index: usize) BindingEditorTarget {
-        const per_player_count = InputBindings.all_actions.len;
-        const player_action_count = InputBindings.player_count * per_player_count;
-        if (index < player_action_count) {
-            return .{
-                .player_action = .{
-                    .port = index / per_player_count,
-                    .action = InputBindings.all_actions[index % per_player_count],
-                },
-            };
-        }
-        return .{
-            .hotkey = InputBindings.all_hotkey_actions[index - player_action_count],
-        };
-    }
-};
-
 const SdlDialogFileFilter = extern struct {
     name: [*c]const u8,
     pattern: [*c]const u8,
@@ -1481,209 +536,33 @@ const rom_dialog_filters = [_]SdlDialogFileFilter{
     .{ .name = "All files", .pattern = "*" },
 };
 
-const CliOptions = struct {
-    rom_path: ?[]const u8 = null,
-    audio_mode: AudioOutput.RenderMode = .normal,
-    renderer_name: ?[]const u8 = null,
-    timing_mode: TimingModeOption = .auto,
-    show_help: bool = false,
-};
+// Re-export CLI types from cli.zig
+const CliOptions = cli_module.Options;
+const ParseCliError = cli_module.ParseError;
+const printUsage = cli_module.printUsage;
+const parseCliArgs = cli_module.parseArgs;
+const cliErrorMessage = cli_module.errorMessage;
 
-const ParseCliError = error{
-    InvalidAudioMode,
-    MissingAudioModeValue,
-    MissingRendererValue,
-    MultipleRomPaths,
-    UnknownOption,
-};
+// Re-export ROM metadata types from rom_metadata.zig
+const TimingModeOption = cli_module.TimingModeOption;
+const ResolvedTimingMode = rom_metadata.ResolvedTimingMode;
+const ResolvedConsoleRegion = rom_metadata.ResolvedConsoleRegion;
 
-const TimingModeOption = enum {
-    auto,
-    pal,
-    ntsc,
-};
+// Re-export keyboard/hotkey functions from input/keyboard.zig
+const keyboardStatePressed = keyboard.keyboardStatePressed;
+const hotkeyModifiersFromKeyboardState = keyboard.hotkeyModifiersFromKeyboardState;
+const isHotkeyModifierScancode = keyboard.isHotkeyModifierScancode;
+const hotkeyBindingFromScancode = keyboard.hotkeyBindingFromScancode;
+const hotkeyActionDescription = keyboard.hotkeyActionDescription;
+const keyboardInputFromScancode = keyboard.keyboardInputFromScancode;
 
-fn audioRenderModeName(mode: AudioOutput.RenderMode) []const u8 {
-    return switch (mode) {
-        .normal => "normal",
-        .ym_only => "ym-only",
-        .psg_only => "psg-only",
-        .unfiltered_mix => "unfiltered-mix",
-    };
-}
-
-fn audioRenderModeLabel(mode: AudioOutput.RenderMode) []const u8 {
-    return switch (mode) {
-        .normal => "NORMAL",
-        .ym_only => "YM ONLY",
-        .psg_only => "PSG ONLY",
-        .unfiltered_mix => "UNFILTERED MIX",
-    };
-}
-
-fn videoAspectModeName(mode: VideoAspectMode) []const u8 {
-    return switch (mode) {
-        .stretch => "stretch",
-        .four_three => "4:3",
-        .square_pixels => "square",
-    };
-}
-
-fn videoAspectModeLabel(mode: VideoAspectMode) []const u8 {
-    return switch (mode) {
-        .stretch => "STRETCH",
-        .four_three => "4:3",
-        .square_pixels => "SQUARE",
-    };
-}
-
-fn parseVideoAspectMode(value: []const u8) error{InvalidVideoAspect}!VideoAspectMode {
-    if (std.mem.eql(u8, value, "stretch")) return .stretch;
-    if (std.mem.eql(u8, value, "4:3") or std.mem.eql(u8, value, "four_three")) return .four_three;
-    if (std.mem.eql(u8, value, "square") or std.mem.eql(u8, value, "square_pixels")) return .square_pixels;
-    return error.InvalidVideoAspect;
-}
-
-fn cycleVideoAspectMode(mode: VideoAspectMode, delta: isize) VideoAspectMode {
-    const modes = [_]VideoAspectMode{ .stretch, .four_three, .square_pixels };
-    var index: isize = 0;
-    for (modes, 0..) |candidate, i| {
-        if (candidate == mode) {
-            index = @intCast(i);
-            break;
-        }
-    }
-    index += delta;
-    const count: isize = @intCast(modes.len);
-    while (index < 0) index += count;
-    while (index >= count) index -= count;
-    return modes[@intCast(index)];
-}
-
-fn videoScaleModeName(mode: VideoScaleMode) []const u8 {
-    return switch (mode) {
-        .fit => "fit",
-        .whole_pixels => "whole_pixels",
-    };
-}
-
-fn videoScaleModeLabel(mode: VideoScaleMode) []const u8 {
-    return switch (mode) {
-        .fit => "FIT",
-        .whole_pixels => "WHOLE",
-    };
-}
-
-fn parseVideoScaleMode(value: []const u8) error{InvalidVideoScale}!VideoScaleMode {
-    if (std.mem.eql(u8, value, "fit")) return .fit;
-    if (std.mem.eql(u8, value, "whole") or std.mem.eql(u8, value, "whole_pixels") or std.mem.eql(u8, value, "integer")) {
-        return .whole_pixels;
-    }
-    return error.InvalidVideoScale;
-}
-
-fn cycleVideoScaleMode(mode: VideoScaleMode, delta: isize) VideoScaleMode {
-    const modes = [_]VideoScaleMode{ .fit, .whole_pixels };
-    var index: isize = 0;
-    for (modes, 0..) |candidate, i| {
-        if (candidate == mode) {
-            index = @intCast(i);
-            break;
-        }
-    }
-    index += delta;
-    const count: isize = @intCast(modes.len);
-    while (index < 0) index += count;
-    while (index >= count) index -= count;
-    return modes[@intCast(index)];
-}
-
-fn cycleAudioRenderMode(mode: AudioOutput.RenderMode, delta: isize) AudioOutput.RenderMode {
-    const modes = [_]AudioOutput.RenderMode{ .normal, .ym_only, .psg_only, .unfiltered_mix };
-    var index: isize = 0;
-    for (modes, 0..) |candidate, i| {
-        if (candidate == mode) {
-            index = @intCast(i);
-            break;
-        }
-    }
-    index += delta;
-    const count: isize = @intCast(modes.len);
-    while (index < 0) index += count;
-    while (index >= count) index -= count;
-    return modes[@intCast(index)];
-}
-
-fn parseAudioRenderMode(value: []const u8) ParseCliError!AudioOutput.RenderMode {
-    if (std.mem.eql(u8, value, "normal")) return .normal;
-    if (std.mem.eql(u8, value, "ym-only") or std.mem.eql(u8, value, "ym_only")) return .ym_only;
-    if (std.mem.eql(u8, value, "psg-only") or std.mem.eql(u8, value, "psg_only")) return .psg_only;
-    if (std.mem.eql(u8, value, "unfiltered-mix") or std.mem.eql(u8, value, "unfiltered_mix")) return .unfiltered_mix;
-    return error.InvalidAudioMode;
-}
-
-fn cliErrorMessage(err: ParseCliError) []const u8 {
-    return switch (err) {
-        error.InvalidAudioMode => "invalid --audio-mode value",
-        error.MissingAudioModeValue => "--audio-mode requires a value",
-        error.MissingRendererValue => "--renderer requires a value",
-        error.MultipleRomPaths => "only one ROM path may be provided",
-        error.UnknownOption => "unknown option",
-    };
-}
-
-fn keyboardStatePressed(state: []const bool, scancode: zsdl3.Scancode) bool {
-    const index: usize = @intFromEnum(scancode);
-    return index < state.len and state[index];
-}
-
-fn hotkeyModifiersFromKeyboardState(state: []const bool) InputBindings.HotkeyModifiers {
-    return .{
-        .shift = keyboardStatePressed(state, .lshift) or keyboardStatePressed(state, .rshift),
-        .ctrl = keyboardStatePressed(state, .lctrl) or keyboardStatePressed(state, .rctrl),
-        .alt = keyboardStatePressed(state, .lalt) or keyboardStatePressed(state, .ralt),
-        .gui = keyboardStatePressed(state, .lgui) or keyboardStatePressed(state, .rgui),
-    };
-}
-
-fn isHotkeyModifierScancode(scancode: zsdl3.Scancode) bool {
-    return switch (scancode) {
-        .lshift, .rshift, .lctrl, .rctrl, .lalt, .ralt, .lgui, .rgui => true,
-        else => false,
-    };
-}
-
-fn hotkeyBindingFromScancode(scancode: zsdl3.Scancode, keyboard_state: []const bool) ?InputBindings.HotkeyBinding {
-    const input = keyboardInputFromScancode(scancode) orelse return null;
-    return .{
-        .input = input,
-        .modifiers = hotkeyModifiersFromKeyboardState(keyboard_state),
-    };
-}
-
-fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
-    return switch (action) {
-        .toggle_help => "HELP",
-        .toggle_pause => "PAUSE",
-        .open_rom => "OPEN ROM",
-        .restart_rom => "SOFT RESET",
-        .reload_rom => "HARD RESET / RELOAD",
-        .open_keyboard_editor => "KEYBOARD EDITOR",
-        .toggle_performance_hud => "PERF HUD",
-        .reset_performance_hud => "RESET PERF HUD",
-        .save_quick_state => "SAVE QUICK STATE",
-        .load_quick_state => "LOAD QUICK STATE",
-        .save_state_file => "SAVE STATE FILE",
-        .load_state_file => "LOAD STATE FILE",
-        .next_state_slot => "NEXT STATE SLOT",
-        .step => "STEP CPU",
-        .registers => "REGISTER DUMP",
-        .record_gif => "RECORD GIF",
-        .record_wav => "RECORD WAV",
-        .toggle_fullscreen => "FULLSCREEN",
-        .quit => "QUIT",
-    };
-}
+// Re-export binding editor types from input/binding_editor.zig
+const BindingEditorTarget = binding_editor_module.Target;
+const BindingEditorStatus = binding_editor_module.Status;
+const BindingEditorState = binding_editor_module.State;
+const bindingEditorTargetForIndex = binding_editor_module.targetForIndex;
+const bindingName = binding_editor_module.bindingName;
+const bindingEditorRowText = binding_editor_module.rowText;
 
 fn openRomDialogCallback(
     userdata: ?*anyopaque,
@@ -1764,7 +643,7 @@ fn applyAudioRenderModeSetting(
     if (audio) |a| {
         a.output.setRenderMode(next_mode);
     }
-    notifyFrontend(notifications, .info, "AUDIO MODE {s}", .{audioRenderModeLabel(next_mode)});
+    notifyFrontend(notifications, .info, "AUDIO MODE {s}", .{next_mode.label()});
 }
 
 fn applySettingsAction(
@@ -1784,16 +663,16 @@ fn applySettingsAction(
 ) void {
     switch (action) {
         .video_aspect_mode => {
-            const next_mode = cycleVideoAspectMode(frontend_config.video_aspect_mode, if (delta == 0) 1 else delta);
+            const next_mode = frontend_config.video_aspect_mode.cycle(if (delta == 0) 1 else delta);
             frontend_config.video_aspect_mode = next_mode;
             persistFrontendConfig(frontend_config, frontend_config_path, notifications);
-            notifyFrontend(notifications, .info, "ASPECT {s}", .{videoAspectModeLabel(next_mode)});
+            notifyFrontend(notifications, .info, "ASPECT {s}", .{next_mode.label()});
         },
         .video_scale_mode => {
-            const next_mode = cycleVideoScaleMode(frontend_config.video_scale_mode, if (delta == 0) 1 else delta);
+            const next_mode = frontend_config.video_scale_mode.cycle(if (delta == 0) 1 else delta);
             frontend_config.video_scale_mode = next_mode;
             persistFrontendConfig(frontend_config, frontend_config_path, notifications);
-            notifyFrontend(notifications, .info, "SCALING {s}", .{videoScaleModeLabel(next_mode)});
+            notifyFrontend(notifications, .info, "SCALING {s}", .{next_mode.label()});
         },
         .fullscreen => {
             if (delta < 0) {
@@ -1805,7 +684,7 @@ fn applySettingsAction(
             }
         },
         .audio_render_mode => {
-            applyAudioRenderModeSetting(audio, current_audio_mode, cycleAudioRenderMode(current_audio_mode.*, if (delta == 0) 1 else delta), notifications);
+            applyAudioRenderModeSetting(audio, current_audio_mode, current_audio_mode.cycle(if (delta == 0) 1 else delta), notifications);
         },
         .performance_hud => {
             if (delta < 0) {
@@ -1823,30 +702,9 @@ fn applySettingsAction(
         },
         .close => {
             _ = settings;
-            closeSettings(ui);
+            ui.closeSettings();
         },
     }
-}
-
-fn activateHomeMenuSelection(
-    ui: *FrontendUi,
-    home_menu: *const HomeMenuState,
-    settings: *SettingsMenuState,
-    config: *const FrontendConfig,
-) HomeScreenCommand {
-    return switch (home_menu.currentAction(config)) {
-        .open_rom => .open_dialog,
-        .recent_rom => |index| .{ .load_recent = index },
-        .show_settings => blk: {
-            openSettings(ui, settings);
-            break :blk .none;
-        },
-        .show_help => blk: {
-            ui.show_help = true;
-            break :blk .none;
-        },
-        .quit => .quit,
-    };
 }
 
 fn handleHomeScreenKey(
@@ -1874,15 +732,6 @@ fn handleHomeScreenKey(
     }
 }
 
-fn frontendGamepadCommandFromHome(command: HomeScreenCommand) FrontendGamepadCommand {
-    return switch (command) {
-        .none => .consumed,
-        .open_dialog => .open_dialog,
-        .load_recent => |index| .{ .load_recent = index },
-        .quit => .quit,
-    };
-}
-
 fn handleHomeScreenGamepadInput(
     ui: *FrontendUi,
     home_menu: *HomeMenuState,
@@ -1907,7 +756,7 @@ fn handleHomeScreenGamepadInput(
             break :blk frontendGamepadCommandFromHome(activateHomeMenuSelection(ui, home_menu, settings, config));
         },
         .west => blk: {
-            if (pressed) openSettings(ui, settings);
+            if (pressed) ui.openSettings(settings);
             break :blk .consumed;
         },
         .north => blk: {
@@ -1935,7 +784,7 @@ fn handleHelpOverlayGamepadInput(
                 if (ui.show_home) {
                     ui.show_help = false;
                 } else {
-                    resumeFrontendGame(ui);
+                    ui.resumeGame();
                 }
             }
             break :blk .consumed;
@@ -1965,7 +814,7 @@ fn handlePauseOverlayGamepadInput(
             break :blk .consumed;
         },
         .west => blk: {
-            if (pressed) openSettings(ui, settings);
+            if (pressed) ui.openSettings(settings);
             break :blk .consumed;
         },
         .north => blk: {
@@ -1973,7 +822,7 @@ fn handlePauseOverlayGamepadInput(
             break :blk .consumed;
         },
         .east, .back, .start, .guide => blk: {
-            if (pressed) resumeFrontendGame(ui);
+            if (pressed) ui.resumeGame();
             break :blk .consumed;
         },
         else => .ignored,
@@ -2061,15 +910,15 @@ fn handleSettingsGamepadInput(
             break :blk .consumed;
         },
         .east, .back => blk: {
-            if (pressed) closeSettings(ui);
+            if (pressed) ui.closeSettings();
             break :blk .consumed;
         },
         .guide => blk: {
             if (pressed) {
                 if (ui.show_home) {
-                    closeSettings(ui);
+                    ui.closeSettings();
                 } else {
-                    resumeFrontendGame(ui);
+                    ui.resumeGame();
                 }
             }
             break :blk .consumed;
@@ -2097,11 +946,11 @@ fn handleSaveManagerGamepadInput(
 
     return switch (input) {
         .east, .back => blk: {
-            if (pressed) closeSaveManager(ui);
+            if (pressed) ui.closeSaveManager();
             break :blk .consumed;
         },
         .guide => blk: {
-            if (pressed) resumeFrontendGame(ui);
+            if (pressed) ui.resumeGame();
             break :blk .consumed;
         },
         .dpad_up, .dpad_left, .left_shoulder => blk: {
@@ -2239,7 +1088,7 @@ fn handleFrontendGamepadInput(
     if (input == .guide and !ui.show_home and !ui.dialog_active and !ui.show_keyboard_editor) {
         if (pressed) {
             if (ui.paused or ui.show_save_manager or ui.show_help) {
-                resumeFrontendGame(ui);
+                ui.resumeGame();
             } else {
                 ui.paused = true;
             }
@@ -2265,12 +1114,6 @@ fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: 
     );
     return true;
 }
-
-const FrontendEventDisposition = enum {
-    unhandled,
-    handled,
-    quit,
-};
 
 fn dispatchHomeScreenCommand(
     command: HomeScreenCommand,
@@ -2419,11 +1262,6 @@ fn resetAudioOutput(audio: *AudioInit, wav_recorder: ?*WavRecorder) void {
     audio.armStartupMute();
 }
 
-fn queuedAudioBytes(audio: ?*AudioInit) ?usize {
-    const handle = audio orelse return null;
-    return zsdl3.getAudioStreamQueued(handle.stream) catch null;
-}
-
 fn stopGifRecording(gif_recorder: *?GifRecorder, reason: []const u8) void {
     if (gif_recorder.*) |*rec| {
         const frames = rec.frame_count;
@@ -2444,21 +1282,6 @@ fn stopWavRecording(audio: ?*AudioInit, wav_recorder: *?WavRecorder, reason: []c
         wav_recorder.* = null;
         std.debug.print("{s} ({d} samples, {d:.2}s)\n", .{ reason, samples, duration });
     }
-}
-
-fn logLoadedRomMetadata(machine: *Machine, rom_path: []const u8) void {
-    const metadata = machine.romMetadata();
-    std.debug.print("Loading ROM: {s}\n", .{rom_path});
-    if (metadata.console) |console| {
-        std.debug.print("Console: {s}\n", .{console});
-    }
-    if (metadata.title) |title| {
-        std.debug.print("Title:   {s}\n", .{title});
-    }
-    std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{
-        metadata.reset_stack_pointer,
-        metadata.reset_program_counter,
-    });
 }
 
 fn loadRomIntoMachine(
@@ -2562,62 +1385,6 @@ fn hardResetCurrentMachine(
     notifyFrontend(notifications, .info, "HARD RESET COMPLETE", .{});
 }
 
-fn printUsage() void {
-    std.debug.print("Usage: sandopolis [options] [rom_file]\n", .{});
-    std.debug.print("Options:\n", .{});
-    std.debug.print("  --audio-mode <mode>   Audio render mode: normal, ym-only, psg-only, unfiltered-mix\n", .{});
-    std.debug.print("  --audio-mode=<mode>   Same as above\n", .{});
-    std.debug.print("  --renderer <name>     SDL render driver override (for example: software, opengl)\n", .{});
-    std.debug.print("  --renderer=<name>     Same as above\n", .{});
-    std.debug.print("  --pal                 Force PAL/50Hz timing and version bits\n", .{});
-    std.debug.print("  --ntsc                Force NTSC/60Hz timing and version bits\n", .{});
-    std.debug.print("  -h, --help            Show this help text\n", .{});
-}
-
-fn parseCliArgs(args: []const []const u8) ParseCliError!CliOptions {
-    var options = CliOptions{};
-    var index: usize = 1;
-    while (index < args.len) : (index += 1) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            options.show_help = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--audio-mode")) {
-            index += 1;
-            if (index >= args.len) return error.MissingAudioModeValue;
-            options.audio_mode = try parseAudioRenderMode(args[index]);
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--audio-mode=")) {
-            options.audio_mode = try parseAudioRenderMode(arg["--audio-mode=".len..]);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--renderer")) {
-            index += 1;
-            if (index >= args.len) return error.MissingRendererValue;
-            options.renderer_name = args[index];
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--renderer=")) {
-            options.renderer_name = arg["--renderer=".len..];
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--pal")) {
-            options.timing_mode = .pal;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--ntsc")) {
-            options.timing_mode = .ntsc;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
-        if (options.rom_path != null) return error.MultipleRomPaths;
-        options.rom_path = arg;
-    }
-    return options;
-}
-
 fn currentRendererName(renderer: *zsdl3.Renderer) ?[]const u8 {
     const raw = SDL_GetRendererName(renderer);
     if (raw == null) return null;
@@ -2641,240 +1408,12 @@ fn logAvailableRenderDrivers() void {
     std.debug.print("\n", .{});
 }
 
-const ResolvedTimingMode = struct {
-    pal_mode: bool,
-    description: []const u8,
-};
-
-const ResolvedConsoleRegion = struct {
-    overseas: bool,
-    description: []const u8,
-};
-
-fn inferPalModeFromCountryCodes(country_codes: ?[]const u8) ?bool {
-    const codes = country_codes orelse return null;
-
-    var uses_letter_codes = false;
-    for (codes) |raw| {
-        switch (std.ascii.toUpper(raw)) {
-            'E', 'U', 'J' => {
-                uses_letter_codes = true;
-                break;
-            },
-            else => {},
-        }
-    }
-
-    var pal_compatible = false;
-    var ntsc_compatible = false;
-    for (codes) |raw| {
-        const ch = std.ascii.toUpper(raw);
-        if (uses_letter_codes) {
-            switch (ch) {
-                0, ' ' => {},
-                'E' => pal_compatible = true,
-                'U', 'J' => ntsc_compatible = true,
-                else => {},
-            }
-            continue;
-        }
-
-        switch (ch) {
-            0, ' ' => {},
-            '0'...'9', 'A'...'F' => {
-                const nibble = std.fmt.charToDigit(ch, 16) catch continue;
-                if ((nibble & 0x8) != 0) pal_compatible = true;
-                if ((nibble & 0x5) != 0) ntsc_compatible = true;
-            },
-            else => {},
-        }
-    }
-
-    if (pal_compatible and !ntsc_compatible) return true;
-    if (ntsc_compatible and !pal_compatible) return false;
-    return null;
-}
-
-fn inferConsoleIsOverseasFromCountryCodes(country_codes: ?[]const u8) ?bool {
-    const codes = country_codes orelse return null;
-
-    var uses_letter_codes = false;
-    for (codes) |raw| {
-        switch (std.ascii.toUpper(raw)) {
-            'E', 'U', 'J' => {
-                uses_letter_codes = true;
-                break;
-            },
-            else => {},
-        }
-    }
-
-    var domestic_compatible = false;
-    var overseas_compatible = false;
-    for (codes) |raw| {
-        const ch = std.ascii.toUpper(raw);
-        if (uses_letter_codes) {
-            switch (ch) {
-                0, ' ' => {},
-                'J' => domestic_compatible = true,
-                'E', 'U' => overseas_compatible = true,
-                else => {},
-            }
-            continue;
-        }
-
-        switch (ch) {
-            0, ' ' => {},
-            '0'...'9', 'A'...'F' => {
-                const nibble = std.fmt.charToDigit(ch, 16) catch continue;
-                if ((nibble & 0x1) != 0) domestic_compatible = true;
-                if ((nibble & 0xC) != 0) overseas_compatible = true;
-            },
-            else => {},
-        }
-    }
-
-    if (domestic_compatible and !overseas_compatible) return false;
-    if (overseas_compatible and !domestic_compatible) return true;
-    return null;
-}
-
-fn resolveTimingMode(metadata: Machine.RomMetadata, timing_mode: TimingModeOption) ResolvedTimingMode {
-    return switch (timing_mode) {
-        .pal => .{ .pal_mode = true, .description = "PAL/50Hz (forced)" },
-        .ntsc => .{ .pal_mode = false, .description = "NTSC/60Hz (forced)" },
-        .auto => {
-            if (inferPalModeFromCountryCodes(metadata.country_codes)) |pal_mode| {
-                return .{
-                    .pal_mode = pal_mode,
-                    .description = if (pal_mode) "PAL/50Hz (auto)" else "NTSC/60Hz (auto)",
-                };
-            }
-            return .{ .pal_mode = false, .description = "NTSC/60Hz (auto default)" };
-        },
-    };
-}
-
-fn resolveConsoleRegion(metadata: Machine.RomMetadata) ResolvedConsoleRegion {
-    if (inferConsoleIsOverseasFromCountryCodes(metadata.country_codes)) |overseas| {
-        return .{
-            .overseas = overseas,
-            .description = if (overseas) "Overseas/export (auto)" else "Domestic/Japan (auto)",
-        };
-    }
-    return .{ .overseas = true, .description = "Overseas/export (auto default)" };
-}
-
-fn formatName(format: zsdl3.AudioFormat) []const u8 {
-    return switch (format) {
-        .S16LE => "S16LE",
-        .S16BE => "S16BE",
-        .F32LE => "F32LE",
-        .F32BE => "F32BE",
-        else => "unknown",
-    };
-}
-
-fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardInput {
-    return switch (scancode) {
-        .up => .up,
-        .down => .down,
-        .left => .left,
-        .right => .right,
-        .a => .a,
-        .s => .s,
-        .d => .d,
-        .q => .q,
-        .w => .w,
-        .e => .e,
-        .r => .r,
-        .f => .f,
-        .h => .h,
-        .i => .i,
-        .j => .j,
-        .k => .k,
-        .l => .l,
-        .m => .m,
-        .n => .n,
-        .o => .o,
-        .p => .p,
-        .u => .u,
-        .z => .z,
-        .x => .x,
-        .c => .c,
-        .v => .v,
-        .@"return" => .@"return",
-        .tab => .tab,
-        .backspace => .backspace,
-        .space => .space,
-        .escape => .escape,
-        .delete => .delete,
-        .lshift => .lshift,
-        .rshift => .rshift,
-        .semicolon => .semicolon,
-        .apostrophe => .apostrophe,
-        .comma => .comma,
-        .period => .period,
-        .slash => .slash,
-        .f1 => .f1,
-        .f2 => .f2,
-        .f3 => .f3,
-        .f4 => .f4,
-        .f5 => .f5,
-        .f6 => .f6,
-        .f7 => .f7,
-        .f8 => .f8,
-        .f9 => .f9,
-        .f10 => .f10,
-        .f11 => .f11,
-        .f12 => .f12,
-        else => null,
-    };
-}
-
-fn effectiveInputConfigPath(input_config_path: ?[]const u8) []const u8 {
-    return input_config_path orelse InputBindings.default_config_name;
-}
-
-fn bindingName(input: ?InputBindings.KeyboardInput) []const u8 {
-    return if (input) |value| InputBindings.keyboardInputName(value) else "none";
-}
-
-fn bindingEditorOpen(ui: *FrontendUi, editor: *BindingEditorState, bindings: *const InputBindings.Bindings, machine: *Machine) void {
-    ui.show_keyboard_editor = true;
-    ui.show_help = false;
-    editor.capture_mode = false;
-    editor.setStatus(.neutral, "UP DOWN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE");
-    machine.releaseKeyboardBindings(bindings);
-}
-
-fn bindingEditorClose(ui: *FrontendUi, editor: *BindingEditorState) void {
-    ui.show_keyboard_editor = false;
-    editor.capture_mode = false;
-    editor.clearStatus();
-}
-
-fn bindingEditorRowText(
-    buffer: []u8,
-    bindings: *const InputBindings.Bindings,
-    target: BindingEditorTarget,
-) ![]const u8 {
-    return switch (target) {
-        .player_action => |item| std.fmt.bufPrint(buffer, "P{d} {s} = {s}", .{
-            item.port + 1,
-            InputBindings.actionName(item.action),
-            bindingName(bindings.keyboardBinding(item.port, item.action)),
-        }),
-        .hotkey => |action| {
-            var binding_buffer: [48]u8 = undefined;
-            const binding = try InputBindings.hotkeyBindingDisplayName(binding_buffer[0..], bindings.hotkeyBinding(action));
-            return std.fmt.bufPrint(buffer, "HOTKEY {s} = {s}", .{
-                hotkeyActionDescription(action),
-                binding,
-            });
-        },
-    };
-}
+// Re-export ROM metadata functions from rom_metadata.zig
+const inferPalModeFromCountryCodes = rom_metadata.inferPalModeFromCountryCodes;
+const inferConsoleIsOverseasFromCountryCodes = rom_metadata.inferConsoleIsOverseasFromCountryCodes;
+const resolveTimingMode = rom_metadata.resolveTimingMode;
+const resolveConsoleRegion = rom_metadata.resolveConsoleRegion;
+const logLoadedRomMetadata = rom_metadata.logLoadedRomMetadata;
 
 fn handleBindingEditorKey(
     ui: *FrontendUi,
@@ -2890,7 +1429,10 @@ fn handleBindingEditorKey(
         if (!pressed) return false;
         const binding = hotkey_binding orelse return false;
         if (bindings.hotkeyForBinding(binding) != .open_keyboard_editor) return false;
-        bindingEditorOpen(ui, editor, bindings, machine);
+        ui.show_keyboard_editor = true;
+        ui.show_help = false;
+        editor.open();
+        machine.releaseKeyboardBindings(bindings);
         return true;
     }
 
@@ -2917,12 +1459,14 @@ fn handleBindingEditorKey(
     }
 
     if (scancode == .escape) {
-        bindingEditorClose(ui, editor);
+        ui.show_keyboard_editor = false;
+        editor.close();
         return true;
     }
     if (hotkey_binding) |binding| {
         if (bindings.hotkeyForBinding(binding) == .open_keyboard_editor) {
-            bindingEditorClose(ui, editor);
+            ui.show_keyboard_editor = false;
+            editor.close();
             return true;
         }
     }
@@ -2932,7 +1476,7 @@ fn handleBindingEditorKey(
         .down => editor.move(1),
         .@"return" => editor.beginCapture(),
         .f5 => {
-            const path = effectiveInputConfigPath(input_config_path);
+            const path = input_config_path orelse InputBindings.default_config_name;
             bindings.saveToFile(path) catch |err| {
                 std.debug.print("Failed to save input config {s}: {s}\n", .{ path, @errorName(err) });
                 editor.setStatus(.failed, "FAILED TO SAVE CONFIG");
@@ -2995,18 +1539,6 @@ fn handleQuickStateAction(
         },
         else => return false,
     }
-}
-
-fn resolvePersistentStatePath(
-    allocator: std.mem.Allocator,
-    machine: *const Machine,
-    explicit_state_path: ?[]const u8,
-    persistent_state_slot: u8,
-) ![]u8 {
-    if (explicit_state_path) |path| {
-        return StateFile.pathForSlot(allocator, path, persistent_state_slot);
-    }
-    return StateFile.pathForMachineSlot(allocator, machine, persistent_state_slot);
 }
 
 fn handlePersistentStateAction(
@@ -3095,175 +1627,16 @@ fn handlePersistentStateAction(
     }
 }
 
-fn gamepadInputFromButton(button: u8) ?InputBindings.GamepadInput {
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_up)) return .dpad_up;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_down)) return .dpad_down;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_left)) return .dpad_left;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_right)) return .dpad_right;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.south)) return .south;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.east)) return .east;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.west)) return .west;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.north)) return .north;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.left_shoulder)) return .left_shoulder;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.right_shoulder)) return .right_shoulder;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.back)) return .back;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.start)) return .start;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.guide)) return .guide;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.left_stick)) return .left_stick;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.right_stick)) return .right_stick;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.misc1)) return .misc1;
-    return null;
-}
-
-fn joystickInputFromButton(button: u8) ?InputBindings.GamepadInput {
-    return switch (button) {
-        0 => .south,
-        1 => .east,
-        2 => .west,
-        3 => .north,
-        4 => .left_shoulder,
-        5 => .right_shoulder,
-        6 => .back,
-        7 => .start,
-        else => null,
-    };
-}
-
-fn updateAxisPair(
-    negative: *bool,
-    positive: *bool,
-    value: i16,
-    threshold: i16,
-    negative_input: InputBindings.GamepadInput,
-    positive_input: InputBindings.GamepadInput,
-) [max_input_transitions]?GamepadTransition {
-    var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
-    var next_index: usize = 0;
-    const next_negative = value <= -threshold;
-    const next_positive = value >= threshold;
-
-    if (negative.* != next_negative) {
-        transitions[next_index] = .{
-            .input = negative_input,
-            .pressed = next_negative,
-        };
-        negative.* = next_negative;
-        next_index += 1;
-    }
-    if (positive.* != next_positive) {
-        transitions[next_index] = .{
-            .input = positive_input,
-            .pressed = next_positive,
-        };
-        positive.* = next_positive;
-    }
-
-    return transitions;
-}
-
-fn updateLeftStickState(
-    state: *DirectionState,
-    axis: zsdl3.Gamepad.Axis,
-    value: i16,
-    threshold: i16,
-) [max_input_transitions]?GamepadTransition {
-    return switch (axis) {
-        .leftx => updateAxisPair(&state.left, &state.right, value, threshold, .dpad_left, .dpad_right),
-        .lefty => updateAxisPair(&state.up, &state.down, value, threshold, .dpad_up, .dpad_down),
-        else => [_]?GamepadTransition{null} ** max_input_transitions,
-    };
-}
-
-fn updateTriggerState(
-    state: *bool,
-    value: i16,
-    threshold: i16,
-    input: InputBindings.GamepadInput,
-) [max_input_transitions]?GamepadTransition {
-    var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
-    const pressed = value >= threshold;
-    if (state.* != pressed) {
-        transitions[0] = .{
-            .input = input,
-            .pressed = pressed,
-        };
-        state.* = pressed;
-    }
-    return transitions;
-}
-
-fn updateGamepadAxisState(
-    stick_state: *DirectionState,
-    trigger_state: *TriggerState,
-    axis: zsdl3.Gamepad.Axis,
-    value: i16,
-    axis_threshold: i16,
-    trigger_threshold: i16,
-) [max_input_transitions]?GamepadTransition {
-    return switch (axis) {
-        .leftx, .lefty => updateLeftStickState(stick_state, axis, value, axis_threshold),
-        .left_trigger => updateTriggerState(&trigger_state.left, value, trigger_threshold, .left_trigger),
-        .right_trigger => updateTriggerState(&trigger_state.right, value, trigger_threshold, .right_trigger),
-        else => [_]?GamepadTransition{null} ** max_input_transitions,
-    };
-}
-
-fn updateJoystickAxisState(
-    state: *DirectionState,
-    axis: u8,
-    value: i16,
-    threshold: i16,
-) [max_input_transitions]?GamepadTransition {
-    return switch (axis) {
-        0 => updateAxisPair(&state.left, &state.right, value, threshold, .dpad_left, .dpad_right),
-        1 => updateAxisPair(&state.up, &state.down, value, threshold, .dpad_up, .dpad_down),
-        else => [_]?GamepadTransition{null} ** max_input_transitions,
-    };
-}
-
-fn updateHatState(state: *DirectionState, value: u8) [max_input_transitions]?GamepadTransition {
-    var transitions = [_]?GamepadTransition{null} ** max_input_transitions;
-    var next_index: usize = 0;
-    const next_up = (value & joystick_hat_up) != 0;
-    const next_down = (value & joystick_hat_down) != 0;
-    const next_left = (value & joystick_hat_left) != 0;
-    const next_right = (value & joystick_hat_right) != 0;
-
-    if (state.up != next_up) {
-        transitions[next_index] = .{ .input = .dpad_up, .pressed = next_up };
-        state.up = next_up;
-        next_index += 1;
-    }
-    if (state.down != next_down) {
-        transitions[next_index] = .{ .input = .dpad_down, .pressed = next_down };
-        state.down = next_down;
-        next_index += 1;
-    }
-    if (state.left != next_left) {
-        transitions[next_index] = .{ .input = .dpad_left, .pressed = next_left };
-        state.left = next_left;
-        next_index += 1;
-    }
-    if (state.right != next_right) {
-        transitions[next_index] = .{ .input = .dpad_right, .pressed = next_right };
-        state.right = next_right;
-    }
-
-    return transitions;
-}
-
-fn applyInputTransitions(
-    bindings: *const InputBindings.Bindings,
-    machine: *Machine,
-    port: usize,
-    transitions: anytype,
-) void {
-    for (transitions) |maybe_transition| {
-        if (maybe_transition) |transition| {
-            _ = machine.applyGamepadBindings(bindings, port, transition.input, transition.pressed);
-        }
-    }
-}
+// Re-export gamepad input functions from input/gamepad.zig
+const gamepadInputFromButton = gamepad.inputFromGamepadButton;
+const joystickInputFromButton = gamepad.inputFromJoystickButton;
+const updateAxisPair = gamepad.updateAxisPair;
+const updateLeftStickState = gamepad.updateLeftStickState;
+const updateTriggerState = gamepad.updateTriggerState;
+const updateGamepadAxisState = gamepad.updateGamepadAxisState;
+const updateJoystickAxisState = gamepad.updateJoystickAxisState;
+const updateHatState = gamepad.updateHatState;
+const applyInputTransitions = gamepad.applyTransitions;
 
 fn handleFrontendGamepadTransitions(
     ui: *FrontendUi,
@@ -3323,121 +1696,14 @@ fn handleFrontendGamepadTransitions(
     return .ignored;
 }
 
-fn findGamepadPort(gamepads: *const [InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) ?usize {
-    for (gamepads, 0..) |slot, port| {
-        if (slot) |assigned| {
-            if (assigned.id == id) return port;
-        }
-    }
-    return null;
-}
-
-fn findJoystickPort(joysticks: *const [InputBindings.player_count]?JoystickSlot, id: zsdl3.Joystick.Id) ?usize {
-    for (joysticks, 0..) |slot, port| {
-        if (slot) |assigned| {
-            if (assigned.id == id) return port;
-        }
-    }
-    return null;
-}
-
-fn portOccupied(
-    gamepads: *const [InputBindings.player_count]?GamepadSlot,
-    joysticks: *const [InputBindings.player_count]?JoystickSlot,
-    port: usize,
-) bool {
-    return gamepads[port] != null or joysticks[port] != null;
-}
-
-fn assignGamepadSlot(
-    gamepads: *[InputBindings.player_count]?GamepadSlot,
-    joysticks: *const [InputBindings.player_count]?JoystickSlot,
-    stick_states: *[InputBindings.player_count]DirectionState,
-    trigger_states: *[InputBindings.player_count]TriggerState,
-    id: zsdl3.Joystick.Id,
-) void {
-    if (findGamepadPort(gamepads, id) != null) return;
-    for (gamepads, 0..) |slot, port| {
-        if (slot == null and !portOccupied(gamepads, joysticks, port)) {
-            if (zsdl3.openGamepad(id)) |handle| {
-                gamepads[port] = .{ .id = id, .handle = handle };
-                stick_states[port] = .{};
-                trigger_states[port] = .{};
-                std.debug.print("Opened Gamepad ID: {d} for player {d}\n", .{ @intFromEnum(id), port + 1 });
-            }
-            return;
-        }
-    }
-}
-
-fn removeGamepadSlot(
-    gamepads: *[InputBindings.player_count]?GamepadSlot,
-    stick_states: *[InputBindings.player_count]DirectionState,
-    trigger_states: *[InputBindings.player_count]TriggerState,
-    machine: *Machine,
-    bindings: *const InputBindings.Bindings,
-    id: zsdl3.Joystick.Id,
-) void {
-    for (gamepads, 0..) |slot, port| {
-        if (slot) |assigned| {
-            if (assigned.id == id) {
-                machine.releaseGamepadBindings(bindings, port);
-                stick_states[port] = .{};
-                trigger_states[port] = .{};
-                assigned.handle.close();
-                gamepads[port] = null;
-                std.debug.print("Closed Gamepad ID: {d} from player {d}\n", .{ @intFromEnum(id), port + 1 });
-                return;
-            }
-        }
-    }
-}
-
-fn assignJoystickSlot(
-    gamepads: *const [InputBindings.player_count]?GamepadSlot,
-    joysticks: *[InputBindings.player_count]?JoystickSlot,
-    axis_states: *[InputBindings.player_count]DirectionState,
-    hat_states: *[InputBindings.player_count]DirectionState,
-    id: zsdl3.Joystick.Id,
-) void {
-    if (SDL_IsGamepad(id)) return;
-    if (findJoystickPort(joysticks, id) != null) return;
-
-    for (joysticks, 0..) |slot, port| {
-        if (slot == null and !portOccupied(gamepads, joysticks, port)) {
-            if (SDL_OpenJoystick(id)) |handle| {
-                joysticks[port] = .{ .id = id, .handle = handle };
-                axis_states[port] = .{};
-                hat_states[port] = .{};
-                std.debug.print("Opened Joystick ID: {d} for player {d}\n", .{ @intFromEnum(id), port + 1 });
-            }
-            return;
-        }
-    }
-}
-
-fn removeJoystickSlot(
-    joysticks: *[InputBindings.player_count]?JoystickSlot,
-    axis_states: *[InputBindings.player_count]DirectionState,
-    hat_states: *[InputBindings.player_count]DirectionState,
-    machine: *Machine,
-    bindings: *const InputBindings.Bindings,
-    id: zsdl3.Joystick.Id,
-) void {
-    for (joysticks, 0..) |slot, port| {
-        if (slot) |assigned| {
-            if (assigned.id == id) {
-                machine.releaseGamepadBindings(bindings, port);
-                axis_states[port] = .{};
-                hat_states[port] = .{};
-                SDL_CloseJoystick(assigned.handle);
-                joysticks[port] = null;
-                std.debug.print("Closed Joystick ID: {d} from player {d}\n", .{ @intFromEnum(id), port + 1 });
-                return;
-            }
-        }
-    }
-}
+// Re-export gamepad slot functions from input/gamepad.zig
+const findGamepadPort = gamepad.findGamepadPort;
+const findJoystickPort = gamepad.findJoystickPort;
+const portOccupied = gamepad.portOccupied;
+const assignGamepadSlot = gamepad.assignGamepadSlot;
+const removeGamepadSlot = gamepad.removeGamepadSlot;
+const assignJoystickSlot = gamepad.assignJoystickSlot;
+const removeJoystickSlot = gamepad.removeJoystickSlot;
 
 fn tryInitAudio(userdata: *u8) ?AudioInit {
     const playback_device: zsdl3.AudioDeviceId = @enumFromInt(zsdl3.AUDIO_DEVICE_DEFAULT_PLAYBACK);
@@ -3456,7 +1722,14 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
             if (SDL_OpenAudioDeviceStream(playback_device, &spec, null, userdata)) |stream| {
                 const audio_device = zsdl3.getAudioStreamDevice(stream);
                 _ = zsdl3.resumeAudioDevice(audio_device);
-                std.debug.print("Audio enabled: {s} {d}Hz\n", .{ formatName(format), freq });
+                const format_name: []const u8 = switch (format) {
+                    .S16LE => "S16LE",
+                    .S16BE => "S16BE",
+                    .F32LE => "F32LE",
+                    .F32BE => "F32BE",
+                    else => "unknown",
+                };
+                std.debug.print("Audio enabled: {s} {d}Hz\n", .{ format_name, freq });
                 return .{
                     .stream = stream,
                     .output = AudioOutput.init(),
@@ -3474,379 +1747,21 @@ const overlayTextWidth = ui_render.textWidth;
 const drawOverlayText = ui_render.drawText;
 const renderOverlayPanel = ui_render.renderPanel;
 
-fn computeVideoDestinationRect(
-    viewport: zsdl3.Rect,
-    source_height: i32,
-    aspect_mode: VideoAspectMode,
-    scale_mode: VideoScaleMode,
-) zsdl3.FRect {
-    const viewport_w = @as(f32, @floatFromInt(@max(viewport.w, 0)));
-    const viewport_h = @as(f32, @floatFromInt(@max(viewport.h, 0)));
-    if (viewport_w == 0 or viewport_h == 0 or source_height <= 0) {
-        return .{ .x = 0, .y = 0, .w = viewport_w, .h = viewport_h };
-    }
-    if (aspect_mode == .stretch) {
-        return .{ .x = 0, .y = 0, .w = viewport_w, .h = viewport_h };
-    }
-
-    const nominal_h = @as(f32, @floatFromInt(source_height));
-    const nominal_w = switch (aspect_mode) {
-        .stretch => unreachable,
-        .four_three => nominal_h * (4.0 / 3.0),
-        .square_pixels => @as(f32, @floatFromInt(Vdp.framebuffer_width)),
-    };
-
-    var scale = @min(viewport_w / nominal_w, viewport_h / nominal_h);
-    if (scale_mode == .whole_pixels and scale >= 1.0) {
-        const whole = @floor(scale);
-        if (whole >= 1.0) scale = whole;
-    }
-
-    const dest_w = nominal_w * scale;
-    const dest_h = nominal_h * scale;
-    return .{
-        .x = (viewport_w - dest_w) * 0.5,
-        .y = (viewport_h - dest_h) * 0.5,
-        .w = dest_w,
-        .h = dest_h,
-    };
-}
-
-fn formatDurationMsTenths(buffer: []u8, ns: u64) ![]const u8 {
-    const tenths = (ns + 50_000) / 100_000;
-    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
-}
-
-fn formatRateHzTenths(buffer: []u8, ns: u64) ![]const u8 {
-    if (ns == 0) return std.fmt.bufPrint(buffer, "0.0", .{});
-    const tenths = (@as(u128, std.time.ns_per_s) * 10 + @as(u128, ns) / 2) / @as(u128, ns);
-    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
-}
-
-fn formatPercentTenths(buffer: []u8, tenths_percent: u64) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths_percent / 10, tenths_percent % 10 });
-}
-
-fn formatPerformanceSpikeLine(buffer: []u8, frame_number: u32, perf: *const PerformanceHudState) ![]const u8 {
-    var metric_buffers: [4][16]u8 = undefined;
-    const work_text = try formatDurationMsTenths(metric_buffers[0][0..], perf.last_work_ns);
-    const overrun_text = try formatDurationMsTenths(metric_buffers[1][0..], perf.last_overrun_ns);
-    const hottest_stage = perf.hottestStage();
-    const hot_text = try formatDurationMsTenths(metric_buffers[2][0..], hottest_stage.ns);
-    const audio_text = if (perf.queuedAudioNs()) |queued_ns|
-        try formatDurationMsTenths(metric_buffers[3][0..], queued_ns)
-    else
-        "OFF";
-    const counter_state = if (perf.last_core_counters_sampled) "LIVE" else "HOLD";
-
-    if (!perf.last_core_counters_sampled) {
-        if (perf.last_audio_queued_bytes == null) {
-            return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} audio=OFF", .{
-                frame_number,
-                work_text,
-                overrun_text,
-                hottest_stage.label,
-                hot_text,
-                counter_state,
-            });
-        }
-
-        return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} audio={s}ms", .{
-            frame_number,
-            work_text,
-            overrun_text,
-            hottest_stage.label,
-            hot_text,
-            counter_state,
-            audio_text,
-        });
-    }
-
-    if (perf.last_audio_queued_bytes == null) {
-        return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} 68k={d} z80={d} xfer={d} acc={d} dma={d} spr={d}/{d}/{d} audio=OFF", .{
-            frame_number,
-            work_text,
-            overrun_text,
-            hottest_stage.label,
-            hot_text,
-            counter_state,
-            perf.last_core_counters.m68k_instructions,
-            perf.last_core_counters.z80_instructions,
-            perf.last_core_counters.transfer_slots,
-            perf.last_core_counters.access_slots,
-            perf.last_core_counters.dma_words,
-            perf.last_core_counters.render_sprite_entries,
-            perf.last_core_counters.render_sprite_pixels,
-            perf.last_core_counters.render_sprite_opaque_pixels,
-        });
-    }
-
-    return std.fmt.bufPrint(buffer, "SLOW FRAME f={d} work={s}ms over={s}ms hot={s} {s}ms ctr={s} 68k={d} z80={d} xfer={d} acc={d} dma={d} spr={d}/{d}/{d} audio={s}ms", .{
-        frame_number,
-        work_text,
-        overrun_text,
-        hottest_stage.label,
-        hot_text,
-        counter_state,
-        perf.last_core_counters.m68k_instructions,
-        perf.last_core_counters.z80_instructions,
-        perf.last_core_counters.transfer_slots,
-        perf.last_core_counters.access_slots,
-        perf.last_core_counters.dma_words,
-        perf.last_core_counters.render_sprite_entries,
-        perf.last_core_counters.render_sprite_pixels,
-        perf.last_core_counters.render_sprite_opaque_pixels,
-        audio_text,
-    });
-}
-
-fn formatPerformanceSpikeWindowLine(buffer: []u8, summary: *const PerformanceSpikeWindowSummary) ![]const u8 {
-    var metric_buffers: [3][16]u8 = undefined;
-    const max_overrun_text = try formatDurationMsTenths(metric_buffers[0][0..], summary.max_overrun_ns);
-    const avg_overrun_text = try formatDurationMsTenths(metric_buffers[1][0..], summary.average_overrun_ns);
-    const audio_text = if (summary.audioQueuedNs()) |queued_ns|
-        try formatDurationMsTenths(metric_buffers[2][0..], queued_ns)
-    else
-        "OFF";
-
-    if (summary.audio_queued_bytes == null) {
-        return std.fmt.bufPrint(buffer, "SPIKE WINDOW f={d}-{d} slow={d} max_over={s}ms avg_over={s}ms audio=OFF", .{
-            summary.start_frame,
-            summary.end_frame,
-            summary.slow_frame_count,
-            max_overrun_text,
-            avg_overrun_text,
-        });
-    }
-
-    return std.fmt.bufPrint(buffer, "SPIKE WINDOW f={d}-{d} slow={d} max_over={s}ms avg_over={s}ms audio={s}ms", .{
-        summary.start_frame,
-        summary.end_frame,
-        summary.slow_frame_count,
-        max_overrun_text,
-        avg_overrun_text,
-        audio_text,
-    });
-}
+// Re-export performance formatting functions from frontend/performance.zig
+const formatDurationMsTenths = perf_monitor.formatDurationMsTenths;
+const formatRateHzTenths = perf_monitor.formatRateHzTenths;
+const formatPercentTenths = perf_monitor.formatPercentTenths;
+const formatPerformanceSpikeLine = perf_monitor.formatSpikeLine;
+const formatPerformanceSpikeWindowLine = perf_monitor.formatSpikeWindowLine;
 
 // Re-export pause/help overlay rendering from frontend/ui.zig
 const renderPauseOverlay = ui_render.renderPauseOverlay;
 const renderHelpOverlay = ui_render.renderHelpOverlay;
+const renderDialogOverlay = ui_render.renderDialogOverlay;
+const renderToastOverlay = ui_render.renderToastOverlay;
+const renderHomeOverlay = ui_render.renderHomeOverlay;
+const renderKeyboardEditorOverlay = ui_render.renderKeyboardEditorOverlay;
 const formatOverlayLine = ui_render.formatOverlayLine;
-
-fn formatHomeMenuItem(
-    buffer: []u8,
-    config: *const FrontendConfig,
-    action: HomeMenuAction,
-    selected: bool,
-) ![]const u8 {
-    const prefix = if (selected) "> " else "| ";
-    return switch (action) {
-        .open_rom => std.fmt.bufPrint(buffer, "{s}OPEN ROM", .{prefix}),
-        .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}RECENT {d} {s}", .{
-            prefix,
-            index + 1,
-            std.fs.path.basename(config.recentRom(index)),
-        }),
-        .show_settings => std.fmt.bufPrint(buffer, "{s}SETTINGS", .{prefix}),
-        .show_help => std.fmt.bufPrint(buffer, "{s}HELP AND HOTKEYS", .{prefix}),
-        .quit => std.fmt.bufPrint(buffer, "{s}QUIT", .{prefix}),
-    };
-}
-
-fn homeMenuActionForIndex(selected_index: usize, config: *const FrontendConfig) HomeMenuAction {
-    if (selected_index == 0) return .open_rom;
-    const recent_end = 1 + config.recent_rom_count;
-    if (selected_index < recent_end) {
-        return .{ .recent_rom = selected_index - 1 };
-    }
-    if (selected_index == recent_end) return .show_settings;
-    if (selected_index == recent_end + 1) return .show_help;
-    return .quit;
-}
-
-fn renderHomeOverlay(
-    renderer: *zsdl3.Renderer,
-    viewport: zsdl3.Rect,
-    home_menu: *const HomeMenuState,
-    config: *const FrontendConfig,
-) !void {
-    const title = "SANDOPOLIS";
-    const subtitle = "OPEN A ROM TO START";
-    const empty_recent_note = "NO RECENT ROMS YET";
-    const footer_a = "DPAD MOVE  A OR START SELECT";
-    const footer_b = "F3 OPEN DIALOG  F1 HELP  ESC QUIT";
-    const scale = overlayScale(viewport);
-    const padding = 12.0 * scale;
-    const line_height = 9.0 * scale;
-    const item_count = HomeMenuState.itemCount(config);
-    const note_count: usize = if (config.recent_rom_count == 0) 1 else 0;
-
-    var line_buffers: [frontend_recent_rom_limit + 3][96]u8 = undefined;
-    var menu_lines: [frontend_recent_rom_limit + 3][]const u8 = undefined;
-    var max_width = overlayTextWidth(title, scale);
-    max_width = @max(max_width, overlayTextWidth(subtitle, scale));
-    max_width = @max(max_width, overlayTextWidth(footer_a, scale));
-    max_width = @max(max_width, overlayTextWidth(footer_b, scale));
-    if (note_count != 0) {
-        max_width = @max(max_width, overlayTextWidth(empty_recent_note, scale));
-    }
-
-    for (0..item_count) |index| {
-        const line = try formatHomeMenuItem(
-            line_buffers[index][0..],
-            config,
-            homeMenuActionForIndex(index, config),
-            index == home_menu.selected_index,
-        );
-        menu_lines[index] = line;
-        max_width = @max(max_width, overlayTextWidth(line, scale));
-    }
-
-    const body_lines = 3 + note_count + item_count;
-    const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)),
-    };
-
-    try renderOverlayPanel(
-        renderer,
-        panel,
-        UiColors.panel_secondary,
-        UiColors.cyan,
-        scale,
-    );
-
-    try drawOverlayText(
-        renderer,
-        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
-        panel.y + padding,
-        scale,
-        UiColors.cyan,
-        title,
-    );
-
-    const text_x = panel.x + padding;
-    var y = panel.y + padding + 13.0 * scale;
-    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_primary, subtitle);
-    y += line_height;
-
-    if (note_count != 0) {
-        try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, empty_recent_note);
-        y += line_height;
-    }
-
-    for (menu_lines[0..item_count], 0..) |line, index| {
-        const color: zsdl3.Color = if (index == home_menu.selected_index)
-            UiColors.gold
-        else
-            UiColors.text_primary;
-        try drawOverlayText(renderer, text_x, y, scale, color, line);
-        y += line_height;
-    }
-
-    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, footer_a);
-    y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, footer_b);
-}
-
-fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast: *const FrontendToast, frame_number: u64) !void {
-    if (!toast.visible(frame_number)) return;
-
-    const scale = overlayScale(viewport);
-    const padding = 8.0 * scale;
-    const text = toast.slice();
-    const width = overlayTextWidth(text, scale);
-    const panel_width = width + padding * 2.0;
-    const panel_height = padding * 2.0 + 7.0 * scale;
-    const panel = zsdl3.FRect{
-        .x = @max(12.0 * scale, @as(f32, @floatFromInt(viewport.w)) - panel_width - 12.0 * scale),
-        .y = 12.0 * scale,
-        .w = panel_width,
-        .h = panel_height,
-    };
-    const ToastPalette = struct {
-        fill: zsdl3.Color,
-        border: zsdl3.Color,
-    };
-    const toast_colors: ToastPalette = switch (toast.style) {
-        .info => .{
-            .fill = UiColors.panel_primary,
-            .border = UiColors.gold,
-        },
-        .success => .{
-            .fill = .{ .r = 0x0D, .g = 0x18, .b = 0x12, .a = 0xE8 },
-            .border = UiColors.green,
-        },
-        .failure => .{
-            .fill = .{ .r = 0x1B, .g = 0x0F, .b = 0x11, .a = 0xEC },
-            .border = UiColors.orange,
-        },
-    };
-
-    try renderOverlayPanel(
-        renderer,
-        panel,
-        toast_colors.fill,
-        toast_colors.border,
-        scale,
-    );
-    try drawOverlayText(
-        renderer,
-        panel.x + padding,
-        panel.y + padding,
-        scale,
-        UiColors.text_primary,
-        text,
-    );
-}
-
-fn formatTimestampUtc(buffer: []u8, ns: i128) ![]const u8 {
-    if (ns <= 0) return std.fmt.bufPrint(buffer, "UNKNOWN", .{});
-
-    const seconds: u64 = @intCast(@divFloor(ns, std.time.ns_per_s));
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds };
-    const epoch_day = epoch_seconds.getEpochDay();
-    const year_day = epoch_day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-
-    return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} UTC", .{
-        year_day.year,
-        @intFromEnum(month_day.month) + 1,
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-    });
-}
-
-fn formatSaveManagerSlotLine(
-    buffer: []u8,
-    metadata: *const SaveManagerSlotMetadata,
-    slot: u8,
-    selected: bool,
-) ![]const u8 {
-    const prefix = if (selected) "> " else "| ";
-    if (!metadata.exists) {
-        return std.fmt.bufPrint(buffer, "{s}SLOT {d} EMPTY", .{ prefix, slot });
-    }
-
-    var time_buffer: [32]u8 = undefined;
-    const modified_text = try formatTimestampUtc(time_buffer[0..], metadata.modified_ns);
-    const size_kib = (metadata.size_bytes + 1023) / 1024;
-    return std.fmt.bufPrint(buffer, "{s}SLOT {d} {s} {d}KB", .{
-        prefix,
-        slot,
-        modified_text,
-        size_kib,
-    });
-}
-
-fn formatSaveManagerPathLine(buffer: []u8, metadata: *const SaveManagerSlotMetadata) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "FILE {s}", .{std.fs.path.basename(metadata.path.slice())});
-}
 
 fn renderSaveManagerPreview(
     renderer: *zsdl3.Renderer,
@@ -4077,197 +1992,8 @@ fn renderSaveManagerOverlay(
     );
 }
 
-fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
-    const title = "OPEN ROM";
-    const lines = [_][]const u8{
-        "SYSTEM FILE DIALOG ACTIVE",
-        "",
-        "SELECT A ROM OR CANCEL",
-    };
-    const scale = overlayScale(viewport);
-    const padding = 10.0 * scale;
-    const line_height = 9.0 * scale;
-
-    var max_width = overlayTextWidth(title, scale);
-    for (lines) |line| {
-        max_width = @max(max_width, overlayTextWidth(line, scale));
-    }
-
-    const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
-    };
-
-    try renderOverlayPanel(
-        renderer,
-        panel,
-        UiColors.panel_primary,
-        UiColors.orange,
-        scale,
-    );
-
-    try drawOverlayText(
-        renderer,
-        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
-        panel.y + padding,
-        scale,
-        UiColors.orange,
-        title,
-    );
-
-    var y = panel.y + padding + 11.0 * scale;
-    for (lines) |line| {
-        if (line.len != 0) {
-            try drawOverlayText(
-                renderer,
-                panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
-                y,
-                scale,
-                UiColors.text_primary,
-                line,
-            );
-        }
-        y += line_height;
-    }
-}
-
-fn renderPerformanceHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const PerformanceHudState) !void {
-    const title = "PERF HUD";
-    const scale = overlayScale(viewport);
-    const padding = 8.0 * scale;
-    const line_height = 9.0 * scale;
-
-    var metric_buffers: [19][16]u8 = undefined;
-    const fps_text = try formatRateHzTenths(metric_buffers[0][0..], perf.last_present_ns);
-    const avg_fps_text = try formatRateHzTenths(metric_buffers[1][0..], perf.average_present_ns);
-    const target_fps_text = try formatRateHzTenths(metric_buffers[2][0..], perf.last_target_ns);
-    const work_text = try formatDurationMsTenths(metric_buffers[3][0..], perf.last_work_ns);
-    const target_text = try formatDurationMsTenths(metric_buffers[4][0..], perf.last_target_ns);
-    const avg_text = try formatDurationMsTenths(metric_buffers[5][0..], perf.average_work_ns);
-    const sleep_text = try formatDurationMsTenths(metric_buffers[6][0..], perf.last_sleep_ns);
-    const overrun_text = try formatDurationMsTenths(metric_buffers[7][0..], perf.last_overrun_ns);
-    const slow_percent_text = try formatPercentTenths(metric_buffers[8][0..], perf.slowFramePercentTenths());
-    const worst_work_text = try formatDurationMsTenths(metric_buffers[9][0..], perf.worst_work_ns);
-    const worst_overrun_text = try formatDurationMsTenths(metric_buffers[10][0..], perf.worst_overrun_ns);
-    const audio_text = if (perf.queuedAudioNs()) |queued_ns|
-        try formatDurationMsTenths(metric_buffers[11][0..], queued_ns)
-    else
-        "OFF";
-    const emu_text = try formatDurationMsTenths(metric_buffers[12][0..], perf.last_phases.emulation_ns);
-    const emu_avg_text = try formatDurationMsTenths(metric_buffers[13][0..], perf.average_phases.emulation_ns);
-    const audio_cpu_text = try formatDurationMsTenths(metric_buffers[14][0..], perf.last_phases.audio_ns);
-    const audio_cpu_avg_text = try formatDurationMsTenths(metric_buffers[15][0..], perf.average_phases.audio_ns);
-    const other_text = try formatDurationMsTenths(metric_buffers[16][0..], perf.last_other_ns);
-    const other_avg_text = try formatDurationMsTenths(metric_buffers[17][0..], perf.average_other_ns);
-    const core_sample_text = try std.fmt.bufPrint(metric_buffers[18][0..], "1/{d}+B{d}", .{ performance_core_sample_period, performance_core_burst_frames });
-
-    var line_buffers: [27][72]u8 = undefined;
-    var lines: [27][]const u8 = undefined;
-    lines[0] = try std.fmt.bufPrint(&line_buffers[0], "FPS {s} / {s}", .{ fps_text, target_fps_text });
-    lines[1] = try std.fmt.bufPrint(&line_buffers[1], "FPS AVG {s}", .{avg_fps_text});
-    lines[2] = try std.fmt.bufPrint(&line_buffers[2], "WORK {s} / {s} MS", .{ work_text, target_text });
-    lines[3] = try std.fmt.bufPrint(&line_buffers[3], "AVG {s} MS", .{avg_text});
-    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "EMU {s} / {s} MS", .{ emu_text, emu_avg_text });
-    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "OTHER {s} / {s} MS", .{ other_text, other_avg_text });
-    lines[6] = try std.fmt.bufPrint(&line_buffers[6], "CORE SAMP {s}", .{core_sample_text});
-    lines[7] = try std.fmt.bufPrint(&line_buffers[7], "68K INS {d} / {d}", .{ perf.last_core_counters.m68k_instructions, perf.average_core_counters.m68k_instructions });
-    lines[8] = try std.fmt.bufPrint(&line_buffers[8], "Z80 INS {d} / {d}", .{ perf.last_core_counters.z80_instructions, perf.average_core_counters.z80_instructions });
-    lines[9] = try std.fmt.bufPrint(&line_buffers[9], "XFER {d} / {d}", .{ perf.last_core_counters.transfer_slots, perf.average_core_counters.transfer_slots });
-    lines[10] = try std.fmt.bufPrint(&line_buffers[10], "ACCESS {d} / {d}", .{ perf.last_core_counters.access_slots, perf.average_core_counters.access_slots });
-    lines[11] = try std.fmt.bufPrint(&line_buffers[11], "DMA WORDS {d} / {d}", .{ perf.last_core_counters.dma_words, perf.average_core_counters.dma_words });
-    lines[12] = try std.fmt.bufPrint(&line_buffers[12], "SCANLINES {d} / {d}", .{ perf.last_core_counters.render_scanlines, perf.average_core_counters.render_scanlines });
-    lines[13] = try std.fmt.bufPrint(&line_buffers[13], "SPR ENTS {d} / {d}", .{ perf.last_core_counters.render_sprite_entries, perf.average_core_counters.render_sprite_entries });
-    lines[14] = try std.fmt.bufPrint(&line_buffers[14], "SPR PIX {d} / {d}", .{ perf.last_core_counters.render_sprite_pixels, perf.average_core_counters.render_sprite_pixels });
-    lines[15] = try std.fmt.bufPrint(&line_buffers[15], "SPR OPAQ {d} / {d}", .{ perf.last_core_counters.render_sprite_opaque_pixels, perf.average_core_counters.render_sprite_opaque_pixels });
-    lines[16] = try std.fmt.bufPrint(&line_buffers[16], "AUD CPU {s} / {s} MS", .{ audio_cpu_text, audio_cpu_avg_text });
-    lines[17] = try std.fmt.bufPrint(&line_buffers[17], "UPLOAD {d} / {d} US", .{
-        (perf.last_phases.upload_ns + 500) / 1000,
-        (perf.average_phases.upload_ns + 500) / 1000,
-    });
-    lines[18] = try std.fmt.bufPrint(&line_buffers[18], "DRAW {d} / {d} US", .{
-        (perf.last_phases.draw_ns + 500) / 1000,
-        (perf.average_phases.draw_ns + 500) / 1000,
-    });
-    lines[19] = try std.fmt.bufPrint(&line_buffers[19], "PRESENT {d} / {d} US", .{
-        (perf.last_phases.present_call_ns + 500) / 1000,
-        (perf.average_phases.present_call_ns + 500) / 1000,
-    });
-    lines[20] = try std.fmt.bufPrint(&line_buffers[20], "SLEEP {s} MS", .{sleep_text});
-    lines[21] = try std.fmt.bufPrint(&line_buffers[21], "OVER {s} MS", .{overrun_text});
-    lines[22] = try std.fmt.bufPrint(&line_buffers[22], "SLOW {d} {s} PCT", .{ perf.slow_frame_count, slow_percent_text });
-    lines[23] = try std.fmt.bufPrint(&line_buffers[23], "WORST WORK {s} MS", .{worst_work_text});
-    lines[24] = try std.fmt.bufPrint(&line_buffers[24], "WORST OVR {s} MS", .{worst_overrun_text});
-    lines[25] = if (perf.last_audio_queued_bytes == null)
-        "AUDIO OFF"
-    else
-        try std.fmt.bufPrint(&line_buffers[25], "AUDIO {s} MS", .{audio_text});
-    lines[26] = "F12 RESET";
-
-    var max_width = overlayTextWidth(title, scale);
-    for (lines) |line| {
-        max_width = @max(max_width, overlayTextWidth(line, scale));
-    }
-
-    const panel = zsdl3.FRect{
-        .x = 12.0 * scale,
-        .y = 12.0 * scale,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
-    };
-
-    try renderOverlayPanel(
-        renderer,
-        panel,
-        UiColors.panel_overlay,
-        UiColors.orange,
-        scale,
-    );
-
-    try drawOverlayText(
-        renderer,
-        panel.x + padding,
-        panel.y + padding,
-        scale,
-        UiColors.orange,
-        title,
-    );
-
-    var y = panel.y + padding + 12.0 * scale;
-    for (lines) |line| {
-        try drawOverlayText(
-            renderer,
-            panel.x + padding,
-            y,
-            scale,
-            UiColors.text_primary,
-            line,
-        );
-        y += line_height;
-    }
-}
-
-fn formatSettingsActionLine(
-    buffer: []u8,
-    action: SettingsMenuAction,
-    selected: bool,
-    aspect_mode: VideoAspectMode,
-    scale_mode: VideoScaleMode,
-    fullscreen: bool,
-    audio_mode: AudioOutput.RenderMode,
-    performance_hud: bool,
-) ![]const u8 {
-    const prefix = if (selected) "> " else "| ";
-    return switch (action) {
-        .video_aspect_mode => std.fmt.bufPrint(buffer, "{s}ASPECT {s}", .{ prefix, videoAspectModeLabel(aspect_mode) }),
-        .video_scale_mode => std.fmt.bufPrint(buffer, "{s}SCALING {s}", .{ prefix, videoScaleModeLabel(scale_mode) }),
-        .fullscreen => std.fmt.bufPrint(buffer, "{s}FULLSCREEN {s}", .{ prefix, if (fullscreen) "ON" else "OFF" }),
-        .audio_render_mode => std.fmt.bufPrint(buffer, "{s}AUDIO MODE {s}", .{ prefix, audioRenderModeLabel(audio_mode) }),
-        .performance_hud => std.fmt.bufPrint(buffer, "{s}PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
-        .close => std.fmt.bufPrint(buffer, "{s}CLOSE SETTINGS", .{prefix}),
-    };
-}
+// Re-export performance HUD rendering from frontend/performance.zig
+const renderPerformanceHud = perf_monitor.renderHud;
 
 fn renderSettingsOverlay(
     renderer: *zsdl3.Renderer,
@@ -4390,113 +2116,6 @@ fn renderSettingsOverlay(
     try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .close) selected_color else normal_color, action_lines[5]);
 }
 
-fn renderKeyboardEditorOverlay(
-    renderer: *zsdl3.Renderer,
-    viewport: zsdl3.Rect,
-    editor: *const BindingEditorState,
-    bindings: *const InputBindings.Bindings,
-) !void {
-    const title = "KEYBOARD EDITOR";
-    const controls = if (editor.capture_mode)
-        "PRESS A KEY  ESC CANCEL  DEL CLEAR"
-    else
-        "UP DOWN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE";
-    const scale = overlayScale(viewport);
-    const padding = 10.0 * scale;
-    const row_height = 10.0 * scale;
-    const header_height = 28.0 * scale;
-    const footer_height = 18.0 * scale;
-    const visible_rows = @min(@as(usize, 11), BindingEditorState.selectionCount());
-
-    const panel = zsdl3.FRect{
-        .x = 12.0 * scale,
-        .y = 12.0 * scale,
-        .w = @as(f32, @floatFromInt(viewport.w)) - 24.0 * scale,
-        .h = header_height + footer_height + @as(f32, @floatFromInt(visible_rows)) * row_height + padding * 2.0,
-    };
-
-    try renderOverlayPanel(
-        renderer,
-        panel,
-        UiColors.panel_secondary,
-        UiColors.blue,
-        scale,
-    );
-
-    try drawOverlayText(
-        renderer,
-        panel.x + padding,
-        panel.y + padding,
-        scale,
-        UiColors.blue,
-        title,
-    );
-    try drawOverlayText(
-        renderer,
-        panel.x + padding,
-        panel.y + padding + 11.0 * scale,
-        scale,
-        UiColors.text_muted,
-        controls,
-    );
-
-    const first_visible = if (editor.selected_index < visible_rows / 2)
-        @as(usize, 0)
-    else
-        @min(
-            editor.selected_index - visible_rows / 2,
-            BindingEditorState.selectionCount() - visible_rows,
-        );
-    var y = panel.y + padding + header_height;
-    for (0..visible_rows) |row| {
-        const index = first_visible + row;
-        const selected = index == editor.selected_index;
-        const row_rect = zsdl3.FRect{
-            .x = panel.x + padding - 3.0 * scale,
-            .y = y - 1.0 * scale,
-            .w = panel.w - padding * 2.0 + 6.0 * scale,
-            .h = row_height,
-        };
-        if (selected) {
-            try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 });
-            try zsdl3.renderFillRect(renderer, row_rect);
-            try zsdl3.setRenderDrawColor(renderer, UiColors.blue);
-            try zsdl3.renderRect(renderer, row_rect);
-        }
-
-        var line_buffer: [96]u8 = undefined;
-        const line = try bindingEditorRowText(line_buffer[0..], bindings, BindingEditorState.targetForIndex(index));
-        try drawOverlayText(
-            renderer,
-            panel.x + padding,
-            y,
-            scale,
-            if (selected)
-                UiColors.text_selected
-            else
-                UiColors.text_primary,
-            line,
-        );
-        y += row_height;
-    }
-
-    const status_color: zsdl3.Color = switch (editor.status) {
-        .neutral => UiColors.text_muted,
-        .success => UiColors.success,
-        .failed => UiColors.failure,
-    };
-    if (editor.status_message.len != 0) {
-        try drawOverlayText(
-            renderer,
-            panel.x + padding,
-            panel.y + panel.h - padding - 7.0 * scale,
-            scale,
-            status_color,
-            editor.status_message.slice(),
-        );
-    }
-}
-
 fn renderFrontendOverlay(
     renderer: *zsdl3.Renderer,
     ui: *const FrontendUi,
@@ -4606,7 +2225,7 @@ pub fn main() !void {
         audio.?.output.setRenderMode(cli.audio_mode);
     }
     if (cli.audio_mode != .normal) {
-        std.debug.print("Audio render mode: {s}\n", .{audioRenderModeName(cli.audio_mode)});
+        std.debug.print("Audio render mode: {s}\n", .{cli.audio_mode.name()});
     }
     defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
@@ -5405,7 +3024,10 @@ pub fn main() !void {
             machine.discardPendingAudio();
             frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
         }
-        const queued_audio_bytes = queuedAudioBytes(if (audio) |*a| a else null);
+        const queued_audio_bytes: ?usize = if (audio) |*a|
+            zsdl3.getAudioStreamQueued(a.stream) catch null
+        else
+            null;
 
         const framebuffer = machine.framebuffer();
         const framebuffer_height: i32 = @intCast(framebuffer.len / Vdp.framebuffer_width);
@@ -6551,13 +4173,13 @@ test "settings menu wraps and audio render mode cycles" {
     settings.move(-1);
     try std.testing.expectEqual(SettingsMenuAction.close, settings.currentAction());
 
-    try std.testing.expectEqual(VideoAspectMode.four_three, cycleVideoAspectMode(.stretch, 1));
-    try std.testing.expectEqual(VideoAspectMode.square_pixels, cycleVideoAspectMode(.stretch, -1));
-    try std.testing.expectEqual(VideoScaleMode.whole_pixels, cycleVideoScaleMode(.fit, 1));
-    try std.testing.expectEqual(VideoScaleMode.fit, cycleVideoScaleMode(.whole_pixels, 1));
-    try std.testing.expectEqual(AudioOutput.RenderMode.ym_only, cycleAudioRenderMode(.normal, 1));
-    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, cycleAudioRenderMode(.normal, -1));
-    try std.testing.expectEqual(AudioOutput.RenderMode.normal, cycleAudioRenderMode(.unfiltered_mix, 1));
+    try std.testing.expectEqual(VideoAspectMode.four_three, VideoAspectMode.stretch.cycle(1));
+    try std.testing.expectEqual(VideoAspectMode.square_pixels, VideoAspectMode.stretch.cycle(-1));
+    try std.testing.expectEqual(VideoScaleMode.whole_pixels, VideoScaleMode.fit.cycle(1));
+    try std.testing.expectEqual(VideoScaleMode.fit, VideoScaleMode.whole_pixels.cycle(1));
+    try std.testing.expectEqual(AudioOutput.RenderMode.ym_only, AudioOutput.RenderMode.normal.cycle(1));
+    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, AudioOutput.RenderMode.normal.cycle(-1));
+    try std.testing.expectEqual(AudioOutput.RenderMode.normal, AudioOutput.RenderMode.unfiltered_mix.cycle(1));
 }
 
 test "video destination rect honors aspect and integer scaling" {
@@ -7175,9 +4797,7 @@ test "output path format matches expected pattern" {
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
 extern fn SDL_GetJoysticks(count: *c_int) ?[*]zsdl3.Joystick.Id;
-extern fn SDL_IsGamepad(id: zsdl3.Joystick.Id) bool;
-extern fn SDL_OpenJoystick(id: zsdl3.Joystick.Id) ?*SdlJoystick;
-extern fn SDL_CloseJoystick(joystick: *SdlJoystick) void;
+// SDL_IsGamepad, SDL_OpenJoystick, SDL_CloseJoystick are re-exported from input/gamepad.zig
 extern fn SDL_OpenAudioDeviceStream(
     device: zsdl3.AudioDeviceId,
     spec: *const SdlAudioSpecRaw,

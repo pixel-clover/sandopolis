@@ -153,6 +153,9 @@ pub const Psg = struct {
                     self.noise.countdown = self.tones[2].countdown;
                 }
 
+                // Real SN76489 hardware reseeds LFSR on every noise control write.
+                // This can cause audible clicks when games rapidly switch modes,
+                // but is accurate to hardware behavior.
                 self.noise.shift_register = 0x8000;
                 self.noise.real_output_bit = 0;
             }
