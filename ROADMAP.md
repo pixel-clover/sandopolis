@@ -47,8 +47,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] SRAM support with persistent `.sav` load/store
 - [x] Configurable input mapping via a config file with keyboard, gamepad, and analog threshold settings
 - [x] Resizable window and fullscreen toggle
+- [x] Startup home screen with recent-ROM history and remembered open-directory state
 - [x] GIF animation recording support
-- [ ] Rebinding and device-management UX improvements with clearer runtime feedback
+- [ ] Rebinding, save-management, and controller UX improvements beyond the current home screen and status toasts
 - [ ] More controller I/O edge-case coverage and broader peripheral support
 
 ### Compatibility and tooling

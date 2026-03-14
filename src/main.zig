@@ -169,15 +169,20 @@ fn uncappedBootFrames(audio_enabled: bool) u32 {
     return if (audio_enabled) 0 else 240;
 }
 
+const frontend_config_name = "sandopolis_frontend.cfg";
+const frontend_recent_rom_limit: usize = 8;
+const frontend_toast_duration_frames: u64 = 180;
+
 const FrontendUi = struct {
     paused: bool = false,
+    show_home: bool = false,
     show_help: bool = false,
     dialog_active: bool = false,
     show_keyboard_editor: bool = false,
     show_performance_hud: bool = false,
 
     fn emulationPaused(self: *const FrontendUi) bool {
-        return self.paused or self.show_help or self.dialog_active or self.show_keyboard_editor;
+        return self.paused or self.show_home or self.show_help or self.dialog_active or self.show_keyboard_editor;
     }
 };
 
@@ -541,6 +546,8 @@ const FileDialogState = struct {
     in_flight: bool = false,
     selected_path: DialogPathCopy = .{},
     failure_message: DialogMessageCopy = .{},
+    default_location_len: usize = 0,
+    default_location_z: [std.fs.max_path_bytes + 1]u8 = [_]u8{0} ** (std.fs.max_path_bytes + 1),
     outcome: enum {
         idle,
         selected,
@@ -548,7 +555,7 @@ const FileDialogState = struct {
         failed,
     } = .idle,
 
-    fn begin(self: *FileDialogState) bool {
+    fn begin(self: *FileDialogState, default_location: ?[]const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.in_flight) return false;
@@ -556,7 +563,19 @@ const FileDialogState = struct {
         self.outcome = .idle;
         self.selected_path = .{};
         self.failure_message = .{};
+        self.default_location_len = 0;
+        @memset(&self.default_location_z, 0);
+        if (default_location) |path| {
+            const len = @min(path.len, std.fs.max_path_bytes);
+            @memcpy(self.default_location_z[0..len], path[0..len]);
+            self.default_location_len = len;
+        }
         return true;
+    }
+
+    fn defaultLocation(self: *const FileDialogState) ?[*:0]const u8 {
+        if (self.default_location_len == 0) return null;
+        return self.default_location_z[0..self.default_location_len :0].ptr;
     }
 
     fn finishSelected(self: *FileDialogState, path: []const u8) void {
@@ -607,6 +626,239 @@ const FileDialogState = struct {
         self.outcome = .failed;
         self.in_flight = false;
     }
+};
+
+const FrontendToastStyle = enum {
+    info,
+    success,
+    failure,
+};
+
+const FrontendToast = struct {
+    style: FrontendToastStyle = .info,
+    message: DialogMessageCopy = .{},
+    hide_after_frame: u64 = 0,
+
+    fn visible(self: *const FrontendToast, frame_number: u64) bool {
+        return self.message.len != 0 and frame_number < self.hide_after_frame;
+    }
+
+    fn show(self: *FrontendToast, style: FrontendToastStyle, message: []const u8, frame_number: u64) void {
+        self.style = style;
+        self.message = .{};
+        const len = @min(message.len, self.message.bytes.len);
+        @memcpy(self.message.bytes[0..len], message[0..len]);
+        self.message.len = len;
+        self.hide_after_frame = frame_number + frontend_toast_duration_frames;
+    }
+
+    fn slice(self: *const FrontendToast) []const u8 {
+        return self.message.slice();
+    }
+};
+
+const FrontendNotifications = struct {
+    toast: ?*FrontendToast = null,
+    frame_number: u64 = 0,
+};
+
+fn notifyFrontend(notifications: FrontendNotifications, style: FrontendToastStyle, comptime fmt: []const u8, args: anytype) void {
+    if (notifications.toast) |toast| {
+        var buffer: [max_dialog_message_bytes]u8 = undefined;
+        const message = std.fmt.bufPrint(buffer[0..], fmt, args) catch "MESSAGE TOO LONG";
+        toast.show(style, message, notifications.frame_number);
+    }
+}
+
+const FrontendConfig = struct {
+    recent_rom_count: usize = 0,
+    recent_roms: [frontend_recent_rom_limit]DialogPathCopy = [_]DialogPathCopy{.{}} ** frontend_recent_rom_limit,
+    last_open_dir: DialogPathCopy = .{},
+
+    fn parseContents(contents: []const u8) !FrontendConfig {
+        var config = FrontendConfig{};
+        var line_iter = std.mem.splitScalar(u8, contents, '\n');
+        while (line_iter.next()) |raw_line| {
+            const line = trimFrontendConfigLine(raw_line);
+            if (line.len == 0) continue;
+
+            const separator = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            const lhs = std.mem.trim(u8, line[0..separator], " \t\r");
+            const rhs = std.mem.trim(u8, line[separator + 1 ..], " \t\r");
+            if (rhs.len == 0) continue;
+
+            if (std.ascii.eqlIgnoreCase(lhs, "last_open_dir")) {
+                config.setLastOpenDir(rhs);
+            } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
+                config.appendRecentRom(rhs);
+            }
+        }
+
+        return config;
+    }
+
+    fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !FrontendConfig {
+        const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return .{},
+            else => return err,
+        };
+        defer file.close();
+
+        const contents = try file.readToEndAlloc(allocator, 64 * 1024);
+        defer allocator.free(contents);
+        return try FrontendConfig.parseContents(contents);
+    }
+
+    fn writeContents(self: *const FrontendConfig, writer: *std.Io.Writer) !void {
+        if (self.last_open_dir.len != 0) {
+            try writer.print("last_open_dir = {s}\n", .{self.last_open_dir.slice()});
+        }
+        for (self.recent_roms[0..self.recent_rom_count]) |path| {
+            try writer.print("recent_rom = {s}\n", .{path.slice()});
+        }
+    }
+
+    fn saveToFile(self: *const FrontendConfig, path: []const u8) !void {
+        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        defer file.close();
+        var buffer: [4096]u8 = undefined;
+        var writer = file.writer(&buffer);
+        try self.writeContents(&writer.interface);
+        try writer.interface.flush();
+    }
+
+    fn recentRom(self: *const FrontendConfig, index: usize) []const u8 {
+        std.debug.assert(index < self.recent_rom_count);
+        return self.recent_roms[index].slice();
+    }
+
+    fn noteLoadedRom(self: *FrontendConfig, path: []const u8) void {
+        self.setLastOpenDirFromPath(path);
+        self.noteRecentRom(path);
+    }
+
+    fn removeRecentRom(self: *FrontendConfig, index: usize) void {
+        if (index >= self.recent_rom_count) return;
+        var next = index;
+        while (next + 1 < self.recent_rom_count) : (next += 1) {
+            self.recent_roms[next] = self.recent_roms[next + 1];
+        }
+        self.recent_rom_count -= 1;
+        self.recent_roms[self.recent_rom_count] = .{};
+    }
+
+    fn noteRecentRom(self: *FrontendConfig, path: []const u8) void {
+        if (path.len == 0 or path.len > std.fs.max_path_bytes) return;
+
+        var target = DialogPathCopy{};
+        target.set(path);
+        const previous_entries = self.recent_roms;
+        const previous_count = self.recent_rom_count;
+        self.recent_roms = [_]DialogPathCopy{.{}} ** frontend_recent_rom_limit;
+        self.recent_roms[0] = target;
+        var next_count: usize = 1;
+        for (previous_entries[0..previous_count]) |entry| {
+            if (std.mem.eql(u8, entry.slice(), path)) continue;
+            if (next_count >= frontend_recent_rom_limit) break;
+            self.recent_roms[next_count] = entry;
+            next_count += 1;
+        }
+        self.recent_rom_count = next_count;
+    }
+
+    fn appendRecentRom(self: *FrontendConfig, path: []const u8) void {
+        if (path.len == 0 or path.len > std.fs.max_path_bytes) return;
+        for (self.recent_roms[0..self.recent_rom_count]) |entry| {
+            if (std.mem.eql(u8, entry.slice(), path)) return;
+        }
+        if (self.recent_rom_count >= frontend_recent_rom_limit) return;
+        self.recent_roms[self.recent_rom_count].set(path);
+        self.recent_rom_count += 1;
+    }
+
+    fn setLastOpenDirFromPath(self: *FrontendConfig, path: []const u8) void {
+        if (std.fs.path.dirname(path)) |dir| {
+            self.setLastOpenDir(dir);
+        } else {
+            self.setLastOpenDir(".");
+        }
+    }
+
+    fn setLastOpenDir(self: *FrontendConfig, path: []const u8) void {
+        if (path.len == 0 or path.len > std.fs.max_path_bytes) return;
+        self.last_open_dir.set(path);
+    }
+};
+
+fn trimFrontendConfigLine(raw_line: []const u8) []const u8 {
+    const line = std.mem.trim(u8, raw_line, " \t\r");
+    if (line.len == 0) return "";
+    if (line[0] == '#' or line[0] == ';') return "";
+    return line;
+}
+
+fn defaultFrontendConfigPath(allocator: std.mem.Allocator) ![]u8 {
+    const env_path = std.process.getEnvVarOwned(allocator, "SANDOPOLIS_FRONTEND_CONFIG") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    if (env_path) |path| return path;
+    return try allocator.dupe(u8, frontend_config_name);
+}
+
+const HomeMenuAction = union(enum) {
+    open_rom,
+    recent_rom: usize,
+    show_help,
+    quit,
+};
+
+const HomeMenuState = struct {
+    selected_index: usize = 0,
+
+    fn itemCount(config: *const FrontendConfig) usize {
+        return config.recent_rom_count + 3;
+    }
+
+    fn clamp(self: *HomeMenuState, config: *const FrontendConfig) void {
+        const count = itemCount(config);
+        if (count == 0) {
+            self.selected_index = 0;
+        } else if (self.selected_index >= count) {
+            self.selected_index = count - 1;
+        }
+    }
+
+    fn move(self: *HomeMenuState, delta: isize, config: *const FrontendConfig) void {
+        const count: isize = @intCast(itemCount(config));
+        if (count == 0) {
+            self.selected_index = 0;
+            return;
+        }
+
+        var next: isize = @intCast(self.selected_index);
+        next += delta;
+        while (next < 0) next += count;
+        while (next >= count) next -= count;
+        self.selected_index = @intCast(next);
+    }
+
+    fn currentAction(self: *const HomeMenuState, config: *const FrontendConfig) HomeMenuAction {
+        if (self.selected_index == 0) return .open_rom;
+        const recent_end = 1 + config.recent_rom_count;
+        if (self.selected_index < recent_end) {
+            return .{ .recent_rom = self.selected_index - 1 };
+        }
+        if (self.selected_index == recent_end) return .show_help;
+        return .quit;
+    }
+};
+
+const HomeScreenCommand = union(enum) {
+    none,
+    open_dialog,
+    load_recent: usize,
+    quit,
 };
 
 const BindingEditorTarget = union(enum) {
@@ -873,8 +1125,56 @@ fn openRomDialogCallback(
     dialog_state.finishSelected(std.mem.span(@as([*:0]const u8, @ptrCast(selected_path))));
 }
 
-fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: *zsdl3.Window) bool {
-    if (!dialog_state.begin()) return false;
+fn preferredOpenRomLocation(frontend_config: *const FrontendConfig, current_rom_path: *const DialogPathCopy) ?[]const u8 {
+    if (frontend_config.last_open_dir.len != 0) return frontend_config.last_open_dir.slice();
+    if (current_rom_path.len != 0) {
+        return std.fs.path.dirname(current_rom_path.slice()) orelse current_rom_path.slice();
+    }
+    return null;
+}
+
+fn rememberLoadedRom(frontend_config: *FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications, rom_path: []const u8) void {
+    frontend_config.noteLoadedRom(rom_path);
+    frontend_config.saveToFile(frontend_config_path) catch |err| {
+        std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
+        notifyFrontend(notifications, .failure, "FAILED TO SAVE FRONTEND CONFIG", .{});
+    };
+}
+
+fn handleHomeScreenKey(
+    ui: *FrontendUi,
+    home_menu: *HomeMenuState,
+    config: *const FrontendConfig,
+    scancode: zsdl3.Scancode,
+    pressed: bool,
+) HomeScreenCommand {
+    if (!ui.show_home or ui.dialog_active or ui.show_keyboard_editor or ui.show_help) return .none;
+    if (!pressed) return .none;
+
+    switch (scancode) {
+        .up => {
+            home_menu.move(-1, config);
+            return .none;
+        },
+        .down => {
+            home_menu.move(1, config);
+            return .none;
+        },
+        .@"return" => return switch (home_menu.currentAction(config)) {
+            .open_rom => .open_dialog,
+            .recent_rom => |index| .{ .load_recent = index },
+            .show_help => blk: {
+                ui.show_help = true;
+                break :blk .none;
+            },
+            .quit => .quit,
+        },
+        else => return .none,
+    }
+}
+
+fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: *zsdl3.Window, default_location: ?[]const u8) bool {
+    if (!dialog_state.begin(default_location)) return false;
     ui.dialog_active = true;
     ui.show_help = false;
     SDL_ShowOpenFileDialog(
@@ -883,7 +1183,7 @@ fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: 
         window,
         &rom_dialog_filters,
         @intCast(rom_dialog_filters.len),
-        null,
+        dialog_state.defaultLocation(),
         false,
     );
     return true;
@@ -951,6 +1251,7 @@ fn loadRomIntoMachine(
     wav_recorder: *?WavRecorder,
     frame_counter: *u32,
     rom_path: []const u8,
+    notifications: FrontendNotifications,
 ) !void {
     var next_machine = try Machine.init(allocator, rom_path);
     errdefer next_machine.deinit(allocator);
@@ -982,13 +1283,15 @@ fn loadRomIntoMachine(
     machine.rebindRuntimePointers();
     old_machine.deinit(allocator);
     frame_counter.* = 0;
+    notifyFrontend(notifications, .success, "LOADED {s}", .{std.fs.path.basename(rom_path)});
 }
 
-fn softResetCurrentMachine(machine: *Machine, frame_counter: *u32) void {
+fn softResetCurrentMachine(machine: *Machine, frame_counter: *u32, notifications: FrontendNotifications) void {
     machine.softReset();
     frame_counter.* = 0;
     std.debug.print("CPU Soft Reset complete.\n", .{});
     machine.debugDump();
+    notifyFrontend(notifications, .info, "SOFT RESET COMPLETE", .{});
 }
 
 fn hardResetCurrentMachine(
@@ -1001,6 +1304,7 @@ fn hardResetCurrentMachine(
     wav_recorder: *?WavRecorder,
     frame_counter: *u32,
     rom_path: ?[]const u8,
+    notifications: FrontendNotifications,
 ) !void {
     if (rom_path) |path| {
         try loadRomIntoMachine(
@@ -1013,6 +1317,7 @@ fn hardResetCurrentMachine(
             wav_recorder,
             frame_counter,
             path,
+            notifications,
         );
         return;
     }
@@ -1034,6 +1339,7 @@ fn hardResetCurrentMachine(
     std.debug.print("Console region: {s}\n", .{resolved_region.description});
     std.debug.print("CPU Hard Reset complete.\n", .{});
     machine.debugDump();
+    notifyFrontend(notifications, .info, "HARD RESET COMPLETE", .{});
 }
 
 fn printUsage() void {
@@ -1429,11 +1735,13 @@ fn handleQuickStateAction(
     gif_recorder: *?GifRecorder,
     wav_recorder: *?WavRecorder,
     frame_counter: *u32,
+    notifications: FrontendNotifications,
 ) bool {
     switch (action) {
         .save_quick_state => {
             const snapshot = machine.captureSnapshot(allocator) catch |err| {
                 std.debug.print("Failed to save quick state: {}\n", .{err});
+                notifyFrontend(notifications, .failure, "FAILED TO SAVE QUICK STATE", .{});
                 return true;
             };
             if (quick_state.*) |*saved| {
@@ -1441,12 +1749,14 @@ fn handleQuickStateAction(
             }
             quick_state.* = snapshot;
             std.debug.print("Quick state saved.\n", .{});
+            notifyFrontend(notifications, .success, "QUICK STATE SAVED", .{});
             return true;
         },
         .load_quick_state => {
             if (quick_state.*) |*saved| {
                 machine.restoreSnapshot(allocator, saved) catch |err| {
                     std.debug.print("Failed to load quick state: {}\n", .{err});
+                    notifyFrontend(notifications, .failure, "FAILED TO LOAD QUICK STATE", .{});
                     return true;
                 };
                 stopGifRecording(gif_recorder, "GIF recording stopped for state load");
@@ -1456,8 +1766,10 @@ fn handleQuickStateAction(
                 }
                 frame_counter.* = 0;
                 std.debug.print("Quick state loaded.\n", .{});
+                notifyFrontend(notifications, .success, "QUICK STATE LOADED", .{});
             } else {
                 std.debug.print("No quick state saved.\n", .{});
+                notifyFrontend(notifications, .info, "NO QUICK STATE SAVED", .{});
             }
             return true;
         },
@@ -1487,6 +1799,7 @@ fn handlePersistentStateAction(
     gif_recorder: *?GifRecorder,
     wav_recorder: *?WavRecorder,
     frame_counter: *u32,
+    notifications: FrontendNotifications,
 ) bool {
     persistent_state_slot.* = StateFile.normalizePersistentStateSlot(persistent_state_slot.*);
     if (action == .next_state_slot) {
@@ -1494,6 +1807,7 @@ fn handlePersistentStateAction(
 
         const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
             std.debug.print("Failed to resolve state-file slot path: {s}\n", .{@errorName(err)});
+            notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE SLOT", .{});
             return true;
         };
         defer allocator.free(state_path);
@@ -1503,6 +1817,10 @@ fn handlePersistentStateAction(
             StateFile.persistent_state_slot_count,
             state_path,
         });
+        notifyFrontend(notifications, .info, "STATE SLOT {d}/{d}", .{
+            persistent_state_slot.*,
+            StateFile.persistent_state_slot_count,
+        });
         return true;
     }
 
@@ -1511,6 +1829,7 @@ fn handlePersistentStateAction(
 
     owned_state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
         std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
+        notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
         return true;
     };
     const state_path = owned_state_path.?;
@@ -1519,14 +1838,17 @@ fn handlePersistentStateAction(
         .save_state_file => {
             StateFile.saveToFile(machine, state_path) catch |err| {
                 std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
                 return true;
             };
             std.debug.print("Saved state file: {s}\n", .{state_path});
+            notifyFrontend(notifications, .success, "STATE FILE SAVED", .{});
             return true;
         },
         .load_state_file => {
             var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
                 std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
                 return true;
             };
             errdefer next_machine.deinit(allocator);
@@ -1543,6 +1865,7 @@ fn handlePersistentStateAction(
             old_machine.deinit(allocator);
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
+            notifyFrontend(notifications, .success, "STATE FILE LOADED", .{});
             return true;
         },
         else => return false,
@@ -2224,6 +2547,173 @@ fn renderHelpOverlay(
     }
 }
 
+fn formatHomeMenuItem(
+    buffer: []u8,
+    config: *const FrontendConfig,
+    action: HomeMenuAction,
+    selected: bool,
+) ![]const u8 {
+    const prefix = if (selected) "+ " else "- ";
+    return switch (action) {
+        .open_rom => std.fmt.bufPrint(buffer, "{s}OPEN ROM", .{prefix}),
+        .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}RECENT {d} {s}", .{
+            prefix,
+            index + 1,
+            std.fs.path.basename(config.recentRom(index)),
+        }),
+        .show_help => std.fmt.bufPrint(buffer, "{s}HELP AND HOTKEYS", .{prefix}),
+        .quit => std.fmt.bufPrint(buffer, "{s}QUIT", .{prefix}),
+    };
+}
+
+fn homeMenuActionForIndex(selected_index: usize, config: *const FrontendConfig) HomeMenuAction {
+    if (selected_index == 0) return .open_rom;
+    const recent_end = 1 + config.recent_rom_count;
+    if (selected_index < recent_end) {
+        return .{ .recent_rom = selected_index - 1 };
+    }
+    if (selected_index == recent_end) return .show_help;
+    return .quit;
+}
+
+fn renderHomeOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    home_menu: *const HomeMenuState,
+    config: *const FrontendConfig,
+) !void {
+    const title = "SANDOPOLIS";
+    const subtitle = "OPEN A ROM TO START";
+    const empty_recent_note = "NO RECENT ROMS YET";
+    const footer_a = "UP DOWN MOVE  ENTER SELECT";
+    const footer_b = "F3 OPEN DIALOG  F1 HELP  ESC QUIT";
+    const scale = overlayScale(viewport);
+    const padding = 12.0 * scale;
+    const line_height = 9.0 * scale;
+    const item_count = HomeMenuState.itemCount(config);
+    const note_count: usize = if (config.recent_rom_count == 0) 1 else 0;
+
+    var line_buffers: [frontend_recent_rom_limit + 3][96]u8 = undefined;
+    var menu_lines: [frontend_recent_rom_limit + 3][]const u8 = undefined;
+    var max_width = overlayTextWidth(title, scale);
+    max_width = @max(max_width, overlayTextWidth(subtitle, scale));
+    max_width = @max(max_width, overlayTextWidth(footer_a, scale));
+    max_width = @max(max_width, overlayTextWidth(footer_b, scale));
+    if (note_count != 0) {
+        max_width = @max(max_width, overlayTextWidth(empty_recent_note, scale));
+    }
+
+    for (0..item_count) |index| {
+        const line = try formatHomeMenuItem(
+            line_buffers[index][0..],
+            config,
+            homeMenuActionForIndex(index, config),
+            index == home_menu.selected_index,
+        );
+        menu_lines[index] = line;
+        max_width = @max(max_width, overlayTextWidth(line, scale));
+    }
+
+    const body_lines = 3 + note_count + item_count;
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)))) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)),
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        .{ .r = 0x0C, .g = 0x14, .b = 0x1E, .a = 0xEA },
+        .{ .r = 0x57, .g = 0xCC, .b = 0xE2, .a = 0xFF },
+        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x90 },
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        .{ .r = 0x57, .g = 0xCC, .b = 0xE2, .a = 0xFF },
+        title,
+    );
+
+    const text_x = panel.x + padding;
+    var y = panel.y + padding + 13.0 * scale;
+    try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF }, subtitle);
+    y += line_height;
+
+    if (note_count != 0) {
+        try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }, empty_recent_note);
+        y += line_height;
+    }
+
+    for (menu_lines[0..item_count], 0..) |line, index| {
+        const color: zsdl3.Color = if (index == home_menu.selected_index)
+            .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
+        else
+            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF };
+        try drawOverlayText(renderer, text_x, y, scale, color, line);
+        y += line_height;
+    }
+
+    try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }, footer_a);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }, footer_b);
+}
+
+fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast: *const FrontendToast, frame_number: u64) !void {
+    if (!toast.visible(frame_number)) return;
+
+    const scale = overlayScale(viewport);
+    const padding = 8.0 * scale;
+    const text = toast.slice();
+    const width = overlayTextWidth(text, scale);
+    const panel_width = width + padding * 2.0;
+    const panel_height = padding * 2.0 + 7.0 * scale;
+    const panel = zsdl3.FRect{
+        .x = @max(12.0 * scale, @as(f32, @floatFromInt(viewport.w)) - panel_width - 12.0 * scale),
+        .y = 12.0 * scale,
+        .w = panel_width,
+        .h = panel_height,
+    };
+    const ToastPalette = struct {
+        fill: zsdl3.Color,
+        border: zsdl3.Color,
+    };
+    const toast_colors: ToastPalette = switch (toast.style) {
+        .info => .{
+            .fill = .{ .r = 0x10, .g = 0x13, .b = 0x1A, .a = 0xE8 },
+            .border = .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
+        },
+        .success => .{
+            .fill = .{ .r = 0x0D, .g = 0x18, .b = 0x12, .a = 0xE8 },
+            .border = .{ .r = 0x79, .g = 0xD2, .b = 0xB2, .a = 0xFF },
+        },
+        .failure => .{
+            .fill = .{ .r = 0x1B, .g = 0x0F, .b = 0x11, .a = 0xEC },
+            .border = .{ .r = 0xE6, .g = 0x7E, .b = 0x22, .a = 0xFF },
+        },
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        toast_colors.fill,
+        toast_colors.border,
+        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x88 },
+    );
+    try drawOverlayText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding,
+        scale,
+        .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+        text,
+    );
+}
+
 fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     const title = "OPEN ROM";
     const lines = [_][]const u8{
@@ -2505,25 +2995,36 @@ fn renderKeyboardEditorOverlay(
 fn renderFrontendOverlay(
     renderer: *zsdl3.Renderer,
     ui: *const FrontendUi,
+    home_menu: *const HomeMenuState,
+    frontend_config: *const FrontendConfig,
+    toast: *const FrontendToast,
+    frontend_frame_number: u64,
     editor: *const BindingEditorState,
     bindings: *const InputBindings.Bindings,
     persistent_state_slot: u8,
     perf: *const PerformanceHudState,
 ) !void {
-    if (!ui.show_performance_hud and !ui.paused and !ui.show_help and !ui.dialog_active and !ui.show_keyboard_editor) return;
+    const show_panel = ui.show_home or ui.paused or ui.show_help or ui.dialog_active or ui.show_keyboard_editor;
+    const show_toast = toast.visible(frontend_frame_number);
+    if (!ui.show_performance_hud and !show_panel and !show_toast) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
     if (ui.show_performance_hud) {
         try renderPerformanceHud(renderer, viewport, perf);
     }
-    if (!ui.paused and !ui.show_help and !ui.dialog_active and !ui.show_keyboard_editor) return;
+    if (show_toast) {
+        try renderToastOverlay(renderer, viewport, toast, frontend_frame_number);
+    }
+    if (!show_panel) return;
     if (ui.dialog_active) {
         try renderDialogOverlay(renderer, viewport);
     } else if (ui.show_keyboard_editor) {
         try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings);
     } else if (ui.show_help) {
         try renderHelpOverlay(renderer, viewport, bindings, persistent_state_slot);
+    } else if (ui.show_home) {
+        try renderHomeOverlay(renderer, viewport, home_menu, frontend_config);
     } else {
         try renderPauseOverlay(renderer, viewport, bindings, persistent_state_slot);
     }
@@ -2633,8 +3134,8 @@ pub fn main() !void {
     defer vdp_texture.destroy();
 
     if (rom_path == null) {
-        std.debug.print("No ROM file specified. Usage: sandopolis [options] [rom_file]\n", .{});
-        std.debug.print("Loading dummy test ROM...\n", .{});
+        std.debug.print("No ROM file specified. Starting at the frontend home screen.\n", .{});
+        std.debug.print("Loading dummy backend ROM for the idle frontend shell.\n", .{});
     }
 
     const input_config_path = try InputBindings.defaultConfigPath(allocator);
@@ -2645,6 +3146,10 @@ pub fn main() !void {
         input_bindings = try InputBindings.Bindings.loadFromFile(allocator, path);
         std.debug.print("Loaded input config: {s}\n", .{path});
     }
+
+    const frontend_config_path = try defaultFrontendConfigPath(allocator);
+    defer allocator.free(frontend_config_path);
+    var frontend_config = try FrontendConfig.loadFromFile(allocator, frontend_config_path);
 
     var machine = try Machine.init(allocator, rom_path);
     defer {
@@ -2673,18 +3178,26 @@ pub fn main() !void {
     var current_rom_path = DialogPathCopy{};
     if (rom_path) |path| current_rom_path.set(path);
     var frame_counter: u32 = 0;
+    var frontend_frame_counter: u64 = 0;
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
     var wav_recorder: ?WavRecorder = null;
     var quick_state: ?Machine.Snapshot = null;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     defer if (quick_state) |*state| state.deinit(allocator);
-    var frontend_ui = FrontendUi{};
+    var frontend_ui = FrontendUi{ .show_home = rom_path == null };
+    var home_menu = HomeMenuState{};
+    var frontend_toast = FrontendToast{};
     var performance_hud = PerformanceHudState{};
     var performance_spike_log = PerformanceSpikeLogState{};
     var core_profile_frames_remaining: u32 = 0;
     var file_dialog_state = FileDialogState{};
     var binding_editor = BindingEditorState{};
+
+    if (rom_path) |path| {
+        rememberLoadedRom(&frontend_config, frontend_config_path, .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter }, path);
+    }
+    home_menu.clamp(&frontend_config);
 
     var frame_timer = std.time.Instant.now() catch unreachable;
     mainLoop: while (true) {
@@ -2770,9 +3283,63 @@ pub fn main() !void {
                     )) {
                         continue;
                     }
+                    switch (handleHomeScreenKey(&frontend_ui, &home_menu, &frontend_config, scancode, pressed)) {
+                        .none => {},
+                        .open_dialog => {
+                            _ = launchOpenRomDialog(
+                                &file_dialog_state,
+                                &frontend_ui,
+                                window,
+                                preferredOpenRomLocation(&frontend_config, &current_rom_path),
+                            );
+                            continue;
+                        },
+                        .load_recent => |index| {
+                            const notifications = FrontendNotifications{
+                                .toast = &frontend_toast,
+                                .frame_number = frontend_frame_counter,
+                            };
+                            var selected_path = DialogPathCopy{};
+                            selected_path.set(frontend_config.recentRom(index));
+                            loadRomIntoMachine(
+                                allocator,
+                                &machine,
+                                &input_bindings,
+                                cli.timing_mode,
+                                if (audio) |*a| a else null,
+                                &gif_recorder,
+                                &wav_recorder,
+                                &frame_counter,
+                                selected_path.slice(),
+                                notifications,
+                            ) catch |err| {
+                                std.debug.print("Failed to load recent ROM {s}: {}\n", .{ selected_path.slice(), err });
+                                notifyFrontend(notifications, .failure, "FAILED TO LOAD {s}", .{std.fs.path.basename(selected_path.slice())});
+                                if (err == error.FileNotFound) {
+                                    frontend_config.removeRecentRom(index);
+                                    frontend_config.saveToFile(frontend_config_path) catch |save_err| {
+                                        std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(save_err) });
+                                    };
+                                    home_menu.clamp(&frontend_config);
+                                }
+                                continue;
+                            };
+                            current_rom_path = selected_path;
+                            rememberLoadedRom(&frontend_config, frontend_config_path, notifications, selected_path.slice());
+                            home_menu.clamp(&frontend_config);
+                            frontend_ui.show_home = false;
+                            frontend_ui.paused = false;
+                            continue;
+                        },
+                        .quit => break :mainLoop,
+                    }
                     if (pressed) {
                         if (hotkey_binding) |binding| {
                             if (input_bindings.hotkeyForBinding(binding)) |action| {
+                                const notifications = FrontendNotifications{
+                                    .toast = &frontend_toast,
+                                    .frame_number = frontend_frame_counter,
+                                };
                                 if (handleQuickStateAction(
                                     allocator,
                                     action,
@@ -2782,6 +3349,7 @@ pub fn main() !void {
                                     &gif_recorder,
                                     &wav_recorder,
                                     &frame_counter,
+                                    notifications,
                                 )) {
                                     continue;
                                 }
@@ -2795,15 +3363,29 @@ pub fn main() !void {
                                     &gif_recorder,
                                     &wav_recorder,
                                     &frame_counter,
+                                    notifications,
                                 )) {
                                     continue;
                                 }
 
                                 switch (action) {
                                     .toggle_help => frontend_ui.show_help = !frontend_ui.show_help,
-                                    .toggle_pause => frontend_ui.paused = !frontend_ui.paused,
-                                    .open_rom => _ = launchOpenRomDialog(&file_dialog_state, &frontend_ui, window),
-                                    .restart_rom => softResetCurrentMachine(&machine, &frame_counter),
+                                    .toggle_pause => {
+                                        if (!frontend_ui.show_home) {
+                                            frontend_ui.paused = !frontend_ui.paused;
+                                        }
+                                    },
+                                    .open_rom => _ = launchOpenRomDialog(
+                                        &file_dialog_state,
+                                        &frontend_ui,
+                                        window,
+                                        preferredOpenRomLocation(&frontend_config, &current_rom_path),
+                                    ),
+                                    .restart_rom => {
+                                        if (!frontend_ui.show_home) {
+                                            softResetCurrentMachine(&machine, &frame_counter, notifications);
+                                        }
+                                    },
                                     .reload_rom => {
                                         hardResetCurrentMachine(
                                             allocator,
@@ -2815,8 +3397,10 @@ pub fn main() !void {
                                             &wav_recorder,
                                             &frame_counter,
                                             if (current_rom_path.len != 0) current_rom_path.slice() else null,
+                                            notifications,
                                         ) catch |err| {
                                             std.debug.print("Failed to hard reset or reload current ROM: {}\n", .{err});
+                                            notifyFrontend(notifications, .failure, "FAILED TO RELOAD CURRENT ROM", .{});
                                         };
                                     },
                                     .toggle_performance_hud => {
@@ -2850,6 +3434,7 @@ pub fn main() !void {
                                             rec.finish();
                                             gif_recorder = null;
                                             std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
+                                            notifyFrontend(notifications, .success, "GIF RECORDING STOPPED", .{});
                                         } else {
                                             const fps: u16 = if (machine.palMode()) 25 else 30;
                                             const path = gifOutputPath();
@@ -2857,9 +3442,11 @@ pub fn main() !void {
                                             const framebuffer_height: u16 = @intCast(machine.framebuffer().len / Vdp.framebuffer_width);
                                             gif_recorder = GifRecorder.start(path_str, fps, framebuffer_height) catch |err| {
                                                 std.debug.print("Failed to start GIF recording: {}\n", .{err});
+                                                notifyFrontend(notifications, .failure, "FAILED TO START GIF RECORDING", .{});
                                                 continue;
                                             };
                                             std.debug.print("GIF recording started: {s}\n", .{path_str});
+                                            notifyFrontend(notifications, .success, "GIF RECORDING STARTED", .{});
                                         }
                                     },
                                     .record_wav => {
@@ -2873,6 +3460,7 @@ pub fn main() !void {
                                             rec.finish();
                                             wav_recorder = null;
                                             std.debug.print("WAV recording stopped ({d} samples, {d:.2}s)\n", .{ samples, duration });
+                                            notifyFrontend(notifications, .success, "WAV RECORDING STOPPED", .{});
                                         } else {
                                             if (audio) |*a| {
                                                 a.syncRecordedPlayback(null);
@@ -2881,14 +3469,22 @@ pub fn main() !void {
                                             const path_str = std.mem.sliceTo(&path, 0);
                                             wav_recorder = WavRecorder.start(path_str, AudioOutput.output_rate, AudioOutput.channels) catch |err| {
                                                 std.debug.print("Failed to start WAV recording: {}\n", .{err});
+                                                notifyFrontend(notifications, .failure, "FAILED TO START WAV RECORDING", .{});
                                                 continue;
                                             };
                                             std.debug.print("WAV recording started: {s}\n", .{path_str});
+                                            notifyFrontend(notifications, .success, "WAV RECORDING STARTED", .{});
                                         }
                                     },
                                     .toggle_fullscreen => {
                                         const flags = SDL_GetWindowFlags(window);
-                                        _ = SDL_SetWindowFullscreen(window, flags & 1 == 0);
+                                        const enable_fullscreen = flags & 1 == 0;
+                                        _ = SDL_SetWindowFullscreen(window, enable_fullscreen);
+                                        if (enable_fullscreen) {
+                                            notifyFrontend(notifications, .info, "FULLSCREEN ON", .{});
+                                        } else {
+                                            notifyFrontend(notifications, .info, "FULLSCREEN OFF", .{});
+                                        }
                                     },
                                     .quit => break :mainLoop,
                                     .open_keyboard_editor,
@@ -2903,9 +3499,11 @@ pub fn main() !void {
                             }
                         }
                     }
-                    if (hotkey_binding) |binding| {
-                        const mapped_key = binding.input orelse continue;
-                        _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
+                    if (!frontend_ui.show_home) {
+                        if (hotkey_binding) |binding| {
+                            const mapped_key = binding.input orelse continue;
+                            _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
+                        }
                     }
                 },
                 else => {},
@@ -2918,6 +3516,12 @@ pub fn main() !void {
             .failed => |message| {
                 frontend_ui.dialog_active = false;
                 std.debug.print("Open ROM dialog failed: {s}\n", .{message.slice()});
+                notifyFrontend(
+                    .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
+                    .failure,
+                    "OPEN ROM DIALOG FAILED",
+                    .{},
+                );
             },
             .selected => |path| {
                 frontend_ui.dialog_active = false;
@@ -2932,11 +3536,27 @@ pub fn main() !void {
                     &wav_recorder,
                     &frame_counter,
                     path.slice(),
+                    .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
                 ) catch |err| {
                     std.debug.print("Failed to load ROM {s}: {}\n", .{ path.slice(), err });
+                    notifyFrontend(
+                        .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
+                        .failure,
+                        "FAILED TO LOAD {s}",
+                        .{std.fs.path.basename(path.slice())},
+                    );
                     continue;
                 };
                 current_rom_path = path;
+                rememberLoadedRom(
+                    &frontend_config,
+                    frontend_config_path,
+                    .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
+                    path.slice(),
+                );
+                home_menu.clamp(&frontend_config);
+                if (frontend_ui.show_home) frontend_ui.paused = false;
+                frontend_ui.show_home = false;
             },
         }
 
@@ -3015,13 +3635,25 @@ pub fn main() !void {
             .h = @floatFromInt(framebuffer_height),
         };
         try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, null);
-        try renderFrontendOverlay(renderer, &frontend_ui, &binding_editor, &input_bindings, persistent_state_slot, &performance_hud);
+        try renderFrontendOverlay(
+            renderer,
+            &frontend_ui,
+            &home_menu,
+            &frontend_config,
+            &frontend_toast,
+            frontend_frame_counter,
+            &binding_editor,
+            &input_bindings,
+            persistent_state_slot,
+            &performance_hud,
+        );
         frame_phases.draw_ns = (std.time.Instant.now() catch draw_start).since(draw_start);
         const present_call_start = std.time.Instant.now() catch frame_timer;
         zsdl3.renderPresent(renderer);
         frame_phases.present_call_ns = (std.time.Instant.now() catch present_call_start).since(present_call_start);
 
         frame_counter += 1;
+        frontend_frame_counter += 1;
         const frame_now = std.time.Instant.now() catch frame_timer;
         const work_elapsed = frame_now.since(frame_timer);
         if (frame_counter > uncapped_boot_frames) {
@@ -3652,7 +4284,7 @@ test "soft reset helper rewinds cpu without reloading runtime state" {
 
     try std.testing.expectEqual(@as(u32, 0x0000_0202), machine.programCounter());
 
-    softResetCurrentMachine(&machine, &frame_counter);
+    softResetCurrentMachine(&machine, &frame_counter, .{});
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -3697,6 +4329,7 @@ test "hard reset helper reloads the current rom path" {
         &wav_recorder,
         &frame_counter,
         rom_path,
+        .{},
     );
 
     try std.testing.expectEqual(@as(u8, 0x00), machine.readWorkRamByte(0x20));
@@ -3778,11 +4411,11 @@ test "quick state helper saves and restores machine state" {
     var frame_counter: u32 = 42;
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -3810,13 +4443,13 @@ test "persistent state helper saves and restores machine state" {
     defer allocator.free(slot1_state_path);
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(state_path, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -3842,35 +4475,96 @@ test "persistent state helper cycles slots and keeps files separate" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
+test "frontend config tracks recent roms and last directory" {
+    var config = FrontendConfig{};
+
+    config.noteLoadedRom("roms/a.bin");
+    config.noteLoadedRom("roms/b.bin");
+    config.noteLoadedRom("roms/a.bin");
+
+    try std.testing.expectEqualStrings("roms", config.last_open_dir.slice());
+    try std.testing.expectEqual(@as(usize, 2), config.recent_rom_count);
+    try std.testing.expectEqualStrings("roms/a.bin", config.recentRom(0));
+    try std.testing.expectEqualStrings("roms/b.bin", config.recentRom(1));
+}
+
+test "frontend config parsing preserves recent rom order" {
+    const contents =
+        \\last_open_dir = roms
+        \\recent_rom = roms/b.bin
+        \\recent_rom = roms/a.bin
+    ;
+    const config = try FrontendConfig.parseContents(contents);
+
+    try std.testing.expectEqualStrings("roms", config.last_open_dir.slice());
+    try std.testing.expectEqual(@as(usize, 2), config.recent_rom_count);
+    try std.testing.expectEqualStrings("roms/b.bin", config.recentRom(0));
+    try std.testing.expectEqualStrings("roms/a.bin", config.recentRom(1));
+}
+
+test "home menu wraps across dynamic recent rom entries" {
+    var config = FrontendConfig{};
+    config.noteLoadedRom("roms/a.bin");
+    config.noteLoadedRom("roms/b.bin");
+
+    var menu = HomeMenuState{};
+    switch (menu.currentAction(&config)) {
+        .open_rom => {},
+        else => try std.testing.expect(false),
+    }
+
+    menu.move(-1, &config);
+    switch (menu.currentAction(&config)) {
+        .quit => {},
+        else => try std.testing.expect(false),
+    }
+
+    menu.move(1, &config);
+    menu.move(1, &config);
+    switch (menu.currentAction(&config)) {
+        .recent_rom => |index| try std.testing.expectEqual(@as(usize, 0), index),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "frontend toast visibility expires after its frame window" {
+    var toast = FrontendToast{};
+    toast.show(.success, "STATE FILE SAVED", 25);
+
+    try std.testing.expect(toast.visible(25));
+    try std.testing.expect(toast.visible(25 + frontend_toast_duration_frames - 1));
+    try std.testing.expect(!toast.visible(25 + frontend_toast_duration_frames));
+}
+
 test "file dialog state records selected paths and failures" {
     var dialog = FileDialogState{};
-    try std.testing.expect(dialog.begin());
+    try std.testing.expect(dialog.begin(null));
     dialog.finishSelected("roms/test.bin");
 
     const selected = dialog.take();
@@ -3883,24 +4577,25 @@ test "file dialog state records selected paths and failures" {
         else => try std.testing.expect(false),
     }
 
-    try std.testing.expect(dialog.begin());
+    try std.testing.expect(dialog.begin("/tmp"));
     dialog.finishFailed("FAILED");
     const failed = dialog.take();
     switch (failed) {
         .failed => |message| try std.testing.expectEqualStrings("FAILED", message.slice()),
         else => try std.testing.expect(false),
     }
+    try std.testing.expectEqualStrings("/tmp", std.mem.span(dialog.defaultLocation().?));
 }
 
 test "file dialog state records cancellations" {
     var dialog = FileDialogState{};
-    try std.testing.expect(dialog.begin());
+    try std.testing.expect(dialog.begin(null));
     dialog.finishCanceled();
     switch (dialog.take()) {
         .canceled => {},
         else => try std.testing.expect(false),
     }
-    try std.testing.expect(dialog.begin());
+    try std.testing.expect(dialog.begin(null));
 }
 
 test "frame duration uses console master clock" {

@@ -40,7 +40,7 @@ Footage of Sandopolis running a few games:
 - Accurate Sega Genesis/Mega Drive emulation
 - Very portable; can be built and run on any platform that Zig supports including WASM
 - Configurable gameplay input, frontend hotkeys, and rendering settings
-- Supports ROM loading at runtime, quick state save/load, persistent state slots, and keyboard rebinding
+- Supports ROM loading at runtime, recent-ROM history, quick state save/load, persistent state slots, and keyboard rebinding
 - Has a permissive license that allows commercial use
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
@@ -105,6 +105,8 @@ Useful frontend hotkeys:
 - `F3`: open ROM dialog
 - `Shift+F3`: soft reset console
 - `Ctrl+Shift+F3`: hard reset and reload current ROM
+
+If you launch Sandopolis without a ROM, it now starts in a frontend home screen with `Open ROM`, recent-ROM entries, help, and quit actions. Frontend actions such as save/load state, recording, fullscreen, and ROM loads also show short on-screen status toasts. Recent ROM history and the last-open directory are stored in `sandopolis_frontend.cfg` (or the path from `SANDOPOLIS_FRONTEND_CONFIG`).
 
 > [!NOTE]
 > To build from source, you mainly need to have Zig and Git installed.
