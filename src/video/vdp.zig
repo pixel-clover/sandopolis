@@ -425,3 +425,92 @@ test "H40-derived geometry depends only on reg 12 bit 0" {
     try std.testing.expectEqual(@as(u8, 80), vdp.maxSpritesTotal());
     try std.testing.expectEqual(@as(u16, 0xFC00), vdp.spriteAttributeTableBase());
 }
+
+test "VDP init returns expected defaults" {
+    const vdp = Vdp.init();
+
+    // Video state defaults
+    try std.testing.expect(!vdp.vblank);
+    try std.testing.expect(!vdp.hblank);
+    try std.testing.expect(!vdp.odd_frame);
+    try std.testing.expect(!vdp.pal_mode);
+    try std.testing.expect(!vdp.vint_pending);
+    try std.testing.expect(!vdp.sprite_overflow);
+    try std.testing.expect(!vdp.sprite_collision);
+
+    // DMA state defaults
+    try std.testing.expect(!vdp.dma_active);
+    try std.testing.expect(!vdp.dma_fill);
+    try std.testing.expect(!vdp.dma_copy);
+    try std.testing.expectEqual(@as(u32, 0), vdp.dma_remaining);
+
+    // Command state defaults
+    try std.testing.expect(!vdp.pending_command);
+    try std.testing.expectEqual(@as(u8, 0), vdp.code);
+    try std.testing.expectEqual(@as(u16, 0), vdp.addr);
+
+    // FIFO defaults
+    try std.testing.expectEqual(@as(u8, 0), vdp.fifo_len);
+    try std.testing.expectEqual(@as(u8, 0), vdp.pending_fifo_len);
+}
+
+test "display enable controlled by reg 1 bit 6" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isDisplayEnabled());
+
+    vdp.regs[1] = 0x40;
+    try std.testing.expect(vdp.isDisplayEnabled());
+
+    vdp.regs[1] = 0x3F;
+    try std.testing.expect(!vdp.isDisplayEnabled());
+
+    vdp.regs[1] = 0xFF;
+    try std.testing.expect(vdp.isDisplayEnabled());
+}
+
+test "shadow highlight mode controlled by reg 12 bit 3" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isShadowHighlightEnabled());
+
+    vdp.regs[12] = 0x08;
+    try std.testing.expect(vdp.isShadowHighlightEnabled());
+
+    vdp.regs[12] = 0xF7;
+    try std.testing.expect(!vdp.isShadowHighlightEnabled());
+}
+
+test "interlace mode 2 requires reg 12 bits 1 and 2 both set" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isInterlaceMode2());
+    try std.testing.expectEqual(@as(u8, 8), vdp.tileHeight());
+    try std.testing.expectEqual(@as(u32, 32), vdp.tileSizeBytes());
+
+    // Only bit 1 set - not interlace mode 2
+    vdp.regs[12] = 0x02;
+    try std.testing.expect(!vdp.isInterlaceMode2());
+
+    // Only bit 2 set - not interlace mode 2
+    vdp.regs[12] = 0x04;
+    try std.testing.expect(!vdp.isInterlaceMode2());
+
+    // Both bits set - interlace mode 2
+    vdp.regs[12] = 0x06;
+    try std.testing.expect(vdp.isInterlaceMode2());
+    try std.testing.expectEqual(@as(u8, 16), vdp.tileHeight());
+    try std.testing.expectEqual(@as(u32, 64), vdp.tileSizeBytes());
+}
+
+test "HV counter latch controlled by reg 0 bit 1" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isHVCounterLatchEnabled());
+
+    vdp.regs[0] = 0x02;
+    try std.testing.expect(vdp.isHVCounterLatchEnabled());
+
+    vdp.regs[0] = 0xFD;
+    try std.testing.expect(!vdp.isHVCounterLatchEnabled());
+}

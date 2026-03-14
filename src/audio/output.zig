@@ -74,6 +74,9 @@ const BoardOutputLpf = struct {
     prev_r: f32 = 0.0,
     history_factor: f32,
     input_factor: f32,
+    warmup_samples: u8 = 0,
+
+    const warmup_count: u8 = 8;
 
     fn init() BoardOutputLpf {
         return .{
@@ -84,11 +87,24 @@ const BoardOutputLpf = struct {
 
     fn processL(self: *BoardOutputLpf, x: f32) f32 {
         self.prev_l = self.prev_l * self.history_factor + x * self.input_factor;
+
+        // Apply gradual fade-in during warmup to avoid startup transient.
+        if (self.warmup_samples < warmup_count) {
+            self.warmup_samples += 1;
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return self.prev_l * blend;
+        }
         return self.prev_l;
     }
 
     fn processR(self: *BoardOutputLpf, x: f32) f32 {
         self.prev_r = self.prev_r * self.history_factor + x * self.input_factor;
+
+        // Warmup already counted in processL (called first in stereo pair)
+        if (self.warmup_samples <= warmup_count) {
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return self.prev_r * blend;
+        }
         return self.prev_r;
     }
 };
@@ -112,6 +128,9 @@ const FirstOrderLpf = struct {
     prev: f32 = 0.0,
     history_factor: f32,
     input_factor: f32,
+    warmup_samples: u8 = 0,
+
+    const warmup_count: u8 = 8;
 
     fn init(cutoff_hz: f32, sample_rate: f64) FirstOrderLpf {
         const history: f32 = @floatCast(@exp((-std.math.tau * @as(f64, cutoff_hz)) / sample_rate));
@@ -123,6 +142,13 @@ const FirstOrderLpf = struct {
 
     fn process(self: *FirstOrderLpf, x: f32) f32 {
         self.prev = self.prev * self.history_factor + x * self.input_factor;
+
+        // Apply gradual fade-in during warmup to avoid startup transient.
+        if (self.warmup_samples < warmup_count) {
+            self.warmup_samples += 1;
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return self.prev * blend;
+        }
         return self.prev;
     }
 };
@@ -2551,9 +2577,16 @@ test "native psg lpf preserves audible content with minimal filtering" {
 test "board output lpf matches the Genesis Plus GX default recurrence" {
     var lpf = BoardOutputLpf.init();
 
+    // Process enough samples to complete warmup phase
+    for (0..BoardOutputLpf.warmup_count) |_| {
+        _ = lpf.processL(0.0);
+    }
+
+    // Now test the steady-state recurrence relation
     const first = lpf.processL(1.0);
     const second = lpf.processL(-0.5);
 
+    // After warmup, filter should follow standard recurrence: y[n] = history * y[n-1] + input * x[n]
     try std.testing.expectApproxEqAbs(board_output_input_factor, first, 0.000001);
     try std.testing.expectApproxEqAbs(first * board_output_history_factor - 0.5 * board_output_input_factor, second, 0.000001);
 }

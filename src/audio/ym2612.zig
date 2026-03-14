@@ -1107,11 +1107,22 @@ const BiquadLpf = struct {
     a2: f32 = 0,
     z1: f32 = 0,
     z2: f32 = 0,
+    warmup_samples: u8 = 0,
+
+    const warmup_count: u8 = 16;
 
     fn process(self: *BiquadLpf, x: f32) f32 {
         const y = self.b0 * x + self.z1;
         self.z1 = self.b1 * x - self.a1 * y + self.z2;
         self.z2 = self.b2 * x - self.a2 * y;
+
+        // Apply gradual fade-in during warmup to avoid startup transient.
+        // The biquad filter needs a few samples to stabilize.
+        if (self.warmup_samples < warmup_count) {
+            self.warmup_samples += 1;
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return y * blend;
+        }
         return y;
     }
 };

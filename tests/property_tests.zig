@@ -322,6 +322,82 @@ const z80_control_byte_gen = minish.gen.Generator(Z80ControlByteCase){
     .freeFn = null,
 };
 
+const SaveStateRamCase = struct {
+    ram_offset: u16,
+    ram_value: u8,
+    vdp_reg_index: u4,
+    vdp_reg_value: u8,
+    cpu_pc: u24,
+    cpu_sr: u16,
+    m68k_sync_cycles: u32,
+};
+
+const save_state_ram_gen = minish.gen.Generator(SaveStateRamCase){
+    .generateFn = struct {
+        fn generate(tc: *minish.TestCase) minish.GenError!SaveStateRamCase {
+            return .{
+                .ram_offset = try tc.choiceInRange(u16, 0, 0xFFFF),
+                .ram_value = try tc.choiceInRange(u8, 0, std.math.maxInt(u8)),
+                .vdp_reg_index = @intCast(try tc.choiceInRange(u8, 0, 15)),
+                .vdp_reg_value = try tc.choiceInRange(u8, 0, std.math.maxInt(u8)),
+                .cpu_pc = @intCast(try tc.choiceInRange(u32, 0, 0xFFFFFF)),
+                .cpu_sr = try tc.choiceInRange(u16, 0, std.math.maxInt(u16)),
+                .m68k_sync_cycles = try tc.choiceInRange(u32, 0, clock.ntsc_master_cycles_per_frame * 10),
+            };
+        }
+    }.generate,
+    .shrinkFn = null,
+    .freeFn = null,
+};
+
+const SaveStateZ80Case = struct {
+    z80_ram_offset: u13,
+    z80_ram_value: u8,
+    ym_port: u1,
+    ym_reg: u8,
+    ym_value: u8,
+};
+
+const VdpRenderDeterminismCase = struct {
+    vram_offset: u14,
+    vram_value: u16,
+    scroll_a_h: u10,
+    scroll_a_v: u10,
+    bg_color: u6,
+};
+
+const save_state_z80_gen = minish.gen.Generator(SaveStateZ80Case){
+    .generateFn = struct {
+        fn generate(tc: *minish.TestCase) minish.GenError!SaveStateZ80Case {
+            return .{
+                .z80_ram_offset = @intCast(try tc.choiceInRange(u16, 0, 0x1FFF)),
+                .z80_ram_value = try tc.choiceInRange(u8, 0, std.math.maxInt(u8)),
+                .ym_port = @intCast(try tc.choiceInRange(u8, 0, 1)),
+                .ym_reg = try tc.choiceInRange(u8, 0, 0x2F),
+                .ym_value = try tc.choiceInRange(u8, 0, std.math.maxInt(u8)),
+            };
+        }
+    }.generate,
+    .shrinkFn = null,
+    .freeFn = null,
+};
+
+const vdp_render_determinism_gen = minish.gen.Generator(VdpRenderDeterminismCase){
+    .generateFn = struct {
+        fn generate(tc: *minish.TestCase) minish.GenError!VdpRenderDeterminismCase {
+            return .{
+                .vram_offset = @intCast(try tc.choiceInRange(u16, 0, 0x3FFF)),
+                .vram_value = try tc.choiceInRange(u16, 0, std.math.maxInt(u16)),
+                .scroll_a_h = @intCast(try tc.choiceInRange(u16, 0, 0x3FF)),
+                .scroll_a_v = @intCast(try tc.choiceInRange(u16, 0, 0x3FF)),
+                .bg_color = @intCast(try tc.choiceInRange(u8, 0, 0x3F)),
+            };
+        }
+    }.generate,
+    .shrinkFn = null,
+    .freeFn = null,
+};
+
 fn initEmptyEmulator() !Emulator {
     return Emulator.initEmpty(testing.allocator);
 }
@@ -842,5 +918,170 @@ test "property: low-byte writes do not change Z80 control register state" {
     try minish.check(testing.allocator, z80_control_byte_gen, z80ControlLowByteNoOpProperty, .{
         .num_runs = 96,
         .seed = 0xB17E5678,
+    });
+}
+
+fn tempFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: []const u8) ![]u8 {
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    return std.fs.path.join(allocator, &.{ dir_path, file_name });
+}
+
+fn saveStateRamRoundTripProperty(input: SaveStateRamCase) !void {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const state_path = try tempFilePath(testing.allocator, &tmp, "property.state");
+    defer testing.allocator.free(state_path);
+
+    // Create a minimal ROM with valid SEGA header
+    const rom = try makeRomWithSramHeader(testing.allocator, 0x1000, 0xF8, 0x200001, 0x203FFF);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+
+    // Set various machine state based on random input
+    emulator.writeRam(input.ram_offset, input.ram_value);
+    emulator.setVdpRegister(input.vdp_reg_index, input.vdp_reg_value);
+    emulator.setCpuPc(input.cpu_pc);
+    emulator.setCpuSr(input.cpu_sr);
+    emulator.setM68kSyncCycles(input.m68k_sync_cycles);
+
+    // Save the state
+    try emulator.saveToFile(state_path);
+
+    // Load the state into a new emulator
+    var restored = try Emulator.loadFromFile(testing.allocator, state_path);
+    defer restored.deinit(testing.allocator);
+
+    // Verify all state matches
+    try testing.expectEqual(input.ram_value, restored.readRam(input.ram_offset));
+    try testing.expectEqual(input.vdp_reg_value, restored.vdpRegister(input.vdp_reg_index));
+    try testing.expectEqual(@as(u32, input.cpu_pc), restored.cpuPc());
+    try testing.expectEqual(input.cpu_sr, restored.cpuSr());
+    try testing.expectEqual(@as(u64, input.m68k_sync_cycles), restored.m68kSyncCycles());
+}
+
+fn saveStateZ80RoundTripProperty(input: SaveStateZ80Case) !void {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const state_path = try tempFilePath(testing.allocator, &tmp, "z80_property.state");
+    defer testing.allocator.free(state_path);
+
+    // Create a minimal ROM with valid SEGA header
+    const rom = try makeRomWithSramHeader(testing.allocator, 0x1000, 0xF8, 0x200001, 0x203FFF);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+
+    // Request Z80 bus and release reset to allow writes
+    emulator.setZ80BusRequest(0x0100);
+    emulator.setZ80ResetControl(0x0100);
+
+    // Set Z80 state
+    emulator.z80WriteByte(input.z80_ram_offset, input.z80_ram_value);
+
+    // Write to YM2612 registers
+    emulator.write8(0x00A0_4000, input.ym_reg);
+    emulator.write8(0x00A0_4001, input.ym_value);
+
+    // Save state
+    try emulator.saveToFile(state_path);
+
+    // Load into new emulator
+    var restored = try Emulator.loadFromFile(testing.allocator, state_path);
+    defer restored.deinit(testing.allocator);
+
+    // Verify Z80 RAM
+    const restored_value = restored.read8(0x00A0_0000 + @as(u32, input.z80_ram_offset));
+    try testing.expectEqual(input.z80_ram_value, restored_value);
+
+    // Verify YM2612 register (if it's not a keyon register which has side effects)
+    if (input.ym_reg != 0x28) {
+        try testing.expectEqual(input.ym_value, restored.ymRegister(0, input.ym_reg));
+    }
+}
+
+test "property: save-state round-trip preserves M68K state" {
+    try minish.check(testing.allocator, save_state_ram_gen, saveStateRamRoundTripProperty, .{
+        .num_runs = 64,
+        .seed = 0x5A7E0001,
+    });
+}
+
+test "property: save-state round-trip preserves Z80 and YM2612 state" {
+    try minish.check(testing.allocator, save_state_z80_gen, saveStateZ80RoundTripProperty, .{
+        .num_runs = 64,
+        .seed = 0x280A0002,
+    });
+}
+
+fn computeFramebufferHash(framebuffer: []const u32) u64 {
+    var hash: u64 = 0;
+    for (framebuffer, 0..) |pixel, i| {
+        // Simple hash combining position and value
+        hash ^= @as(u64, pixel) ^ (@as(u64, @intCast(i)) << 32);
+        hash = hash *% 0x517cc1b727220a95;
+    }
+    return hash;
+}
+
+fn vdpRenderDeterminismProperty(input: VdpRenderDeterminismCase) !void {
+    // Create a minimal ROM with valid SEGA header
+    const rom = try makeRomWithSramHeader(testing.allocator, 0x1000, 0xF8, 0x200001, 0x203FFF);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+
+    // Enable display (register 1, bit 6)
+    emulator.setVdpRegister(1, 0x40);
+
+    // Set background color register (register 7)
+    emulator.setVdpRegister(7, input.bg_color);
+
+    // Write to VRAM: configure data port for VRAM write
+    emulator.configureVdpDataPort(0x01, @as(u16, input.vram_offset) * 2, 2);
+    emulator.writeVdpData(input.vram_value);
+
+    // Set scroll values via registers
+    // Register 13 = horizontal scroll data table address (bits 5-0 = SA13-SA8)
+    emulator.setVdpRegister(13, 0);
+
+    // Run one full frame
+    emulator.runFramesDiscardingAudio(1);
+
+    // Capture first framebuffer state
+    const fb1 = emulator.framebuffer();
+    const hash1 = computeFramebufferHash(fb1);
+
+    // Save state
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state_path = try tempFilePath(testing.allocator, &tmp, "render.state");
+    defer testing.allocator.free(state_path);
+    try emulator.saveToFile(state_path);
+
+    // Run another frame (advancing state)
+    emulator.runFramesDiscardingAudio(1);
+
+    // Restore state
+    var restored = try Emulator.loadFromFile(testing.allocator, state_path);
+    defer restored.deinit(testing.allocator);
+
+    // The restored framebuffer should match the saved state
+    const fb2 = restored.framebuffer();
+    const hash2 = computeFramebufferHash(fb2);
+
+    try testing.expectEqual(hash1, hash2);
+}
+
+test "property: VDP rendering is deterministic through save-state round-trip" {
+    try minish.check(testing.allocator, vdp_render_determinism_gen, vdpRenderDeterminismProperty, .{
+        .num_runs = 32,
+        .seed = 0x7D900003,
     });
 }
