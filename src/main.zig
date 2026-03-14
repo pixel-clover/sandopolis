@@ -50,6 +50,7 @@ const AudioInit = struct {
             return;
         };
         self.clearPlaybackShadow();
+        self.output.dropQueuedOutput(is_pal);
         try self.pushPending(pending, z80, is_pal, wav_recorder);
     }
 
@@ -83,7 +84,29 @@ const AudioInit = struct {
 
     fn appendPlaybackShadow(self: *AudioInit, samples: []const i16) void {
         if (samples.len == 0) return;
-        std.debug.assert(self.playback_shadow_len + samples.len <= self.playback_shadow.len);
+        if (samples.len >= self.playback_shadow.len) {
+            const tail = samples[samples.len - self.playback_shadow.len ..];
+            @memcpy(self.playback_shadow[0..self.playback_shadow.len], tail);
+            self.playback_shadow_len = self.playback_shadow.len;
+            return;
+        }
+
+        const required_len = self.playback_shadow_len + samples.len;
+        if (required_len > self.playback_shadow.len) {
+            const drop = required_len - self.playback_shadow.len;
+            if (drop < self.playback_shadow_len) {
+                const retained = self.playback_shadow_len - drop;
+                std.mem.copyForwards(
+                    i16,
+                    self.playback_shadow[0..retained],
+                    self.playback_shadow[drop..self.playback_shadow_len],
+                );
+                self.playback_shadow_len = retained;
+            } else {
+                self.playback_shadow_len = 0;
+            }
+        }
+
         @memcpy(
             self.playback_shadow[self.playback_shadow_len .. self.playback_shadow_len + samples.len],
             samples,
@@ -172,17 +195,24 @@ fn uncappedBootFrames(audio_enabled: bool) u32 {
 const frontend_config_name = "sandopolis_frontend.cfg";
 const frontend_recent_rom_limit: usize = 8;
 const frontend_toast_duration_frames: u64 = 180;
+const save_state_preview_width: usize = 80;
+const save_state_preview_height: usize = 56;
+const save_state_preview_pixel_count: usize = save_state_preview_width * save_state_preview_height;
+const save_state_preview_magic = [_]u8{ 'S', 'P', 'R', 'V' };
+const save_state_preview_version: u16 = 1;
 
 const FrontendUi = struct {
     paused: bool = false,
     show_home: bool = false,
+    show_save_manager: bool = false,
+    show_settings: bool = false,
     show_help: bool = false,
     dialog_active: bool = false,
     show_keyboard_editor: bool = false,
     show_performance_hud: bool = false,
 
     fn emulationPaused(self: *const FrontendUi) bool {
-        return self.paused or self.show_home or self.show_help or self.dialog_active or self.show_keyboard_editor;
+        return self.paused or self.show_home or self.show_save_manager or self.show_settings or self.show_help or self.dialog_active or self.show_keyboard_editor;
     }
 };
 
@@ -453,6 +483,48 @@ fn isThresholdSlowFrame(perf: *const PerformanceHudState) bool {
     return perf.last_overrun_ns >= performance_spike_log_threshold_ns;
 }
 
+// Centralized UI color system for consistent theming across overlays
+const UiColors = struct {
+    // Panel backgrounds (darker, cleaner)
+    const panel_primary: zsdl3.Color = .{ .r = 0x0D, .g = 0x11, .b = 0x17, .a = 0xE8 }; // GitHub-dark inspired
+    const panel_secondary: zsdl3.Color = .{ .r = 0x0E, .g = 0x14, .b = 0x19, .a = 0xEE }; // slightly warmer
+    const panel_overlay: zsdl3.Color = .{ .r = 0x0F, .g = 0x13, .b = 0x18, .a = 0xD8 }; // for HUD
+
+    // Accent colors (refined)
+    const cyan: zsdl3.Color = .{ .r = 0x5A, .g = 0xD4, .b = 0xEC, .a = 0xFF }; // slightly brighter
+    const gold: zsdl3.Color = .{ .r = 0xF5, .g = 0xC6, .b = 0x42, .a = 0xFF }; // warmer
+    const orange: zsdl3.Color = .{ .r = 0xF9, .g = 0x8B, .b = 0x4D, .a = 0xFF }; // softer
+    const green: zsdl3.Color = .{ .r = 0x7C, .g = 0xDB, .b = 0xB8, .a = 0xFF }; // mint
+    const blue: zsdl3.Color = .{ .r = 0x58, .g = 0xA6, .b = 0xFF, .a = 0xFF }; // selection
+    const red: zsdl3.Color = .{ .r = 0xE8, .g = 0x5D, .b = 0x5D, .a = 0xFF }; // errors
+
+    // Text colors (better hierarchy)
+    const text_primary: zsdl3.Color = .{ .r = 0xE6, .g = 0xED, .b = 0xF3, .a = 0xFF }; // softer white
+    const text_secondary: zsdl3.Color = .{ .r = 0x8B, .g = 0x94, .b = 0x9E, .a = 0xFF }; // more muted gray
+    const text_selected: zsdl3.Color = .{ .r = 0xFF, .g = 0xF0, .b = 0xC0, .a = 0xFF }; // warmer highlight
+    const text_muted: zsdl3.Color = .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }; // info text
+
+    // Shadow (softer than current 80-90%)
+    const shadow: zsdl3.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x99 }; // 60% opacity
+
+    // Status colors
+    const success: zsdl3.Color = .{ .r = 0x89, .g = 0xDA, .b = 0xA2, .a = 0xFF };
+    const failure: zsdl3.Color = .{ .r = 0xFF, .g = 0x9B, .b = 0x8E, .a = 0xFF };
+};
+
+// Spacing system for consistent layout
+const UiSpacing = struct {
+    const line_height: f32 = 10.0; // up from 9.0 for better readability
+
+    fn shadowOffset(scale: f32) f32 {
+        return 4.0 * scale; // scale-aware (was fixed 6px)
+    }
+
+    fn borderInset(scale: f32) f32 {
+        return 3.0 * scale; // scale-aware (was fixed 3px)
+    }
+};
+
 const OverlayLine = union(enum) {
     hotkey: struct {
         action: InputBindings.HotkeyAction,
@@ -466,6 +538,10 @@ const OverlayLine = union(enum) {
 
 const pause_overlay_lines = [_]OverlayLine{
     .state_file_slot,
+    .{ .text = "ENTER SAVE MANAGER" },
+    .{ .text = "TAB OR PAD X SETTINGS" },
+    .{ .text = "PAD A SAVE MANAGER  B OR GUIDE RESUME" },
+    .{ .text = "PAD Y HELP" },
     .{ .hotkey = .{ .action = .toggle_pause, .label = "RESUME" } },
     .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM" } },
     .{ .hotkey = .{ .action = .restart_rom, .label = "SOFT RESET" } },
@@ -484,6 +560,9 @@ const pause_overlay_lines = [_]OverlayLine{
 const help_overlay_lines = [_]OverlayLine{
     .{ .hotkey = .{ .action = .toggle_help, .label = "CLOSE HELP" } },
     .{ .hotkey = .{ .action = .toggle_pause, .label = "PAUSE OR RESUME" } },
+    .{ .text = "PAUSE THEN ENTER FOR SAVE MANAGER" },
+    .{ .text = "PAUSE THEN TAB OR PAD X FOR SETTINGS" },
+    .{ .text = "PAD GUIDE PAUSES  A SELECTS  B GOES BACK" },
     .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM DIALOG" } },
     .{ .hotkey = .{ .action = .restart_rom, .label = "SOFT RESET CONSOLE" } },
     .{ .hotkey = .{ .action = .reload_rom, .label = "HARD RESET OR RELOAD ROM" } },
@@ -518,10 +597,10 @@ const DialogPathCopy = struct {
     }
 
     fn set(self: *DialogPathCopy, path: []const u8) void {
-        std.debug.assert(path.len <= self.bytes.len);
         self.* = .{};
-        @memcpy(self.bytes[0..path.len], path);
-        self.len = path.len;
+        const copy_len = @min(path.len, self.bytes.len);
+        @memcpy(self.bytes[0..copy_len], path[0..copy_len]);
+        self.len = copy_len;
     }
 };
 
@@ -657,6 +736,17 @@ const FrontendToast = struct {
     }
 };
 
+const VideoAspectMode = enum {
+    stretch,
+    four_three,
+    square_pixels,
+};
+
+const VideoScaleMode = enum {
+    fit,
+    whole_pixels,
+};
+
 const FrontendNotifications = struct {
     toast: ?*FrontendToast = null,
     frame_number: u64 = 0,
@@ -674,6 +764,8 @@ const FrontendConfig = struct {
     recent_rom_count: usize = 0,
     recent_roms: [frontend_recent_rom_limit]DialogPathCopy = [_]DialogPathCopy{.{}} ** frontend_recent_rom_limit,
     last_open_dir: DialogPathCopy = .{},
+    video_aspect_mode: VideoAspectMode = .stretch,
+    video_scale_mode: VideoScaleMode = .fit,
 
     fn parseContents(contents: []const u8) !FrontendConfig {
         var config = FrontendConfig{};
@@ -689,6 +781,10 @@ const FrontendConfig = struct {
 
             if (std.ascii.eqlIgnoreCase(lhs, "last_open_dir")) {
                 config.setLastOpenDir(rhs);
+            } else if (std.ascii.eqlIgnoreCase(lhs, "video_aspect")) {
+                config.video_aspect_mode = parseVideoAspectMode(rhs) catch config.video_aspect_mode;
+            } else if (std.ascii.eqlIgnoreCase(lhs, "video_scale")) {
+                config.video_scale_mode = parseVideoScaleMode(rhs) catch config.video_scale_mode;
             } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
                 config.appendRecentRom(rhs);
             }
@@ -713,6 +809,8 @@ const FrontendConfig = struct {
         if (self.last_open_dir.len != 0) {
             try writer.print("last_open_dir = {s}\n", .{self.last_open_dir.slice()});
         }
+        try writer.print("video_aspect = {s}\n", .{videoAspectModeName(self.video_aspect_mode)});
+        try writer.print("video_scale = {s}\n", .{videoScaleModeName(self.video_scale_mode)});
         for (self.recent_roms[0..self.recent_rom_count]) |path| {
             try writer.print("recent_rom = {s}\n", .{path.slice()});
         }
@@ -806,9 +904,17 @@ fn defaultFrontendConfigPath(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(u8, frontend_config_name);
 }
 
+fn persistFrontendConfig(frontend_config: *const FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
+    frontend_config.saveToFile(frontend_config_path) catch |err| {
+        std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
+        notifyFrontend(notifications, .failure, "FAILED TO SAVE FRONTEND CONFIG", .{});
+    };
+}
+
 const HomeMenuAction = union(enum) {
     open_rom,
     recent_rom: usize,
+    show_settings,
     show_help,
     quit,
 };
@@ -817,7 +923,7 @@ const HomeMenuState = struct {
     selected_index: usize = 0,
 
     fn itemCount(config: *const FrontendConfig) usize {
-        return config.recent_rom_count + 3;
+        return config.recent_rom_count + 4;
     }
 
     fn clamp(self: *HomeMenuState, config: *const FrontendConfig) void {
@@ -849,8 +955,52 @@ const HomeMenuState = struct {
         if (self.selected_index < recent_end) {
             return .{ .recent_rom = self.selected_index - 1 };
         }
-        if (self.selected_index == recent_end) return .show_help;
+        if (self.selected_index == recent_end) return .show_settings;
+        if (self.selected_index == recent_end + 1) return .show_help;
         return .quit;
+    }
+};
+
+const SettingsMenuAction = enum {
+    video_aspect_mode,
+    video_scale_mode,
+    fullscreen,
+    audio_render_mode,
+    performance_hud,
+    close,
+};
+
+const settings_menu_actions = [_]SettingsMenuAction{
+    .video_aspect_mode,
+    .video_scale_mode,
+    .fullscreen,
+    .audio_render_mode,
+    .performance_hud,
+    .close,
+};
+
+const SettingsMenuState = struct {
+    selected_index: usize = 0,
+
+    fn itemCount() usize {
+        return settings_menu_actions.len;
+    }
+
+    fn clamp(self: *SettingsMenuState) void {
+        if (self.selected_index >= itemCount()) self.selected_index = itemCount() - 1;
+    }
+
+    fn move(self: *SettingsMenuState, delta: isize) void {
+        const count: isize = @intCast(itemCount());
+        var next: isize = @intCast(self.selected_index);
+        next += delta;
+        while (next < 0) next += count;
+        while (next >= count) next -= count;
+        self.selected_index = @intCast(next);
+    }
+
+    fn currentAction(self: *const SettingsMenuState) SettingsMenuAction {
+        return settings_menu_actions[self.selected_index];
     }
 };
 
@@ -860,6 +1010,459 @@ const HomeScreenCommand = union(enum) {
     load_recent: usize,
     quit,
 };
+
+const FrontendGamepadCommand = union(enum) {
+    ignored,
+    consumed,
+    open_dialog,
+    load_recent: usize,
+    quit,
+};
+
+const save_manager_slot_count: usize = StateFile.persistent_state_slot_count;
+
+const SaveStatePreview = struct {
+    available: bool = false,
+    pixels: [save_state_preview_pixel_count]u32 = [_]u32{0} ** save_state_preview_pixel_count,
+
+    fn captureFromFramebuffer(framebuffer: []const u32) SaveStatePreview {
+        const source_height = framebuffer.len / Vdp.framebuffer_width;
+        if (source_height == 0) return .{};
+
+        var preview = SaveStatePreview{ .available = true };
+        for (0..save_state_preview_height) |preview_y| {
+            const source_y = if (save_state_preview_height == 1)
+                0
+            else
+                (preview_y * (source_height - 1)) / (save_state_preview_height - 1);
+            for (0..save_state_preview_width) |preview_x| {
+                const source_x = if (save_state_preview_width == 1)
+                    0
+                else
+                    (preview_x * (Vdp.framebuffer_width - 1)) / (save_state_preview_width - 1);
+                preview.pixels[preview_y * save_state_preview_width + preview_x] =
+                    framebuffer[source_y * Vdp.framebuffer_width + source_x];
+            }
+        }
+        return preview;
+    }
+
+    fn saveToFile(self: *const SaveStatePreview, path: []const u8) !void {
+        if (!self.available) return;
+
+        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        defer file.close();
+
+        var buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(&buffer);
+        const writer = &file_writer.interface;
+        try writer.writeAll(&save_state_preview_magic);
+        try writer.writeInt(u16, save_state_preview_version, .little);
+        try writer.writeInt(u16, @intCast(save_state_preview_width), .little);
+        try writer.writeInt(u16, @intCast(save_state_preview_height), .little);
+        for (self.pixels) |pixel| {
+            try writer.writeInt(u32, pixel, .little);
+        }
+        try writer.flush();
+    }
+
+    fn loadFromFile(path: []const u8) !SaveStatePreview {
+        var file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+
+        var buffer: [4096]u8 = undefined;
+        var file_reader = file.reader(&buffer);
+        const reader = &file_reader.interface;
+        const magic = try reader.takeArray(save_state_preview_magic.len);
+        if (!std.mem.eql(u8, magic, &save_state_preview_magic)) return error.InvalidStatePreview;
+
+        const version = try reader.takeInt(u16, .little);
+        if (version != save_state_preview_version) return error.UnsupportedStatePreviewVersion;
+
+        const width = try reader.takeInt(u16, .little);
+        const height = try reader.takeInt(u16, .little);
+        if (width != save_state_preview_width or height != save_state_preview_height) {
+            return error.InvalidStatePreviewDimensions;
+        }
+
+        var preview = SaveStatePreview{ .available = true };
+        for (0..save_state_preview_pixel_count) |index| {
+            preview.pixels[index] = try reader.takeInt(u32, .little);
+        }
+        return preview;
+    }
+};
+
+const SaveManagerSlotMetadata = struct {
+    path: DialogPathCopy = .{},
+    exists: bool = false,
+    size_bytes: u64 = 0,
+    modified_ns: i128 = 0,
+    preview: SaveStatePreview = .{},
+};
+
+const SaveManagerState = struct {
+    slots: [save_manager_slot_count]SaveManagerSlotMetadata = [_]SaveManagerSlotMetadata{.{}} ** save_manager_slot_count,
+
+    fn refresh(
+        self: *SaveManagerState,
+        allocator: std.mem.Allocator,
+        machine: *const Machine,
+        explicit_state_path: ?[]const u8,
+    ) !void {
+        for (0..save_manager_slot_count) |slot_index| {
+            const slot_number: u8 = @intCast(slot_index + 1);
+            const path = try resolvePersistentStatePath(allocator, machine, explicit_state_path, slot_number);
+            defer allocator.free(path);
+
+            var metadata = SaveManagerSlotMetadata{};
+            metadata.path.set(path);
+
+            const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+                error.FileNotFound => {
+                    self.slots[slot_index] = metadata;
+                    continue;
+                },
+                else => return err,
+            };
+            defer file.close();
+
+            const stat = try file.stat();
+            metadata.exists = true;
+            metadata.size_bytes = stat.size;
+            metadata.modified_ns = stat.mtime;
+            const preview_path = try resolveStatePreviewPath(allocator, path);
+            defer allocator.free(preview_path);
+            metadata.preview = SaveStatePreview.loadFromFile(preview_path) catch |err| switch (err) {
+                error.FileNotFound => .{},
+                error.EndOfStream,
+                error.InvalidStatePreview,
+                error.InvalidStatePreviewDimensions,
+                error.UnsupportedStatePreviewVersion,
+                => blk: {
+                    std.debug.print("Ignoring invalid state preview {s}: {s}\n", .{ preview_path, @errorName(err) });
+                    break :blk .{};
+                },
+                else => return err,
+            };
+            self.slots[slot_index] = metadata;
+        }
+    }
+
+    fn slotMetadata(self: *const SaveManagerState, slot: u8) *const SaveManagerSlotMetadata {
+        const normalized = StateFile.normalizePersistentStateSlot(slot);
+        return &self.slots[normalized - StateFile.default_persistent_state_slot];
+    }
+};
+
+fn previousPersistentStateSlot(slot: u8) u8 {
+    const normalized = StateFile.normalizePersistentStateSlot(slot);
+    return if (normalized == StateFile.default_persistent_state_slot)
+        StateFile.persistent_state_slot_count
+    else
+        normalized - 1;
+}
+
+fn resolveStatePreviewPath(allocator: std.mem.Allocator, state_path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}.preview", .{state_path});
+}
+
+fn saveStatePreviewFile(allocator: std.mem.Allocator, machine: *const Machine, state_path: []const u8) !void {
+    const preview_path = try resolveStatePreviewPath(allocator, state_path);
+    defer allocator.free(preview_path);
+
+    const preview = SaveStatePreview.captureFromFramebuffer(machine.framebuffer());
+    try preview.saveToFile(preview_path);
+}
+
+fn deleteStatePreviewFile(allocator: std.mem.Allocator, state_path: []const u8) !void {
+    const preview_path = try resolveStatePreviewPath(allocator, state_path);
+    defer allocator.free(preview_path);
+
+    std.fs.cwd().deleteFile(preview_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+}
+
+fn refreshSaveManager(
+    save_manager: *SaveManagerState,
+    allocator: std.mem.Allocator,
+    machine: *const Machine,
+    explicit_state_path: ?[]const u8,
+    notifications: FrontendNotifications,
+) void {
+    save_manager.refresh(allocator, machine, explicit_state_path) catch |err| {
+        std.debug.print("Failed to refresh save manager metadata: {s}\n", .{@errorName(err)});
+        notifyFrontend(notifications, .failure, "FAILED TO REFRESH SAVE MANAGER", .{});
+    };
+}
+
+fn openSaveManager(
+    ui: *FrontendUi,
+    save_manager: *SaveManagerState,
+    allocator: std.mem.Allocator,
+    machine: *const Machine,
+    explicit_state_path: ?[]const u8,
+    notifications: FrontendNotifications,
+) void {
+    ui.show_save_manager = true;
+    ui.show_help = false;
+    refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+}
+
+fn closeSaveManager(ui: *FrontendUi) void {
+    ui.show_save_manager = false;
+}
+
+fn openSettings(ui: *FrontendUi, settings: *SettingsMenuState) void {
+    ui.show_settings = true;
+    ui.show_save_manager = false;
+    ui.show_help = false;
+    settings.clamp();
+}
+
+fn closeSettings(ui: *FrontendUi) void {
+    ui.show_settings = false;
+}
+
+fn resumeFrontendGame(ui: *FrontendUi) void {
+    ui.paused = false;
+    ui.show_save_manager = false;
+    ui.show_settings = false;
+    ui.show_help = false;
+}
+
+fn deletePersistentStateFile(
+    allocator: std.mem.Allocator,
+    machine: *const Machine,
+    explicit_state_path: ?[]const u8,
+    persistent_state_slot: u8,
+    notifications: FrontendNotifications,
+) bool {
+    const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot) catch |err| {
+        std.debug.print("Failed to resolve state-file path for delete: {s}\n", .{@errorName(err)});
+        notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
+        return true;
+    };
+    defer allocator.free(state_path);
+
+    std.fs.cwd().deleteFile(state_path) catch |err| switch (err) {
+        error.FileNotFound => {
+            notifyFrontend(notifications, .info, "STATE SLOT {d} IS EMPTY", .{persistent_state_slot});
+            return true;
+        },
+        else => {
+            std.debug.print("Failed to delete state file {s}: {s}\n", .{ state_path, @errorName(err) });
+            notifyFrontend(notifications, .failure, "FAILED TO DELETE STATE FILE", .{});
+            return true;
+        },
+    };
+
+    std.debug.print("Deleted state file: {s}\n", .{state_path});
+    deleteStatePreviewFile(allocator, state_path) catch |err| {
+        std.debug.print("Failed to delete state preview {s}.preview: {s}\n", .{ state_path, @errorName(err) });
+    };
+    notifyFrontend(notifications, .success, "STATE FILE DELETED", .{});
+    return true;
+}
+
+fn handlePauseOverlayKey(
+    ui: *FrontendUi,
+    save_manager: *SaveManagerState,
+    settings: *SettingsMenuState,
+    allocator: std.mem.Allocator,
+    machine: *const Machine,
+    explicit_state_path: ?[]const u8,
+    scancode: zsdl3.Scancode,
+    pressed: bool,
+    notifications: FrontendNotifications,
+) bool {
+    if (!ui.paused or ui.show_home or ui.show_save_manager or ui.show_settings or ui.show_help or ui.dialog_active or ui.show_keyboard_editor) return false;
+    if (!pressed) return false;
+
+    switch (scancode) {
+        .@"return" => {
+            openSaveManager(ui, save_manager, allocator, machine, explicit_state_path, notifications);
+            return true;
+        },
+        .tab => {
+            openSettings(ui, settings);
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn handleSettingsKey(
+    ui: *FrontendUi,
+    settings: *SettingsMenuState,
+    frontend_config: *FrontendConfig,
+    frontend_config_path: []const u8,
+    perf: *PerformanceHudState,
+    spike_log: *PerformanceSpikeLogState,
+    core_profile_frames_remaining: *u32,
+    window: *zsdl3.Window,
+    audio: ?*AudioInit,
+    current_audio_mode: *AudioOutput.RenderMode,
+    scancode: zsdl3.Scancode,
+    pressed: bool,
+    notifications: FrontendNotifications,
+) bool {
+    if (!ui.show_settings) return false;
+    if (!pressed) return true;
+
+    switch (scancode) {
+        .escape, .tab => {
+            closeSettings(ui);
+            return true;
+        },
+        .up => {
+            settings.move(-1);
+            return true;
+        },
+        .down => {
+            settings.move(1);
+            return true;
+        },
+        .left => {
+            applySettingsAction(
+                ui,
+                settings,
+                frontend_config,
+                frontend_config_path,
+                perf,
+                spike_log,
+                core_profile_frames_remaining,
+                window,
+                audio,
+                current_audio_mode,
+                settings.currentAction(),
+                -1,
+                notifications,
+            );
+            return true;
+        },
+        .right => {
+            applySettingsAction(
+                ui,
+                settings,
+                frontend_config,
+                frontend_config_path,
+                perf,
+                spike_log,
+                core_profile_frames_remaining,
+                window,
+                audio,
+                current_audio_mode,
+                settings.currentAction(),
+                1,
+                notifications,
+            );
+            return true;
+        },
+        .@"return", .space => {
+            applySettingsAction(
+                ui,
+                settings,
+                frontend_config,
+                frontend_config_path,
+                perf,
+                spike_log,
+                core_profile_frames_remaining,
+                window,
+                audio,
+                current_audio_mode,
+                settings.currentAction(),
+                0,
+                notifications,
+            );
+            return true;
+        },
+        else => return true,
+    }
+}
+
+fn handleSaveManagerKey(
+    ui: *FrontendUi,
+    save_manager: *SaveManagerState,
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    explicit_state_path: ?[]const u8,
+    persistent_state_slot: *u8,
+    gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
+    audio: ?*AudioInit,
+    frame_counter: *u32,
+    scancode: zsdl3.Scancode,
+    hotkey_action: ?InputBindings.HotkeyAction,
+    pressed: bool,
+    notifications: FrontendNotifications,
+) bool {
+    if (!ui.show_save_manager) return false;
+    if (!pressed) return true;
+
+    switch (scancode) {
+        .escape => {
+            closeSaveManager(ui);
+            return true;
+        },
+        .up => {
+            persistent_state_slot.* = previousPersistentStateSlot(persistent_state_slot.*);
+            return true;
+        },
+        .down => {
+            persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
+            return true;
+        },
+        .@"return" => {
+            _ = handlePersistentStateAction(
+                allocator,
+                .load_state_file,
+                machine,
+                explicit_state_path,
+                persistent_state_slot,
+                audio,
+                gif_recorder,
+                wav_recorder,
+                frame_counter,
+                notifications,
+            );
+            refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            return true;
+        },
+        .delete, .backspace => {
+            _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
+            refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            return true;
+        },
+        else => {},
+    }
+
+    if (hotkey_action) |action| {
+        switch (action) {
+            .save_state_file, .load_state_file, .next_state_slot => {
+                _ = handlePersistentStateAction(
+                    allocator,
+                    action,
+                    machine,
+                    explicit_state_path,
+                    persistent_state_slot,
+                    audio,
+                    gif_recorder,
+                    wav_recorder,
+                    frame_counter,
+                    notifications,
+                );
+                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+                return true;
+            },
+            else => {},
+        }
+    }
+
+    return true;
+}
 
 const BindingEditorTarget = union(enum) {
     player_action: struct {
@@ -1006,6 +1609,108 @@ fn audioRenderModeName(mode: AudioOutput.RenderMode) []const u8 {
     };
 }
 
+fn audioRenderModeLabel(mode: AudioOutput.RenderMode) []const u8 {
+    return switch (mode) {
+        .normal => "NORMAL",
+        .ym_only => "YM ONLY",
+        .psg_only => "PSG ONLY",
+        .unfiltered_mix => "UNFILTERED MIX",
+    };
+}
+
+fn videoAspectModeName(mode: VideoAspectMode) []const u8 {
+    return switch (mode) {
+        .stretch => "stretch",
+        .four_three => "4:3",
+        .square_pixels => "square",
+    };
+}
+
+fn videoAspectModeLabel(mode: VideoAspectMode) []const u8 {
+    return switch (mode) {
+        .stretch => "STRETCH",
+        .four_three => "4:3",
+        .square_pixels => "SQUARE",
+    };
+}
+
+fn parseVideoAspectMode(value: []const u8) error{InvalidVideoAspect}!VideoAspectMode {
+    if (std.mem.eql(u8, value, "stretch")) return .stretch;
+    if (std.mem.eql(u8, value, "4:3") or std.mem.eql(u8, value, "four_three")) return .four_three;
+    if (std.mem.eql(u8, value, "square") or std.mem.eql(u8, value, "square_pixels")) return .square_pixels;
+    return error.InvalidVideoAspect;
+}
+
+fn cycleVideoAspectMode(mode: VideoAspectMode, delta: isize) VideoAspectMode {
+    const modes = [_]VideoAspectMode{ .stretch, .four_three, .square_pixels };
+    var index: isize = 0;
+    for (modes, 0..) |candidate, i| {
+        if (candidate == mode) {
+            index = @intCast(i);
+            break;
+        }
+    }
+    index += delta;
+    const count: isize = @intCast(modes.len);
+    while (index < 0) index += count;
+    while (index >= count) index -= count;
+    return modes[@intCast(index)];
+}
+
+fn videoScaleModeName(mode: VideoScaleMode) []const u8 {
+    return switch (mode) {
+        .fit => "fit",
+        .whole_pixels => "whole_pixels",
+    };
+}
+
+fn videoScaleModeLabel(mode: VideoScaleMode) []const u8 {
+    return switch (mode) {
+        .fit => "FIT",
+        .whole_pixels => "WHOLE",
+    };
+}
+
+fn parseVideoScaleMode(value: []const u8) error{InvalidVideoScale}!VideoScaleMode {
+    if (std.mem.eql(u8, value, "fit")) return .fit;
+    if (std.mem.eql(u8, value, "whole") or std.mem.eql(u8, value, "whole_pixels") or std.mem.eql(u8, value, "integer")) {
+        return .whole_pixels;
+    }
+    return error.InvalidVideoScale;
+}
+
+fn cycleVideoScaleMode(mode: VideoScaleMode, delta: isize) VideoScaleMode {
+    const modes = [_]VideoScaleMode{ .fit, .whole_pixels };
+    var index: isize = 0;
+    for (modes, 0..) |candidate, i| {
+        if (candidate == mode) {
+            index = @intCast(i);
+            break;
+        }
+    }
+    index += delta;
+    const count: isize = @intCast(modes.len);
+    while (index < 0) index += count;
+    while (index >= count) index -= count;
+    return modes[@intCast(index)];
+}
+
+fn cycleAudioRenderMode(mode: AudioOutput.RenderMode, delta: isize) AudioOutput.RenderMode {
+    const modes = [_]AudioOutput.RenderMode{ .normal, .ym_only, .psg_only, .unfiltered_mix };
+    var index: isize = 0;
+    for (modes, 0..) |candidate, i| {
+        if (candidate == mode) {
+            index = @intCast(i);
+            break;
+        }
+    }
+    index += delta;
+    const count: isize = @intCast(modes.len);
+    while (index < 0) index += count;
+    while (index >= count) index -= count;
+    return modes[@intCast(index)];
+}
+
 fn parseAudioRenderMode(value: []const u8) ParseCliError!AudioOutput.RenderMode {
     if (std.mem.eql(u8, value, "normal")) return .normal;
     if (std.mem.eql(u8, value, "ym-only") or std.mem.eql(u8, value, "ym_only")) return .ym_only;
@@ -1135,20 +1840,146 @@ fn preferredOpenRomLocation(frontend_config: *const FrontendConfig, current_rom_
 
 fn rememberLoadedRom(frontend_config: *FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications, rom_path: []const u8) void {
     frontend_config.noteLoadedRom(rom_path);
-    frontend_config.saveToFile(frontend_config_path) catch |err| {
-        std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
-        notifyFrontend(notifications, .failure, "FAILED TO SAVE FRONTEND CONFIG", .{});
+    persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+}
+
+const SDL_WINDOW_FULLSCREEN: u64 = 0x00000001;
+
+fn fullscreenEnabled(window: *zsdl3.Window) bool {
+    return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
+fn setFullscreenEnabled(window: *zsdl3.Window, enable: bool, notifications: FrontendNotifications) void {
+    _ = SDL_SetWindowFullscreen(window, enable);
+    if (enable) {
+        notifyFrontend(notifications, .info, "FULLSCREEN ON", .{});
+    } else {
+        notifyFrontend(notifications, .info, "FULLSCREEN OFF", .{});
+    }
+}
+
+fn configurePerformanceHud(
+    ui: *FrontendUi,
+    perf: *PerformanceHudState,
+    spike_log: *PerformanceSpikeLogState,
+    core_profile_frames_remaining: *u32,
+    enabled: bool,
+) void {
+    ui.show_performance_hud = enabled;
+    if (!enabled) {
+        core_profile_frames_remaining.* = 0;
+        return;
+    }
+
+    perf.reset();
+    spike_log.reset();
+    core_profile_frames_remaining.* = 0;
+}
+
+fn applyAudioRenderModeSetting(
+    audio: ?*AudioInit,
+    current_mode: *AudioOutput.RenderMode,
+    next_mode: AudioOutput.RenderMode,
+    notifications: FrontendNotifications,
+) void {
+    current_mode.* = next_mode;
+    if (audio) |a| {
+        a.output.setRenderMode(next_mode);
+    }
+    notifyFrontend(notifications, .info, "AUDIO MODE {s}", .{audioRenderModeLabel(next_mode)});
+}
+
+fn applySettingsAction(
+    ui: *FrontendUi,
+    settings: *SettingsMenuState,
+    frontend_config: *FrontendConfig,
+    frontend_config_path: []const u8,
+    perf: *PerformanceHudState,
+    spike_log: *PerformanceSpikeLogState,
+    core_profile_frames_remaining: *u32,
+    window: *zsdl3.Window,
+    audio: ?*AudioInit,
+    current_audio_mode: *AudioOutput.RenderMode,
+    action: SettingsMenuAction,
+    delta: isize,
+    notifications: FrontendNotifications,
+) void {
+    switch (action) {
+        .video_aspect_mode => {
+            const next_mode = cycleVideoAspectMode(frontend_config.video_aspect_mode, if (delta == 0) 1 else delta);
+            frontend_config.video_aspect_mode = next_mode;
+            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            notifyFrontend(notifications, .info, "ASPECT {s}", .{videoAspectModeLabel(next_mode)});
+        },
+        .video_scale_mode => {
+            const next_mode = cycleVideoScaleMode(frontend_config.video_scale_mode, if (delta == 0) 1 else delta);
+            frontend_config.video_scale_mode = next_mode;
+            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            notifyFrontend(notifications, .info, "SCALING {s}", .{videoScaleModeLabel(next_mode)});
+        },
+        .fullscreen => {
+            if (delta < 0) {
+                setFullscreenEnabled(window, false, notifications);
+            } else if (delta > 0) {
+                setFullscreenEnabled(window, true, notifications);
+            } else {
+                setFullscreenEnabled(window, !fullscreenEnabled(window), notifications);
+            }
+        },
+        .audio_render_mode => {
+            applyAudioRenderModeSetting(audio, current_audio_mode, cycleAudioRenderMode(current_audio_mode.*, if (delta == 0) 1 else delta), notifications);
+        },
+        .performance_hud => {
+            if (delta < 0) {
+                configurePerformanceHud(ui, perf, spike_log, core_profile_frames_remaining, false);
+            } else if (delta > 0) {
+                configurePerformanceHud(ui, perf, spike_log, core_profile_frames_remaining, true);
+            } else {
+                configurePerformanceHud(ui, perf, spike_log, core_profile_frames_remaining, !ui.show_performance_hud);
+            }
+            if (ui.show_performance_hud) {
+                notifyFrontend(notifications, .info, "PERF HUD ON", .{});
+            } else {
+                notifyFrontend(notifications, .info, "PERF HUD OFF", .{});
+            }
+        },
+        .close => {
+            _ = settings;
+            closeSettings(ui);
+        },
+    }
+}
+
+fn activateHomeMenuSelection(
+    ui: *FrontendUi,
+    home_menu: *const HomeMenuState,
+    settings: *SettingsMenuState,
+    config: *const FrontendConfig,
+) HomeScreenCommand {
+    return switch (home_menu.currentAction(config)) {
+        .open_rom => .open_dialog,
+        .recent_rom => |index| .{ .load_recent = index },
+        .show_settings => blk: {
+            openSettings(ui, settings);
+            break :blk .none;
+        },
+        .show_help => blk: {
+            ui.show_help = true;
+            break :blk .none;
+        },
+        .quit => .quit,
     };
 }
 
 fn handleHomeScreenKey(
     ui: *FrontendUi,
     home_menu: *HomeMenuState,
+    settings: *SettingsMenuState,
     config: *const FrontendConfig,
     scancode: zsdl3.Scancode,
     pressed: bool,
 ) HomeScreenCommand {
-    if (!ui.show_home or ui.dialog_active or ui.show_keyboard_editor or ui.show_help) return .none;
+    if (!ui.show_home or ui.dialog_active or ui.show_keyboard_editor or ui.show_settings or ui.show_help) return .none;
     if (!pressed) return .none;
 
     switch (scancode) {
@@ -1160,17 +1991,385 @@ fn handleHomeScreenKey(
             home_menu.move(1, config);
             return .none;
         },
-        .@"return" => return switch (home_menu.currentAction(config)) {
-            .open_rom => .open_dialog,
-            .recent_rom => |index| .{ .load_recent = index },
-            .show_help => blk: {
-                ui.show_help = true;
-                break :blk .none;
-            },
-            .quit => .quit,
-        },
+        .@"return" => return activateHomeMenuSelection(ui, home_menu, settings, config),
         else => return .none,
     }
+}
+
+fn frontendGamepadCommandFromHome(command: HomeScreenCommand) FrontendGamepadCommand {
+    return switch (command) {
+        .none => .consumed,
+        .open_dialog => .open_dialog,
+        .load_recent => |index| .{ .load_recent = index },
+        .quit => .quit,
+    };
+}
+
+fn handleHomeScreenGamepadInput(
+    ui: *FrontendUi,
+    home_menu: *HomeMenuState,
+    settings: *SettingsMenuState,
+    config: *const FrontendConfig,
+    input: InputBindings.GamepadInput,
+    pressed: bool,
+) FrontendGamepadCommand {
+    if (!ui.show_home or ui.dialog_active or ui.show_keyboard_editor or ui.show_settings or ui.show_help) return .ignored;
+
+    return switch (input) {
+        .dpad_up => blk: {
+            if (pressed) home_menu.move(-1, config);
+            break :blk .consumed;
+        },
+        .dpad_down => blk: {
+            if (pressed) home_menu.move(1, config);
+            break :blk .consumed;
+        },
+        .south, .start => blk: {
+            if (!pressed) break :blk .consumed;
+            break :blk frontendGamepadCommandFromHome(activateHomeMenuSelection(ui, home_menu, settings, config));
+        },
+        .west => blk: {
+            if (pressed) openSettings(ui, settings);
+            break :blk .consumed;
+        },
+        .north => blk: {
+            if (pressed) ui.show_help = true;
+            break :blk .consumed;
+        },
+        else => .ignored,
+    };
+}
+
+fn handleHelpOverlayGamepadInput(
+    ui: *FrontendUi,
+    input: InputBindings.GamepadInput,
+    pressed: bool,
+) FrontendGamepadCommand {
+    if (!ui.show_help) return .ignored;
+
+    return switch (input) {
+        .south, .east, .back, .start => blk: {
+            if (pressed) ui.show_help = false;
+            break :blk .consumed;
+        },
+        .guide => blk: {
+            if (pressed) {
+                if (ui.show_home) {
+                    ui.show_help = false;
+                } else {
+                    resumeFrontendGame(ui);
+                }
+            }
+            break :blk .consumed;
+        },
+        else => .ignored,
+    };
+}
+
+fn handlePauseOverlayGamepadInput(
+    ui: *FrontendUi,
+    save_manager: *SaveManagerState,
+    settings: *SettingsMenuState,
+    allocator: std.mem.Allocator,
+    machine: *const Machine,
+    explicit_state_path: ?[]const u8,
+    input: InputBindings.GamepadInput,
+    pressed: bool,
+    notifications: FrontendNotifications,
+) FrontendGamepadCommand {
+    if (!ui.paused or ui.show_home or ui.show_save_manager or ui.show_settings or ui.show_help or ui.dialog_active or ui.show_keyboard_editor) {
+        return .ignored;
+    }
+
+    return switch (input) {
+        .south => blk: {
+            if (pressed) openSaveManager(ui, save_manager, allocator, machine, explicit_state_path, notifications);
+            break :blk .consumed;
+        },
+        .west => blk: {
+            if (pressed) openSettings(ui, settings);
+            break :blk .consumed;
+        },
+        .north => blk: {
+            if (pressed) ui.show_help = true;
+            break :blk .consumed;
+        },
+        .east, .back, .start, .guide => blk: {
+            if (pressed) resumeFrontendGame(ui);
+            break :blk .consumed;
+        },
+        else => .ignored,
+    };
+}
+
+fn handleSettingsGamepadInput(
+    ui: *FrontendUi,
+    settings: *SettingsMenuState,
+    frontend_config: *FrontendConfig,
+    frontend_config_path: []const u8,
+    perf: *PerformanceHudState,
+    spike_log: *PerformanceSpikeLogState,
+    core_profile_frames_remaining: *u32,
+    window: *zsdl3.Window,
+    audio: ?*AudioInit,
+    current_audio_mode: *AudioOutput.RenderMode,
+    input: InputBindings.GamepadInput,
+    pressed: bool,
+    notifications: FrontendNotifications,
+) FrontendGamepadCommand {
+    if (!ui.show_settings) return .ignored;
+
+    return switch (input) {
+        .dpad_up => blk: {
+            if (pressed) settings.move(-1);
+            break :blk .consumed;
+        },
+        .dpad_down => blk: {
+            if (pressed) settings.move(1);
+            break :blk .consumed;
+        },
+        .dpad_left, .left_shoulder => blk: {
+            if (pressed) applySettingsAction(
+                ui,
+                settings,
+                frontend_config,
+                frontend_config_path,
+                perf,
+                spike_log,
+                core_profile_frames_remaining,
+                window,
+                audio,
+                current_audio_mode,
+                settings.currentAction(),
+                -1,
+                notifications,
+            );
+            break :blk .consumed;
+        },
+        .dpad_right, .right_shoulder => blk: {
+            if (pressed) applySettingsAction(
+                ui,
+                settings,
+                frontend_config,
+                frontend_config_path,
+                perf,
+                spike_log,
+                core_profile_frames_remaining,
+                window,
+                audio,
+                current_audio_mode,
+                settings.currentAction(),
+                1,
+                notifications,
+            );
+            break :blk .consumed;
+        },
+        .south, .start => blk: {
+            if (pressed) applySettingsAction(
+                ui,
+                settings,
+                frontend_config,
+                frontend_config_path,
+                perf,
+                spike_log,
+                core_profile_frames_remaining,
+                window,
+                audio,
+                current_audio_mode,
+                settings.currentAction(),
+                0,
+                notifications,
+            );
+            break :blk .consumed;
+        },
+        .east, .back => blk: {
+            if (pressed) closeSettings(ui);
+            break :blk .consumed;
+        },
+        .guide => blk: {
+            if (pressed) {
+                if (ui.show_home) {
+                    closeSettings(ui);
+                } else {
+                    resumeFrontendGame(ui);
+                }
+            }
+            break :blk .consumed;
+        },
+        else => .ignored,
+    };
+}
+
+fn handleSaveManagerGamepadInput(
+    ui: *FrontendUi,
+    save_manager: *SaveManagerState,
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    explicit_state_path: ?[]const u8,
+    persistent_state_slot: *u8,
+    gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
+    audio: ?*AudioInit,
+    frame_counter: *u32,
+    input: InputBindings.GamepadInput,
+    pressed: bool,
+    notifications: FrontendNotifications,
+) FrontendGamepadCommand {
+    if (!ui.show_save_manager) return .ignored;
+
+    return switch (input) {
+        .east, .back => blk: {
+            if (pressed) closeSaveManager(ui);
+            break :blk .consumed;
+        },
+        .guide => blk: {
+            if (pressed) resumeFrontendGame(ui);
+            break :blk .consumed;
+        },
+        .dpad_up, .dpad_left, .left_shoulder => blk: {
+            if (pressed) persistent_state_slot.* = previousPersistentStateSlot(persistent_state_slot.*);
+            break :blk .consumed;
+        },
+        .dpad_down, .dpad_right, .right_shoulder => blk: {
+            if (pressed) persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
+            break :blk .consumed;
+        },
+        .south, .start => blk: {
+            if (pressed) {
+                _ = handlePersistentStateAction(
+                    allocator,
+                    .load_state_file,
+                    machine,
+                    explicit_state_path,
+                    persistent_state_slot,
+                    audio,
+                    gif_recorder,
+                    wav_recorder,
+                    frame_counter,
+                    notifications,
+                );
+                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            }
+            break :blk .consumed;
+        },
+        .west => blk: {
+            if (pressed) {
+                _ = handlePersistentStateAction(
+                    allocator,
+                    .save_state_file,
+                    machine,
+                    explicit_state_path,
+                    persistent_state_slot,
+                    audio,
+                    gif_recorder,
+                    wav_recorder,
+                    frame_counter,
+                    notifications,
+                );
+                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            }
+            break :blk .consumed;
+        },
+        .north => blk: {
+            if (pressed) {
+                _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
+                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            }
+            break :blk .consumed;
+        },
+        else => .ignored,
+    };
+}
+
+fn handleFrontendGamepadInput(
+    ui: *FrontendUi,
+    home_menu: *HomeMenuState,
+    settings: *SettingsMenuState,
+    config: *FrontendConfig,
+    frontend_config_path: []const u8,
+    save_manager: *SaveManagerState,
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    explicit_state_path: ?[]const u8,
+    persistent_state_slot: *u8,
+    gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
+    audio: ?*AudioInit,
+    current_audio_mode: *AudioOutput.RenderMode,
+    perf: *PerformanceHudState,
+    spike_log: *PerformanceSpikeLogState,
+    core_profile_frames_remaining: *u32,
+    window: *zsdl3.Window,
+    frame_counter: *u32,
+    input: InputBindings.GamepadInput,
+    pressed: bool,
+    notifications: FrontendNotifications,
+) FrontendGamepadCommand {
+    const settings_result = handleSettingsGamepadInput(
+        ui,
+        settings,
+        config,
+        frontend_config_path,
+        perf,
+        spike_log,
+        core_profile_frames_remaining,
+        window,
+        audio,
+        current_audio_mode,
+        input,
+        pressed,
+        notifications,
+    );
+    if (settings_result != .ignored) return settings_result;
+
+    const save_result = handleSaveManagerGamepadInput(
+        ui,
+        save_manager,
+        allocator,
+        machine,
+        explicit_state_path,
+        persistent_state_slot,
+        gif_recorder,
+        wav_recorder,
+        audio,
+        frame_counter,
+        input,
+        pressed,
+        notifications,
+    );
+    if (save_result != .ignored) return save_result;
+
+    const help_result = handleHelpOverlayGamepadInput(ui, input, pressed);
+    if (help_result != .ignored) return help_result;
+
+    const home_result = handleHomeScreenGamepadInput(ui, home_menu, settings, config, input, pressed);
+    if (home_result != .ignored) return home_result;
+
+    const pause_result = handlePauseOverlayGamepadInput(
+        ui,
+        save_manager,
+        settings,
+        allocator,
+        machine,
+        explicit_state_path,
+        input,
+        pressed,
+        notifications,
+    );
+    if (pause_result != .ignored) return pause_result;
+
+    if (input == .guide and !ui.show_home and !ui.dialog_active and !ui.show_keyboard_editor) {
+        if (pressed) {
+            if (ui.paused or ui.show_save_manager or ui.show_help) {
+                resumeFrontendGame(ui);
+            } else {
+                ui.paused = true;
+            }
+        }
+        return .consumed;
+    }
+
+    return .ignored;
 }
 
 fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: *zsdl3.Window, default_location: ?[]const u8) bool {
@@ -1187,6 +2386,149 @@ fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: 
         false,
     );
     return true;
+}
+
+const FrontendEventDisposition = enum {
+    unhandled,
+    handled,
+    quit,
+};
+
+fn dispatchHomeScreenCommand(
+    command: HomeScreenCommand,
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    input_bindings: *InputBindings.Bindings,
+    timing_mode: TimingModeOption,
+    audio: ?*AudioInit,
+    gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
+    frame_counter: *u32,
+    frontend_config: *FrontendConfig,
+    frontend_config_path: []const u8,
+    home_menu: *HomeMenuState,
+    current_rom_path: *DialogPathCopy,
+    ui: *FrontendUi,
+    dialog_state: *FileDialogState,
+    window: *zsdl3.Window,
+    toast: *FrontendToast,
+    frontend_frame_counter: u64,
+) FrontendEventDisposition {
+    switch (command) {
+        .none => return .unhandled,
+        .open_dialog => {
+            _ = launchOpenRomDialog(
+                dialog_state,
+                ui,
+                window,
+                preferredOpenRomLocation(frontend_config, current_rom_path),
+            );
+            return .handled;
+        },
+        .load_recent => |index| {
+            const notifications = FrontendNotifications{
+                .toast = toast,
+                .frame_number = frontend_frame_counter,
+            };
+            var selected_path = DialogPathCopy{};
+            selected_path.set(frontend_config.recentRom(index));
+            loadRomIntoMachine(
+                allocator,
+                machine,
+                input_bindings,
+                timing_mode,
+                audio,
+                gif_recorder,
+                wav_recorder,
+                frame_counter,
+                selected_path.slice(),
+                notifications,
+            ) catch |err| {
+                std.debug.print("Failed to load recent ROM {s}: {}\n", .{ selected_path.slice(), err });
+                notifyFrontend(notifications, .failure, "FAILED TO LOAD {s}", .{std.fs.path.basename(selected_path.slice())});
+                if (err == error.FileNotFound) {
+                    frontend_config.removeRecentRom(index);
+                    persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+                    home_menu.clamp(frontend_config);
+                }
+                return .handled;
+            };
+            current_rom_path.* = selected_path;
+            rememberLoadedRom(frontend_config, frontend_config_path, notifications, selected_path.slice());
+            home_menu.clamp(frontend_config);
+            ui.show_home = false;
+            ui.paused = false;
+            return .handled;
+        },
+        .quit => return .quit,
+    }
+}
+
+fn dispatchFrontendGamepadCommand(
+    command: FrontendGamepadCommand,
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    input_bindings: *InputBindings.Bindings,
+    timing_mode: TimingModeOption,
+    audio: ?*AudioInit,
+    gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
+    frame_counter: *u32,
+    frontend_config: *FrontendConfig,
+    frontend_config_path: []const u8,
+    home_menu: *HomeMenuState,
+    current_rom_path: *DialogPathCopy,
+    ui: *FrontendUi,
+    dialog_state: *FileDialogState,
+    window: *zsdl3.Window,
+    toast: *FrontendToast,
+    frontend_frame_counter: u64,
+) FrontendEventDisposition {
+    return switch (command) {
+        .ignored => .unhandled,
+        .consumed => .handled,
+        .open_dialog => dispatchHomeScreenCommand(
+            .open_dialog,
+            allocator,
+            machine,
+            input_bindings,
+            timing_mode,
+            audio,
+            gif_recorder,
+            wav_recorder,
+            frame_counter,
+            frontend_config,
+            frontend_config_path,
+            home_menu,
+            current_rom_path,
+            ui,
+            dialog_state,
+            window,
+            toast,
+            frontend_frame_counter,
+        ),
+        .load_recent => |index| dispatchHomeScreenCommand(
+            .{ .load_recent = index },
+            allocator,
+            machine,
+            input_bindings,
+            timing_mode,
+            audio,
+            gif_recorder,
+            wav_recorder,
+            frame_counter,
+            frontend_config,
+            frontend_config_path,
+            home_menu,
+            current_rom_path,
+            ui,
+            dialog_state,
+            window,
+            toast,
+            frontend_frame_counter,
+        ),
+        .quit => .quit,
+    };
 }
 
 fn resetAudioOutput(audio: *AudioInit, wav_recorder: ?*WavRecorder) void {
@@ -1841,6 +3183,9 @@ fn handlePersistentStateAction(
                 notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
                 return true;
             };
+            saveStatePreviewFile(allocator, machine, state_path) catch |err| {
+                std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
+            };
             std.debug.print("Saved state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE SAVED", .{});
             return true;
@@ -2042,6 +3387,64 @@ fn applyInputTransitions(
     }
 }
 
+fn handleFrontendGamepadTransitions(
+    ui: *FrontendUi,
+    home_menu: *HomeMenuState,
+    settings: *SettingsMenuState,
+    config: *FrontendConfig,
+    frontend_config_path: []const u8,
+    save_manager: *SaveManagerState,
+    allocator: std.mem.Allocator,
+    machine: *Machine,
+    explicit_state_path: ?[]const u8,
+    persistent_state_slot: *u8,
+    gif_recorder: *?GifRecorder,
+    wav_recorder: *?WavRecorder,
+    audio: ?*AudioInit,
+    current_audio_mode: *AudioOutput.RenderMode,
+    perf: *PerformanceHudState,
+    spike_log: *PerformanceSpikeLogState,
+    core_profile_frames_remaining: *u32,
+    window: *zsdl3.Window,
+    frame_counter: *u32,
+    notifications: FrontendNotifications,
+    transitions: anytype,
+) FrontendGamepadCommand {
+    for (transitions) |maybe_transition| {
+        if (maybe_transition) |transition| {
+            const result = handleFrontendGamepadInput(
+                ui,
+                home_menu,
+                settings,
+                config,
+                frontend_config_path,
+                save_manager,
+                allocator,
+                machine,
+                explicit_state_path,
+                persistent_state_slot,
+                gif_recorder,
+                wav_recorder,
+                audio,
+                current_audio_mode,
+                perf,
+                spike_log,
+                core_profile_frames_remaining,
+                window,
+                frame_counter,
+                transition.input,
+                transition.pressed,
+                notifications,
+            );
+            switch (result) {
+                .ignored => {},
+                else => return result,
+            }
+        }
+    }
+    return .ignored;
+}
+
 fn findGamepadPort(gamepads: *const [InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) ?usize {
     for (gamepads, 0..) |slot, port| {
         if (slot) |assigned| {
@@ -2194,6 +3597,44 @@ fn overlayScale(viewport: zsdl3.Rect) f32 {
     return 3.0;
 }
 
+fn computeVideoDestinationRect(
+    viewport: zsdl3.Rect,
+    source_height: i32,
+    aspect_mode: VideoAspectMode,
+    scale_mode: VideoScaleMode,
+) zsdl3.FRect {
+    const viewport_w = @as(f32, @floatFromInt(@max(viewport.w, 0)));
+    const viewport_h = @as(f32, @floatFromInt(@max(viewport.h, 0)));
+    if (viewport_w == 0 or viewport_h == 0 or source_height <= 0) {
+        return .{ .x = 0, .y = 0, .w = viewport_w, .h = viewport_h };
+    }
+    if (aspect_mode == .stretch) {
+        return .{ .x = 0, .y = 0, .w = viewport_w, .h = viewport_h };
+    }
+
+    const nominal_h = @as(f32, @floatFromInt(source_height));
+    const nominal_w = switch (aspect_mode) {
+        .stretch => unreachable,
+        .four_three => nominal_h * (4.0 / 3.0),
+        .square_pixels => @as(f32, @floatFromInt(Vdp.framebuffer_width)),
+    };
+
+    var scale = @min(viewport_w / nominal_w, viewport_h / nominal_h);
+    if (scale_mode == .whole_pixels and scale >= 1.0) {
+        const whole = @floor(scale);
+        if (whole >= 1.0) scale = whole;
+    }
+
+    const dest_w = nominal_w * scale;
+    const dest_h = nominal_h * scale;
+    return .{
+        .x = (viewport_w - dest_w) * 0.5,
+        .y = (viewport_h - dest_h) * 0.5,
+        .w = dest_w,
+        .h = dest_h,
+    };
+}
+
 fn overlayGlyphRows(ch: u8) [7]u8 {
     const glyph = std.ascii.toUpper(ch);
     return switch (glyph) {
@@ -2241,6 +3682,22 @@ fn overlayGlyphRows(ch: u8) [7]u8 {
         '+' => .{ 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 },
         '_' => .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F },
         '?' => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },
+        // Icon glyphs for UI elements
+        '>' => .{ 0x00, 0x08, 0x04, 0x02, 0x04, 0x08, 0x00 }, // right arrow (selected menu item)
+        '<' => .{ 0x00, 0x02, 0x04, 0x08, 0x04, 0x02, 0x00 }, // left arrow (back navigation)
+        '^' => .{ 0x00, 0x04, 0x0E, 0x15, 0x04, 0x04, 0x00 }, // up arrow (scroll up)
+        '~' => .{ 0x00, 0x04, 0x04, 0x15, 0x0E, 0x04, 0x00 }, // down arrow (scroll down)
+        '@' => .{ 0x00, 0x00, 0x01, 0x02, 0x14, 0x08, 0x00 }, // checkmark (success/enabled)
+        '#' => .{ 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x00 }, // X mark (failure/disabled)
+        '$' => .{ 0x00, 0x10, 0x18, 0x1C, 0x18, 0x10, 0x00 }, // play (resume game)
+        '%' => .{ 0x00, 0x1B, 0x1B, 0x1B, 0x1B, 0x1B, 0x00 }, // pause (paused state)
+        '[' => .{ 0x1C, 0x1F, 0x11, 0x11, 0x11, 0x1F, 0x00 }, // folder (open ROM)
+        ']' => .{ 0x1F, 0x11, 0x1F, 0x11, 0x11, 0x11, 0x1F }, // disk (save state)
+        '*' => .{ 0x0A, 0x1F, 0x15, 0x0E, 0x15, 0x1F, 0x0A }, // gear (settings)
+        '(' => .{ 0x0E, 0x11, 0x02, 0x04, 0x00, 0x04, 0x0E }, // help (help/info) - alternative to ?
+        '{' => .{ 0x00, 0x0E, 0x1F, 0x1F, 0x0A, 0x00, 0x00 }, // controller (input config)
+        '|' => .{ 0x00, 0x00, 0x0E, 0x0E, 0x0E, 0x00, 0x00 }, // bullet (list item)
+        '!' => .{ 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 }, // exclamation (warning)
         else => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },
     };
 }
@@ -2396,12 +3853,14 @@ fn renderOverlayPanel(
     rect: zsdl3.FRect,
     fill: zsdl3.Color,
     border: zsdl3.Color,
-    shadow: zsdl3.Color,
+    scale: f32,
 ) !void {
-    try zsdl3.setRenderDrawColor(renderer, shadow);
+    const shadow_offset = UiSpacing.shadowOffset(scale);
+    const border_inset = UiSpacing.borderInset(scale);
+    try zsdl3.setRenderDrawColor(renderer, UiColors.shadow);
     try zsdl3.renderFillRect(renderer, .{
-        .x = rect.x + 6.0,
-        .y = rect.y + 6.0,
+        .x = rect.x + shadow_offset,
+        .y = rect.y + shadow_offset,
         .w = rect.w,
         .h = rect.h,
     });
@@ -2410,10 +3869,10 @@ fn renderOverlayPanel(
     try zsdl3.setRenderDrawColor(renderer, border);
     try zsdl3.renderRect(renderer, rect);
     try zsdl3.renderRect(renderer, .{
-        .x = rect.x + 3.0,
-        .y = rect.y + 3.0,
-        .w = rect.w - 6.0,
-        .h = rect.h - 6.0,
+        .x = rect.x + border_inset,
+        .y = rect.y + border_inset,
+        .w = rect.w - border_inset * 2.0,
+        .h = rect.h - border_inset * 2.0,
     });
 }
 
@@ -2448,9 +3907,9 @@ fn renderPauseOverlay(
     try renderOverlayPanel(
         renderer,
         panel,
-        .{ .r = 0x10, .g = 0x13, .b = 0x1A, .a = 0xD8 },
-        .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
-        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x80 },
+        UiColors.panel_primary,
+        UiColors.gold,
+        scale,
     );
 
     try drawOverlayText(
@@ -2458,7 +3917,7 @@ fn renderPauseOverlay(
         panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
+        UiColors.gold,
         title,
     );
 
@@ -2469,7 +3928,7 @@ fn renderPauseOverlay(
             panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
             y,
             scale,
-            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+            UiColors.text_primary,
             line,
         );
         y += line_height;
@@ -2507,9 +3966,9 @@ fn renderHelpOverlay(
     try renderOverlayPanel(
         renderer,
         panel,
-        .{ .r = 0x0C, .g = 0x10, .b = 0x16, .a = 0xE4 },
-        .{ .r = 0x79, .g = 0xD2, .b = 0xB2, .a = 0xFF },
-        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x88 },
+        UiColors.panel_primary,
+        UiColors.green,
+        scale,
     );
 
     try drawOverlayText(
@@ -2517,7 +3976,7 @@ fn renderHelpOverlay(
         panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        .{ .r = 0x79, .g = 0xD2, .b = 0xB2, .a = 0xFF },
+        UiColors.green,
         title,
     );
 
@@ -2525,12 +3984,12 @@ fn renderHelpOverlay(
     for (help_overlay_lines, lines) |line_spec, line| {
         const color: zsdl3.Color = switch (line_spec) {
             .blank => .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-            .hotkey => .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
+            .hotkey => UiColors.gold,
             .text => |text| if (std.mem.startsWith(u8, text, "HELP"))
-                .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }
+                UiColors.text_muted
             else
-                .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
-            else => .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+                UiColors.text_primary,
+            else => UiColors.text_primary,
         };
 
         if (line.len != 0) {
@@ -2553,7 +4012,7 @@ fn formatHomeMenuItem(
     action: HomeMenuAction,
     selected: bool,
 ) ![]const u8 {
-    const prefix = if (selected) "+ " else "- ";
+    const prefix = if (selected) "> " else "| ";
     return switch (action) {
         .open_rom => std.fmt.bufPrint(buffer, "{s}OPEN ROM", .{prefix}),
         .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}RECENT {d} {s}", .{
@@ -2561,6 +4020,7 @@ fn formatHomeMenuItem(
             index + 1,
             std.fs.path.basename(config.recentRom(index)),
         }),
+        .show_settings => std.fmt.bufPrint(buffer, "{s}SETTINGS", .{prefix}),
         .show_help => std.fmt.bufPrint(buffer, "{s}HELP AND HOTKEYS", .{prefix}),
         .quit => std.fmt.bufPrint(buffer, "{s}QUIT", .{prefix}),
     };
@@ -2572,7 +4032,8 @@ fn homeMenuActionForIndex(selected_index: usize, config: *const FrontendConfig) 
     if (selected_index < recent_end) {
         return .{ .recent_rom = selected_index - 1 };
     }
-    if (selected_index == recent_end) return .show_help;
+    if (selected_index == recent_end) return .show_settings;
+    if (selected_index == recent_end + 1) return .show_help;
     return .quit;
 }
 
@@ -2585,7 +4046,7 @@ fn renderHomeOverlay(
     const title = "SANDOPOLIS";
     const subtitle = "OPEN A ROM TO START";
     const empty_recent_note = "NO RECENT ROMS YET";
-    const footer_a = "UP DOWN MOVE  ENTER SELECT";
+    const footer_a = "DPAD MOVE  A OR START SELECT";
     const footer_b = "F3 OPEN DIALOG  F1 HELP  ESC QUIT";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
@@ -2625,9 +4086,9 @@ fn renderHomeOverlay(
     try renderOverlayPanel(
         renderer,
         panel,
-        .{ .r = 0x0C, .g = 0x14, .b = 0x1E, .a = 0xEA },
-        .{ .r = 0x57, .g = 0xCC, .b = 0xE2, .a = 0xFF },
-        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x90 },
+        UiColors.panel_secondary,
+        UiColors.cyan,
+        scale,
     );
 
     try drawOverlayText(
@@ -2635,32 +4096,32 @@ fn renderHomeOverlay(
         panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        .{ .r = 0x57, .g = 0xCC, .b = 0xE2, .a = 0xFF },
+        UiColors.cyan,
         title,
     );
 
     const text_x = panel.x + padding;
     var y = panel.y + padding + 13.0 * scale;
-    try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF }, subtitle);
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_primary, subtitle);
     y += line_height;
 
     if (note_count != 0) {
-        try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }, empty_recent_note);
+        try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, empty_recent_note);
         y += line_height;
     }
 
     for (menu_lines[0..item_count], 0..) |line, index| {
         const color: zsdl3.Color = if (index == home_menu.selected_index)
-            .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF }
+            UiColors.gold
         else
-            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF };
+            UiColors.text_primary;
         try drawOverlayText(renderer, text_x, y, scale, color, line);
         y += line_height;
     }
 
-    try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }, footer_a);
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, footer_a);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }, footer_b);
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, footer_b);
 }
 
 fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast: *const FrontendToast, frame_number: u64) !void {
@@ -2684,16 +4145,16 @@ fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast: *c
     };
     const toast_colors: ToastPalette = switch (toast.style) {
         .info => .{
-            .fill = .{ .r = 0x10, .g = 0x13, .b = 0x1A, .a = 0xE8 },
-            .border = .{ .r = 0xF2, .g = 0xD0, .b = 0x5B, .a = 0xFF },
+            .fill = UiColors.panel_primary,
+            .border = UiColors.gold,
         },
         .success => .{
             .fill = .{ .r = 0x0D, .g = 0x18, .b = 0x12, .a = 0xE8 },
-            .border = .{ .r = 0x79, .g = 0xD2, .b = 0xB2, .a = 0xFF },
+            .border = UiColors.green,
         },
         .failure => .{
             .fill = .{ .r = 0x1B, .g = 0x0F, .b = 0x11, .a = 0xEC },
-            .border = .{ .r = 0xE6, .g = 0x7E, .b = 0x22, .a = 0xFF },
+            .border = UiColors.orange,
         },
     };
 
@@ -2702,15 +4163,289 @@ fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast: *c
         panel,
         toast_colors.fill,
         toast_colors.border,
-        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x88 },
+        scale,
     );
     try drawOverlayText(
         renderer,
         panel.x + padding,
         panel.y + padding,
         scale,
-        .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+        UiColors.text_primary,
         text,
+    );
+}
+
+fn formatTimestampUtc(buffer: []u8, ns: i128) ![]const u8 {
+    if (ns <= 0) return std.fmt.bufPrint(buffer, "UNKNOWN", .{});
+
+    const seconds: u64 = @intCast(@divFloor(ns, std.time.ns_per_s));
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds };
+    const epoch_day = epoch_seconds.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+
+    return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} UTC", .{
+        year_day.year,
+        @intFromEnum(month_day.month) + 1,
+        month_day.day_index + 1,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+    });
+}
+
+fn formatSaveManagerSlotLine(
+    buffer: []u8,
+    metadata: *const SaveManagerSlotMetadata,
+    slot: u8,
+    selected: bool,
+) ![]const u8 {
+    const prefix = if (selected) "> " else "| ";
+    if (!metadata.exists) {
+        return std.fmt.bufPrint(buffer, "{s}SLOT {d} EMPTY", .{ prefix, slot });
+    }
+
+    var time_buffer: [32]u8 = undefined;
+    const modified_text = try formatTimestampUtc(time_buffer[0..], metadata.modified_ns);
+    const size_kib = (metadata.size_bytes + 1023) / 1024;
+    return std.fmt.bufPrint(buffer, "{s}SLOT {d} {s} {d}KB", .{
+        prefix,
+        slot,
+        modified_text,
+        size_kib,
+    });
+}
+
+fn formatSaveManagerPathLine(buffer: []u8, metadata: *const SaveManagerSlotMetadata) ![]const u8 {
+    return std.fmt.bufPrint(buffer, "FILE {s}", .{std.fs.path.basename(metadata.path.slice())});
+}
+
+fn renderSaveManagerPreview(
+    renderer: *zsdl3.Renderer,
+    frame: zsdl3.FRect,
+    metadata: *const SaveManagerSlotMetadata,
+    scale: f32,
+) !void {
+    try renderOverlayPanel(
+        renderer,
+        frame,
+        .{ .r = 0x08, .g = 0x0E, .b = 0x13, .a = 0xF0 },
+        UiColors.cyan,
+        scale,
+    );
+
+    const preview_rect = zsdl3.FRect{
+        .x = frame.x + 3.0 * scale,
+        .y = frame.y + 3.0 * scale,
+        .w = frame.w - 6.0 * scale,
+        .h = frame.h - 6.0 * scale,
+    };
+
+    if (metadata.preview.available) {
+        const preview_texture = try zsdl3.createTexture(
+            renderer,
+            zsdl3.PixelFormatEnum.argb8888,
+            zsdl3.TextureAccess.streaming,
+            @intCast(save_state_preview_width),
+            @intCast(save_state_preview_height),
+        );
+        defer preview_texture.destroy();
+
+        _ = SDL_UpdateTexture(
+            preview_texture,
+            null,
+            @ptrCast(metadata.preview.pixels[0..].ptr),
+            @intCast(save_state_preview_width * @sizeOf(u32)),
+        );
+        try zsdl3.renderTexture(renderer, preview_texture, null, &preview_rect);
+        return;
+    }
+
+    const lines = if (metadata.exists)
+        [_][]const u8{
+            "NO PREVIEW",
+            "SAVE AGAIN TO",
+            "CAPTURE SCREEN",
+        }
+    else
+        [_][]const u8{
+            "EMPTY SLOT",
+            "SAVE HERE TO",
+            "ADD PREVIEW",
+        };
+    const line_height = 9.0 * scale;
+    var y = frame.y + (frame.h - line_height * @as(f32, @floatFromInt(lines.len))) * 0.5;
+    for (lines) |line| {
+        try drawOverlayText(
+            renderer,
+            frame.x + (frame.w - overlayTextWidth(line, scale)) * 0.5,
+            y,
+            scale,
+            UiColors.text_muted,
+            line,
+        );
+        y += line_height;
+    }
+}
+
+fn renderSaveManagerOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    save_manager: *const SaveManagerState,
+    persistent_state_slot: u8,
+) !void {
+    const title = "SAVE MANAGER";
+    const controls_a = "DPAD OR LB RB SLOT  A LOAD  X SAVE";
+    const controls_b = "B CLOSE  Y DELETE  F8 F9 DEL ALSO WORK";
+    const scale = overlayScale(viewport);
+    const padding = 12.0 * scale;
+    const summary_height = 9.0 * scale;
+    const path_height = 8.0 * scale;
+    const row_gap = 4.0 * scale;
+    const preview_gap = 12.0 * scale;
+    const preview_width = @as(f32, @floatFromInt(save_state_preview_width)) * scale;
+    const preview_height = @as(f32, @floatFromInt(save_state_preview_height)) * scale;
+    const preview_frame_width = preview_width + 6.0 * scale;
+    const preview_frame_height = preview_height + 6.0 * scale;
+    const preview_title = "SELECTED SLOT PREVIEW";
+
+    var summary_buffers: [save_manager_slot_count][96]u8 = undefined;
+    var path_buffers: [save_manager_slot_count][96]u8 = undefined;
+    var summary_lines: [save_manager_slot_count][]const u8 = undefined;
+    var path_lines: [save_manager_slot_count][]const u8 = undefined;
+    var list_width = overlayTextWidth(controls_a, scale);
+    list_width = @max(list_width, overlayTextWidth(controls_b, scale));
+    const selected_metadata = save_manager.slotMetadata(persistent_state_slot);
+    const preview_note = if (selected_metadata.preview.available)
+        "CAPTURED ON SAVE"
+    else if (selected_metadata.exists)
+        "NO PREVIEW SIDECAR"
+    else
+        "SAVE THIS SLOT TO CREATE ONE";
+    const preview_name = std.fs.path.basename(selected_metadata.path.slice());
+    var preview_width_required = overlayTextWidth(preview_title, scale);
+    preview_width_required = @max(preview_width_required, preview_frame_width);
+    preview_width_required = @max(preview_width_required, overlayTextWidth(preview_note, scale));
+    preview_width_required = @max(preview_width_required, overlayTextWidth(preview_name, scale));
+    var max_width = overlayTextWidth(title, scale);
+    max_width = @max(max_width, list_width + preview_gap + preview_width_required);
+
+    for (0..save_manager_slot_count) |slot_index| {
+        const slot_number: u8 = @intCast(slot_index + 1);
+        const metadata = &save_manager.slots[slot_index];
+        summary_lines[slot_index] = try formatSaveManagerSlotLine(
+            summary_buffers[slot_index][0..],
+            metadata,
+            slot_number,
+            slot_number == StateFile.normalizePersistentStateSlot(persistent_state_slot),
+        );
+        path_lines[slot_index] = try formatSaveManagerPathLine(path_buffers[slot_index][0..], metadata);
+        list_width = @max(list_width, overlayTextWidth(summary_lines[slot_index], scale));
+        list_width = @max(list_width, overlayTextWidth(path_lines[slot_index], scale));
+        max_width = @max(max_width, list_width + preview_gap + preview_width_required);
+    }
+
+    const row_height = summary_height + path_height + row_gap;
+    const header_height = 13.0 * scale + summary_height * 2.0 + row_gap;
+    const list_height = row_height * @as(f32, @floatFromInt(save_manager_slot_count));
+    const preview_block_height = summary_height + row_gap + preview_frame_height + row_gap + path_height * 2.0;
+    const content_height = @max(list_height, preview_block_height);
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height)) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height,
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        UiColors.panel_secondary,
+        UiColors.orange,
+        scale,
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        UiColors.orange,
+        title,
+    );
+
+    const text_x = panel.x + padding;
+    var y = panel.y + padding + 13.0 * scale;
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, controls_a);
+    y += summary_height;
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, controls_b);
+    y = panel.y + padding + header_height;
+
+    for (summary_lines, path_lines, 0..) |summary_line, path_line, slot_index| {
+        const selected = slot_index + 1 == StateFile.normalizePersistentStateSlot(persistent_state_slot);
+        try drawOverlayText(
+            renderer,
+            text_x,
+            y,
+            scale,
+            if (selected)
+                UiColors.gold
+            else
+                UiColors.text_primary,
+            summary_line,
+        );
+        y += summary_height;
+        try drawOverlayText(
+            renderer,
+            text_x,
+            y,
+            scale,
+            if (selected)
+                UiColors.orange
+            else
+                UiColors.text_muted,
+            path_line,
+        );
+        y += path_height + row_gap;
+    }
+
+    const preview_x = text_x + list_width + preview_gap;
+    var preview_y = panel.y + padding + header_height;
+    try drawOverlayText(
+        renderer,
+        preview_x + (preview_width_required - overlayTextWidth(preview_title, scale)) * 0.5,
+        preview_y,
+        scale,
+        UiColors.cyan,
+        preview_title,
+    );
+    preview_y += summary_height + row_gap;
+
+    const preview_frame = zsdl3.FRect{
+        .x = preview_x + (preview_width_required - preview_frame_width) * 0.5,
+        .y = preview_y,
+        .w = preview_frame_width,
+        .h = preview_frame_height,
+    };
+    try renderSaveManagerPreview(renderer, preview_frame, selected_metadata, scale);
+    preview_y += preview_frame_height + row_gap;
+
+    try drawOverlayText(
+        renderer,
+        preview_x + (preview_width_required - overlayTextWidth(preview_note, scale)) * 0.5,
+        preview_y,
+        scale,
+        UiColors.text_muted,
+        preview_note,
+    );
+    preview_y += path_height;
+    try drawOverlayText(
+        renderer,
+        preview_x + (preview_width_required - overlayTextWidth(preview_name, scale)) * 0.5,
+        preview_y,
+        scale,
+        UiColors.orange,
+        preview_name,
     );
 }
 
@@ -2740,9 +4475,9 @@ fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
     try renderOverlayPanel(
         renderer,
         panel,
-        .{ .r = 0x10, .g = 0x13, .b = 0x1A, .a = 0xE4 },
-        .{ .r = 0xE6, .g = 0x7E, .b = 0x22, .a = 0xFF },
-        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x88 },
+        UiColors.panel_primary,
+        UiColors.orange,
+        scale,
     );
 
     try drawOverlayText(
@@ -2750,7 +4485,7 @@ fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
         panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        .{ .r = 0xE6, .g = 0x7E, .b = 0x22, .a = 0xFF },
+        UiColors.orange,
         title,
     );
 
@@ -2762,7 +4497,7 @@ fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !void {
                 panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
                 y,
                 scale,
-                .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+                UiColors.text_primary,
                 line,
             );
         }
@@ -2857,9 +4592,9 @@ fn renderPerformanceHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *
     try renderOverlayPanel(
         renderer,
         panel,
-        .{ .r = 0x12, .g = 0x16, .b = 0x1D, .a = 0xD8 },
-        .{ .r = 0xFF, .g = 0x8C, .b = 0x42, .a = 0xFF },
-        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x80 },
+        UiColors.panel_overlay,
+        UiColors.orange,
+        scale,
     );
 
     try drawOverlayText(
@@ -2867,7 +4602,7 @@ fn renderPerformanceHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *
         panel.x + padding,
         panel.y + padding,
         scale,
-        .{ .r = 0xFF, .g = 0xC4, .b = 0x8A, .a = 0xFF },
+        UiColors.orange,
         title,
     );
 
@@ -2878,11 +4613,153 @@ fn renderPerformanceHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *
             panel.x + padding,
             y,
             scale,
-            .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+            UiColors.text_primary,
             line,
         );
         y += line_height;
     }
+}
+
+fn formatSettingsActionLine(
+    buffer: []u8,
+    action: SettingsMenuAction,
+    selected: bool,
+    aspect_mode: VideoAspectMode,
+    scale_mode: VideoScaleMode,
+    fullscreen: bool,
+    audio_mode: AudioOutput.RenderMode,
+    performance_hud: bool,
+) ![]const u8 {
+    const prefix = if (selected) "> " else "| ";
+    return switch (action) {
+        .video_aspect_mode => std.fmt.bufPrint(buffer, "{s}ASPECT {s}", .{ prefix, videoAspectModeLabel(aspect_mode) }),
+        .video_scale_mode => std.fmt.bufPrint(buffer, "{s}SCALING {s}", .{ prefix, videoScaleModeLabel(scale_mode) }),
+        .fullscreen => std.fmt.bufPrint(buffer, "{s}FULLSCREEN {s}", .{ prefix, if (fullscreen) "ON" else "OFF" }),
+        .audio_render_mode => std.fmt.bufPrint(buffer, "{s}AUDIO MODE {s}", .{ prefix, audioRenderModeLabel(audio_mode) }),
+        .performance_hud => std.fmt.bufPrint(buffer, "{s}PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
+        .close => std.fmt.bufPrint(buffer, "{s}CLOSE SETTINGS", .{prefix}),
+    };
+}
+
+fn renderSettingsOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    ui: *const FrontendUi,
+    settings: *const SettingsMenuState,
+    frontend_config: *const FrontendConfig,
+    machine: *const Machine,
+    window: *zsdl3.Window,
+    audio_enabled: bool,
+    current_audio_mode: AudioOutput.RenderMode,
+) !void {
+    const title = "SETTINGS";
+    const controls_a = "UP DOWN MOVE  LEFT RIGHT ADJUST";
+    const controls_b = "ENTER APPLY  ESC BACK  PAD B CLOSE";
+    const heading_video = "VIDEO";
+    const heading_audio = "AUDIO";
+    const heading_system = "SYSTEM";
+    const scale = overlayScale(viewport);
+    const padding = 12.0 * scale;
+    const line_height = 9.0 * scale;
+
+    var action_buffers: [settings_menu_actions.len][96]u8 = undefined;
+    var action_lines: [settings_menu_actions.len][]const u8 = undefined;
+    for (settings_menu_actions, 0..) |action, index| {
+        action_lines[index] = try formatSettingsActionLine(
+            action_buffers[index][0..],
+            action,
+            action == settings.currentAction(),
+            frontend_config.video_aspect_mode,
+            frontend_config.video_scale_mode,
+            fullscreenEnabled(window),
+            current_audio_mode,
+            ui.show_performance_hud,
+        );
+    }
+
+    var renderer_buffer: [96]u8 = undefined;
+    const renderer_line = try std.fmt.bufPrint(
+        renderer_buffer[0..],
+        "RENDERER {s}",
+        .{currentRendererName(renderer) orelse "UNKNOWN"},
+    );
+    const audio_output_line = if (audio_enabled) "OUTPUT ENABLED" else "OUTPUT DISABLED";
+    const timing_line = if (machine.palMode()) "TIMING PAL 50HZ" else "TIMING NTSC 60HZ";
+    const region_line = if (machine.consoleIsOverseas()) "REGION OVERSEAS" else "REGION DOMESTIC";
+
+    var max_width = overlayTextWidth(title, scale);
+    max_width = @max(max_width, overlayTextWidth(controls_a, scale));
+    max_width = @max(max_width, overlayTextWidth(controls_b, scale));
+    for (action_lines) |line| max_width = @max(max_width, overlayTextWidth(line, scale));
+    for ([_][]const u8{ heading_video, heading_audio, heading_system, renderer_line, audio_output_line, timing_line, region_line }) |line| {
+        max_width = @max(max_width, overlayTextWidth(line, scale));
+    }
+
+    const row_count: usize = 18;
+    const panel = zsdl3.FRect{
+        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
+        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)))) * 0.5,
+        .w = max_width + padding * 2.0,
+        .h = padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)),
+    };
+
+    try renderOverlayPanel(
+        renderer,
+        panel,
+        UiColors.panel_secondary,
+        UiColors.blue,
+        scale,
+    );
+
+    try drawOverlayText(
+        renderer,
+        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        UiColors.blue,
+        title,
+    );
+
+    const text_x = panel.x + padding;
+    var y = panel.y + padding + 12.0 * scale;
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, controls_a);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, controls_b);
+    y += line_height;
+
+    const heading_color = UiColors.cyan;
+    const info_color = UiColors.text_muted;
+    const selected_color = UiColors.text_selected;
+    const normal_color = UiColors.text_primary;
+
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_video);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .video_aspect_mode) selected_color else normal_color, action_lines[0]);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .video_scale_mode) selected_color else normal_color, action_lines[1]);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .fullscreen) selected_color else normal_color, action_lines[2]);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, info_color, renderer_line);
+    y += line_height * 2.0;
+
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_audio);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .audio_render_mode) selected_color else normal_color, action_lines[3]);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, info_color, audio_output_line);
+    y += line_height * 2.0;
+
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_system);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .performance_hud) selected_color else normal_color, action_lines[4]);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, info_color, timing_line);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, info_color, region_line);
+    y += line_height * 2.0;
+
+    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .close) selected_color else normal_color, action_lines[5]);
 }
 
 fn renderKeyboardEditorOverlay(
@@ -2913,9 +4790,9 @@ fn renderKeyboardEditorOverlay(
     try renderOverlayPanel(
         renderer,
         panel,
-        .{ .r = 0x0B, .g = 0x11, .b = 0x19, .a = 0xED },
-        .{ .r = 0x6A, .g = 0xB5, .b = 0xFF, .a = 0xFF },
-        .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x90 },
+        UiColors.panel_secondary,
+        UiColors.blue,
+        scale,
     );
 
     try drawOverlayText(
@@ -2923,7 +4800,7 @@ fn renderKeyboardEditorOverlay(
         panel.x + padding,
         panel.y + padding,
         scale,
-        .{ .r = 0x6A, .g = 0xB5, .b = 0xFF, .a = 0xFF },
+        UiColors.blue,
         title,
     );
     try drawOverlayText(
@@ -2931,7 +4808,7 @@ fn renderKeyboardEditorOverlay(
         panel.x + padding,
         panel.y + padding + 11.0 * scale,
         scale,
-        .{ .r = 0xD7, .g = 0xE2, .b = 0xEE, .a = 0xFF },
+        UiColors.text_muted,
         controls,
     );
 
@@ -2955,7 +4832,7 @@ fn renderKeyboardEditorOverlay(
         if (selected) {
             try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 });
             try zsdl3.renderFillRect(renderer, row_rect);
-            try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x6A, .g = 0xB5, .b = 0xFF, .a = 0xFF });
+            try zsdl3.setRenderDrawColor(renderer, UiColors.blue);
             try zsdl3.renderRect(renderer, row_rect);
         }
 
@@ -2967,18 +4844,18 @@ fn renderKeyboardEditorOverlay(
             y,
             scale,
             if (selected)
-                .{ .r = 0xFF, .g = 0xF4, .b = 0xC4, .a = 0xFF }
+                UiColors.text_selected
             else
-                .{ .r = 0xF4, .g = 0xF7, .b = 0xFB, .a = 0xFF },
+                UiColors.text_primary,
             line,
         );
         y += row_height;
     }
 
     const status_color: zsdl3.Color = switch (editor.status) {
-        .neutral => .{ .r = 0xD7, .g = 0xE2, .b = 0xEE, .a = 0xFF },
-        .success => .{ .r = 0x89, .g = 0xDA, .b = 0xA2, .a = 0xFF },
-        .failed => .{ .r = 0xFF, .g = 0x9B, .b = 0x8E, .a = 0xFF },
+        .neutral => UiColors.text_muted,
+        .success => UiColors.success,
+        .failed => UiColors.failure,
     };
     if (editor.status_message.len != 0) {
         try drawOverlayText(
@@ -2996,15 +4873,21 @@ fn renderFrontendOverlay(
     renderer: *zsdl3.Renderer,
     ui: *const FrontendUi,
     home_menu: *const HomeMenuState,
+    settings: *const SettingsMenuState,
     frontend_config: *const FrontendConfig,
+    save_manager: *const SaveManagerState,
     toast: *const FrontendToast,
     frontend_frame_number: u64,
     editor: *const BindingEditorState,
     bindings: *const InputBindings.Bindings,
+    machine: *const Machine,
+    window: *zsdl3.Window,
+    audio_enabled: bool,
+    current_audio_mode: AudioOutput.RenderMode,
     persistent_state_slot: u8,
     perf: *const PerformanceHudState,
 ) !void {
-    const show_panel = ui.show_home or ui.paused or ui.show_help or ui.dialog_active or ui.show_keyboard_editor;
+    const show_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.paused or ui.show_help or ui.dialog_active or ui.show_keyboard_editor;
     const show_toast = toast.visible(frontend_frame_number);
     if (!ui.show_performance_hud and !show_panel and !show_toast) return;
 
@@ -3021,6 +4904,10 @@ fn renderFrontendOverlay(
         try renderDialogOverlay(renderer, viewport);
     } else if (ui.show_keyboard_editor) {
         try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings);
+    } else if (ui.show_settings) {
+        try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode);
+    } else if (ui.show_save_manager) {
+        try renderSaveManagerOverlay(renderer, viewport, save_manager, persistent_state_slot);
     } else if (ui.show_help) {
         try renderHelpOverlay(renderer, viewport, bindings, persistent_state_slot);
     } else if (ui.show_home) {
@@ -3084,6 +4971,7 @@ pub fn main() !void {
 
     var audio_userdata: u8 = 0;
     var audio: ?AudioInit = tryInitAudio(&audio_userdata);
+    var current_audio_mode = cli.audio_mode;
     if (audio == null) {
         std.debug.print("Audio disabled: no compatible stream format\n", .{});
     } else {
@@ -3187,6 +5075,8 @@ pub fn main() !void {
     defer if (quick_state) |*state| state.deinit(allocator);
     var frontend_ui = FrontendUi{ .show_home = rom_path == null };
     var home_menu = HomeMenuState{};
+    var settings_menu = SettingsMenuState{};
+    var save_manager = SaveManagerState{};
     var frontend_toast = FrontendToast{};
     var performance_hud = PerformanceHudState{};
     var performance_spike_log = PerformanceSpikeLogState{};
@@ -3215,62 +5105,366 @@ pub fn main() !void {
                     const button = event.gbutton.button;
                     const port = findGamepadPort(&gamepads, event.gbutton.which) orelse continue;
                     if (gamepadInputFromButton(button)) |mapped_button| {
+                        const notifications = FrontendNotifications{
+                            .toast = &frontend_toast,
+                            .frame_number = frontend_frame_counter,
+                        };
+                        const explicit_state_path = if (current_rom_path.len != 0) current_rom_path.slice() else null;
+                        switch (dispatchFrontendGamepadCommand(
+                            handleFrontendGamepadInput(
+                                &frontend_ui,
+                                &home_menu,
+                                &settings_menu,
+                                &frontend_config,
+                                frontend_config_path,
+                                &save_manager,
+                                allocator,
+                                &machine,
+                                explicit_state_path,
+                                &persistent_state_slot,
+                                &gif_recorder,
+                                &wav_recorder,
+                                if (audio) |*a| a else null,
+                                &current_audio_mode,
+                                &performance_hud,
+                                &performance_spike_log,
+                                &core_profile_frames_remaining,
+                                window,
+                                &frame_counter,
+                                mapped_button,
+                                pressed,
+                                notifications,
+                            ),
+                            allocator,
+                            &machine,
+                            &input_bindings,
+                            cli.timing_mode,
+                            if (audio) |*a| a else null,
+                            &gif_recorder,
+                            &wav_recorder,
+                            &frame_counter,
+                            &frontend_config,
+                            frontend_config_path,
+                            &home_menu,
+                            &current_rom_path,
+                            &frontend_ui,
+                            &file_dialog_state,
+                            window,
+                            &frontend_toast,
+                            frontend_frame_counter,
+                        )) {
+                            .quit => break :mainLoop,
+                            .handled => continue,
+                            .unhandled => {},
+                        }
+                    }
+                    if (frontend_ui.emulationPaused()) continue;
+                    if (gamepadInputFromButton(button)) |mapped_button| {
                         _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
                 },
                 zsdl3.EventType.gamepad_axis_motion => {
                     const port = findGamepadPort(&gamepads, event.gaxis.which) orelse continue;
                     const axis: zsdl3.Gamepad.Axis = @enumFromInt(event.gaxis.axis);
-                    applyInputTransitions(
-                        &input_bindings,
-                        &machine,
-                        port,
-                        updateGamepadAxisState(
-                            &gamepad_sticks[port],
-                            &gamepad_triggers[port],
-                            axis,
-                            event.gaxis.value,
-                            input_bindings.gamepad_axis_threshold,
-                            input_bindings.trigger_threshold,
-                        ),
+                    const transitions = updateGamepadAxisState(
+                        &gamepad_sticks[port],
+                        &gamepad_triggers[port],
+                        axis,
+                        event.gaxis.value,
+                        input_bindings.gamepad_axis_threshold,
+                        input_bindings.trigger_threshold,
                     );
+                    const notifications = FrontendNotifications{
+                        .toast = &frontend_toast,
+                        .frame_number = frontend_frame_counter,
+                    };
+                    const explicit_state_path = if (current_rom_path.len != 0) current_rom_path.slice() else null;
+                    switch (dispatchFrontendGamepadCommand(
+                        handleFrontendGamepadTransitions(
+                            &frontend_ui,
+                            &home_menu,
+                            &settings_menu,
+                            &frontend_config,
+                            frontend_config_path,
+                            &save_manager,
+                            allocator,
+                            &machine,
+                            explicit_state_path,
+                            &persistent_state_slot,
+                            &gif_recorder,
+                            &wav_recorder,
+                            if (audio) |*a| a else null,
+                            &current_audio_mode,
+                            &performance_hud,
+                            &performance_spike_log,
+                            &core_profile_frames_remaining,
+                            window,
+                            &frame_counter,
+                            notifications,
+                            transitions,
+                        ),
+                        allocator,
+                        &machine,
+                        &input_bindings,
+                        cli.timing_mode,
+                        if (audio) |*a| a else null,
+                        &gif_recorder,
+                        &wav_recorder,
+                        &frame_counter,
+                        &frontend_config,
+                        frontend_config_path,
+                        &home_menu,
+                        &current_rom_path,
+                        &frontend_ui,
+                        &file_dialog_state,
+                        window,
+                        &frontend_toast,
+                        frontend_frame_counter,
+                    )) {
+                        .quit => break :mainLoop,
+                        .handled => continue,
+                        .unhandled => {},
+                    }
+                    if (frontend_ui.emulationPaused()) continue;
+                    applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_button_down, zsdl3.EventType.joystick_button_up => {
                     const pressed = (event.type == zsdl3.EventType.joystick_button_down);
                     const port = findJoystickPort(&joysticks, event.jbutton.which) orelse continue;
+                    if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
+                        const notifications = FrontendNotifications{
+                            .toast = &frontend_toast,
+                            .frame_number = frontend_frame_counter,
+                        };
+                        const explicit_state_path = if (current_rom_path.len != 0) current_rom_path.slice() else null;
+                        switch (dispatchFrontendGamepadCommand(
+                            handleFrontendGamepadInput(
+                                &frontend_ui,
+                                &home_menu,
+                                &settings_menu,
+                                &frontend_config,
+                                frontend_config_path,
+                                &save_manager,
+                                allocator,
+                                &machine,
+                                explicit_state_path,
+                                &persistent_state_slot,
+                                &gif_recorder,
+                                &wav_recorder,
+                                if (audio) |*a| a else null,
+                                &current_audio_mode,
+                                &performance_hud,
+                                &performance_spike_log,
+                                &core_profile_frames_remaining,
+                                window,
+                                &frame_counter,
+                                mapped_button,
+                                pressed,
+                                notifications,
+                            ),
+                            allocator,
+                            &machine,
+                            &input_bindings,
+                            cli.timing_mode,
+                            if (audio) |*a| a else null,
+                            &gif_recorder,
+                            &wav_recorder,
+                            &frame_counter,
+                            &frontend_config,
+                            frontend_config_path,
+                            &home_menu,
+                            &current_rom_path,
+                            &frontend_ui,
+                            &file_dialog_state,
+                            window,
+                            &frontend_toast,
+                            frontend_frame_counter,
+                        )) {
+                            .quit => break :mainLoop,
+                            .handled => continue,
+                            .unhandled => {},
+                        }
+                    }
+                    if (frontend_ui.emulationPaused()) continue;
                     if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
                         _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
                 },
                 zsdl3.EventType.joystick_axis_motion => {
                     const port = findJoystickPort(&joysticks, event.jaxis.which) orelse continue;
-                    applyInputTransitions(
-                        &input_bindings,
-                        &machine,
-                        port,
-                        updateJoystickAxisState(
-                            &joystick_axes[port],
-                            event.jaxis.axis,
-                            event.jaxis.value,
-                            input_bindings.joystick_axis_threshold,
-                        ),
+                    const transitions = updateJoystickAxisState(
+                        &joystick_axes[port],
+                        event.jaxis.axis,
+                        event.jaxis.value,
+                        input_bindings.joystick_axis_threshold,
                     );
+                    const notifications = FrontendNotifications{
+                        .toast = &frontend_toast,
+                        .frame_number = frontend_frame_counter,
+                    };
+                    const explicit_state_path = if (current_rom_path.len != 0) current_rom_path.slice() else null;
+                    switch (dispatchFrontendGamepadCommand(
+                        handleFrontendGamepadTransitions(
+                            &frontend_ui,
+                            &home_menu,
+                            &settings_menu,
+                            &frontend_config,
+                            frontend_config_path,
+                            &save_manager,
+                            allocator,
+                            &machine,
+                            explicit_state_path,
+                            &persistent_state_slot,
+                            &gif_recorder,
+                            &wav_recorder,
+                            if (audio) |*a| a else null,
+                            &current_audio_mode,
+                            &performance_hud,
+                            &performance_spike_log,
+                            &core_profile_frames_remaining,
+                            window,
+                            &frame_counter,
+                            notifications,
+                            transitions,
+                        ),
+                        allocator,
+                        &machine,
+                        &input_bindings,
+                        cli.timing_mode,
+                        if (audio) |*a| a else null,
+                        &gif_recorder,
+                        &wav_recorder,
+                        &frame_counter,
+                        &frontend_config,
+                        frontend_config_path,
+                        &home_menu,
+                        &current_rom_path,
+                        &frontend_ui,
+                        &file_dialog_state,
+                        window,
+                        &frontend_toast,
+                        frontend_frame_counter,
+                    )) {
+                        .quit => break :mainLoop,
+                        .handled => continue,
+                        .unhandled => {},
+                    }
+                    if (frontend_ui.emulationPaused()) continue;
+                    applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_hat_motion => {
                     if (event.jhat.hat != 0) continue;
                     const port = findJoystickPort(&joysticks, event.jhat.which) orelse continue;
-                    applyInputTransitions(
-                        &input_bindings,
+                    const transitions = updateHatState(&joystick_hats[port], event.jhat.value);
+                    const notifications = FrontendNotifications{
+                        .toast = &frontend_toast,
+                        .frame_number = frontend_frame_counter,
+                    };
+                    const explicit_state_path = if (current_rom_path.len != 0) current_rom_path.slice() else null;
+                    switch (dispatchFrontendGamepadCommand(
+                        handleFrontendGamepadTransitions(
+                            &frontend_ui,
+                            &home_menu,
+                            &settings_menu,
+                            &frontend_config,
+                            frontend_config_path,
+                            &save_manager,
+                            allocator,
+                            &machine,
+                            explicit_state_path,
+                            &persistent_state_slot,
+                            &gif_recorder,
+                            &wav_recorder,
+                            if (audio) |*a| a else null,
+                            &current_audio_mode,
+                            &performance_hud,
+                            &performance_spike_log,
+                            &core_profile_frames_remaining,
+                            window,
+                            &frame_counter,
+                            notifications,
+                            transitions,
+                        ),
+                        allocator,
                         &machine,
-                        port,
-                        updateHatState(&joystick_hats[port], event.jhat.value),
-                    );
+                        &input_bindings,
+                        cli.timing_mode,
+                        if (audio) |*a| a else null,
+                        &gif_recorder,
+                        &wav_recorder,
+                        &frame_counter,
+                        &frontend_config,
+                        frontend_config_path,
+                        &home_menu,
+                        &current_rom_path,
+                        &frontend_ui,
+                        &file_dialog_state,
+                        window,
+                        &frontend_toast,
+                        frontend_frame_counter,
+                    )) {
+                        .quit => break :mainLoop,
+                        .handled => continue,
+                        .unhandled => {},
+                    }
+                    if (frontend_ui.emulationPaused()) continue;
+                    applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
                     const pressed = (event.type == zsdl3.EventType.key_down);
                     const scancode = event.key.scancode;
                     const keyboard_state = zsdl3.getKeyboardState();
                     const hotkey_binding = hotkeyBindingFromScancode(scancode, keyboard_state);
+                    const hotkey_action = if (hotkey_binding) |binding| input_bindings.hotkeyForBinding(binding) else null;
+                    const explicit_state_path = if (current_rom_path.len != 0) current_rom_path.slice() else null;
+                    if (handleSettingsKey(
+                        &frontend_ui,
+                        &settings_menu,
+                        &frontend_config,
+                        frontend_config_path,
+                        &performance_hud,
+                        &performance_spike_log,
+                        &core_profile_frames_remaining,
+                        window,
+                        if (audio) |*a| a else null,
+                        &current_audio_mode,
+                        scancode,
+                        pressed,
+                        .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
+                    )) {
+                        continue;
+                    }
+                    if (handleSaveManagerKey(
+                        &frontend_ui,
+                        &save_manager,
+                        allocator,
+                        &machine,
+                        explicit_state_path,
+                        &persistent_state_slot,
+                        &gif_recorder,
+                        &wav_recorder,
+                        if (audio) |*a| a else null,
+                        &frame_counter,
+                        scancode,
+                        hotkey_action,
+                        pressed,
+                        .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
+                    )) {
+                        continue;
+                    }
+                    if (handlePauseOverlayKey(
+                        &frontend_ui,
+                        &save_manager,
+                        &settings_menu,
+                        allocator,
+                        &machine,
+                        explicit_state_path,
+                        scancode,
+                        pressed,
+                        .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
+                    )) {
+                        continue;
+                    }
                     if (handleBindingEditorKey(
                         &frontend_ui,
                         &binding_editor,
@@ -3283,223 +5477,195 @@ pub fn main() !void {
                     )) {
                         continue;
                     }
-                    switch (handleHomeScreenKey(&frontend_ui, &home_menu, &frontend_config, scancode, pressed)) {
-                        .none => {},
-                        .open_dialog => {
-                            _ = launchOpenRomDialog(
-                                &file_dialog_state,
-                                &frontend_ui,
-                                window,
-                                preferredOpenRomLocation(&frontend_config, &current_rom_path),
-                            );
-                            continue;
-                        },
-                        .load_recent => |index| {
+                    switch (dispatchHomeScreenCommand(
+                        handleHomeScreenKey(&frontend_ui, &home_menu, &settings_menu, &frontend_config, scancode, pressed),
+                        allocator,
+                        &machine,
+                        &input_bindings,
+                        cli.timing_mode,
+                        if (audio) |*a| a else null,
+                        &gif_recorder,
+                        &wav_recorder,
+                        &frame_counter,
+                        &frontend_config,
+                        frontend_config_path,
+                        &home_menu,
+                        &current_rom_path,
+                        &frontend_ui,
+                        &file_dialog_state,
+                        window,
+                        &frontend_toast,
+                        frontend_frame_counter,
+                    )) {
+                        .quit => break :mainLoop,
+                        .handled => continue,
+                        .unhandled => {},
+                    }
+                    if (pressed) {
+                        if (hotkey_action) |action| {
                             const notifications = FrontendNotifications{
                                 .toast = &frontend_toast,
                                 .frame_number = frontend_frame_counter,
                             };
-                            var selected_path = DialogPathCopy{};
-                            selected_path.set(frontend_config.recentRom(index));
-                            loadRomIntoMachine(
+                            if (handleQuickStateAction(
                                 allocator,
+                                action,
                                 &machine,
-                                &input_bindings,
-                                cli.timing_mode,
+                                &quick_state,
                                 if (audio) |*a| a else null,
                                 &gif_recorder,
                                 &wav_recorder,
                                 &frame_counter,
-                                selected_path.slice(),
                                 notifications,
-                            ) catch |err| {
-                                std.debug.print("Failed to load recent ROM {s}: {}\n", .{ selected_path.slice(), err });
-                                notifyFrontend(notifications, .failure, "FAILED TO LOAD {s}", .{std.fs.path.basename(selected_path.slice())});
-                                if (err == error.FileNotFound) {
-                                    frontend_config.removeRecentRom(index);
-                                    frontend_config.saveToFile(frontend_config_path) catch |save_err| {
-                                        std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(save_err) });
-                                    };
-                                    home_menu.clamp(&frontend_config);
-                                }
-                                continue;
-                            };
-                            current_rom_path = selected_path;
-                            rememberLoadedRom(&frontend_config, frontend_config_path, notifications, selected_path.slice());
-                            home_menu.clamp(&frontend_config);
-                            frontend_ui.show_home = false;
-                            frontend_ui.paused = false;
-                            continue;
-                        },
-                        .quit => break :mainLoop,
-                    }
-                    if (pressed) {
-                        if (hotkey_binding) |binding| {
-                            if (input_bindings.hotkeyForBinding(binding)) |action| {
-                                const notifications = FrontendNotifications{
-                                    .toast = &frontend_toast,
-                                    .frame_number = frontend_frame_counter,
-                                };
-                                if (handleQuickStateAction(
-                                    allocator,
-                                    action,
-                                    &machine,
-                                    &quick_state,
-                                    if (audio) |*a| a else null,
-                                    &gif_recorder,
-                                    &wav_recorder,
-                                    &frame_counter,
-                                    notifications,
-                                )) {
-                                    continue;
-                                }
-                                if (handlePersistentStateAction(
-                                    allocator,
-                                    action,
-                                    &machine,
-                                    null,
-                                    &persistent_state_slot,
-                                    if (audio) |*a| a else null,
-                                    &gif_recorder,
-                                    &wav_recorder,
-                                    &frame_counter,
-                                    notifications,
-                                )) {
-                                    continue;
-                                }
-
-                                switch (action) {
-                                    .toggle_help => frontend_ui.show_help = !frontend_ui.show_help,
-                                    .toggle_pause => {
-                                        if (!frontend_ui.show_home) {
-                                            frontend_ui.paused = !frontend_ui.paused;
-                                        }
-                                    },
-                                    .open_rom => _ = launchOpenRomDialog(
-                                        &file_dialog_state,
-                                        &frontend_ui,
-                                        window,
-                                        preferredOpenRomLocation(&frontend_config, &current_rom_path),
-                                    ),
-                                    .restart_rom => {
-                                        if (!frontend_ui.show_home) {
-                                            softResetCurrentMachine(&machine, &frame_counter, notifications);
-                                        }
-                                    },
-                                    .reload_rom => {
-                                        hardResetCurrentMachine(
-                                            allocator,
-                                            &machine,
-                                            &input_bindings,
-                                            cli.timing_mode,
-                                            if (audio) |*a| a else null,
-                                            &gif_recorder,
-                                            &wav_recorder,
-                                            &frame_counter,
-                                            if (current_rom_path.len != 0) current_rom_path.slice() else null,
-                                            notifications,
-                                        ) catch |err| {
-                                            std.debug.print("Failed to hard reset or reload current ROM: {}\n", .{err});
-                                            notifyFrontend(notifications, .failure, "FAILED TO RELOAD CURRENT ROM", .{});
-                                        };
-                                    },
-                                    .toggle_performance_hud => {
-                                        frontend_ui.show_performance_hud = !frontend_ui.show_performance_hud;
-                                        if (!frontend_ui.show_performance_hud) {
-                                            core_profile_frames_remaining = 0;
-                                        } else {
-                                            performance_hud.reset();
-                                            performance_spike_log.reset();
-                                            core_profile_frames_remaining = 0;
-                                        }
-                                    },
-                                    .reset_performance_hud => {
-                                        performance_hud.reset();
-                                        performance_spike_log.reset();
-                                        core_profile_frames_remaining = 0;
-                                    },
-                                    .step => {
-                                        if (frontend_ui.show_help) continue;
-                                        machine.runMasterSlice(clock.m68k_divider);
-                                        machine.debugDump();
-                                    },
-                                    .registers => {
-                                        if (frontend_ui.show_help) continue;
-                                        machine.debugDump();
-                                    },
-                                    .record_gif => {
-                                        if (frontend_ui.show_help) continue;
-                                        if (gif_recorder) |*rec| {
-                                            const frames = rec.frame_count;
-                                            rec.finish();
-                                            gif_recorder = null;
-                                            std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
-                                            notifyFrontend(notifications, .success, "GIF RECORDING STOPPED", .{});
-                                        } else {
-                                            const fps: u16 = if (machine.palMode()) 25 else 30;
-                                            const path = gifOutputPath();
-                                            const path_str = std.mem.sliceTo(&path, 0);
-                                            const framebuffer_height: u16 = @intCast(machine.framebuffer().len / Vdp.framebuffer_width);
-                                            gif_recorder = GifRecorder.start(path_str, fps, framebuffer_height) catch |err| {
-                                                std.debug.print("Failed to start GIF recording: {}\n", .{err});
-                                                notifyFrontend(notifications, .failure, "FAILED TO START GIF RECORDING", .{});
-                                                continue;
-                                            };
-                                            std.debug.print("GIF recording started: {s}\n", .{path_str});
-                                            notifyFrontend(notifications, .success, "GIF RECORDING STARTED", .{});
-                                        }
-                                    },
-                                    .record_wav => {
-                                        if (frontend_ui.show_help) continue;
-                                        if (wav_recorder) |*rec| {
-                                            if (audio) |*a| {
-                                                a.syncRecordedPlayback(rec);
-                                            }
-                                            const duration = rec.getDurationSeconds();
-                                            const samples = rec.sample_count;
-                                            rec.finish();
-                                            wav_recorder = null;
-                                            std.debug.print("WAV recording stopped ({d} samples, {d:.2}s)\n", .{ samples, duration });
-                                            notifyFrontend(notifications, .success, "WAV RECORDING STOPPED", .{});
-                                        } else {
-                                            if (audio) |*a| {
-                                                a.syncRecordedPlayback(null);
-                                            }
-                                            const path = wavOutputPath();
-                                            const path_str = std.mem.sliceTo(&path, 0);
-                                            wav_recorder = WavRecorder.start(path_str, AudioOutput.output_rate, AudioOutput.channels) catch |err| {
-                                                std.debug.print("Failed to start WAV recording: {}\n", .{err});
-                                                notifyFrontend(notifications, .failure, "FAILED TO START WAV RECORDING", .{});
-                                                continue;
-                                            };
-                                            std.debug.print("WAV recording started: {s}\n", .{path_str});
-                                            notifyFrontend(notifications, .success, "WAV RECORDING STARTED", .{});
-                                        }
-                                    },
-                                    .toggle_fullscreen => {
-                                        const flags = SDL_GetWindowFlags(window);
-                                        const enable_fullscreen = flags & 1 == 0;
-                                        _ = SDL_SetWindowFullscreen(window, enable_fullscreen);
-                                        if (enable_fullscreen) {
-                                            notifyFrontend(notifications, .info, "FULLSCREEN ON", .{});
-                                        } else {
-                                            notifyFrontend(notifications, .info, "FULLSCREEN OFF", .{});
-                                        }
-                                    },
-                                    .quit => break :mainLoop,
-                                    .open_keyboard_editor,
-                                    .save_quick_state,
-                                    .load_quick_state,
-                                    .save_state_file,
-                                    .load_state_file,
-                                    .next_state_slot,
-                                    => {},
-                                }
+                            )) {
                                 continue;
                             }
+                            if (handlePersistentStateAction(
+                                allocator,
+                                action,
+                                &machine,
+                                null,
+                                &persistent_state_slot,
+                                if (audio) |*a| a else null,
+                                &gif_recorder,
+                                &wav_recorder,
+                                &frame_counter,
+                                notifications,
+                            )) {
+                                continue;
+                            }
+
+                            switch (action) {
+                                .toggle_help => frontend_ui.show_help = !frontend_ui.show_help,
+                                .toggle_pause => {
+                                    if (!frontend_ui.show_home) {
+                                        frontend_ui.paused = !frontend_ui.paused;
+                                    }
+                                },
+                                .open_rom => _ = launchOpenRomDialog(
+                                    &file_dialog_state,
+                                    &frontend_ui,
+                                    window,
+                                    preferredOpenRomLocation(&frontend_config, &current_rom_path),
+                                ),
+                                .restart_rom => {
+                                    if (!frontend_ui.show_home) {
+                                        softResetCurrentMachine(&machine, &frame_counter, notifications);
+                                    }
+                                },
+                                .reload_rom => {
+                                    hardResetCurrentMachine(
+                                        allocator,
+                                        &machine,
+                                        &input_bindings,
+                                        cli.timing_mode,
+                                        if (audio) |*a| a else null,
+                                        &gif_recorder,
+                                        &wav_recorder,
+                                        &frame_counter,
+                                        if (current_rom_path.len != 0) current_rom_path.slice() else null,
+                                        notifications,
+                                    ) catch |err| {
+                                        std.debug.print("Failed to hard reset or reload current ROM: {}\n", .{err});
+                                        notifyFrontend(notifications, .failure, "FAILED TO RELOAD CURRENT ROM", .{});
+                                    };
+                                },
+                                .toggle_performance_hud => {
+                                    configurePerformanceHud(
+                                        &frontend_ui,
+                                        &performance_hud,
+                                        &performance_spike_log,
+                                        &core_profile_frames_remaining,
+                                        !frontend_ui.show_performance_hud,
+                                    );
+                                },
+                                .reset_performance_hud => {
+                                    performance_hud.reset();
+                                    performance_spike_log.reset();
+                                    core_profile_frames_remaining = 0;
+                                },
+                                .step => {
+                                    if (frontend_ui.show_help) continue;
+                                    machine.runMasterSlice(clock.m68k_divider);
+                                    machine.debugDump();
+                                },
+                                .registers => {
+                                    if (frontend_ui.show_help) continue;
+                                    machine.debugDump();
+                                },
+                                .record_gif => {
+                                    if (frontend_ui.show_help) continue;
+                                    if (gif_recorder) |*rec| {
+                                        const frames = rec.frame_count;
+                                        rec.finish();
+                                        gif_recorder = null;
+                                        std.debug.print("GIF recording stopped ({d} frames)\n", .{frames});
+                                        notifyFrontend(notifications, .success, "GIF RECORDING STOPPED", .{});
+                                    } else {
+                                        const fps: u16 = if (machine.palMode()) 25 else 30;
+                                        const path = gifOutputPath() orelse {
+                                            std.debug.print("No available GIF output slot (001-999 all exist)\n", .{});
+                                            notifyFrontend(notifications, .failure, "NO AVAILABLE GIF SLOT", .{});
+                                            continue;
+                                        };
+                                        const path_str = std.mem.sliceTo(&path, 0);
+                                        const framebuffer_height: u16 = @intCast(machine.framebuffer().len / Vdp.framebuffer_width);
+                                        gif_recorder = GifRecorder.start(path_str, fps, framebuffer_height) catch |err| {
+                                            std.debug.print("Failed to start GIF recording: {}\n", .{err});
+                                            notifyFrontend(notifications, .failure, "FAILED TO START GIF RECORDING", .{});
+                                            continue;
+                                        };
+                                        std.debug.print("GIF recording started: {s}\n", .{path_str});
+                                        notifyFrontend(notifications, .success, "GIF RECORDING STARTED", .{});
+                                    }
+                                },
+                                .record_wav => {
+                                    if (frontend_ui.show_help) continue;
+                                    if (wav_recorder) |*rec| {
+                                        if (audio) |*a| {
+                                            a.syncRecordedPlayback(rec);
+                                        }
+                                        const duration = rec.getDurationSeconds();
+                                        const samples = rec.sample_count;
+                                        rec.finish();
+                                        wav_recorder = null;
+                                        std.debug.print("WAV recording stopped ({d} samples, {d:.2}s)\n", .{ samples, duration });
+                                        notifyFrontend(notifications, .success, "WAV RECORDING STOPPED", .{});
+                                    } else {
+                                        if (audio) |*a| {
+                                            a.syncRecordedPlayback(null);
+                                        }
+                                        const path = wavOutputPath() orelse {
+                                            std.debug.print("No available WAV output slot (001-999 all exist)\n", .{});
+                                            notifyFrontend(notifications, .failure, "NO AVAILABLE WAV SLOT", .{});
+                                            continue;
+                                        };
+                                        const path_str = std.mem.sliceTo(&path, 0);
+                                        wav_recorder = WavRecorder.start(path_str, AudioOutput.output_rate, AudioOutput.channels) catch |err| {
+                                            std.debug.print("Failed to start WAV recording: {}\n", .{err});
+                                            notifyFrontend(notifications, .failure, "FAILED TO START WAV RECORDING", .{});
+                                            continue;
+                                        };
+                                        std.debug.print("WAV recording started: {s}\n", .{path_str});
+                                        notifyFrontend(notifications, .success, "WAV RECORDING STARTED", .{});
+                                    }
+                                },
+                                .toggle_fullscreen => {
+                                    setFullscreenEnabled(window, !fullscreenEnabled(window), notifications);
+                                },
+                                .quit => break :mainLoop,
+                                .open_keyboard_editor,
+                                .save_quick_state,
+                                .load_quick_state,
+                                .save_state_file,
+                                .load_state_file,
+                                .next_state_slot,
+                                => {},
+                            }
+                            continue;
                         }
                     }
-                    if (!frontend_ui.show_home) {
+                    if (!frontend_ui.emulationPaused()) {
                         if (hotkey_binding) |binding| {
                             const mapped_key = binding.input orelse continue;
                             _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
@@ -3634,16 +5800,29 @@ pub fn main() !void {
             .w = @floatFromInt(Vdp.framebuffer_width),
             .h = @floatFromInt(framebuffer_height),
         };
-        try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, null);
+        const viewport = try zsdl3.getRenderViewport(renderer);
+        const dest_rect = computeVideoDestinationRect(
+            viewport,
+            framebuffer_height,
+            frontend_config.video_aspect_mode,
+            frontend_config.video_scale_mode,
+        );
+        try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, &dest_rect);
         try renderFrontendOverlay(
             renderer,
             &frontend_ui,
             &home_menu,
+            &settings_menu,
             &frontend_config,
+            &save_manager,
             &frontend_toast,
             frontend_frame_counter,
             &binding_editor,
             &input_bindings,
+            &machine,
+            window,
+            audio != null,
+            current_audio_mode,
             persistent_state_slot,
             &performance_hud,
         );
@@ -4397,6 +6576,27 @@ test "audio playback shadow only records samples that have actually drained" {
     recorder.finish();
 }
 
+test "audio playback shadow clamps to its mirror capacity instead of overflowing" {
+    const allocator = std.testing.allocator;
+    var audio = AudioInit{
+        .stream = @ptrFromInt(1),
+        .output = AudioOutput.init(),
+    };
+
+    const capacity = audio.playback_shadow.len;
+    const oversized = try allocator.alloc(i16, capacity + 4);
+    defer allocator.free(oversized);
+    for (oversized, 0..) |*sample, index| {
+        sample.* = @intCast(index);
+    }
+
+    audio.appendPlaybackShadow(oversized);
+
+    try std.testing.expectEqual(capacity, audio.playback_shadow_len);
+    try std.testing.expectEqual(@as(i16, 4), audio.playback_shadow[0]);
+    try std.testing.expectEqual(@as(i16, @intCast(capacity + 3)), audio.playback_shadow[audio.playback_shadow_len - 1]);
+}
+
 test "quick state helper saves and restores machine state" {
     const allocator = std.testing.allocator;
     const rom = [_]u8{0} ** 0x400;
@@ -4501,6 +6701,110 @@ test "persistent state helper cycles slots and keeps files separate" {
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
+test "save manager metadata tracks slot files and deletions" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = [_]u8{0} ** 0x400;
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
+    defer allocator.free(state_path);
+    const slot2_state_path = try StateFile.pathForSlot(allocator, state_path, 2);
+    defer allocator.free(slot2_state_path);
+    const slot2_preview_path = try resolveStatePreviewPath(allocator, slot2_state_path);
+    defer allocator.free(slot2_preview_path);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
+    var frame_counter: u32 = 0;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+
+    machine.writeWorkRamByte(0x20, 0x11);
+    try std.testing.expect(handlePersistentStateAction(
+        allocator,
+        .save_state_file,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        null,
+        &gif_recorder,
+        &wav_recorder,
+        &frame_counter,
+        .{},
+    ));
+
+    persistent_state_slot = 2;
+    machine.writeWorkRamByte(0x20, 0x22);
+    try std.testing.expect(handlePersistentStateAction(
+        allocator,
+        .save_state_file,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        null,
+        &gif_recorder,
+        &wav_recorder,
+        &frame_counter,
+        .{},
+    ));
+
+    var save_manager = SaveManagerState{};
+    try save_manager.refresh(allocator, &machine, state_path);
+
+    try std.testing.expect(save_manager.slotMetadata(1).exists);
+    try std.testing.expect(save_manager.slotMetadata(2).exists);
+    try std.testing.expect(!save_manager.slotMetadata(3).exists);
+    try std.testing.expect(save_manager.slotMetadata(1).preview.available);
+    try std.testing.expect(save_manager.slotMetadata(2).preview.available);
+    try std.testing.expect(save_manager.slotMetadata(1).size_bytes != 0);
+    try std.testing.expect(save_manager.slotMetadata(1).modified_ns != 0);
+    try std.testing.expectEqualStrings("frontend.slot1.state", std.fs.path.basename(save_manager.slotMetadata(1).path.slice()));
+    try std.testing.expectEqualStrings("frontend.slot2.state", std.fs.path.basename(save_manager.slotMetadata(2).path.slice()));
+    try std.fs.cwd().access(slot2_preview_path, .{});
+
+    try std.testing.expect(deletePersistentStateFile(allocator, &machine, state_path, 2, .{}));
+    try save_manager.refresh(allocator, &machine, state_path);
+    try std.testing.expect(!save_manager.slotMetadata(2).exists);
+    try std.testing.expect(!save_manager.slotMetadata(2).preview.available);
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot2_preview_path, .{}));
+}
+
+test "save state preview sidecar round-trips sampled pixels" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const preview_path = try std.fs.path.join(allocator, &.{ dir_path, "slot1.state.preview" });
+    defer allocator.free(preview_path);
+
+    var framebuffer = [_]u32{0} ** (Vdp.framebuffer_width * 224);
+    for (0..224) |y| {
+        for (0..Vdp.framebuffer_width) |x| {
+            framebuffer[y * Vdp.framebuffer_width + x] =
+                0xFF00_0000 |
+                (@as(u32, @intCast(y)) << 8) |
+                @as(u32, @intCast(x & 0xFF));
+        }
+    }
+
+    const preview = SaveStatePreview.captureFromFramebuffer(framebuffer[0..]);
+    try std.testing.expect(preview.available);
+    try std.testing.expectEqual(framebuffer[0], preview.pixels[0]);
+    try std.testing.expectEqual(framebuffer[(224 - 1) * Vdp.framebuffer_width + (Vdp.framebuffer_width - 1)], preview.pixels[save_state_preview_pixel_count - 1]);
+
+    try preview.saveToFile(preview_path);
+    const loaded = try SaveStatePreview.loadFromFile(preview_path);
+    try std.testing.expect(loaded.available);
+    try std.testing.expectEqualSlices(u32, preview.pixels[0..], loaded.pixels[0..]);
+}
+
 test "frontend config tracks recent roms and last directory" {
     var config = FrontendConfig{};
 
@@ -4517,12 +6821,16 @@ test "frontend config tracks recent roms and last directory" {
 test "frontend config parsing preserves recent rom order" {
     const contents =
         \\last_open_dir = roms
+        \\video_aspect = 4:3
+        \\video_scale = whole_pixels
         \\recent_rom = roms/b.bin
         \\recent_rom = roms/a.bin
     ;
     const config = try FrontendConfig.parseContents(contents);
 
     try std.testing.expectEqualStrings("roms", config.last_open_dir.slice());
+    try std.testing.expectEqual(VideoAspectMode.four_three, config.video_aspect_mode);
+    try std.testing.expectEqual(VideoScaleMode.whole_pixels, config.video_scale_mode);
     try std.testing.expectEqual(@as(usize, 2), config.recent_rom_count);
     try std.testing.expectEqualStrings("roms/b.bin", config.recentRom(0));
     try std.testing.expectEqualStrings("roms/a.bin", config.recentRom(1));
@@ -4553,6 +6861,42 @@ test "home menu wraps across dynamic recent rom entries" {
     }
 }
 
+test "home screen gamepad navigation loads recent rom entries" {
+    var config = FrontendConfig{};
+    config.noteLoadedRom("roms/a.bin");
+    config.noteLoadedRom("roms/b.bin");
+
+    var ui = FrontendUi{ .show_home = true };
+    var menu = HomeMenuState{};
+    var settings = SettingsMenuState{};
+
+    switch (handleHomeScreenGamepadInput(&ui, &menu, &settings, &config, .dpad_down, true)) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    switch (menu.currentAction(&config)) {
+        .recent_rom => |index| try std.testing.expectEqual(@as(usize, 0), index),
+        else => try std.testing.expect(false),
+    }
+    switch (handleHomeScreenGamepadInput(&ui, &menu, &settings, &config, .south, true)) {
+        .load_recent => |index| try std.testing.expectEqual(@as(usize, 0), index),
+        else => try std.testing.expect(false),
+    }
+
+    switch (handleHomeScreenGamepadInput(&ui, &menu, &settings, &config, .west, true)) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(ui.show_settings);
+    ui.show_settings = false;
+
+    switch (handleHomeScreenGamepadInput(&ui, &menu, &settings, &config, .north, true)) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(ui.show_help);
+}
+
 test "frontend toast visibility expires after its frame window" {
     var toast = FrontendToast{};
     toast.show(.success, "STATE FILE SAVED", 25);
@@ -4560,6 +6904,348 @@ test "frontend toast visibility expires after its frame window" {
     try std.testing.expect(toast.visible(25));
     try std.testing.expect(toast.visible(25 + frontend_toast_duration_frames - 1));
     try std.testing.expect(!toast.visible(25 + frontend_toast_duration_frames));
+}
+
+test "frontend ui treats save manager as a paused overlay" {
+    var ui = FrontendUi{ .show_save_manager = true };
+    try std.testing.expect(ui.emulationPaused());
+}
+
+test "frontend ui treats settings as a paused overlay" {
+    var ui = FrontendUi{ .show_settings = true };
+    try std.testing.expect(ui.emulationPaused());
+}
+
+test "settings menu wraps and audio render mode cycles" {
+    var settings = SettingsMenuState{};
+    try std.testing.expectEqual(SettingsMenuAction.video_aspect_mode, settings.currentAction());
+
+    settings.move(-1);
+    try std.testing.expectEqual(SettingsMenuAction.close, settings.currentAction());
+
+    try std.testing.expectEqual(VideoAspectMode.four_three, cycleVideoAspectMode(.stretch, 1));
+    try std.testing.expectEqual(VideoAspectMode.square_pixels, cycleVideoAspectMode(.stretch, -1));
+    try std.testing.expectEqual(VideoScaleMode.whole_pixels, cycleVideoScaleMode(.fit, 1));
+    try std.testing.expectEqual(VideoScaleMode.fit, cycleVideoScaleMode(.whole_pixels, 1));
+    try std.testing.expectEqual(AudioOutput.RenderMode.ym_only, cycleAudioRenderMode(.normal, 1));
+    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, cycleAudioRenderMode(.normal, -1));
+    try std.testing.expectEqual(AudioOutput.RenderMode.normal, cycleAudioRenderMode(.unfiltered_mix, 1));
+}
+
+test "video destination rect honors aspect and integer scaling" {
+    const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 };
+
+    const stretch = computeVideoDestinationRect(viewport, 224, .stretch, .fit);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), stretch.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), stretch.y, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1280.0), stretch.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 720.0), stretch.h, 0.001);
+
+    const four_three = computeVideoDestinationRect(viewport, 224, .four_three, .fit);
+    try std.testing.expectApproxEqAbs(@as(f32, 160.0), four_three.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), four_three.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 960.0), four_three.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 720.0), four_three.h, 0.01);
+
+    const integer_scaled = computeVideoDestinationRect(viewport, 224, .square_pixels, .whole_pixels);
+    try std.testing.expectApproxEqAbs(@as(f32, 160.0), integer_scaled.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 24.0), integer_scaled.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 960.0), integer_scaled.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 672.0), integer_scaled.h, 0.01);
+}
+
+test "settings actions persist frontend video settings" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const config_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.cfg" });
+    defer allocator.free(config_path);
+
+    var ui = FrontendUi{ .show_settings = true };
+    var settings = SettingsMenuState{};
+    var config = FrontendConfig{};
+    var perf = PerformanceHudState{};
+    var spike_log = PerformanceSpikeLogState{};
+    var core_profile_frames_remaining: u32 = 0;
+    var current_audio_mode: AudioOutput.RenderMode = .normal;
+    const fake_window: *zsdl3.Window = @ptrFromInt(1);
+
+    applySettingsAction(
+        &ui,
+        &settings,
+        &config,
+        config_path,
+        &perf,
+        &spike_log,
+        &core_profile_frames_remaining,
+        fake_window,
+        null,
+        &current_audio_mode,
+        .video_aspect_mode,
+        1,
+        .{},
+    );
+    applySettingsAction(
+        &ui,
+        &settings,
+        &config,
+        config_path,
+        &perf,
+        &spike_log,
+        &core_profile_frames_remaining,
+        fake_window,
+        null,
+        &current_audio_mode,
+        .video_scale_mode,
+        1,
+        .{},
+    );
+
+    try std.testing.expectEqual(VideoAspectMode.four_three, config.video_aspect_mode);
+    try std.testing.expectEqual(VideoScaleMode.whole_pixels, config.video_scale_mode);
+
+    const saved = try FrontendConfig.loadFromFile(allocator, config_path);
+    try std.testing.expectEqual(VideoAspectMode.four_three, saved.video_aspect_mode);
+    try std.testing.expectEqual(VideoScaleMode.whole_pixels, saved.video_scale_mode);
+}
+
+test "guide button toggles pause and resumes overlays" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var ui = FrontendUi{};
+    var menu = HomeMenuState{};
+    var settings = SettingsMenuState{};
+    var config = FrontendConfig{};
+    var save_manager = SaveManagerState{};
+    var performance_hud = PerformanceHudState{};
+    var performance_spike_log = PerformanceSpikeLogState{};
+    var current_audio_mode: AudioOutput.RenderMode = .normal;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+    var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
+    var frame_counter: u32 = 0;
+    var core_profile_frames_remaining: u32 = 0;
+    const fake_window: *zsdl3.Window = @ptrFromInt(1);
+
+    switch (handleFrontendGamepadInput(
+        &ui,
+        &menu,
+        &settings,
+        &config,
+        "frontend.cfg",
+        &save_manager,
+        allocator,
+        &machine,
+        null,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &current_audio_mode,
+        &performance_hud,
+        &performance_spike_log,
+        &core_profile_frames_remaining,
+        fake_window,
+        &frame_counter,
+        .guide,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(ui.paused);
+
+    ui.show_help = true;
+    ui.show_save_manager = true;
+    switch (handleFrontendGamepadInput(
+        &ui,
+        &menu,
+        &settings,
+        &config,
+        "frontend.cfg",
+        &save_manager,
+        allocator,
+        &machine,
+        null,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &current_audio_mode,
+        &performance_hud,
+        &performance_spike_log,
+        &core_profile_frames_remaining,
+        fake_window,
+        &frame_counter,
+        .guide,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(!ui.paused);
+    try std.testing.expect(!ui.show_help);
+    try std.testing.expect(!ui.show_save_manager);
+}
+
+test "save manager gamepad controls save load delete and close" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = [_]u8{0} ** 0x400;
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
+    defer allocator.free(state_path);
+    const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, 1);
+    defer allocator.free(slot1_state_path);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var ui = FrontendUi{ .paused = true, .show_save_manager = true };
+    var save_manager = SaveManagerState{};
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+    var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
+    var frame_counter: u32 = 5;
+
+    machine.writeWorkRamByte(0x20, 0x44);
+    switch (handleSaveManagerGamepadInput(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        .west,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.fs.cwd().access(slot1_state_path, .{});
+    try std.testing.expect(save_manager.slotMetadata(1).exists);
+
+    machine.writeWorkRamByte(0x20, 0x00);
+    frame_counter = 99;
+    switch (handleSaveManagerGamepadInput(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        .south,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expectEqual(@as(u8, 0x44), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u32, 0), frame_counter);
+
+    switch (handleSaveManagerGamepadInput(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        .right_shoulder,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
+
+    switch (handleSaveManagerGamepadInput(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        .left_shoulder,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
+
+    switch (handleSaveManagerGamepadInput(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        .north,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(!save_manager.slotMetadata(1).exists);
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot1_state_path, .{}));
+
+    switch (handleSaveManagerGamepadInput(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        .east,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(!ui.show_save_manager);
+    try std.testing.expect(ui.paused);
 }
 
 test "file dialog state records selected paths and failures" {
@@ -4596,6 +7282,32 @@ test "file dialog state records cancellations" {
         else => try std.testing.expect(false),
     }
     try std.testing.expect(dialog.begin(null));
+}
+
+test "dialog path copy truncates paths exceeding buffer capacity" {
+    var path_copy = DialogPathCopy{};
+    const long_path = "a" ** (std.fs.max_path_bytes + 100);
+    path_copy.set(long_path);
+    try std.testing.expectEqual(std.fs.max_path_bytes, path_copy.len);
+    try std.testing.expectEqual(std.fs.max_path_bytes, path_copy.slice().len);
+    for (path_copy.slice()) |c| {
+        try std.testing.expectEqual(@as(u8, 'a'), c);
+    }
+}
+
+test "dialog path copy handles exact buffer capacity" {
+    var path_copy = DialogPathCopy{};
+    const exact_path = "b" ** std.fs.max_path_bytes;
+    path_copy.set(exact_path);
+    try std.testing.expectEqual(std.fs.max_path_bytes, path_copy.len);
+}
+
+test "dialog path copy handles normal paths" {
+    var path_copy = DialogPathCopy{};
+    const normal_path = "/home/user/roms/game.bin";
+    path_copy.set(normal_path);
+    try std.testing.expectEqual(normal_path.len, path_copy.len);
+    try std.testing.expectEqualStrings(normal_path, path_copy.slice());
 }
 
 test "frame duration uses console master clock" {
@@ -4778,32 +7490,59 @@ test "console region auto-detection defaults to overseas for multi-region countr
     try std.testing.expectEqualStrings("Overseas/export (auto default)", resolved.description);
 }
 
-fn gifOutputPath() [48]u8 {
+fn gifOutputPath() ?[48]u8 {
     var buf: [48]u8 = [_]u8{0} ** 48;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
-        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch break;
+        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch return null;
         buf[name.len] = 0;
         std.fs.cwd().access(name, .{}) catch {
             return buf;
         };
     }
-
-    return buf;
+    return null;
 }
 
-fn wavOutputPath() [48]u8 {
+fn wavOutputPath() ?[48]u8 {
     var buf: [48]u8 = [_]u8{0} ** 48;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
-        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{i}) catch break;
+        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{i}) catch return null;
         buf[name.len] = 0;
         std.fs.cwd().access(name, .{}) catch {
             return buf;
         };
     }
+    return null;
+}
 
-    return buf;
+test "gif output path returns optional type" {
+    // Verify the function returns an optional - this tests the fix for the
+    // bug where returning non-null on exhausted slots would overwrite files
+    const ResultType = @TypeOf(gifOutputPath());
+    const info = @typeInfo(ResultType);
+    try std.testing.expect(info == .optional);
+}
+
+test "wav output path returns optional type" {
+    // Verify the function returns an optional - this tests the fix for the
+    // bug where returning non-null on exhausted slots would overwrite files
+    const ResultType = @TypeOf(wavOutputPath());
+    const info = @typeInfo(ResultType);
+    try std.testing.expect(info == .optional);
+}
+
+test "output path format matches expected pattern" {
+    // Test that the format string produces expected filenames
+    var buf: [48]u8 = [_]u8{0} ** 48;
+    const name1 = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{@as(u32, 1)}) catch unreachable;
+    try std.testing.expectEqualStrings("sandopolis_001.gif", name1);
+
+    const name999 = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{@as(u32, 999)}) catch unreachable;
+    try std.testing.expectEqualStrings("sandopolis_999.gif", name999);
+
+    const wav_name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{@as(u32, 42)}) catch unreachable;
+    try std.testing.expectEqualStrings("sandopolis_042.wav", wav_name);
 }
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;

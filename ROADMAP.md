@@ -48,8 +48,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Configurable input mapping via a config file with keyboard, gamepad, and analog threshold settings
 - [x] Resizable window and fullscreen toggle
 - [x] Startup home screen with recent-ROM history and remembered open-directory state
+- [x] Modal save manager for persistent state slots with runtime metadata and delete support
 - [x] GIF animation recording support
-- [ ] Rebinding, save-management, and controller UX improvements beyond the current home screen and status toasts
+- [x] Save-state previews/screenshots and fuller settings menus beyond the current keyboard/gamepad home, pause, and save-manager flow
 - [ ] More controller I/O edge-case coverage and broader peripheral support
 
 ### Compatibility and tooling

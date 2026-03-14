@@ -40,7 +40,7 @@ Footage of Sandopolis running a few games:
 - Accurate Sega Genesis/Mega Drive emulation
 - Very portable; can be built and run on any platform that Zig supports including WASM
 - Configurable gameplay input, frontend hotkeys, and rendering settings
-- Supports ROM loading at runtime, recent-ROM history, quick state save/load, persistent state slots, and keyboard rebinding
+- Supports ROM loading at runtime, recent-ROM history, a save-state manager, quick state save/load, persistent state slots, and keyboard rebinding
 - Has a permissive license that allows commercial use
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
@@ -106,7 +106,7 @@ Useful frontend hotkeys:
 - `Shift+F3`: soft reset console
 - `Ctrl+Shift+F3`: hard reset and reload current ROM
 
-If you launch Sandopolis without a ROM, it now starts in a frontend home screen with `Open ROM`, recent-ROM entries, help, and quit actions. Frontend actions such as save/load state, recording, fullscreen, and ROM loads also show short on-screen status toasts. Recent ROM history and the last-open directory are stored in `sandopolis_frontend.cfg` (or the path from `SANDOPOLIS_FRONTEND_CONFIG`).
+If you launch Sandopolis without a ROM, it now starts in a frontend home screen with `Open ROM`, recent-ROM entries, settings, help, and quit actions. Frontend actions such as save/load state, recording, fullscreen, and ROM loads also show short on-screen status toasts. Persistent states also have a modal save manager: pause, press `Enter`, then use `Up`/`Down` to pick a slot, `F8` to save, `Enter` or `F9` to load, and `Delete` to remove a slot. Each persistent slot also writes a small `.preview` sidecar and the save manager shows the captured screenshot for the selected slot. The frontend is gamepad-driven too: `Guide` opens or closes the pause flow, the home screen and save manager accept `D-pad` navigation plus `A`/`Start` confirm, and the save manager maps `X` to save and `Y` to delete. There is also a settings modal for runtime-safe frontend controls such as aspect mode, integer scaling, fullscreen, audio render mode, and the performance HUD. Recent ROM history, the last-open directory, and frontend video settings are stored in `sandopolis_frontend.cfg` (or the path from `SANDOPOLIS_FRONTEND_CONFIG`).
 
 > [!NOTE]
 > To build from source, you mainly need to have Zig and Git installed.
