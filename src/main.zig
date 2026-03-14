@@ -13,6 +13,7 @@ const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
 const WavRecorder = @import("recording/wav.zig").WavRecorder;
 const StateFile = @import("state_file.zig");
+const ui_render = @import("frontend/ui.zig");
 
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
@@ -483,108 +484,10 @@ fn isThresholdSlowFrame(perf: *const PerformanceHudState) bool {
     return perf.last_overrun_ns >= performance_spike_log_threshold_ns;
 }
 
-// Centralized UI color system for consistent theming across overlays
-const UiColors = struct {
-    // Panel backgrounds (darker, cleaner)
-    const panel_primary: zsdl3.Color = .{ .r = 0x0D, .g = 0x11, .b = 0x17, .a = 0xE8 }; // GitHub-dark inspired
-    const panel_secondary: zsdl3.Color = .{ .r = 0x0E, .g = 0x14, .b = 0x19, .a = 0xEE }; // slightly warmer
-    const panel_overlay: zsdl3.Color = .{ .r = 0x0F, .g = 0x13, .b = 0x18, .a = 0xD8 }; // for HUD
-
-    // Accent colors (refined)
-    const cyan: zsdl3.Color = .{ .r = 0x5A, .g = 0xD4, .b = 0xEC, .a = 0xFF }; // slightly brighter
-    const gold: zsdl3.Color = .{ .r = 0xF5, .g = 0xC6, .b = 0x42, .a = 0xFF }; // warmer
-    const orange: zsdl3.Color = .{ .r = 0xF9, .g = 0x8B, .b = 0x4D, .a = 0xFF }; // softer
-    const green: zsdl3.Color = .{ .r = 0x7C, .g = 0xDB, .b = 0xB8, .a = 0xFF }; // mint
-    const blue: zsdl3.Color = .{ .r = 0x58, .g = 0xA6, .b = 0xFF, .a = 0xFF }; // selection
-    const red: zsdl3.Color = .{ .r = 0xE8, .g = 0x5D, .b = 0x5D, .a = 0xFF }; // errors
-
-    // Text colors (better hierarchy)
-    const text_primary: zsdl3.Color = .{ .r = 0xE6, .g = 0xED, .b = 0xF3, .a = 0xFF }; // softer white
-    const text_secondary: zsdl3.Color = .{ .r = 0x8B, .g = 0x94, .b = 0x9E, .a = 0xFF }; // more muted gray
-    const text_selected: zsdl3.Color = .{ .r = 0xFF, .g = 0xF0, .b = 0xC0, .a = 0xFF }; // warmer highlight
-    const text_muted: zsdl3.Color = .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }; // info text
-
-    // Shadow (softer than current 80-90%)
-    const shadow: zsdl3.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x99 }; // 60% opacity
-
-    // Status colors
-    const success: zsdl3.Color = .{ .r = 0x89, .g = 0xDA, .b = 0xA2, .a = 0xFF };
-    const failure: zsdl3.Color = .{ .r = 0xFF, .g = 0x9B, .b = 0x8E, .a = 0xFF };
-};
-
-// Spacing system for consistent layout
-const UiSpacing = struct {
-    const line_height: f32 = 10.0; // up from 9.0 for better readability
-
-    fn shadowOffset(scale: f32) f32 {
-        return 4.0 * scale; // scale-aware (was fixed 6px)
-    }
-
-    fn borderInset(scale: f32) f32 {
-        return 3.0 * scale; // scale-aware (was fixed 3px)
-    }
-};
-
-const OverlayLine = union(enum) {
-    hotkey: struct {
-        action: InputBindings.HotkeyAction,
-        label: []const u8,
-    },
-    text: []const u8,
-    blank,
-    state_file_slot,
-    active_state_slot,
-};
-
-const pause_overlay_lines = [_]OverlayLine{
-    .state_file_slot,
-    .{ .text = "ENTER SAVE MANAGER" },
-    .{ .text = "TAB OR PAD X SETTINGS" },
-    .{ .text = "PAD A SAVE MANAGER  B OR GUIDE RESUME" },
-    .{ .text = "PAD Y HELP" },
-    .{ .hotkey = .{ .action = .toggle_pause, .label = "RESUME" } },
-    .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM" } },
-    .{ .hotkey = .{ .action = .restart_rom, .label = "SOFT RESET" } },
-    .{ .hotkey = .{ .action = .reload_rom, .label = "HARD RESET / RELOAD" } },
-    .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD EDITOR" } },
-    .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERF HUD" } },
-    .{ .hotkey = .{ .action = .reset_performance_hud, .label = "RESET PERF HUD" } },
-    .{ .hotkey = .{ .action = .save_quick_state, .label = "SAVE QUICK STATE" } },
-    .{ .hotkey = .{ .action = .load_quick_state, .label = "LOAD QUICK STATE" } },
-    .{ .hotkey = .{ .action = .save_state_file, .label = "SAVE STATE FILE" } },
-    .{ .hotkey = .{ .action = .load_state_file, .label = "LOAD STATE FILE" } },
-    .{ .hotkey = .{ .action = .next_state_slot, .label = "NEXT STATE SLOT" } },
-    .{ .hotkey = .{ .action = .toggle_help, .label = "HELP" } },
-};
-
-const help_overlay_lines = [_]OverlayLine{
-    .{ .hotkey = .{ .action = .toggle_help, .label = "CLOSE HELP" } },
-    .{ .hotkey = .{ .action = .toggle_pause, .label = "PAUSE OR RESUME" } },
-    .{ .text = "PAUSE THEN ENTER FOR SAVE MANAGER" },
-    .{ .text = "PAUSE THEN TAB OR PAD X FOR SETTINGS" },
-    .{ .text = "PAD GUIDE PAUSES  A SELECTS  B GOES BACK" },
-    .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM DIALOG" } },
-    .{ .hotkey = .{ .action = .restart_rom, .label = "SOFT RESET CONSOLE" } },
-    .{ .hotkey = .{ .action = .reload_rom, .label = "HARD RESET OR RELOAD ROM" } },
-    .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD EDITOR" } },
-    .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "TOGGLE PERF HUD" } },
-    .{ .hotkey = .{ .action = .reset_performance_hud, .label = "RESET PERF HUD" } },
-    .{ .hotkey = .{ .action = .save_quick_state, .label = "SAVE QUICK STATE" } },
-    .{ .hotkey = .{ .action = .load_quick_state, .label = "LOAD QUICK STATE" } },
-    .{ .hotkey = .{ .action = .save_state_file, .label = "SAVE STATE FILE" } },
-    .{ .hotkey = .{ .action = .load_state_file, .label = "LOAD STATE FILE" } },
-    .{ .hotkey = .{ .action = .next_state_slot, .label = "NEXT STATE SLOT" } },
-    .blank,
-    .{ .hotkey = .{ .action = .step, .label = "STEP CPU" } },
-    .{ .hotkey = .{ .action = .registers, .label = "REGISTER DUMP" } },
-    .{ .hotkey = .{ .action = .record_gif, .label = "START OR STOP GIF" } },
-    .{ .hotkey = .{ .action = .record_wav, .label = "START OR STOP WAV" } },
-    .{ .hotkey = .{ .action = .toggle_fullscreen, .label = "TOGGLE FULLSCREEN" } },
-    .{ .hotkey = .{ .action = .quit, .label = "QUIT" } },
-    .blank,
-    .active_state_slot,
-    .{ .text = "HELP PAUSE AND MENUS FREEZE EMULATION" },
-};
+// Re-export UI types from frontend/ui.zig
+const UiColors = ui_render.Colors;
+const UiSpacing = ui_render.Spacing;
+const OverlayLine = ui_render.OverlayLine;
 
 const max_dialog_message_bytes: usize = 256;
 
@@ -1779,31 +1682,6 @@ fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
         .record_wav => "RECORD WAV",
         .toggle_fullscreen => "FULLSCREEN",
         .quit => "QUIT",
-    };
-}
-
-fn formatOverlayLine(
-    buffer: []u8,
-    bindings: *const InputBindings.Bindings,
-    line: OverlayLine,
-    persistent_state_slot: u8,
-) ![]const u8 {
-    return switch (line) {
-        .blank => "",
-        .text => |text| text,
-        .state_file_slot => std.fmt.bufPrint(buffer, "STATE FILE SLOT {d}/{d}", .{
-            persistent_state_slot,
-            StateFile.persistent_state_slot_count,
-        }),
-        .active_state_slot => std.fmt.bufPrint(buffer, "ACTIVE STATE SLOT {d}/{d}", .{
-            persistent_state_slot,
-            StateFile.persistent_state_slot_count,
-        }),
-        .hotkey => |item| {
-            var binding_buffer: [48]u8 = undefined;
-            const binding = try InputBindings.hotkeyBindingDisplayName(binding_buffer[0..], bindings.hotkeyBinding(item.action));
-            return std.fmt.bufPrint(buffer, "{s} {s}", .{ binding, item.label });
-        },
     };
 }
 
@@ -3590,12 +3468,11 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
     return null;
 }
 
-fn overlayScale(viewport: zsdl3.Rect) f32 {
-    const min_dimension = @min(viewport.w, viewport.h);
-    if (min_dimension < 360) return 1.0;
-    if (min_dimension < 720) return 2.0;
-    return 3.0;
-}
+// Re-export UI rendering functions from frontend/ui.zig
+const overlayScale = ui_render.overlayScale;
+const overlayTextWidth = ui_render.textWidth;
+const drawOverlayText = ui_render.drawText;
+const renderOverlayPanel = ui_render.renderPanel;
 
 fn computeVideoDestinationRect(
     viewport: zsdl3.Rect,
@@ -3633,102 +3510,6 @@ fn computeVideoDestinationRect(
         .w = dest_w,
         .h = dest_h,
     };
-}
-
-fn overlayGlyphRows(ch: u8) [7]u8 {
-    const glyph = std.ascii.toUpper(ch);
-    return switch (glyph) {
-        ' ' => .{ 0, 0, 0, 0, 0, 0, 0 },
-        'A' => .{ 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 },
-        'B' => .{ 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E },
-        'C' => .{ 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E },
-        'D' => .{ 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E },
-        'E' => .{ 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F },
-        'F' => .{ 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 },
-        'G' => .{ 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E },
-        'H' => .{ 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 },
-        'I' => .{ 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F },
-        'J' => .{ 0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C },
-        'K' => .{ 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 },
-        'L' => .{ 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F },
-        'M' => .{ 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 },
-        'N' => .{ 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 },
-        'O' => .{ 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E },
-        'P' => .{ 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 },
-        'Q' => .{ 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D },
-        'R' => .{ 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 },
-        'S' => .{ 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E },
-        'T' => .{ 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 },
-        'U' => .{ 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E },
-        'V' => .{ 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 },
-        'W' => .{ 0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11 },
-        'X' => .{ 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 },
-        'Y' => .{ 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 },
-        'Z' => .{ 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F },
-        '0' => .{ 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E },
-        '1' => .{ 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E },
-        '2' => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F },
-        '3' => .{ 0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E },
-        '4' => .{ 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 },
-        '5' => .{ 0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E },
-        '6' => .{ 0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E },
-        '7' => .{ 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10 },
-        '8' => .{ 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E },
-        '9' => .{ 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E },
-        ':' => .{ 0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00 },
-        '-' => .{ 0x00, 0x00, 0x00, 0x0E, 0x00, 0x00, 0x00 },
-        '.' => .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06 },
-        '/' => .{ 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 },
-        '+' => .{ 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 },
-        '_' => .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F },
-        '?' => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },
-        // Icon glyphs for UI elements
-        '>' => .{ 0x00, 0x08, 0x04, 0x02, 0x04, 0x08, 0x00 }, // right arrow (selected menu item)
-        '<' => .{ 0x00, 0x02, 0x04, 0x08, 0x04, 0x02, 0x00 }, // left arrow (back navigation)
-        '^' => .{ 0x00, 0x04, 0x0E, 0x15, 0x04, 0x04, 0x00 }, // up arrow (scroll up)
-        '~' => .{ 0x00, 0x04, 0x04, 0x15, 0x0E, 0x04, 0x00 }, // down arrow (scroll down)
-        '@' => .{ 0x00, 0x00, 0x01, 0x02, 0x14, 0x08, 0x00 }, // checkmark (success/enabled)
-        '#' => .{ 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x00 }, // X mark (failure/disabled)
-        '$' => .{ 0x00, 0x10, 0x18, 0x1C, 0x18, 0x10, 0x00 }, // play (resume game)
-        '%' => .{ 0x00, 0x1B, 0x1B, 0x1B, 0x1B, 0x1B, 0x00 }, // pause (paused state)
-        '[' => .{ 0x1C, 0x1F, 0x11, 0x11, 0x11, 0x1F, 0x00 }, // folder (open ROM)
-        ']' => .{ 0x1F, 0x11, 0x1F, 0x11, 0x11, 0x11, 0x1F }, // disk (save state)
-        '*' => .{ 0x0A, 0x1F, 0x15, 0x0E, 0x15, 0x1F, 0x0A }, // gear (settings)
-        '(' => .{ 0x0E, 0x11, 0x02, 0x04, 0x00, 0x04, 0x0E }, // help (help/info) - alternative to ?
-        '{' => .{ 0x00, 0x0E, 0x1F, 0x1F, 0x0A, 0x00, 0x00 }, // controller (input config)
-        '|' => .{ 0x00, 0x00, 0x0E, 0x0E, 0x0E, 0x00, 0x00 }, // bullet (list item)
-        '!' => .{ 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 }, // exclamation (warning)
-        else => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },
-    };
-}
-
-fn overlayTextWidth(text: []const u8, scale: f32) f32 {
-    return @as(f32, @floatFromInt(text.len)) * 6.0 * scale;
-}
-
-fn drawOverlayGlyph(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, ch: u8) !void {
-    const rows = overlayGlyphRows(ch);
-    for (rows, 0..) |bits, row| {
-        for (0..5) |col| {
-            const shift: u3 = @intCast(4 - col);
-            if (((bits >> shift) & 1) == 0) continue;
-            try zsdl3.renderFillRect(renderer, .{
-                .x = x + @as(f32, @floatFromInt(col)) * scale,
-                .y = y + @as(f32, @floatFromInt(row)) * scale,
-                .w = scale,
-                .h = scale,
-            });
-        }
-    }
-}
-
-fn drawOverlayText(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color: zsdl3.Color, text: []const u8) !void {
-    try zsdl3.setRenderDrawColor(renderer, color);
-    var cursor = x;
-    for (text) |ch| {
-        try drawOverlayGlyph(renderer, cursor, y, scale, ch);
-        cursor += 6.0 * scale;
-    }
 }
 
 fn formatDurationMsTenths(buffer: []u8, ns: u64) ![]const u8 {
@@ -3848,163 +3629,10 @@ fn formatPerformanceSpikeWindowLine(buffer: []u8, summary: *const PerformanceSpi
     });
 }
 
-fn renderOverlayPanel(
-    renderer: *zsdl3.Renderer,
-    rect: zsdl3.FRect,
-    fill: zsdl3.Color,
-    border: zsdl3.Color,
-    scale: f32,
-) !void {
-    const shadow_offset = UiSpacing.shadowOffset(scale);
-    const border_inset = UiSpacing.borderInset(scale);
-    try zsdl3.setRenderDrawColor(renderer, UiColors.shadow);
-    try zsdl3.renderFillRect(renderer, .{
-        .x = rect.x + shadow_offset,
-        .y = rect.y + shadow_offset,
-        .w = rect.w,
-        .h = rect.h,
-    });
-    try zsdl3.setRenderDrawColor(renderer, fill);
-    try zsdl3.renderFillRect(renderer, rect);
-    try zsdl3.setRenderDrawColor(renderer, border);
-    try zsdl3.renderRect(renderer, rect);
-    try zsdl3.renderRect(renderer, .{
-        .x = rect.x + border_inset,
-        .y = rect.y + border_inset,
-        .w = rect.w - border_inset * 2.0,
-        .h = rect.h - border_inset * 2.0,
-    });
-}
-
-fn renderPauseOverlay(
-    renderer: *zsdl3.Renderer,
-    viewport: zsdl3.Rect,
-    bindings: *const InputBindings.Bindings,
-    persistent_state_slot: u8,
-) !void {
-    const title = "PAUSED";
-    const scale = overlayScale(viewport);
-    const padding = 10.0 * scale;
-    const line_height = 9.0 * scale;
-
-    var line_buffers: [pause_overlay_lines.len][80]u8 = undefined;
-    var lines: [pause_overlay_lines.len][]const u8 = undefined;
-    var max_width = overlayTextWidth(title, scale);
-    for (pause_overlay_lines, 0..) |line, i| {
-        lines[i] = try formatOverlayLine(line_buffers[i][0..], bindings, line, persistent_state_slot);
-    }
-    for (lines) |line| {
-        max_width = @max(max_width, overlayTextWidth(line, scale));
-    }
-
-    const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
-    };
-
-    try renderOverlayPanel(
-        renderer,
-        panel,
-        UiColors.panel_primary,
-        UiColors.gold,
-        scale,
-    );
-
-    try drawOverlayText(
-        renderer,
-        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
-        panel.y + padding,
-        scale,
-        UiColors.gold,
-        title,
-    );
-
-    var y = panel.y + padding + 11.0 * scale;
-    for (lines) |line| {
-        try drawOverlayText(
-            renderer,
-            panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
-            y,
-            scale,
-            UiColors.text_primary,
-            line,
-        );
-        y += line_height;
-    }
-}
-
-fn renderHelpOverlay(
-    renderer: *zsdl3.Renderer,
-    viewport: zsdl3.Rect,
-    bindings: *const InputBindings.Bindings,
-    persistent_state_slot: u8,
-) !void {
-    const title = "SANDOPOLIS HELP";
-    const scale = overlayScale(viewport);
-    const padding = 10.0 * scale;
-    const line_height = 9.0 * scale;
-
-    var line_buffers: [help_overlay_lines.len][96]u8 = undefined;
-    var lines: [help_overlay_lines.len][]const u8 = undefined;
-    var max_width = overlayTextWidth(title, scale);
-    for (help_overlay_lines, 0..) |line, i| {
-        lines[i] = try formatOverlayLine(line_buffers[i][0..], bindings, line, persistent_state_slot);
-    }
-    for (lines) |line| {
-        max_width = @max(max_width, overlayTextWidth(line, scale));
-    }
-
-    const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
-    };
-
-    try renderOverlayPanel(
-        renderer,
-        panel,
-        UiColors.panel_primary,
-        UiColors.green,
-        scale,
-    );
-
-    try drawOverlayText(
-        renderer,
-        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
-        panel.y + padding,
-        scale,
-        UiColors.green,
-        title,
-    );
-
-    var y = panel.y + padding + 12.0 * scale;
-    for (help_overlay_lines, lines) |line_spec, line| {
-        const color: zsdl3.Color = switch (line_spec) {
-            .blank => .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-            .hotkey => UiColors.gold,
-            .text => |text| if (std.mem.startsWith(u8, text, "HELP"))
-                UiColors.text_muted
-            else
-                UiColors.text_primary,
-            else => UiColors.text_primary,
-        };
-
-        if (line.len != 0) {
-            try drawOverlayText(
-                renderer,
-                panel.x + (panel.w - overlayTextWidth(line, scale)) * 0.5,
-                y,
-                scale,
-                color,
-                line,
-            );
-        }
-        y += line_height;
-    }
-}
+// Re-export pause/help overlay rendering from frontend/ui.zig
+const renderPauseOverlay = ui_render.renderPauseOverlay;
+const renderHelpOverlay = ui_render.renderHelpOverlay;
+const formatOverlayLine = ui_render.formatOverlayLine;
 
 fn formatHomeMenuItem(
     buffer: []u8,
