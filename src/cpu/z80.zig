@@ -205,6 +205,20 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn discardPendingAudioEvents(self: *Z80) void {
+        var ym_writes: [64]YmWriteEvent = undefined;
+        while (self.takeYmWrites(ym_writes[0..]) != 0) {}
+
+        var ym_dac_samples: [64]YmDacSampleEvent = undefined;
+        while (self.takeYmDacSamples(ym_dac_samples[0..]) != 0) {}
+
+        var ym_resets: [16]YmResetEvent = undefined;
+        while (self.takeYmResets(ym_resets[0..]) != 0) {}
+
+        var psg_commands: [64]PsgCommandEvent = undefined;
+        while (self.takePsgCommands(psg_commands[0..]) != 0) {}
+    }
+
     pub fn setAudioMasterOffset(self: *Z80, master_offset: u32) void {
         if (self.handle) |h| c.jgz80_set_audio_master_offset(h, master_offset);
     }
@@ -342,6 +356,34 @@ test "z80 pending audible event helper ignores reset-only events" {
 
     var ym_reset_events: [1]Z80.YmResetEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
+}
+
+test "z80 can discard all pending audio event queues" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x4000, 0x2A);
+    z80.writeByte(0x4001, 0x56);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x0F);
+    z80.writeByte(0x7F11, 0x90);
+    z80.writeReset(0);
+
+    try std.testing.expect(z80.hasPendingAudibleEvents());
+    try std.testing.expectEqual(@as(u16, 1), z80.pendingYmWriteCount());
+    try std.testing.expectEqual(@as(u16, 1), z80.pendingYmDacCount());
+    try std.testing.expectEqual(@as(u16, 1), z80.pendingPsgCommandCount());
+
+    z80.discardPendingAudioEvents();
+
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+    try std.testing.expectEqual(@as(u16, 0), z80.pendingYmWriteCount());
+    try std.testing.expectEqual(@as(u16, 0), z80.pendingYmDacCount());
+    try std.testing.expectEqual(@as(u16, 0), z80.pendingPsgCommandCount());
+
+    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 0), z80.takeYmResets(ym_reset_events[0..]));
 }
 
 test "z80 instruction writes stamp ym events at the in-instruction access time" {

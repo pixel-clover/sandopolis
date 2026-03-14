@@ -294,6 +294,7 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
     machine.cpu.restoreState(&cpu_state);
     machine.bus.z80.restoreState(&z80_state);
     machine.bus.rebindRuntimePointers();
+    machine.clearPendingAudioTransferState();
 
     return machine;
 }
@@ -378,6 +379,10 @@ test "save-state files round-trip machine state" {
     machine.bus.ram[0x1234] = 0x56;
     machine.bus.vdp.regs[1] = 0x40;
     machine.bus.audio_timing.consumeMaster(1234);
+    machine.bus.z80.setAudioMasterOffset(1234);
+    machine.bus.z80.writeByte(0x4000, 0x22);
+    machine.bus.z80.writeByte(0x4001, 0x0F);
+    machine.bus.z80.writeByte(0x7F11, 0x90);
     var timing_state = machine.bus.captureTimingState();
     timing_state.z80_stall_master_debt = 49;
     timing_state.z80_wait_master_cycles = 50;
@@ -404,6 +409,8 @@ test "save-state files round-trip machine state" {
     try testing.expectEqual(@as(u8, 0x56), restored.bus.ram[0x1234]);
     try testing.expectEqual(@as(u8, 0x40), restored.bus.vdp.regs[1]);
     try testing.expectEqual(@as(u8, 0x9A), restored.bus.z80.readByte(0x0000));
+    try testing.expectEqual(@as(u8, 0x0F), restored.bus.z80.getYmRegister(0, 0x22));
+    try testing.expectEqual(@as(u8, 0x90), restored.bus.z80.getPsgLast());
     try testing.expectEqual(@as(u8, 0xC7), restored.bus.read8(0x0020_0007));
     try testing.expectEqual(@as(u32, 0x0000_1234), @as(u32, restored.cpu.core.pc));
     try testing.expectEqual(@as(u16, 0x2700), @as(u16, restored.cpu.core.sr));
@@ -416,6 +423,7 @@ test "save-state files round-trip machine state" {
     try testing.expectEqualStrings("saves/test.sav", restored.bus.persistentSavePath().?);
     try testing.expectEqualStrings("roms/test.md", restored.bus.sourcePath().?);
 
-    const pending = restored.bus.audio_timing.takePending();
-    try testing.expectEqual(@as(u32, 1234), pending.master_cycles);
+    try testing.expectEqual(@as(u32, 0), restored.bus.audio_timing.takePending().master_cycles);
+    try testing.expectEqual(@as(u16, 0), restored.bus.z80.pendingYmWriteCount());
+    try testing.expectEqual(@as(u16, 0), restored.bus.z80.pendingPsgCommandCount());
 }

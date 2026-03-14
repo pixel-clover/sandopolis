@@ -282,11 +282,16 @@ pub const Machine = struct {
         var old_machine = self.*;
         self.* = next_machine;
         self.rebindRuntimePointers();
+        self.clearPendingAudioTransferState();
         old_machine.deinit(allocator);
     }
 
     pub fn rebindRuntimePointers(self: *Machine) void {
         self.bus.rebindRuntimePointers();
+    }
+
+    pub fn clearPendingAudioTransferState(self: *Machine) void {
+        self.bus.clearPendingAudioTransferState();
     }
 
     pub fn testing(self: *Machine) TestingView {
@@ -656,6 +661,10 @@ test "machine snapshots restore CPU bus and Z80 state" {
     machine.bus.vdp.regs[1] = 0x40;
     machine.bus.audio_timing.consumeMaster(1234);
     machine.bus.z80.writeByte(0x0000, 0x9A);
+    machine.bus.z80.setAudioMasterOffset(1234);
+    machine.bus.z80.writeByte(0x4000, 0x22);
+    machine.bus.z80.writeByte(0x4001, 0x0F);
+    machine.bus.z80.writeByte(0x7F11, 0x90);
     machine.cpu.core.pc = 0x0000_1234;
     machine.cpu.core.sr = 0x2700;
     machine.m68k_sync.master_cycles = 777;
@@ -678,12 +687,14 @@ test "machine snapshots restore CPU bus and Z80 state" {
     try std.testing.expectEqual(@as(u8, 0x56), machine.bus.ram[0x1234]);
     try std.testing.expectEqual(@as(u8, 0x40), machine.bus.vdp.regs[1]);
     try std.testing.expectEqual(@as(u8, 0x9A), machine.bus.z80.readByte(0x0000));
+    try std.testing.expectEqual(@as(u8, 0x0F), machine.bus.z80.getYmRegister(0, 0x22));
+    try std.testing.expectEqual(@as(u8, 0x90), machine.bus.z80.getPsgLast());
     try std.testing.expectEqual(@as(u32, 0x0000_1234), @as(u32, machine.cpu.core.pc));
     try std.testing.expectEqual(@as(u16, 0x2700), @as(u16, machine.cpu.core.sr));
     try std.testing.expectEqual(@as(u64, 777), machine.m68k_sync.master_cycles);
-
-    const pending = machine.bus.audio_timing.takePending();
-    try std.testing.expectEqual(@as(u32, 1234), pending.master_cycles);
+    try std.testing.expectEqual(@as(u32, 0), machine.takePendingAudio().master_cycles);
+    try std.testing.expectEqual(@as(u16, 0), machine.bus.z80.pendingYmWriteCount());
+    try std.testing.expectEqual(@as(u16, 0), machine.bus.z80.pendingPsgCommandCount());
 }
 
 fn makeGenesisRom(allocator: std.mem.Allocator, stack_pointer: u32, program_counter: u32, program: []const u8) ![]u8 {

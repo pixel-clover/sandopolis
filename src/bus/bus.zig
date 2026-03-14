@@ -485,6 +485,12 @@ pub const Bus = struct {
         try self.cartridge.restoreRamState(state.cartridge_ram, cartridge_ram_bytes);
     }
 
+    pub fn clearPendingAudioTransferState(self: *Bus) void {
+        self.audio_timing = .{};
+        self.z80.discardPendingAudioEvents();
+        self.z80.setAudioMasterOffset(0);
+    }
+
     pub fn replaceStoragePaths(self: *Bus, allocator: std.mem.Allocator, save_path: ?[]u8, source_path: ?[]u8) void {
         if (self.cartridge.save_path) |existing| allocator.free(existing);
         self.cartridge.save_path = save_path;
