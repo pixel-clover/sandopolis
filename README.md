@@ -72,7 +72,7 @@ cd sandopolis
 > [!NOTE]
 > If you want to run the tests and develop Sandopolis further, you may want to clone the repository with
 > `git clone --recursive https://github.com/pixel-clover/sandopolis.git`.
-> Note that you also need to have `git-lfs` installed to download some of the files like test ROMs. 
+> Note that you also need to have `git-lfs` installed to download some of the files like test ROMs.
 
 ##### 2. Build the Sandopolis binary
 

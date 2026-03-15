@@ -119,7 +119,6 @@ pub const Psg = struct {
                 noise.real_output_bit = @intCast(noise.shift_register & 0x01);
             }
         }
-
     }
 
     pub fn doCommand(self: *Psg, command: u8) void {
