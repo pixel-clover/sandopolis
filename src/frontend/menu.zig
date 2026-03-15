@@ -44,6 +44,39 @@ pub const FrontendUi = struct {
     }
 };
 
+// Animation state for slide-in effects (separate from FrontendUi to avoid complexity)
+pub const SlideAnimation = struct {
+    panel_open_frame: u64 = 0,
+    was_panel_visible: bool = false,
+
+    const animation_frames: u64 = 12; // ~200ms at 60fps
+
+    // Update animation state based on current panel visibility
+    pub fn update(self: *SlideAnimation, panel_visible: bool, current_frame: u64) void {
+        if (panel_visible and !self.was_panel_visible) {
+            self.panel_open_frame = current_frame;
+        }
+        self.was_panel_visible = panel_visible;
+    }
+
+    // Calculate slide-in animation progress (0.0 = start, 1.0 = complete)
+    pub fn progress(self: *const SlideAnimation, current_frame: u64) f32 {
+        if (self.panel_open_frame == 0) return 1.0;
+        const elapsed = current_frame -| self.panel_open_frame;
+        if (elapsed >= animation_frames) return 1.0;
+        const t = @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(animation_frames));
+        // Ease-out cubic: 1 - (1 - t)^3
+        const inv = 1.0 - t;
+        return 1.0 - (inv * inv * inv);
+    }
+
+    // Calculate Y offset for slide-down animation (returns pixels to offset from top)
+    pub fn slideOffset(self: *const SlideAnimation, current_frame: u64, panel_height: f32) f32 {
+        const p = self.progress(current_frame);
+        return -panel_height * (1.0 - p);
+    }
+};
+
 // Home menu action types
 pub const HomeMenuAction = union(enum) {
     open_rom,

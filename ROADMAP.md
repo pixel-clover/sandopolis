@@ -5,7 +5,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 > [!IMPORTANT]
 > This roadmap is a work in progress and is subject to change.
 
-### Core system
+### Core System
 
 - [x] Project scaffolding, SDL3 integration, and memory bus structure
 - [x] ROM loading with `.bin`, `.md`, and `.smd` deinterleave support
@@ -15,7 +15,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Z80 bus control with BUSREQ/RESET and 68K window gating
 - [ ] Per-access 68K/Z80 arbitration and wait-state behavior in shared bus windows
 
-### Video display processor
+### Video Display Processor
 
 - [x] VDP registers, VRAM/CRAM/VSRAM, and pattern/tile rendering
 - [x] Plane A/B with scrolling, sprites with SAT parsing, and priority handling
@@ -30,7 +30,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [ ] More hardware-accurate VDP interrupt/status edge cases and DMA/FIFO corner cases
 - [ ] Broader validation against demanding hardware demos and VDP-focused test ROMs
 
-### Audio subsystem
+### Audio Subsystem
 
 - [x] Audio timing with master-clock accumulation and rate conversion
 - [x] Output pipeline with timestamped event application, stereo mixing, and SDL3 playback
@@ -40,7 +40,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [ ] Reduce remaining YM2612 mismatches against reference output and hardware edge cases
 - [ ] Improve final mix, filtering, and resampling to better match console output character
 
-### Input and interaction
+### Input and Interaction
 
 - [x] Keyboard and gamepad bindings for two players with hotkeys
 - [x] Controller I/O with timed TH behavior and 3/6-button protocol
@@ -53,7 +53,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Save-state previews/screenshots and fuller settings menus beyond the current keyboard/gamepad home, pause, and save-manager flow
 - [ ] More controller I/O edge-case coverage and broader peripheral support
 
-### Compatibility and tooling
+### Compatibility and Tooling
 
 - [x] Separate test targets for unit, frontend, integration, regression, and property suites
 - [x] Regression test coverage for CPU, bus, VDP, DMA/FIFO, SRAM, and audio paths
@@ -64,7 +64,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [ ] Debugger with single stepping, breakpoints, and register/memory inspection
 - [ ] Expand compatibility regression coverage with broader external ROM and test-ROM suites
 
-### Future goals
+### Future Goals
 
 - [ ] Sega CD and 32X subsystem support
 - [ ] Browser/WebAssembly build and frontend path

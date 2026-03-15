@@ -189,24 +189,53 @@ pub fn deletePreviewFile(allocator: std.mem.Allocator, state_path: []const u8) !
     };
 }
 
-// Format timestamp as UTC date/time string
-pub fn formatTimestampUtc(buffer: []u8, ns: i128) ![]const u8 {
+// Format timestamp as relative time string (e.g., "2 DAYS AGO", "JUST NOW")
+pub fn formatTimestampRelative(buffer: []u8, ns: i128) ![]const u8 {
     if (ns <= 0) return std.fmt.bufPrint(buffer, "UNKNOWN", .{});
 
-    const seconds: u64 = @intCast(@divFloor(ns, std.time.ns_per_s));
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds };
-    const epoch_day = epoch_seconds.getEpochDay();
-    const year_day = epoch_day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const now_ns: i128 = std.time.nanoTimestamp();
+    const diff_ns = now_ns - ns;
 
-    return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} UTC", .{
-        year_day.year,
-        @intFromEnum(month_day.month) + 1,
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-    });
+    if (diff_ns < 0) {
+        return std.fmt.bufPrint(buffer, "JUST NOW", .{});
+    }
+
+    const diff_seconds: u64 = @intCast(@divFloor(diff_ns, std.time.ns_per_s));
+    const diff_minutes = diff_seconds / 60;
+    const diff_hours = diff_minutes / 60;
+    const diff_days = diff_hours / 24;
+
+    if (diff_seconds < 60) {
+        return std.fmt.bufPrint(buffer, "JUST NOW", .{});
+    } else if (diff_minutes < 60) {
+        if (diff_minutes == 1) {
+            return std.fmt.bufPrint(buffer, "1 MIN AGO", .{});
+        }
+        return std.fmt.bufPrint(buffer, "{d} MINS AGO", .{diff_minutes});
+    } else if (diff_hours < 24) {
+        if (diff_hours == 1) {
+            return std.fmt.bufPrint(buffer, "1 HOUR AGO", .{});
+        }
+        return std.fmt.bufPrint(buffer, "{d} HOURS AGO", .{diff_hours});
+    } else if (diff_days < 30) {
+        if (diff_days == 1) {
+            return std.fmt.bufPrint(buffer, "YESTERDAY", .{});
+        }
+        return std.fmt.bufPrint(buffer, "{d} DAYS AGO", .{diff_days});
+    } else {
+        // For older saves, show the actual date
+        const seconds: u64 = @intCast(@divFloor(ns, std.time.ns_per_s));
+        const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds };
+        const epoch_day = epoch_seconds.getEpochDay();
+        const year_day = epoch_day.calculateYearDay();
+        const month_day = year_day.calculateMonthDay();
+
+        return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+            year_day.year,
+            @intFromEnum(month_day.month) + 1,
+            month_day.day_index + 1,
+        });
+    }
 }
 
 // Format save slot line for display
@@ -222,7 +251,7 @@ pub fn formatSlotLine(
     }
 
     var time_buffer: [32]u8 = undefined;
-    const modified_text = try formatTimestampUtc(time_buffer[0..], metadata.modified_ns);
+    const modified_text = try formatTimestampRelative(time_buffer[0..], metadata.modified_ns);
     const size_kib = (metadata.size_bytes + 1023) / 1024;
     return std.fmt.bufPrint(buffer, "{s}SLOT {d} {s} {d}KB", .{
         prefix,

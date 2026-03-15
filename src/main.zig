@@ -239,7 +239,7 @@ const resolveStatePreviewPath = saves_module.resolvePreviewPath;
 const saveStatePreviewFile = saves_module.savePreviewFile;
 const deleteStatePreviewFile = saves_module.deletePreviewFile;
 const resolvePersistentStatePath = saves_module.resolvePersistentStatePath;
-const formatTimestampUtc = saves_module.formatTimestampUtc;
+const formatTimestampRelative = saves_module.formatTimestampRelative;
 const formatSaveManagerSlotLine = saves_module.formatSlotLine;
 const formatSaveManagerPathLine = saves_module.formatPathLine;
 
@@ -260,7 +260,9 @@ const isThresholdSlowFrame = perf_monitor.isThresholdSlowFrame;
 // Re-export UI types from frontend/ui.zig
 const UiColors = ui_render.Colors;
 const UiSpacing = ui_render.Spacing;
+const UiAnimation = ui_render.Animation;
 const OverlayLine = ui_render.OverlayLine;
+const renderStatusBar = ui_render.renderStatusBar;
 
 fn persistFrontendConfig(frontend_config: *const FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
     frontend_config.saveToFile(frontend_config_path) catch |err| {
@@ -1836,6 +1838,7 @@ fn renderSaveManagerOverlay(
     viewport: zsdl3.Rect,
     save_manager: *const SaveManagerState,
     persistent_state_slot: u8,
+    frame_number: u64,
 ) !void {
     const title = "SAVE MANAGER";
     const controls_a = "DPAD OR LB RB SLOT  A LOAD  X SAVE";
@@ -1846,8 +1849,10 @@ fn renderSaveManagerOverlay(
     const path_height = 8.0 * scale;
     const row_gap = 4.0 * scale;
     const preview_gap = 12.0 * scale;
-    const preview_width = @as(f32, @floatFromInt(save_state_preview_width)) * scale;
-    const preview_height = @as(f32, @floatFromInt(save_state_preview_height)) * scale;
+    // Enlarged preview (1.5x) for better visibility
+    const preview_scale = 1.5;
+    const preview_width = @as(f32, @floatFromInt(save_state_preview_width)) * scale * preview_scale;
+    const preview_height = @as(f32, @floatFromInt(save_state_preview_height)) * scale * preview_scale;
     const preview_frame_width = preview_width + 6.0 * scale;
     const preview_frame_height = preview_height + 6.0 * scale;
     const preview_title = "SELECTED SLOT PREVIEW";
@@ -1926,27 +1931,29 @@ fn renderSaveManagerOverlay(
 
     for (summary_lines, path_lines, 0..) |summary_line, path_line, slot_index| {
         const selected = slot_index + 1 == StateFile.normalizePersistentStateSlot(persistent_state_slot);
+        const summary_color = if (selected)
+            UiAnimation.pulseColor(UiColors.gold, frame_number, 0.75, 1.0)
+        else
+            UiColors.text_primary;
         try drawOverlayText(
             renderer,
             text_x,
             y,
             scale,
-            if (selected)
-                UiColors.gold
-            else
-                UiColors.text_primary,
+            summary_color,
             summary_line,
         );
         y += summary_height;
+        const path_color = if (selected)
+            UiAnimation.pulseColor(UiColors.orange, frame_number, 0.8, 1.0)
+        else
+            UiColors.text_muted;
         try drawOverlayText(
             renderer,
             text_x,
             y,
             scale,
-            if (selected)
-                UiColors.orange
-            else
-                UiColors.text_muted,
+            path_color,
             path_line,
         );
         y += path_height + row_gap;
@@ -2133,15 +2140,24 @@ fn renderFrontendOverlay(
     current_audio_mode: AudioOutput.RenderMode,
     persistent_state_slot: u8,
     perf: *const PerformanceHudState,
+    current_rom_path: ?[]const u8,
 ) !void {
     const show_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.paused or ui.show_help or ui.dialog_active or ui.show_keyboard_editor;
     const show_toast = toast.visible(frontend_frame_number);
+    const has_rom = current_rom_path != null and current_rom_path.?.len > 0;
+    // Show status bar when paused or help is open (not during gameplay or when other panels are open)
+    const show_blocking_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.dialog_active or ui.show_keyboard_editor;
+    const show_status_bar = has_rom and (ui.paused or ui.show_help) and !show_blocking_panel and !ui.show_performance_hud;
     if (!ui.show_performance_hud and !show_panel and !show_toast) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
     if (ui.show_performance_hud) {
         try renderPerformanceHud(renderer, viewport, perf);
+    }
+    if (show_status_bar) {
+        const rom_name = std.fs.path.basename(current_rom_path.?);
+        try renderStatusBar(renderer, viewport, rom_name, persistent_state_slot, machine.palMode());
     }
     if (show_toast) {
         try renderToastOverlay(renderer, viewport, toast, frontend_frame_number);
@@ -2150,15 +2166,15 @@ fn renderFrontendOverlay(
     if (ui.dialog_active) {
         try renderDialogOverlay(renderer, viewport);
     } else if (ui.show_keyboard_editor) {
-        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings);
+        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number);
     } else if (ui.show_settings) {
         try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode);
     } else if (ui.show_save_manager) {
-        try renderSaveManagerOverlay(renderer, viewport, save_manager, persistent_state_slot);
+        try renderSaveManagerOverlay(renderer, viewport, save_manager, persistent_state_slot, frontend_frame_number);
     } else if (ui.show_help) {
         try renderHelpOverlay(renderer, viewport, bindings, persistent_state_slot);
     } else if (ui.show_home) {
-        try renderHomeOverlay(renderer, viewport, home_menu, frontend_config);
+        try renderHomeOverlay(renderer, viewport, home_menu, frontend_config, frontend_frame_number);
     } else {
         try renderPauseOverlay(renderer, viewport, bindings, persistent_state_slot);
     }
@@ -3075,6 +3091,7 @@ pub fn main() !void {
             current_audio_mode,
             persistent_state_slot,
             &performance_hud,
+            if (current_rom_path.len != 0) current_rom_path.slice() else null,
         );
         frame_phases.draw_ns = (std.time.Instant.now() catch draw_start).since(draw_start);
         const present_call_start = std.time.Instant.now() catch frame_timer;

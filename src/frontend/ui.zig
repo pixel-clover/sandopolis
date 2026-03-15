@@ -58,6 +58,43 @@ pub const Spacing = struct {
     }
 };
 
+// Animation helpers for UI effects
+pub const Animation = struct {
+    // Generate a pulse value (0.0 to 1.0) based on frame counter
+    // Returns a smooth sine-based oscillation for selected item highlighting
+    pub fn pulse(frame: u64, period_frames: u32) f32 {
+        const phase = @as(f32, @floatFromInt(frame % period_frames)) / @as(f32, @floatFromInt(period_frames));
+        // Use sine for smooth oscillation, map from [-1,1] to [0,1]
+        return (std.math.sin(phase * std.math.pi * 2.0) + 1.0) * 0.5;
+    }
+
+    // Apply pulse effect to a color's brightness
+    // min_brightness: minimum brightness multiplier (e.g., 0.7)
+    // max_brightness: maximum brightness multiplier (e.g., 1.0)
+    pub fn pulseColor(base: zsdl3.Color, frame: u64, min_brightness: f32, max_brightness: f32) zsdl3.Color {
+        const p = pulse(frame, 45); // ~0.75 second period at 60fps
+        const brightness = min_brightness + (max_brightness - min_brightness) * p;
+        return .{
+            .r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(base.r)) * brightness)),
+            .g = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(base.g)) * brightness)),
+            .b = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(base.b)) * brightness)),
+            .a = base.a,
+        };
+    }
+
+    // Apply pulse to alpha only (for glow effects)
+    pub fn pulseAlpha(base: zsdl3.Color, frame: u64, min_alpha: u8, max_alpha: u8) zsdl3.Color {
+        const p = pulse(frame, 45);
+        const alpha_range = @as(f32, @floatFromInt(max_alpha - min_alpha));
+        return .{
+            .r = base.r,
+            .g = base.g,
+            .b = base.b,
+            .a = min_alpha + @as(u8, @intFromFloat(alpha_range * p)),
+        };
+    }
+};
+
 // Menu line types for overlay rendering
 pub const OverlayLine = union(enum) {
     hotkey: struct {
@@ -641,6 +678,7 @@ pub fn renderHomeOverlay(
     viewport: zsdl3.Rect,
     home_menu: *const HomeMenuState,
     cfg: *const FrontendConfig,
+    frame_number: u64,
 ) !void {
     const title = "SANDOPOLIS";
     const subtitle = "OPEN A ROM TO START";
@@ -710,10 +748,9 @@ pub fn renderHomeOverlay(
     }
 
     for (menu_lines[0..item_count], 0..) |line, index| {
-        const color: zsdl3.Color = if (index == home_menu.selected_index)
-            Colors.gold
-        else
-            Colors.text_primary;
+        const is_selected = index == home_menu.selected_index;
+        const base_color: zsdl3.Color = if (is_selected) Colors.gold else Colors.text_primary;
+        const color = if (is_selected) Animation.pulseColor(base_color, frame_number, 0.75, 1.0) else base_color;
         try drawText(renderer, text_x, y, scale, color, line);
         y += line_height;
     }
@@ -729,6 +766,7 @@ pub fn renderKeyboardEditorOverlay(
     viewport: zsdl3.Rect,
     editor: *const BindingEditorState,
     bindings: *const InputBindings.Bindings,
+    frame_number: u64,
 ) !void {
     const title = "KEYBOARD EDITOR";
     const controls = if (editor.capture_mode)
@@ -792,23 +830,23 @@ pub fn renderKeyboardEditorOverlay(
             .h = row_height,
         };
         if (selected) {
-            try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 });
+            const pulse_alpha = Animation.pulseAlpha(.{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 }, frame_number, 0xE0, 0xF2);
+            try zsdl3.setRenderDrawColor(renderer, pulse_alpha);
             try zsdl3.renderFillRect(renderer, row_rect);
-            try zsdl3.setRenderDrawColor(renderer, Colors.blue);
+            try zsdl3.setRenderDrawColor(renderer, Animation.pulseColor(Colors.blue, frame_number, 0.8, 1.0));
             try zsdl3.renderRect(renderer, row_rect);
         }
 
         var line_buffer: [96]u8 = undefined;
         const line = try bindingEditorRowText(line_buffer[0..], bindings, bindingEditorTargetForIndex(index));
+        const base_color: zsdl3.Color = if (selected) Colors.text_selected else Colors.text_primary;
+        const text_color = if (selected) Animation.pulseColor(base_color, frame_number, 0.85, 1.0) else base_color;
         try drawText(
             renderer,
             panel.x + padding,
             y,
             scale,
-            if (selected)
-                Colors.text_selected
-            else
-                Colors.text_primary,
+            text_color,
             line,
         );
         y += row_height;
@@ -829,4 +867,55 @@ pub fn renderKeyboardEditorOverlay(
             editor.status_message.slice(),
         );
     }
+}
+
+/// Render a status bar at the bottom of the screen showing ROM info
+pub fn renderStatusBar(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    rom_name: []const u8,
+    slot: u8,
+    is_pal: bool,
+) !void {
+    const scale = overlayScale(viewport);
+    const padding = 6.0 * scale;
+    const bar_height = 7.0 * scale + padding * 2.0;
+    const viewport_width = @as(f32, @floatFromInt(viewport.w));
+    const viewport_height = @as(f32, @floatFromInt(viewport.h));
+
+    // Semi-transparent background bar at bottom
+    const bar_rect = zsdl3.FRect{
+        .x = 0,
+        .y = viewport_height - bar_height,
+        .w = viewport_width,
+        .h = bar_height,
+    };
+
+    // Dark background with low opacity
+    try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x60 });
+    try zsdl3.renderFillRect(renderer, bar_rect);
+
+    // ROM name on the left
+    try drawText(
+        renderer,
+        padding,
+        bar_rect.y + padding,
+        scale,
+        Colors.text_secondary,
+        rom_name,
+    );
+
+    // Slot and region info on the right
+    var info_buffer: [32]u8 = undefined;
+    const region_label = if (is_pal) "PAL" else "NTSC";
+    const info_text = std.fmt.bufPrint(&info_buffer, "SLOT {d} | {s}", .{ slot, region_label }) catch "SLOT ?";
+    const info_width = textWidth(info_text, scale);
+    try drawText(
+        renderer,
+        viewport_width - info_width - padding,
+        bar_rect.y + padding,
+        scale,
+        Colors.text_secondary,
+        info_text,
+    );
 }
