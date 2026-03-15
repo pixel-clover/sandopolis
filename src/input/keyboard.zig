@@ -55,6 +55,7 @@ pub fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
         .registers => "REGISTER DUMP",
         .record_gif => "RECORD GIF",
         .record_wav => "RECORD WAV",
+        .screenshot => "SCREENSHOT",
         .toggle_fullscreen => "FULLSCREEN",
         .quit => "QUIT",
     };
@@ -114,6 +115,7 @@ pub fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.Keyboa
         .f10 => .f10,
         .f11 => .f11,
         .f12 => .f12,
+        .printscreen => .print_screen,
         else => null,
     };
 }

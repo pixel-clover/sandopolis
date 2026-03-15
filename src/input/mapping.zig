@@ -42,6 +42,7 @@ pub const HotkeyAction = enum(u8) {
     registers,
     record_gif,
     record_wav,
+    screenshot,
     toggle_fullscreen,
     quit,
 };
@@ -98,6 +99,7 @@ pub const KeyboardInput = enum(u8) {
     f10,
     f11,
     f12,
+    print_screen,
 };
 
 pub const HotkeyModifiers = packed struct(u4) {
@@ -166,6 +168,7 @@ pub const all_hotkey_actions = [_]HotkeyAction{
     .registers,
     .record_gif,
     .record_wav,
+    .screenshot,
     .toggle_fullscreen,
     .quit,
 };
@@ -234,25 +237,38 @@ pub const Bindings = struct {
             bindings.setGamepadForPort(port, .start, .start);
         }
 
-        bindings.setHotkey(.toggle_help, .f1);
-        bindings.setHotkey(.toggle_pause, .f2);
-        bindings.setHotkey(.open_rom, .f3);
-        bindings.setHotkeyWithModifiers(.restart_rom, .f3, .{ .shift = true });
-        bindings.setHotkeyWithModifiers(.reload_rom, .f3, .{ .shift = true, .ctrl = true });
-        bindings.setHotkey(.open_keyboard_editor, .f4);
-        bindings.setHotkey(.toggle_performance_hud, .f5);
-        bindings.setHotkey(.reset_performance_hud, .f12);
-        bindings.setHotkey(.save_quick_state, .f6);
-        bindings.setHotkey(.load_quick_state, .f7);
-        bindings.setHotkey(.save_state_file, .f8);
-        bindings.setHotkey(.load_state_file, .f9);
-        bindings.setHotkey(.next_state_slot, .f10);
-        bindings.setHotkey(.step, .space);
-        bindings.setHotkey(.registers, .backspace);
-        bindings.setHotkey(.record_gif, .r);
-        bindings.setHotkeyWithModifiers(.record_wav, .r, .{ .shift = true });
-        bindings.setHotkey(.toggle_fullscreen, .f11);
-        bindings.setHotkey(.quit, .escape);
+        // Optimized hotkey layout (alpha v2)
+        // Core controls - most intuitive keys
+        bindings.setHotkey(.toggle_pause, .escape); // Escape opens pause menu
+        bindings.setHotkeyWithModifiers(.quit, .q, .{ .ctrl = true }); // Ctrl+Q to quit (standard)
+        bindings.setHotkeyWithModifiers(.open_rom, .o, .{ .ctrl = true }); // Ctrl+O to open (standard)
+        bindings.setHotkey(.toggle_fullscreen, .f11); // F11 fullscreen (standard)
+
+        // Reset controls - R for reset
+        bindings.setHotkey(.restart_rom, .r); // R = soft reset
+        bindings.setHotkeyWithModifiers(.reload_rom, .r, .{ .shift = true }); // Shift+R = hard reset
+
+        // Save states - F5/F7 quick, F2/F4 file, F3 slot
+        bindings.setHotkey(.save_quick_state, .f5); // F5 = quick save (common convention)
+        bindings.setHotkey(.load_quick_state, .f7); // F7 = quick load
+        bindings.setHotkey(.save_state_file, .f2); // F2 = save to slot file
+        bindings.setHotkey(.load_state_file, .f4); // F4 = load from slot file
+        bindings.setHotkey(.next_state_slot, .f3); // F3 = cycle slot
+
+        // Help and tools
+        bindings.setHotkey(.toggle_help, .f1); // F1 = help (standard)
+        bindings.setHotkey(.open_keyboard_editor, .f8); // F8 = key config
+        bindings.setHotkey(.toggle_performance_hud, .f6); // F6 = perf HUD
+        bindings.setHotkey(.reset_performance_hud, .f9); // F9 = reset perf stats
+
+        // Recording - F12 family
+        bindings.setHotkey(.record_gif, .f12); // F12 = record GIF
+        bindings.setHotkeyWithModifiers(.record_wav, .f12, .{ .shift = true }); // Shift+F12 = record audio
+        bindings.setHotkeyWithModifiers(.screenshot, .f12, .{ .ctrl = true }); // Ctrl+F12 = screenshot
+
+        // Debug controls
+        bindings.setHotkey(.step, .backspace); // Backspace = step CPU
+        bindings.setHotkey(.registers, .f10); // F10 = show registers
 
         return bindings;
     }
@@ -794,23 +810,26 @@ test "input bindings parse overrides and unbinds" {
 test "default hotkeys distinguish open rom soft reset and hard reload" {
     const bindings = Bindings.defaults();
 
-    try testing.expectEqual(HotkeyBinding{ .input = .f3 }, bindings.hotkeyBinding(.open_rom));
+    // open_rom = Ctrl+O
+    try testing.expectEqual(HotkeyBinding{ .input = .o, .modifiers = .{ .ctrl = true } }, bindings.hotkeyBinding(.open_rom));
+    // restart_rom (soft reset) = R
     try testing.expectEqual(
-        HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true } },
+        HotkeyBinding{ .input = .r },
         bindings.hotkeyBinding(.restart_rom),
     );
+    // reload_rom (hard reset) = Shift+R
     try testing.expectEqual(
-        HotkeyBinding{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
+        HotkeyBinding{ .input = .r, .modifiers = .{ .shift = true } },
         bindings.hotkeyBinding(.reload_rom),
     );
-    try testing.expectEqual(HotkeyAction.open_rom, bindings.hotkeyForBinding(.{ .input = .f3 }).?);
+    try testing.expectEqual(HotkeyAction.open_rom, bindings.hotkeyForBinding(.{ .input = .o, .modifiers = .{ .ctrl = true } }).?);
     try testing.expectEqual(
         HotkeyAction.restart_rom,
-        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .shift = true } }).?,
+        bindings.hotkeyForBinding(.{ .input = .r }).?,
     );
     try testing.expectEqual(
         HotkeyAction.reload_rom,
-        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } }).?,
+        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .shift = true } }).?,
     );
 }
 

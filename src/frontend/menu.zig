@@ -16,6 +16,7 @@ pub const FrontendUi = struct {
     dialog_active: bool = false,
     show_keyboard_editor: bool = false,
     show_performance_hud: bool = false,
+    delete_confirm_pending: bool = false, // Waiting for delete confirmation
 
     pub fn emulationPaused(self: *const FrontendUi) bool {
         return self.paused or self.show_home or self.show_save_manager or self.show_settings or self.show_help or self.dialog_active or self.show_keyboard_editor;
@@ -23,6 +24,7 @@ pub const FrontendUi = struct {
 
     pub fn closeSaveManager(self: *FrontendUi) void {
         self.show_save_manager = false;
+        self.delete_confirm_pending = false;
     }
 
     pub fn closeSettings(self: *FrontendUi) void {
@@ -34,6 +36,7 @@ pub const FrontendUi = struct {
         self.show_save_manager = false;
         self.show_settings = false;
         self.show_help = false;
+        self.delete_confirm_pending = false;
     }
 
     pub fn openSettings(self: *FrontendUi, settings: *SettingsMenuState) void {
@@ -41,6 +44,10 @@ pub const FrontendUi = struct {
         self.show_save_manager = false;
         self.show_help = false;
         settings.clamp();
+    }
+
+    pub fn cancelDeleteConfirm(self: *FrontendUi) void {
+        self.delete_confirm_pending = false;
     }
 };
 
@@ -199,23 +206,23 @@ pub const EventDisposition = enum {
 };
 
 // Format a home menu item for display
+// Icons: [ = folder, ] = disk, * = gear, ( = help, { = controller
 pub fn formatHomeMenuItem(
     buffer: []u8,
     cfg: *const FrontendConfig,
     action: HomeMenuAction,
     selected: bool,
 ) ![]const u8 {
-    const prefix = if (selected) "> " else "| ";
+    const prefix = if (selected) "> " else "  ";
     return switch (action) {
-        .open_rom => std.fmt.bufPrint(buffer, "{s}OPEN ROM", .{prefix}),
-        .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}RECENT {d} {s}", .{
+        .open_rom => std.fmt.bufPrint(buffer, "{s}[ OPEN ROM", .{prefix}),
+        .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}] {s}", .{
             prefix,
-            index + 1,
             std.fs.path.basename(cfg.recentRom(index)),
         }),
-        .show_settings => std.fmt.bufPrint(buffer, "{s}SETTINGS", .{prefix}),
-        .show_help => std.fmt.bufPrint(buffer, "{s}HELP AND HOTKEYS", .{prefix}),
-        .quit => std.fmt.bufPrint(buffer, "{s}QUIT", .{prefix}),
+        .show_settings => std.fmt.bufPrint(buffer, "{s}* SETTINGS", .{prefix}),
+        .show_help => std.fmt.bufPrint(buffer, "{s}( HELP AND HOTKEYS", .{prefix}),
+        .quit => std.fmt.bufPrint(buffer, "{s}! QUIT", .{prefix}),
     };
 }
 

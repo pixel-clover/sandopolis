@@ -187,6 +187,7 @@ pub const help_right_sections = [_]MenuSection{
             .{ .hotkey = .{ .action = .registers, .label = "REGISTERS" } },
             .{ .hotkey = .{ .action = .record_gif, .label = "RECORD GIF" } },
             .{ .hotkey = .{ .action = .record_wav, .label = "RECORD WAV" } },
+            .{ .hotkey = .{ .action = .screenshot, .label = "SCREENSHOT" } },
         },
     },
 };
@@ -299,7 +300,27 @@ pub fn drawText(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color: zs
     }
 }
 
-/// Render a panel with shadow and double border
+/// Interpolate between two colors
+fn lerpColor(a: zsdl3.Color, b: zsdl3.Color, t: f32) zsdl3.Color {
+    return .{
+        .r = @intFromFloat(@as(f32, @floatFromInt(a.r)) + (@as(f32, @floatFromInt(b.r)) - @as(f32, @floatFromInt(a.r))) * t),
+        .g = @intFromFloat(@as(f32, @floatFromInt(a.g)) + (@as(f32, @floatFromInt(b.g)) - @as(f32, @floatFromInt(a.g))) * t),
+        .b = @intFromFloat(@as(f32, @floatFromInt(a.b)) + (@as(f32, @floatFromInt(b.b)) - @as(f32, @floatFromInt(a.b))) * t),
+        .a = @intFromFloat(@as(f32, @floatFromInt(a.a)) + (@as(f32, @floatFromInt(b.a)) - @as(f32, @floatFromInt(a.a))) * t),
+    };
+}
+
+/// Adjust color brightness
+fn adjustBrightness(color: zsdl3.Color, factor: f32) zsdl3.Color {
+    return .{
+        .r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.r)) * factor)),
+        .g = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.g)) * factor)),
+        .b = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(color.b)) * factor)),
+        .a = color.a,
+    };
+}
+
+/// Render a panel with shadow, gradient background, and double border
 pub fn renderPanel(
     renderer: *zsdl3.Renderer,
     rect: zsdl3.FRect,
@@ -309,6 +330,8 @@ pub fn renderPanel(
 ) !void {
     const shadow_offset = Spacing.shadowOffset(scale);
     const border_inset = Spacing.borderInset(scale);
+
+    // Draw shadow
     try zsdl3.setRenderDrawColor(renderer, Colors.shadow);
     try zsdl3.renderFillRect(renderer, .{
         .x = rect.x + shadow_offset,
@@ -316,8 +339,26 @@ pub fn renderPanel(
         .w = rect.w,
         .h = rect.h,
     });
-    try zsdl3.setRenderDrawColor(renderer, fill);
-    try zsdl3.renderFillRect(renderer, rect);
+
+    // Draw gradient background (subtle: top slightly lighter, bottom slightly darker)
+    const top_color = adjustBrightness(fill, 1.15);
+    const bottom_color = adjustBrightness(fill, 0.85);
+    const gradient_steps: usize = 8; // Number of bands for gradient
+    const band_height = rect.h / @as(f32, @floatFromInt(gradient_steps));
+
+    for (0..gradient_steps) |i| {
+        const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(gradient_steps - 1));
+        const band_color = lerpColor(top_color, bottom_color, t);
+        try zsdl3.setRenderDrawColor(renderer, band_color);
+        try zsdl3.renderFillRect(renderer, .{
+            .x = rect.x,
+            .y = rect.y + @as(f32, @floatFromInt(i)) * band_height,
+            .w = rect.w,
+            .h = band_height + 1.0, // +1 to avoid gaps
+        });
+    }
+
+    // Draw double border
     try zsdl3.setRenderDrawColor(renderer, border);
     try zsdl3.renderRect(renderer, rect);
     try zsdl3.renderRect(renderer, .{
@@ -511,6 +552,31 @@ pub fn renderTwoColumnOverlay(
     }
 }
 
+/// Render a slot indicator badge in the top-left corner
+pub fn renderSlotBadge(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    persistent_state_slot: u8,
+) !void {
+    const scale = overlayScale(viewport);
+    const padding = 6.0 * scale;
+    const slot = StateFile.normalizePersistentStateSlot(persistent_state_slot);
+
+    var slot_buffer: [16]u8 = undefined;
+    const slot_text = try std.fmt.bufPrint(&slot_buffer, "] SLOT {d}", .{slot});
+    const text_w = textWidth(slot_text, scale);
+
+    const badge_rect = zsdl3.FRect{
+        .x = 12.0 * scale,
+        .y = 12.0 * scale,
+        .w = text_w + padding * 2.0,
+        .h = 7.0 * scale + padding * 2.0,
+    };
+
+    try renderPanel(renderer, badge_rect, Colors.panel_primary, Colors.cyan, scale);
+    try drawText(renderer, badge_rect.x + padding, badge_rect.y + padding, scale, Colors.cyan, slot_text);
+}
+
 /// Render the pause overlay
 pub fn renderPauseOverlay(
     renderer: *zsdl3.Renderer,
@@ -518,17 +584,15 @@ pub fn renderPauseOverlay(
     bindings: *const InputBindings.Bindings,
     persistent_state_slot: u8,
 ) !void {
-    var slot_buffer: [64]u8 = undefined;
-    const slot_text = try std.fmt.bufPrint(&slot_buffer, "] SLOT {d}  |  ENTER SAVE MANAGER  |  TAB SETTINGS", .{
-        StateFile.normalizePersistentStateSlot(persistent_state_slot),
-    });
+    // Render slot badge in corner
+    try renderSlotBadge(renderer, viewport, persistent_state_slot);
 
     try renderTwoColumnOverlay(
         renderer,
         viewport,
         bindings,
         "% PAUSED",
-        slot_text,
+        "ENTER SAVE MANAGER  |  TAB SETTINGS",
         "PAD: A SAVE MGR  B RESUME  X SETTINGS  Y HELP",
         &pause_left_sections,
         &pause_right_sections,

@@ -15,6 +15,7 @@ const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
 const WavRecorder = @import("recording/wav.zig").WavRecorder;
+const screenshot = @import("recording/screenshot.zig");
 const StateFile = @import("state_file.zig");
 const ui_render = @import("frontend/ui.zig");
 const perf_monitor = @import("frontend/performance.zig");
@@ -468,36 +469,63 @@ fn handleSaveManagerKey(
 
     switch (scancode) {
         .escape => {
-            ui.closeSaveManager();
+            if (ui.delete_confirm_pending) {
+                ui.cancelDeleteConfirm();
+                notifyFrontend(notifications, .info, "DELETE CANCELLED", .{});
+            } else {
+                ui.closeSaveManager();
+            }
             return true;
         },
         .up => {
+            ui.cancelDeleteConfirm(); // Cancel any pending delete on navigation
             persistent_state_slot.* = previousPersistentStateSlot(persistent_state_slot.*);
             return true;
         },
         .down => {
+            ui.cancelDeleteConfirm(); // Cancel any pending delete on navigation
             persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
             return true;
         },
         .@"return" => {
-            _ = handlePersistentStateAction(
-                allocator,
-                .load_state_file,
-                machine,
-                explicit_state_path,
-                persistent_state_slot,
-                audio,
-                gif_recorder,
-                wav_recorder,
-                frame_counter,
-                notifications,
-            );
-            refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            if (ui.delete_confirm_pending) {
+                // Confirm delete
+                ui.cancelDeleteConfirm();
+                _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
+                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            } else {
+                _ = handlePersistentStateAction(
+                    allocator,
+                    .load_state_file,
+                    machine,
+                    explicit_state_path,
+                    persistent_state_slot,
+                    audio,
+                    gif_recorder,
+                    wav_recorder,
+                    frame_counter,
+                    notifications,
+                );
+                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            }
             return true;
         },
         .delete, .backspace => {
-            _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
-            refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            if (ui.delete_confirm_pending) {
+                // Second press confirms delete
+                ui.cancelDeleteConfirm();
+                _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
+                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+            } else {
+                // First press asks for confirmation
+                const metadata = save_manager.slotMetadata(persistent_state_slot.*);
+                if (metadata.exists) {
+                    ui.delete_confirm_pending = true;
+                    notifyFrontend(notifications, .info, "PRESS DEL AGAIN TO CONFIRM DELETE", .{});
+                } else {
+                    notifyFrontend(notifications, .info, "SLOT IS ALREADY EMPTY", .{});
+                }
+            }
             return true;
         },
         else => {},
@@ -948,7 +976,14 @@ fn handleSaveManagerGamepadInput(
 
     return switch (input) {
         .east, .back => blk: {
-            if (pressed) ui.closeSaveManager();
+            if (pressed) {
+                if (ui.delete_confirm_pending) {
+                    ui.cancelDeleteConfirm();
+                    notifyFrontend(notifications, .info, "DELETE CANCELLED", .{});
+                } else {
+                    ui.closeSaveManager();
+                }
+            }
             break :blk .consumed;
         },
         .guide => blk: {
@@ -956,33 +991,47 @@ fn handleSaveManagerGamepadInput(
             break :blk .consumed;
         },
         .dpad_up, .dpad_left, .left_shoulder => blk: {
-            if (pressed) persistent_state_slot.* = previousPersistentStateSlot(persistent_state_slot.*);
+            if (pressed) {
+                ui.cancelDeleteConfirm();
+                persistent_state_slot.* = previousPersistentStateSlot(persistent_state_slot.*);
+            }
             break :blk .consumed;
         },
         .dpad_down, .dpad_right, .right_shoulder => blk: {
-            if (pressed) persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
+            if (pressed) {
+                ui.cancelDeleteConfirm();
+                persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
+            }
             break :blk .consumed;
         },
         .south, .start => blk: {
             if (pressed) {
-                _ = handlePersistentStateAction(
-                    allocator,
-                    .load_state_file,
-                    machine,
-                    explicit_state_path,
-                    persistent_state_slot,
-                    audio,
-                    gif_recorder,
-                    wav_recorder,
-                    frame_counter,
-                    notifications,
-                );
-                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+                if (ui.delete_confirm_pending) {
+                    // Confirm delete with A button
+                    ui.cancelDeleteConfirm();
+                    _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
+                    refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+                } else {
+                    _ = handlePersistentStateAction(
+                        allocator,
+                        .load_state_file,
+                        machine,
+                        explicit_state_path,
+                        persistent_state_slot,
+                        audio,
+                        gif_recorder,
+                        wav_recorder,
+                        frame_counter,
+                        notifications,
+                    );
+                    refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+                }
             }
             break :blk .consumed;
         },
         .west => blk: {
             if (pressed) {
+                ui.cancelDeleteConfirm();
                 _ = handlePersistentStateAction(
                     allocator,
                     .save_state_file,
@@ -1001,8 +1050,21 @@ fn handleSaveManagerGamepadInput(
         },
         .north => blk: {
             if (pressed) {
-                _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
-                refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+                if (ui.delete_confirm_pending) {
+                    // Second Y press confirms delete
+                    ui.cancelDeleteConfirm();
+                    _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
+                    refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
+                } else {
+                    // First Y press asks for confirmation
+                    const metadata = save_manager.slotMetadata(persistent_state_slot.*);
+                    if (metadata.exists) {
+                        ui.delete_confirm_pending = true;
+                        notifyFrontend(notifications, .info, "PRESS Y AGAIN TO CONFIRM DELETE", .{});
+                    } else {
+                        notifyFrontend(notifications, .info, "SLOT IS ALREADY EMPTY", .{});
+                    }
+                }
             }
             break :blk .consumed;
         },
@@ -2913,6 +2975,24 @@ pub fn main() !void {
                                         notifyFrontend(notifications, .success, "WAV RECORDING STARTED", .{});
                                     }
                                 },
+                                .screenshot => {
+                                    if (frontend_ui.show_help) continue;
+                                    const path = screenshotOutputPath() orelse {
+                                        std.debug.print("No available screenshot slot (001-999 all exist)\n", .{});
+                                        notifyFrontend(notifications, .failure, "NO AVAILABLE SCREENSHOT SLOT", .{});
+                                        continue;
+                                    };
+                                    const path_str = std.mem.sliceTo(&path, 0);
+                                    const framebuffer = machine.framebuffer();
+                                    const framebuffer_height: u32 = @intCast(framebuffer.len / Vdp.framebuffer_width);
+                                    screenshot.saveBmp(path_str, framebuffer, Vdp.framebuffer_width, framebuffer_height) catch |err| {
+                                        std.debug.print("Failed to save screenshot: {}\n", .{err});
+                                        notifyFrontend(notifications, .failure, "FAILED TO SAVE SCREENSHOT", .{});
+                                        continue;
+                                    };
+                                    std.debug.print("Screenshot saved: {s}\n", .{path_str});
+                                    notifyFrontend(notifications, .success, "SCREENSHOT SAVED", .{});
+                                },
                                 .toggle_fullscreen => {
                                     setFullscreenEnabled(window, !fullscreenEnabled(window), notifications);
                                 },
@@ -3258,26 +3338,26 @@ test "default hotkeys include frontend commands and modifiers" {
         bindings.hotkeyBinding(.toggle_help),
     );
     try std.testing.expectEqual(
-        InputBindings.HotkeyBinding{ .input = .f3 },
+        InputBindings.HotkeyBinding{ .input = .o, .modifiers = .{ .ctrl = true } },
         bindings.hotkeyBinding(.open_rom),
     );
     try std.testing.expectEqual(
-        InputBindings.HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true } },
+        InputBindings.HotkeyBinding{ .input = .r },
         bindings.hotkeyBinding(.restart_rom),
     );
     try std.testing.expectEqual(
-        InputBindings.HotkeyBinding{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
+        InputBindings.HotkeyBinding{ .input = .r, .modifiers = .{ .shift = true } },
         bindings.hotkeyBinding(.reload_rom),
     );
     try std.testing.expectEqual(
         InputBindings.HotkeyAction.restart_rom,
-        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .shift = true } }).?,
+        bindings.hotkeyForBinding(.{ .input = .r }).?,
     );
     try std.testing.expectEqual(
         InputBindings.HotkeyAction.reload_rom,
-        bindings.hotkeyForBinding(.{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } }).?,
+        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .shift = true } }).?,
     );
-    try std.testing.expect(bindings.hotkeyForBinding(.{ .input = .f3 }) == .open_rom);
+    try std.testing.expect(bindings.hotkeyForBinding(.{ .input = .o, .modifiers = .{ .ctrl = true } }) == .open_rom);
 }
 
 test "duration formatter rounds to tenths of a millisecond" {
@@ -3601,8 +3681,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
         &bindings,
         &machine,
         null,
-        .f4,
-        .{ .input = .f4 },
+        .f8,
+        .{ .input = .f8 },
         true,
     ));
     try std.testing.expect(ui.show_keyboard_editor);
@@ -3621,8 +3701,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
         &bindings,
         &machine,
         null,
-        .f4,
-        .{ .input = .f4 },
+        .f8,
+        .{ .input = .f8 },
         true,
     ));
     try std.testing.expect(!ui.show_keyboard_editor);
@@ -3643,8 +3723,8 @@ test "binding editor clears hotkeys during capture" {
         &bindings,
         &machine,
         null,
-        .f4,
-        .{ .input = .f4 },
+        .f8,
+        .{ .input = .f8 },
         true,
     ));
     editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len;
@@ -3668,8 +3748,8 @@ test "binding editor captures modifier hotkeys" {
         &bindings,
         &machine,
         null,
-        .f4,
-        .{ .input = .f4 },
+        .f8,
+        .{ .input = .f8 },
         true,
     ));
     editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
@@ -4472,6 +4552,7 @@ test "save manager gamepad controls save load delete and close" {
     }
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
+    // First press initiates delete confirmation
     switch (handleSaveManagerGamepadInput(
         &ui,
         &save_manager,
@@ -4490,6 +4571,29 @@ test "save manager gamepad controls save load delete and close" {
         .consumed => {},
         else => try std.testing.expect(false),
     }
+    try std.testing.expect(ui.delete_confirm_pending);
+    try std.testing.expect(save_manager.slotMetadata(1).exists); // Not deleted yet
+
+    // Second press confirms delete
+    switch (handleSaveManagerGamepadInput(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        state_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        .north,
+        true,
+        .{},
+    )) {
+        .consumed => {},
+        else => try std.testing.expect(false),
+    }
+    try std.testing.expect(!ui.delete_confirm_pending);
     try std.testing.expect(!save_manager.slotMetadata(1).exists);
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot1_state_path, .{}));
 
@@ -4783,6 +4887,19 @@ fn wavOutputPath() ?[48]u8 {
     return null;
 }
 
+fn screenshotOutputPath() ?[48]u8 {
+    var buf: [48]u8 = [_]u8{0} ** 48;
+    var i: u32 = 1;
+    while (i <= 999) : (i += 1) {
+        const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.bmp", .{i}) catch return null;
+        buf[name.len] = 0;
+        std.fs.cwd().access(name, .{}) catch {
+            return buf;
+        };
+    }
+    return null;
+}
+
 test "gif output path returns optional type" {
     // Verify the function returns an optional - this tests the fix for the
     // bug where returning non-null on exhausted slots would overwrite files
@@ -4799,6 +4916,14 @@ test "wav output path returns optional type" {
     try std.testing.expect(info == .optional);
 }
 
+test "screenshot output path returns optional type" {
+    // Verify the function returns an optional - this tests the fix for the
+    // bug where returning non-null on exhausted slots would overwrite files
+    const ResultType = @TypeOf(screenshotOutputPath());
+    const info = @typeInfo(ResultType);
+    try std.testing.expect(info == .optional);
+}
+
 test "output path format matches expected pattern" {
     // Test that the format string produces expected filenames
     var buf: [48]u8 = [_]u8{0} ** 48;
@@ -4810,6 +4935,9 @@ test "output path format matches expected pattern" {
 
     const wav_name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{@as(u32, 42)}) catch unreachable;
     try std.testing.expectEqualStrings("sandopolis_042.wav", wav_name);
+
+    const bmp_name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.bmp", .{@as(u32, 123)}) catch unreachable;
+    try std.testing.expectEqualStrings("sandopolis_123.bmp", bmp_name);
 }
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
