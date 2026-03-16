@@ -116,15 +116,20 @@ pub const View = struct {
         self.vdp.step(master_cycles);
         self.audio_timing.consumeMaster(master_cycles);
 
-        const phase_total = @as(u32, self.state.m68k_master_phase) + (master_cycles % @as(u32, clock.m68k_divider));
-        self.state.m68k_master_phase = @intCast(phase_total % @as(u32, clock.m68k_divider));
+        const m68k_div: u32 = clock.m68k_divider;
+        const z80_div: u32 = clock.z80_divider;
 
-        const z80_phase_total = @as(u32, self.state.z80_master_phase) + (master_cycles % @as(u32, clock.z80_divider));
-        self.state.z80_master_phase = @intCast(z80_phase_total % @as(u32, clock.z80_divider));
+        var m68k_phase = @as(u32, self.state.m68k_master_phase) + (master_cycles % m68k_div);
+        if (m68k_phase >= m68k_div) m68k_phase -= m68k_div;
+        self.state.m68k_master_phase = @intCast(m68k_phase);
+
+        var z80_phase = @as(u32, self.state.z80_master_phase) + (master_cycles % z80_div);
+        if (z80_phase >= z80_div) z80_phase -= z80_div;
+        self.state.z80_master_phase = @intCast(z80_phase);
 
         const io_total = @as(u32, self.state.io_master_remainder) + master_cycles;
-        self.io.tick(io_total / clock.m68k_divider);
-        self.state.io_master_remainder = @intCast(io_total % clock.m68k_divider);
+        self.io.tick(io_total / m68k_div);
+        self.state.io_master_remainder = @intCast(io_total % m68k_div);
 
         self.vdp.progressTransfers(master_cycles, self.dma_read_ctx, self.dma_read_word_fn);
     }

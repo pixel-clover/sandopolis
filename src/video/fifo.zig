@@ -133,8 +133,9 @@ fn normalizeTransferLineMasterCycle(total_master_cycles: u32) u16 {
 }
 
 fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
-    const total = @as(u32, self.transfer_line_master_cycle) + master_cycles;
-    self.transfer_line_master_cycle = normalizeTransferLineMasterCycle(total);
+    var total = @as(u32, self.transfer_line_master_cycle) + master_cycles;
+    if (total >= clock.ntsc_master_cycles_per_line) total -= clock.ntsc_master_cycles_per_line;
+    self.transfer_line_master_cycle = @intCast(total);
 }
 
 fn slotIndexInSet(slot_idx: u16, comptime slot_set: []const u8) bool {

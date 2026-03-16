@@ -344,8 +344,9 @@ pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
 }
 
 pub fn step(self: *Vdp, cycles: u32) void {
-    const total = @as(u32, self.line_master_cycle) + cycles;
-    self.line_master_cycle = @intCast(total % clock.ntsc_master_cycles_per_line);
+    var total = @as(u32, self.line_master_cycle) + cycles;
+    if (total >= clock.ntsc_master_cycles_per_line) total -= clock.ntsc_master_cycles_per_line;
+    self.line_master_cycle = @intCast(total);
 }
 
 pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: u16) bool {
