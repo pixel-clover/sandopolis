@@ -93,37 +93,28 @@ Quick examples:
 - `external/Nuked-OPN2` is an optional LGPL developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the
   default `sandopolis`, `check`, `test`, or release build paths.
 
-## Required Validation
+## Workflow
 
-Run these checks for any non-trivial change:
+Before coding:
 
-1. `zig build check`
-2. `zig build test`
+1. Identify whether this is a timing, API, frontend, or docs change.
+2. Read the touched module and existing nearby tests.
 
-Also run these when relevant:
+Implement and test:
 
-1. `zig build test-unit` when touching module-local tests, unit-test build wiring, or test-only module behavior during iteration
-2. `zig build test-frontend` when touching frontend helper functions or UI state logic
-3. `zig build docs --prefix .` for docs/API/build-doc changes
-4. `make test` when touching the Makefile or contributor workflow
-5. `make docs` when touching docs generation paths
-6. `zig build run -- <path-to-rom>` or `make run ARGS="<path-to-rom>"` for frontend/manual runtime checks
-7. `zig build compare-ym -- [scenario]` when touching raw YM2612 synthesis behavior, the compare harness, or the Nuked reference integration and the
-   submodule is available
+1. Make the smallest change that solves the problem.
+2. Add or update tests in the correct location (module-local `test` blocks for unit behavior, `tests/` for integration/regression/property coverage).
+3. Run the narrowest relevant test target while iterating (`zig build test-unit`, `zig build test-integration`, etc.).
+4. Run `zig build check` and `zig build test`.
+5. Update docs (`README.md`, `ROADMAP.md`, `src/api.zig` exports) if behavior or workflow changed.
 
-## First Contribution Flow
+Additional validation when relevant:
 
-Use this sequence for a new change:
-
-1. Read the touched module and existing nearby tests.
-2. Implement the smallest change that solves the problem.
-3. Add or update tests in the correct location:
-    - module-local `test` blocks for unit behavior
-    - `tests/` for integration/regression/property coverage
-4. Run the narrowest relevant test target while iterating (`zig build test-unit`, `zig build test-integration`, etc.).
-5. Run `zig build test`.
-6. Run `zig build check`.
-7. Update docs (`README.md`, `ROADMAP.md`, and `src/api.zig` exports) if behavior or workflow changed.
+- `zig build test-frontend` when touching frontend helper functions or UI state logic.
+- `zig build docs --prefix .` for docs/API/build-doc changes.
+- `make test` / `make docs` when touching the Makefile or contributor workflow.
+- `zig build run -- <path-to-rom>` for frontend/manual runtime checks.
+- `zig build compare-ym -- [scenario]` when touching YM2612 synthesis and the Nuked submodule is available.
 
 ## Testing Expectations
 
@@ -131,37 +122,16 @@ Use this sequence for a new change:
 - Timing, DMA, VDP, scheduler, controller, and bus arbitration changes need explicit coverage.
 - Prefer targeted assertions over broad snapshot-style tests unless the behavior is naturally end-to-end.
 - Keep tests deterministic and avoid hidden dependencies on local state beyond explicitly referenced ROMs.
-
-Minimal unit-test checklist:
-
-1. Initialize only the state you need.
-2. Drive the relevant API directly.
-3. Assert on observable behavior, not incidental implementation detail.
-4. Keep helper setup local to the module unless multiple suites truly share it.
+- Initialize only the state you need, drive the relevant API directly, and assert on observable behavior.
+- When uncertain about emulator correctness, add or refine tests first.
 
 ## Documentation Expectations
 
-- Public-facing API docs are generated from `src/api.zig`.
-- Keep `src/api.zig` focused on deliberate public surfaces. Do not re-export raw internal coordination types like `Bus`, `Cpu`, `Vdp`, or `Z80`; add
-  facade/view types instead.
-- If a type should show up in generated docs, re-export it from `src/api.zig`.
+- Public-facing API docs are generated from `src/api.zig`. Keep it focused on deliberate public surfaces — do not re-export raw internal coordination
+  types like `Bus`, `Cpu`, `Vdp`, or `Z80`; add facade/view types instead.
 - User workflow changes should update `README.md`.
-- Progress/completeness wording should update `ROADMAP.md` when it materially changes.
-
-## Change Design Checklist
-
-Before coding:
-
-1. Is this a timing change, an API change, a frontend change, or a workflow/docs change?
-2. Which existing tests should fail before the change?
-3. Does the change belong in a core module or only in the frontend?
-
-Before submitting:
-
-1. Did you put tests in the correct place?
-2. Did `zig build test` pass?
-3. Did you update docs/workflow files if needed?
-4. Did you avoid introducing a new global mutable state or frontend/core coupling?
+- Progress/completeness changes should update `ROADMAP.md`.
+- If you detect stale docs while changing related code, fix them in the same patch.
 
 ## Review Guidelines (P0/P1 Focus)
 
@@ -179,12 +149,3 @@ Use this review format:
 5. `Minimal fix direction`
 
 Do not include style-only feedback or broad praise.
-
-## Practical Notes for Agents
-
-- Follow existing module boundaries unless there is a strong reason to change them.
-- Prefer adapting the current scheduler/timing model over introducing parallel experimental paths.
-- If you detect stale docs or workflow targets while changing related code, fix them in the same patch if the scope stays coherent.
-- When uncertain about emulator correctness, add or refine tests first.
-- Use `sandopolis.testing` and the `compare-ym` tool for developer-only reference validation rather than wiring external reference cores into the main
-  emulator path.
