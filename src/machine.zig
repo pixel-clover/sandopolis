@@ -123,6 +123,7 @@ pub const Machine = struct {
 
         pub fn z80Reset(self: *TestingView) void {
             self.machine.bus.z80.reset();
+            self.machine.bus.syncZ80RunCache();
         }
 
         pub fn z80WriteByte(self: *TestingView, addr: u16, value: u8) void {

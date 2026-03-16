@@ -450,6 +450,14 @@ pub const Bus = struct {
         return self.vdp.nextTransferStepMasterCycles();
     }
 
+    pub fn recordRefreshCycles(self: *Bus, m68k_cycles: u32, ppc: u32) void {
+        self.timing_state.applyRefreshPenalty(m68k_cycles, ppc);
+    }
+
+    pub fn resetRefreshCounter(self: *Bus) void {
+        self.timing_state.resetRefreshCounter();
+    }
+
     pub fn setPendingM68kWaitMasterCycles(self: *Bus, master_cycles: u32) void {
         self.timing_state.setPendingM68kWaitMasterCycles(master_cycles);
     }
@@ -483,6 +491,7 @@ pub const Bus = struct {
         self.restoreTimingState(state.timing_state);
         self.open_bus = state.open_bus;
         try self.cartridge.restoreRamState(state.cartridge_ram, cartridge_ram_bytes);
+        self.timing_state.z80_cached_can_run = self.z80.canRun();
     }
 
     pub fn clearPendingAudioTransferState(self: *Bus) void {
@@ -505,6 +514,13 @@ pub const Bus = struct {
 
     pub fn step(self: *Bus, m68k_cycles: u32) void {
         self.stepMaster(clock.m68kCyclesToMaster(m68k_cycles));
+    }
+
+    /// Refresh the cached Z80 canRun flag from the actual Z80 state.
+    /// Call after directly modifying Z80 bus/reset state outside the
+    /// normal bus control write path.
+    pub fn syncZ80RunCache(self: *Bus) void {
+        self.timing_state.z80_cached_can_run = self.z80.canRun();
     }
 };
 
@@ -652,6 +668,7 @@ test "z80 68k-bus stall is applied before the next instruction" {
     defer bus.deinit(testing.allocator);
 
     bus.z80.reset();
+    bus.syncZ80RunCache();
     bus.z80.writeByte(0x0000, 0x3A);
     bus.z80.writeByte(0x0001, 0x00);
     bus.z80.writeByte(0x0002, 0x80);
@@ -688,6 +705,7 @@ test "mid-instruction z80 stall flush is charged against later master slices" {
     defer bus.deinit(testing.allocator);
 
     bus.z80.reset();
+    bus.syncZ80RunCache();
     bus.z80.writeByte(0x0000, 0x34); // INC (HL)
 
     var state = bus.z80.captureState();
@@ -811,6 +829,7 @@ test "banked access offsets advance vdp state before the first z80 host read" {
     try testing.expect(expected_counter_byte != @as(u8, @truncate(bus.vdp.readHVCounterAdjusted(0))));
 
     bus.z80.reset();
+    bus.syncZ80RunCache();
     bus.z80.writeByte(0x0000, 0x3A); // LD A,(nn)
     bus.z80.writeByte(0x0001, 0x09);
     bus.z80.writeByte(0x0002, 0x80);

@@ -14,7 +14,10 @@ pub const State = struct {
     z80_stall_master_debt: u32 = 0,
     z80_wait_master_cycles: u32 = 0,
     z80_odd_access: bool = false,
+    z80_cached_can_run: bool = false,
     m68k_wait_master_cycles: u32 = 0,
+    m68k_refresh_counter: u32 = 0,
+    z80_dma_halted: bool = false,
 
     pub fn pendingM68kWaitMasterCycles(self: *const State) u32 {
         return self.m68k_wait_master_cycles;
@@ -28,6 +31,20 @@ pub const State = struct {
 
     pub fn setPendingM68kWaitMasterCycles(self: *State, master_cycles: u32) void {
         self.m68k_wait_master_cycles = master_cycles;
+    }
+
+    pub fn applyRefreshPenalty(self: *State, m68k_cycles: u32, ppc: u32) void {
+        self.m68k_refresh_counter += m68k_cycles;
+        if (self.m68k_refresh_counter >= clock.refresh_interval) {
+            self.m68k_refresh_counter -= clock.refresh_interval;
+            const region = (ppc >> 21) & 7;
+            const wait = clock.refresh_wait_by_region[region];
+            self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(wait);
+        }
+    }
+
+    pub fn resetRefreshCounter(self: *State) void {
+        self.m68k_refresh_counter = 0;
     }
 };
 
@@ -95,7 +112,9 @@ pub const View = struct {
 
         self.recordZ80EarlyAdvancedMaster(pre_access_master_cycles, true);
 
-        if (!self.vdp.shouldHaltCpu()) {
+        if (self.vdp.shouldHaltCpu()) {
+            self.state.z80_dma_halted = true;
+        } else {
             self.state.m68k_wait_master_cycles += self.z80ContentionM68kWaitMasterCycles();
         }
 
@@ -136,6 +155,7 @@ pub const View = struct {
 
     pub fn noteZ80RunnableStateTransition(self: *View, was_can_run: bool) void {
         const can_run = self.z80.canRun();
+        self.state.z80_cached_can_run = can_run;
         if (was_can_run == can_run) return;
 
         if (!can_run) {
@@ -144,6 +164,10 @@ pub const View = struct {
         }
 
         self.state.z80_master_credit = self.state.z80_master_phase;
+    }
+
+    pub fn refreshZ80CanRunCache(self: *View) void {
+        self.state.z80_cached_can_run = self.z80.canRun();
     }
 
     pub fn stepMasterEarly(self: *View, master_cycles: u32) void {
@@ -166,9 +190,18 @@ pub const View = struct {
                 continue;
             }
 
-            if (!self.z80.canRun()) {
+            if (!self.state.z80_cached_can_run) {
                 if (remaining != 0) self.advanceNonZ80Master(remaining);
                 return;
+            }
+
+            if (self.state.z80_dma_halted) {
+                if (!self.vdp.shouldHaltCpu()) {
+                    self.state.z80_dma_halted = false;
+                } else {
+                    if (remaining != 0) self.advanceNonZ80Master(remaining);
+                    return;
+                }
             }
 
             if (self.state.z80_wait_master_cycles != 0) {
@@ -370,6 +403,7 @@ test "z80 timing carries instruction overshoot across stepMaster slices" {
     );
 
     z80.reset();
+    view.refreshZ80CanRunCache();
     z80.writeByte(0x0000, 0x00);
     z80.writeByte(0x0001, 0x00);
 

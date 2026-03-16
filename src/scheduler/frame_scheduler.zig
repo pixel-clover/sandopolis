@@ -8,6 +8,11 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
     var remaining = total_master_cycles;
     remaining -= m68k_sync.consumeDebt(remaining);
 
+    // Hoist the memory interface outside the loop — the memory map does not
+    // change during a single scheduler slice, so constructing the vtable
+    // struct once avoids rebuilding 12 function pointers per instruction.
+    var memory = bus.cpuMemory();
+
     while (remaining > 0) {
         const vdp_halts_cpu = bus.shouldHaltM68k();
 
@@ -19,6 +24,7 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
         }
 
         if (vdp_halts_cpu) {
+            bus.resetRefreshCounter();
             const quantum = @min(remaining, bus.dmaHaltQuantum());
             remaining -= quantum;
             bus.stepMaster(m68k_sync.flushStalledMaster(quantum));
@@ -31,16 +37,17 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
             continue;
         }
 
-        var memory = bus.cpuMemory();
         const step = cpu.stepInstruction(&memory);
         const stepped_master = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles;
         if (stepped_master == 0) {
+            bus.resetRefreshCounter();
             const quantum = @min(remaining, idle_master_quantum);
             remaining -= quantum;
             bus.stepMaster(m68k_sync.commitMasterCycles(quantum));
             continue;
         }
 
+        bus.recordRefreshCycles(step.m68k_cycles, step.ppc);
         bus.stepMaster(m68k_sync.commitMasterCycles(stepped_master));
         if (stepped_master > remaining) {
             m68k_sync.addDebt(stepped_master - remaining);
