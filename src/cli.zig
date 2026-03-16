@@ -1,92 +1,84 @@
 const std = @import("std");
+const chilli = @import("chilli");
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const rom_metadata = @import("rom_metadata.zig");
+const build_options = @import("build_options");
 
 pub const TimingModeOption = rom_metadata.TimingModeOption;
 
-// CLI parsing options
-pub const Options = struct {
+pub const Config = struct {
     rom_path: ?[]const u8 = null,
     audio_mode: AudioOutput.RenderMode = .normal,
     renderer_name: ?[]const u8 = null,
     timing_mode: TimingModeOption = .auto,
-    show_help: bool = false,
+    should_run: bool = false,
 };
 
-// CLI parsing errors
-pub const ParseError = error{
-    InvalidAudioMode,
-    MissingAudioModeValue,
-    MissingRendererValue,
-    MultipleRomPaths,
-    UnknownOption,
-};
+fn exec(ctx: chilli.CommandContext) !void {
+    const config: *Config = ctx.getContextData(Config).?;
 
-// Print usage information
-pub fn printUsage() void {
-    std.debug.print("Usage: sandopolis [options] [rom_file]\n", .{});
-    std.debug.print("Options:\n", .{});
-    std.debug.print("  --audio-mode <mode>   Audio render mode: normal, ym-only, psg-only, unfiltered-mix\n", .{});
-    std.debug.print("  --audio-mode=<mode>   Same as above\n", .{});
-    std.debug.print("  --renderer <name>     SDL render driver override (for example: software, opengl)\n", .{});
-    std.debug.print("  --renderer=<name>     Same as above\n", .{});
-    std.debug.print("  --pal                 Force PAL/50Hz timing and version bits\n", .{});
-    std.debug.print("  --ntsc                Force NTSC/60Hz timing and version bits\n", .{});
-    std.debug.print("  -h, --help            Show this help text\n", .{});
-}
+    // Positional: ROM path
+    const rom_arg = try ctx.getArg("rom_file", []const u8);
+    config.rom_path = if (rom_arg.len > 0) rom_arg else null;
 
-// Parse command line arguments
-pub fn parseArgs(args: []const []const u8) ParseError!Options {
-    var options = Options{};
-    var index: usize = 1;
-    while (index < args.len) : (index += 1) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            options.show_help = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--audio-mode")) {
-            index += 1;
-            if (index >= args.len) return error.MissingAudioModeValue;
-            options.audio_mode = try AudioOutput.RenderMode.parse(args[index]);
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--audio-mode=")) {
-            options.audio_mode = try AudioOutput.RenderMode.parse(arg["--audio-mode=".len..]);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--renderer")) {
-            index += 1;
-            if (index >= args.len) return error.MissingRendererValue;
-            options.renderer_name = args[index];
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--renderer=")) {
-            options.renderer_name = arg["--renderer=".len..];
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--pal")) {
-            options.timing_mode = .pal;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--ntsc")) {
-            options.timing_mode = .ntsc;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--")) return error.UnknownOption;
-        if (options.rom_path != null) return error.MultipleRomPaths;
-        options.rom_path = arg;
+    // --audio-mode
+    const audio_str = try ctx.getFlag("audio-mode", []const u8);
+    if (!std.mem.eql(u8, audio_str, "normal")) {
+        config.audio_mode = AudioOutput.RenderMode.parse(audio_str) catch
+            return error.InvalidAudioMode;
     }
-    return options;
+
+    // --renderer
+    const renderer_str = try ctx.getFlag("renderer", []const u8);
+    config.renderer_name = if (renderer_str.len > 0) renderer_str else null;
+
+    // --pal / --ntsc (mutually exclusive)
+    const pal = try ctx.getFlag("pal", bool);
+    const ntsc = try ctx.getFlag("ntsc", bool);
+    if (pal and ntsc) return error.ConflictingTimingFlags;
+    if (pal) config.timing_mode = .pal;
+    if (ntsc) config.timing_mode = .ntsc;
+
+    config.should_run = true;
 }
 
-// Get human-readable error message
-pub fn errorMessage(err: ParseError) []const u8 {
-    return switch (err) {
-        error.InvalidAudioMode => "invalid --audio-mode value",
-        error.MissingAudioModeValue => "--audio-mode requires a value",
-        error.MissingRendererValue => "--renderer requires a value",
-        error.MultipleRomPaths => "only one ROM path may be provided",
-        error.UnknownOption => "unknown option",
-    };
+pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
+    var cmd = try chilli.Command.init(allocator, .{
+        .name = "sandopolis",
+        .description = "A Sega Genesis/Mega Drive emulator written in Zig and C",
+        .version = build_options.version,
+        .exec = exec,
+    });
+
+    try cmd.addFlag(.{
+        .name = "audio-mode",
+        .description = "Audio render mode: normal, ym-only, psg-only, unfiltered-mix",
+        .type = .String,
+        .default_value = .{ .String = "normal" },
+    });
+    try cmd.addFlag(.{
+        .name = "renderer",
+        .description = "SDL render driver override (e.g. software, opengl)",
+        .type = .String,
+        .default_value = .{ .String = "" },
+    });
+    try cmd.addFlag(.{
+        .name = "pal",
+        .description = "Force PAL/50Hz timing and version bits",
+        .type = .Bool,
+        .default_value = .{ .Bool = false },
+    });
+    try cmd.addFlag(.{
+        .name = "ntsc",
+        .description = "Force NTSC/60Hz timing and version bits",
+        .type = .Bool,
+        .default_value = .{ .Bool = false },
+    });
+    try cmd.addPositional(.{
+        .name = "rom_file",
+        .description = "Path to a ROM file (.bin, .md, or .smd)",
+        .default_value = .{ .String = "" },
+    });
+
+    return cmd;
 }

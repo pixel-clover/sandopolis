@@ -88,6 +88,8 @@ If the build is successful, you can find the built binary at `zig-out/bin/`.
 
 #### Run the Emulator
 
+Run the `sandopolis` binary to start the emulator GUI:
+
 ```bash
 sandopolis
 ```
@@ -95,6 +97,29 @@ sandopolis
 <div align="center">
 <img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.3.png" width="150%">
 </div>
+
+Run `sandopolis --help` to see the list of available command-line options.
+
+Example output:
+
+```
+A Sega Genesis/Mega Drive emulator written in Zig and C
+Version: 0.1.0-alpha.3
+
+Usage:
+  sandopolis [flags] [rom_file]
+
+Arguments:
+  rom_file  Path to a ROM file (.bin, .md, or .smd) (optional)
+
+Flags:
+  -h, --help        Shows help information for this command [Bool] (default: false)
+      --audio-mode  Audio render mode: normal, ym-only, psg-only, unfiltered-mix [String] (default: "normal")
+      --renderer    SDL render driver override (e.g. software, opengl) [String] (default: "")
+      --pal         Force PAL/50Hz timing and version bits [Bool] (default: false)
+      --ntsc        Force NTSC/60Hz timing and version bits [Bool] (default: false)
+      --version     Print version information and exit [Bool] (default: false)
+```
 
 ---
 
@@ -113,7 +138,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution
 * The logo is from [SVG Repo](https://www.svgrepo.com/svg/519365/sonic-runners) with some modifications.
 * This project uses material from the following projects and resources:
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
-    * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU emulation
+    * [Chilli](https://github.com/CogitatorTech/minish) framework for CLI parsing and handling
+    * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU (Motorola 68000) emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
     * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl) and [SDL](https://github.com/castholm/SDL))
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)

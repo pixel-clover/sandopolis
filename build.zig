@@ -100,6 +100,7 @@ pub fn build(b: *std.Build) void {
     const version = @import("build.zig.zon").version;
 
     const zsdl = b.dependency("zsdl", .{});
+    const chilli = b.dependency("chilli", .{});
     const minish = b.dependency("minish", .{});
     const sdl3_dep = b.dependency("sdl3", .{
         .target = target,
@@ -127,6 +128,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
@@ -155,6 +157,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
@@ -189,6 +192,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
