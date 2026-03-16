@@ -38,7 +38,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, timers, and die-accurate ROM tables
 - [x] Audio filtering with low-pass on YM2612 output and DC-blocking on the final mix
 - [ ] Reduce remaining YM2612 mismatches against reference output and hardware edge cases
-- [ ] Improve final mix, filtering, and resampling to better match console output character
+- [ ] Improve final mix, filtering, and resampling to better match the console output character
 
 ### Input and Interaction
 
@@ -52,7 +52,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] GIF animation recording support
 - [x] WAV audio recording (for debugging)
 - [x] BMP screenshot capture
-- [x] Save-state previews/screenshots and fuller settings menus beyond the current keyboard/gamepad home, pause, and save-manager flow
+- [x] Save-state previews/screenshots, pause, and save-manager flow
 - [ ] More controller I/O edge-case coverage and broader peripheral support
 
 ### Compatibility and Tooling
