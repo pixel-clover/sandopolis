@@ -2,14 +2,42 @@ const std = @import("std");
 const render = @import("render.zig");
 const fifo_mod = @import("fifo.zig");
 const timing_mod = @import("timing.zig");
+const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 
 pub const Vdp = struct {
+    pub const save_state_skip_fields = .{
+        "active_execution_counters",
+        "sprite_cache_entries",
+        "sprite_cache_valid",
+        "sprite_cache_base",
+        "sprite_cache_total",
+    };
+
+    pub const framebuffer_width: usize = 320;
+    pub const max_framebuffer_height: usize = 240;
+    pub const sprite_cache_entry_count: usize = 80;
+
+    pub const SpriteCacheEntry = struct {
+        y_pos: i16 = 0,
+        x_pos_raw: u16 = 0,
+        x_pos: i16 = 0,
+        h_size: u8 = 0,
+        v_size: u8 = 0,
+        link: u8 = 0,
+        tile_base: u16 = 0,
+        palette: u8 = 0,
+        is_high: bool = false,
+        x_flip: bool = false,
+        y_flip: bool = false,
+        new_layer: u8 = 0,
+    };
+
     vram: [64 * 1024]u8,
     cram: [128]u8,
     vsram: [80]u8,
     regs: [32]u8,
 
-    framebuffer: [320 * 224]u32,
+    framebuffer: [framebuffer_width * max_framebuffer_height]u32,
 
     code: u8,
     addr: u16,
@@ -29,6 +57,8 @@ pub const Vdp = struct {
 
     dma_fill: bool,
     dma_copy: bool,
+    dma_fill_ready: bool,
+    dma_fill_word: u16,
     dma_source_addr: u32,
     dma_length: u16,
     dma_remaining: u32,
@@ -58,6 +88,11 @@ pub const Vdp = struct {
     dbg_cram_writes: u64,
     dbg_vsram_writes: u64,
     dbg_unknown_writes: u64,
+    active_execution_counters: ?*CoreFrameCounters,
+    sprite_cache_entries: [sprite_cache_entry_count]SpriteCacheEntry,
+    sprite_cache_valid: bool,
+    sprite_cache_base: u16,
+    sprite_cache_total: u8,
 
     pub const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
 
@@ -108,6 +143,19 @@ pub const Vdp = struct {
         transfer_hblank: bool = false,
         transfer_odd_frame: bool = false,
         pending_port_write_delay_master_cycles: u16 = 0,
+        replay_pending_port_writes: [8]PendingPortWrite = [_]PendingPortWrite{.{ .data = 0 }} ** 8,
+        replay_pending_port_write_len: u8 = 0,
+        projected_code: u8 = 0,
+        projected_addr: u16 = 0,
+        projected_pending_command: bool = false,
+        projected_command_word: u32 = 0,
+        projected_regs: [32]u8 = [_]u8{0} ** 32,
+        projected_dma_active: bool = false,
+        projected_dma_fill: bool = false,
+        projected_dma_copy: bool = false,
+        projected_dma_fill_ready: bool = false,
+        projected_dma_remaining: u32 = 0,
+        projected_dma_start_delay_slots: u8 = 0,
     };
 
     pub fn init() Vdp {
@@ -116,7 +164,7 @@ pub const Vdp = struct {
             .cram = [_]u8{0} ** 128,
             .vsram = [_]u8{0} ** 80,
             .regs = [_]u8{0} ** 32,
-            .framebuffer = [_]u32{0} ** (320 * 224),
+            .framebuffer = [_]u32{0} ** (framebuffer_width * max_framebuffer_height),
             .code = 0,
             .addr = 0,
             .pending_command = false,
@@ -132,6 +180,8 @@ pub const Vdp = struct {
             .sprite_collision = false,
             .dma_fill = false,
             .dma_copy = false,
+            .dma_fill_ready = false,
+            .dma_fill_word = 0,
             .dma_source_addr = 0,
             .dma_length = 0,
             .dma_remaining = 0,
@@ -158,11 +208,20 @@ pub const Vdp = struct {
             .dbg_cram_writes = 0,
             .dbg_vsram_writes = 0,
             .dbg_unknown_writes = 0,
+            .active_execution_counters = null,
+            .sprite_cache_entries = [_]SpriteCacheEntry{.{}} ** sprite_cache_entry_count,
+            .sprite_cache_valid = false,
+            .sprite_cache_base = 0,
+            .sprite_cache_total = 0,
         };
     }
 
+    pub fn setActiveExecutionCounters(self: *Vdp, counters: ?*CoreFrameCounters) void {
+        self.active_execution_counters = counters;
+    }
+
     pub fn isH40(self: *const Vdp) bool {
-        return (self.regs[12] & 0x81) != 0;
+        return (self.regs[12] & 0x01) != 0;
     }
 
     pub fn screenWidth(self: *const Vdp) u16 {
@@ -183,6 +242,57 @@ pub const Vdp = struct {
 
     pub fn maxSpritesTotal(self: *const Vdp) u8 {
         return if (self.isH40()) 80 else 64;
+    }
+
+    pub fn spriteAttributeTableBase(self: *const Vdp) u16 {
+        return if (self.isH40())
+            ((@as(u16, self.regs[5] & 0x7F) << 9) & 0xFC00)
+        else
+            ((@as(u16, self.regs[5] & 0x7F) << 9) & 0xFE00);
+    }
+
+    pub fn invalidateSpriteCache(self: *Vdp) void {
+        self.sprite_cache_valid = false;
+    }
+
+    pub fn ensureSpriteCache(self: *Vdp) void {
+        const sprite_base = self.spriteAttributeTableBase();
+        const max_total = self.maxSpritesTotal();
+        if (self.sprite_cache_valid and self.sprite_cache_base == sprite_base and self.sprite_cache_total == max_total) {
+            return;
+        }
+
+        const vram = &self.vram;
+        for (0..max_total) |sprite_index_usize| {
+            const entry_addr = @as(usize, sprite_base) + (sprite_index_usize * 8);
+            const y_word = (@as(u16, vram[entry_addr]) << 8) | vram[entry_addr + 1];
+            const size = vram[entry_addr + 2];
+            const link = vram[entry_addr + 3] & 0x7F;
+            const attr = (@as(u16, vram[entry_addr + 4]) << 8) | vram[entry_addr + 5];
+            const x_word = (@as(u16, vram[entry_addr + 6]) << 8) | vram[entry_addr + 7];
+            const h_size: u8 = @intCast(((size >> 2) & 0x3) + 1);
+            const v_size: u8 = @intCast((size & 0x3) + 1);
+            const x_pos_raw = x_word & 0x01FF;
+
+            self.sprite_cache_entries[sprite_index_usize] = .{
+                .y_pos = @as(i16, @intCast(y_word & 0x03FF)) - 128,
+                .x_pos_raw = x_pos_raw,
+                .x_pos = @as(i16, @intCast(x_pos_raw)) - 128,
+                .h_size = h_size,
+                .v_size = v_size,
+                .link = link,
+                .tile_base = attr & 0x07FF,
+                .palette = @intCast((attr >> 13) & 0x3),
+                .is_high = (attr & 0x8000) != 0,
+                .x_flip = (attr & 0x0800) != 0,
+                .y_flip = (attr & 0x1000) != 0,
+                .new_layer = render.layerOrder(3, (attr & 0x8000) != 0),
+            };
+        }
+
+        self.sprite_cache_base = sprite_base;
+        self.sprite_cache_total = max_total;
+        self.sprite_cache_valid = true;
     }
 
     pub fn isDisplayEnabled(self: *const Vdp) bool {
@@ -231,13 +341,28 @@ pub const Vdp = struct {
     }
 
     pub fn vramWriteByte(self: *Vdp, address: u16, value: u8) void {
-        self.vram[address & 0xFFFF] = value;
+        const addr = address & 0xFFFF;
+        self.vram[addr] = value;
+        self.noteSpriteTableWrite(addr);
     }
 
     pub fn vramWriteWord(self: *Vdp, address: u16, value: u16) void {
         const addr = address & 0xFFFE;
         self.vram[addr] = @intCast((value >> 8) & 0xFF);
         self.vram[addr + 1] = @intCast(value & 0xFF);
+        self.noteSpriteTableWrite(addr);
+        self.noteSpriteTableWrite(addr + 1);
+    }
+
+    fn noteSpriteTableWrite(self: *Vdp, address: u16) void {
+        if (!self.sprite_cache_valid) return;
+
+        const sprite_base = self.spriteAttributeTableBase();
+        const sprite_end = @as(u32, sprite_base) + (@as(u32, self.maxSpritesTotal()) * 8);
+        const addr_u32 = @as(u32, address);
+        if (addr_u32 >= sprite_base and addr_u32 < sprite_end) {
+            self.invalidateSpriteCache();
+        }
     }
 
     pub const renderScanline = render.renderScanline;
@@ -266,10 +391,14 @@ pub const Vdp = struct {
     pub const readHVCounter = timing_mod.readHVCounter;
     pub const readHVCounterAdjusted = timing_mod.readHVCounterAdjusted;
     pub const step = timing_mod.step;
+    pub const activeVisibleLines = timing_mod.activeVisibleLines;
+    pub const totalLinesForCurrentFrame = timing_mod.totalLinesForCurrentFrame;
+    pub const frameMasterCycles = timing_mod.frameMasterCycles;
     pub const setScanlineState = timing_mod.setScanlineState;
     pub const setHBlank = timing_mod.setHBlank;
     pub const isVBlankInterruptEnabled = timing_mod.isVBlankInterruptEnabled;
     pub const beginFrame = timing_mod.beginFrame;
+    pub const applyPowerOnResetTiming = timing_mod.applyPowerOnResetTiming;
     pub const consumeHintForLine = timing_mod.consumeHintForLine;
     pub const hInterruptMasterCycles = timing_mod.hInterruptMasterCycles;
     pub const hblankStartMasterCycles = timing_mod.hblankStartMasterCycles;
@@ -279,3 +408,109 @@ pub const Vdp = struct {
         std.debug.print("VDP Code: {X} Addr: {X:0>4} Reg[1]: {X} Reg[15]: {X}\n", .{ self.code, self.addr, self.regs[1], self.regs[15] });
     }
 };
+
+test "H40-derived geometry depends only on reg 12 bit 0" {
+    var vdp = Vdp.init();
+    vdp.regs[5] = 0x7F;
+
+    vdp.regs[12] = 0x80;
+    try std.testing.expect(!vdp.isH40());
+    try std.testing.expectEqual(@as(u16, 256), vdp.screenWidth());
+    try std.testing.expectEqual(@as(u8, 64), vdp.maxSpritesTotal());
+    try std.testing.expectEqual(@as(u16, 0xFE00), vdp.spriteAttributeTableBase());
+
+    vdp.regs[12] = 0x01;
+    try std.testing.expect(vdp.isH40());
+    try std.testing.expectEqual(@as(u16, 320), vdp.screenWidth());
+    try std.testing.expectEqual(@as(u8, 80), vdp.maxSpritesTotal());
+    try std.testing.expectEqual(@as(u16, 0xFC00), vdp.spriteAttributeTableBase());
+}
+
+test "VDP init returns expected defaults" {
+    const vdp = Vdp.init();
+
+    // Video state defaults
+    try std.testing.expect(!vdp.vblank);
+    try std.testing.expect(!vdp.hblank);
+    try std.testing.expect(!vdp.odd_frame);
+    try std.testing.expect(!vdp.pal_mode);
+    try std.testing.expect(!vdp.vint_pending);
+    try std.testing.expect(!vdp.sprite_overflow);
+    try std.testing.expect(!vdp.sprite_collision);
+
+    // DMA state defaults
+    try std.testing.expect(!vdp.dma_active);
+    try std.testing.expect(!vdp.dma_fill);
+    try std.testing.expect(!vdp.dma_copy);
+    try std.testing.expectEqual(@as(u32, 0), vdp.dma_remaining);
+
+    // Command state defaults
+    try std.testing.expect(!vdp.pending_command);
+    try std.testing.expectEqual(@as(u8, 0), vdp.code);
+    try std.testing.expectEqual(@as(u16, 0), vdp.addr);
+
+    // FIFO defaults
+    try std.testing.expectEqual(@as(u8, 0), vdp.fifo_len);
+    try std.testing.expectEqual(@as(u8, 0), vdp.pending_fifo_len);
+}
+
+test "display enable controlled by reg 1 bit 6" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isDisplayEnabled());
+
+    vdp.regs[1] = 0x40;
+    try std.testing.expect(vdp.isDisplayEnabled());
+
+    vdp.regs[1] = 0x3F;
+    try std.testing.expect(!vdp.isDisplayEnabled());
+
+    vdp.regs[1] = 0xFF;
+    try std.testing.expect(vdp.isDisplayEnabled());
+}
+
+test "shadow highlight mode controlled by reg 12 bit 3" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isShadowHighlightEnabled());
+
+    vdp.regs[12] = 0x08;
+    try std.testing.expect(vdp.isShadowHighlightEnabled());
+
+    vdp.regs[12] = 0xF7;
+    try std.testing.expect(!vdp.isShadowHighlightEnabled());
+}
+
+test "interlace mode 2 requires reg 12 bits 1 and 2 both set" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isInterlaceMode2());
+    try std.testing.expectEqual(@as(u8, 8), vdp.tileHeight());
+    try std.testing.expectEqual(@as(u32, 32), vdp.tileSizeBytes());
+
+    // Only bit 1 set - not interlace mode 2
+    vdp.regs[12] = 0x02;
+    try std.testing.expect(!vdp.isInterlaceMode2());
+
+    // Only bit 2 set - not interlace mode 2
+    vdp.regs[12] = 0x04;
+    try std.testing.expect(!vdp.isInterlaceMode2());
+
+    // Both bits set - interlace mode 2
+    vdp.regs[12] = 0x06;
+    try std.testing.expect(vdp.isInterlaceMode2());
+    try std.testing.expectEqual(@as(u8, 16), vdp.tileHeight());
+    try std.testing.expectEqual(@as(u32, 64), vdp.tileSizeBytes());
+}
+
+test "HV counter latch controlled by reg 0 bit 1" {
+    var vdp = Vdp.init();
+
+    try std.testing.expect(!vdp.isHVCounterLatchEnabled());
+
+    vdp.regs[0] = 0x02;
+    try std.testing.expect(vdp.isHVCounterLatchEnabled());
+
+    vdp.regs[0] = 0xFD;
+    try std.testing.expect(!vdp.isHVCounterLatchEnabled());
+}

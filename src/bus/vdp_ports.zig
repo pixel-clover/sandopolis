@@ -8,44 +8,56 @@ fn splitWordByte(word: u16, address: u32) u8 {
         @intCast(word & 0xFF);
 }
 
-fn readStatus(vdp: *Vdp, open_bus: *u16) u16 {
-    const opcode = cpu_runtime.currentOpcode();
+fn readOpenBusByte(open_bus: *const u16, address: u32) u8 {
+    return splitWordByte(open_bus.*, address);
+}
+
+fn readStatus(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeState) u16 {
+    const opcode = runtime.currentOpcode();
     const status = vdp.readControlAdjusted(opcode) | (open_bus.* & 0xFC00);
     open_bus.* = status;
-    cpu_runtime.clearInterrupt();
+    runtime.clearInterrupt();
     return status;
 }
 
-fn readHVCounter(vdp: *Vdp, open_bus: *u16) u16 {
-    const opcode = cpu_runtime.currentOpcode();
+fn readHVCounter(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeState) u16 {
+    const opcode = runtime.currentOpcode();
     const word = vdp.readHVCounterAdjusted(opcode);
     open_bus.* = word;
     return word;
 }
 
-pub fn readByte(vdp: *Vdp, open_bus: *u16, address: u32) u8 {
+pub fn readByte(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeState, address: u32) u8 {
     const port = address & 0x1F;
-    if (port < 0x04) {
-        const word = vdp.readData();
-        open_bus.* = word;
-        return splitWordByte(word, address);
+    switch (port) {
+        0x00, 0x01, 0x02, 0x03 => {
+            const word = vdp.readData();
+            open_bus.* = word;
+            return splitWordByte(word, address);
+        },
+        0x04, 0x05, 0x06, 0x07 => return splitWordByte(readStatus(vdp, open_bus, runtime), address),
+        0x08, 0x09, 0x0C, 0x0D => return splitWordByte(readHVCounter(vdp, open_bus, runtime), address),
+        0x18, 0x19, 0x1C, 0x1D => return readOpenBusByte(open_bus, address),
+        else => return 0xFF,
     }
-    if (port < 0x08) return splitWordByte(readStatus(vdp, open_bus), address);
-    if (port < 0x10) return splitWordByte(readHVCounter(vdp, open_bus), address);
-    return 0xFF;
 }
 
-pub fn readWord(vdp: *Vdp, open_bus: *u16, address: u32) u16 {
+pub fn readWord(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeState, address: u32) u16 {
     const port = address & 0x1F;
-    if (port < 0x04) {
-        const word = vdp.readData();
-        open_bus.* = word;
-        return word;
+    switch (port & 0x1E) {
+        0x00, 0x02 => {
+            const word = vdp.readData();
+            open_bus.* = word;
+            return word;
+        },
+        0x04, 0x06 => return readStatus(vdp, open_bus, runtime),
+        0x08, 0x0A, 0x0C, 0x0E => return readHVCounter(vdp, open_bus, runtime),
+        0x18, 0x1A, 0x1C, 0x1E => return open_bus.*,
+        else => {
+            open_bus.* = 0xFFFF;
+            return 0xFFFF;
+        },
     }
-    if (port < 0x08) return readStatus(vdp, open_bus);
-    if (port < 0x10) return readHVCounter(vdp, open_bus);
-    open_bus.* = 0xFFFF;
-    return 0xFFFF;
 }
 
 pub fn writeByte(vdp: *Vdp, address: u32, value: u8) void {

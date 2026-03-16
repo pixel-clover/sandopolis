@@ -1,6 +1,8 @@
 const std = @import("std");
 const internal_machine = @import("../machine.zig");
 const internal_timing = @import("../audio/timing.zig");
+const state_file = @import("../state_file.zig");
+const AudioOutput = @import("../audio/output.zig").AudioOutput;
 
 const empty_rom = [_]u8{};
 
@@ -56,6 +58,10 @@ pub const Emulator = struct {
         self.handle.machine.reset();
     }
 
+    pub fn softReset(self: *Emulator) void {
+        self.handle.machine.softReset();
+    }
+
     pub fn flushPersistentStorage(self: *Emulator) !void {
         try self.handle.machine.flushPersistentStorage();
     }
@@ -71,6 +77,26 @@ pub const Emulator = struct {
     pub fn runFrames(self: *Emulator, frames: usize) void {
         for (0..frames) |_| {
             self.handle.machine.runFrame();
+        }
+    }
+
+    pub fn discardPendingAudio(self: *Emulator) void {
+        self.handle.machine.discardPendingAudio();
+    }
+
+    pub fn runFramesDiscardingAudio(self: *Emulator, frames: usize) void {
+        for (0..frames) |_| {
+            self.handle.machine.runFrame();
+            self.handle.machine.discardPendingAudio();
+        }
+    }
+
+    pub fn runFramesProcessingAudio(self: *Emulator, frames: usize) !void {
+        var output = AudioOutput.init();
+        for (0..frames) |_| {
+            self.handle.machine.runFrame();
+            const pending = self.handle.machine.takePendingAudio();
+            try output.discardPending(pending, &self.handle.machine.bus.z80, self.handle.machine.palMode());
         }
     }
 
@@ -165,6 +191,11 @@ pub const Emulator = struct {
         machine.setVdpRegister(index, value);
     }
 
+    pub fn setPalMode(self: *Emulator, pal_mode: bool) void {
+        var machine = self.handle.machine.testing();
+        machine.setPalMode(pal_mode);
+    }
+
     pub fn vdpRegister(self: *const Emulator, index: usize) u8 {
         const machine = self.handle.machine.testingConst();
         return machine.vdpRegister(index);
@@ -183,6 +214,11 @@ pub const Emulator = struct {
     pub fn vdpAddr(self: *const Emulator) u16 {
         const machine = self.handle.machine.testingConst();
         return machine.vdpAddr();
+    }
+
+    pub fn vdpScanline(self: *const Emulator) u16 {
+        const machine = self.handle.machine.testingConst();
+        return machine.vdpScanline();
     }
 
     pub fn writeVdpData(self: *Emulator, value: u16) void {
@@ -216,7 +252,7 @@ pub const Emulator = struct {
     }
 
     pub fn framebuffer(self: *const Emulator) []const u32 {
-        return self.handle.machine.framebuffer()[0..];
+        return self.handle.machine.framebuffer();
     }
 
     pub fn takePendingAudio(self: *Emulator) PendingAudioFrames {
@@ -248,6 +284,16 @@ pub const Emulator = struct {
         return machine.z80ProgramCounter();
     }
 
+    pub fn z80BusAckWord(self: *const Emulator) u16 {
+        const machine = self.handle.machine.testingConst();
+        return machine.z80BusAckWord();
+    }
+
+    pub fn z80ResetControlWord(self: *const Emulator) u16 {
+        const machine = self.handle.machine.testingConst();
+        return machine.z80ResetControlWord();
+    }
+
     pub fn setZ80BusRequest(self: *Emulator, value: u16) void {
         var machine = self.handle.machine.testing();
         machine.setZ80BusRequest(value);
@@ -271,5 +317,51 @@ pub const Emulator = struct {
     pub fn cpuDebtMasterCycles(self: *const Emulator) u32 {
         const machine = self.handle.machine.testingConst();
         return machine.cpuDebtMasterCycles();
+    }
+
+    pub fn saveToFile(self: *const Emulator, path: []const u8) !void {
+        try state_file.saveToFile(&self.handle.machine, path);
+    }
+
+    pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Emulator {
+        const state = try allocator.create(State);
+        errdefer allocator.destroy(state);
+
+        state.* = .{
+            .machine = try state_file.loadFromFile(allocator, path),
+        };
+        return .{ .handle = state };
+    }
+
+    pub fn cpuPc(self: *const Emulator) u32 {
+        return self.handle.machine.programCounter();
+    }
+
+    pub fn cpuSr(self: *const Emulator) u16 {
+        return self.handle.machine.cpu.core.sr;
+    }
+
+    pub fn m68kSyncCycles(self: *const Emulator) u64 {
+        return self.handle.machine.m68k_sync.master_cycles;
+    }
+
+    pub fn readRam(self: *const Emulator, offset: u16) u8 {
+        return self.handle.machine.bus.ram[offset];
+    }
+
+    pub fn writeRam(self: *Emulator, offset: u16, value: u8) void {
+        self.handle.machine.bus.ram[offset] = value;
+    }
+
+    pub fn setCpuPc(self: *Emulator, pc: u32) void {
+        self.handle.machine.cpu.core.pc = pc;
+    }
+
+    pub fn setCpuSr(self: *Emulator, sr: u16) void {
+        self.handle.machine.cpu.core.sr = sr;
+    }
+
+    pub fn setM68kSyncCycles(self: *Emulator, cycles: u64) void {
+        self.handle.machine.m68k_sync.master_cycles = cycles;
     }
 };

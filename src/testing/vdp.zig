@@ -104,8 +104,6 @@ pub const Vdp = struct {
 
     pub fn progressTransfersWithEvents(self: *Vdp, master_cycles: u32) void {
         const vdp = &self.handle.vdp;
-        const visible_lines: u16 = if (vdp.pal_mode) clock.pal_visible_lines else clock.ntsc_visible_lines;
-        const total_lines: u16 = if (vdp.pal_mode) clock.pal_lines_per_frame else clock.ntsc_lines_per_frame;
         var remaining = master_cycles;
 
         while (remaining != 0) {
@@ -140,7 +138,12 @@ pub const Vdp = struct {
                 continue;
             }
             if (chunk == to_line_end) {
+                const visible_lines = vdp.activeVisibleLines();
+                const total_lines = vdp.totalLinesForCurrentFrame();
                 const next_line: u16 = if (vdp.scanline + 1 >= total_lines) 0 else vdp.scanline + 1;
+                if (next_line == 0) {
+                    vdp.odd_frame = !vdp.odd_frame;
+                }
                 _ = vdp.setScanlineState(next_line, visible_lines, total_lines);
                 vdp.setHBlank(false);
             }

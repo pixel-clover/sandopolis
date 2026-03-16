@@ -25,9 +25,24 @@ pub const Action = enum(u8) {
 };
 
 pub const HotkeyAction = enum(u8) {
+    toggle_help,
+    toggle_pause,
+    open_rom,
+    restart_rom,
+    reload_rom,
+    open_keyboard_editor,
+    toggle_performance_hud,
+    reset_performance_hud,
+    save_quick_state,
+    load_quick_state,
+    save_state_file,
+    load_state_file,
+    next_state_slot,
     step,
     registers,
     record_gif,
+    record_wav,
+    screenshot,
     toggle_fullscreen,
     quit,
 };
@@ -64,6 +79,7 @@ pub const KeyboardInput = enum(u8) {
     backspace,
     space,
     escape,
+    delete,
     lshift,
     rshift,
     semicolon,
@@ -71,7 +87,31 @@ pub const KeyboardInput = enum(u8) {
     comma,
     period,
     slash,
+    f1,
+    f2,
+    f3,
+    f4,
+    f5,
+    f6,
+    f7,
+    f8,
+    f9,
+    f10,
     f11,
+    f12,
+    print_screen,
+};
+
+pub const HotkeyModifiers = packed struct(u4) {
+    shift: bool = false,
+    ctrl: bool = false,
+    alt: bool = false,
+    gui: bool = false,
+};
+
+pub const HotkeyBinding = struct {
+    input: ?KeyboardInput = null,
+    modifiers: HotkeyModifiers = .{},
 };
 
 pub const GamepadInput = enum(u8) {
@@ -110,7 +150,28 @@ pub const all_actions = [_]Action{
     .start,
 };
 
-pub const all_hotkey_actions = [_]HotkeyAction{ .step, .registers, .record_gif, .toggle_fullscreen, .quit };
+pub const all_hotkey_actions = [_]HotkeyAction{
+    .toggle_help,
+    .toggle_pause,
+    .open_rom,
+    .restart_rom,
+    .reload_rom,
+    .open_keyboard_editor,
+    .toggle_performance_hud,
+    .reset_performance_hud,
+    .save_quick_state,
+    .load_quick_state,
+    .save_state_file,
+    .load_state_file,
+    .next_state_slot,
+    .step,
+    .registers,
+    .record_gif,
+    .record_wav,
+    .screenshot,
+    .toggle_fullscreen,
+    .quit,
+};
 
 const actions = all_actions;
 const hotkey_actions = all_hotkey_actions;
@@ -118,7 +179,7 @@ const hotkey_actions = all_hotkey_actions;
 pub const Bindings = struct {
     keyboard: [player_count][actions.len]?KeyboardInput,
     gamepad: [player_count][actions.len]?GamepadInput,
-    hotkeys: [hotkey_actions.len]?KeyboardInput,
+    hotkeys: [hotkey_actions.len]HotkeyBinding,
     controller_types: [player_count]ControllerType,
     gamepad_axis_threshold: i16,
     joystick_axis_threshold: i16,
@@ -128,7 +189,7 @@ pub const Bindings = struct {
         var bindings = Bindings{
             .keyboard = [_][actions.len]?KeyboardInput{[_]?KeyboardInput{null} ** actions.len} ** player_count,
             .gamepad = [_][actions.len]?GamepadInput{[_]?GamepadInput{null} ** actions.len} ** player_count,
-            .hotkeys = [_]?KeyboardInput{null} ** hotkey_actions.len,
+            .hotkeys = [_]HotkeyBinding{.{}} ** hotkey_actions.len,
             .controller_types = [_]ControllerType{.six_button} ** player_count,
             .gamepad_axis_threshold = default_gamepad_axis_threshold,
             .joystick_axis_threshold = default_joystick_axis_threshold,
@@ -176,11 +237,38 @@ pub const Bindings = struct {
             bindings.setGamepadForPort(port, .start, .start);
         }
 
-        bindings.setHotkey(.step, .space);
-        bindings.setHotkey(.registers, .backspace);
-        bindings.setHotkey(.record_gif, .r);
-        bindings.setHotkey(.toggle_fullscreen, .f11);
-        bindings.setHotkey(.quit, .escape);
+        // Optimized hotkey layout (alpha v2)
+        // Core controls - most intuitive keys
+        bindings.setHotkey(.toggle_pause, .escape); // Escape opens pause menu
+        bindings.setHotkeyWithModifiers(.quit, .q, .{ .ctrl = true }); // Ctrl+Q to quit (standard)
+        bindings.setHotkeyWithModifiers(.open_rom, .o, .{ .ctrl = true }); // Ctrl+O to open (standard)
+        bindings.setHotkey(.toggle_fullscreen, .f11); // F11 fullscreen (standard)
+
+        // Reset controls - R for reset
+        bindings.setHotkey(.restart_rom, .r); // R = soft reset
+        bindings.setHotkeyWithModifiers(.reload_rom, .r, .{ .shift = true }); // Shift+R = hard reset
+
+        // Save states - F5/F7 quick, F2/F4 file, F3 slot
+        bindings.setHotkey(.save_quick_state, .f5); // F5 = quick save (common convention)
+        bindings.setHotkey(.load_quick_state, .f7); // F7 = quick load
+        bindings.setHotkey(.save_state_file, .f2); // F2 = save to slot file
+        bindings.setHotkey(.load_state_file, .f4); // F4 = load from slot file
+        bindings.setHotkey(.next_state_slot, .f3); // F3 = cycle slot
+
+        // Help and tools
+        bindings.setHotkey(.toggle_help, .f1); // F1 = help (standard)
+        bindings.setHotkey(.open_keyboard_editor, .f8); // F8 = key config
+        bindings.setHotkey(.toggle_performance_hud, .f6); // F6 = perf HUD
+        bindings.setHotkey(.reset_performance_hud, .f9); // F9 = reset perf stats
+
+        // Recording - F12 family
+        bindings.setHotkey(.record_gif, .f12); // F12 = record GIF
+        bindings.setHotkeyWithModifiers(.record_wav, .f12, .{ .shift = true }); // Shift+F12 = record audio
+        bindings.setHotkeyWithModifiers(.screenshot, .f12, .{ .ctrl = true }); // Ctrl+F12 = screenshot
+
+        // Debug controls
+        bindings.setHotkey(.step, .backspace); // Backspace = step CPU
+        bindings.setHotkey(.registers, .f10); // F10 = show registers
 
         return bindings;
     }
@@ -226,7 +314,14 @@ pub const Bindings = struct {
     }
 
     pub fn setHotkey(self: *Bindings, action: HotkeyAction, input: ?KeyboardInput) void {
-        self.hotkeys[hotkeyIndex(action)] = input;
+        self.setHotkeyWithModifiers(action, input, .{});
+    }
+
+    pub fn setHotkeyWithModifiers(self: *Bindings, action: HotkeyAction, input: ?KeyboardInput, modifiers: HotkeyModifiers) void {
+        self.hotkeys[hotkeyIndex(action)] = .{
+            .input = input,
+            .modifiers = if (input == null) .{} else modifiers,
+        };
     }
 
     pub fn setControllerType(self: *Bindings, port: usize, controller_type: ControllerType) void {
@@ -294,8 +389,12 @@ pub const Bindings = struct {
     }
 
     pub fn hotkeyForKeyboard(self: *const Bindings, input: KeyboardInput) ?HotkeyAction {
+        return self.hotkeyForBinding(.{ .input = input });
+    }
+
+    pub fn hotkeyForBinding(self: *const Bindings, binding: HotkeyBinding) ?HotkeyAction {
         for (hotkey_actions) |action| {
-            if (self.hotkeys[hotkeyIndex(action)] == input) {
+            if (hotkeyBindingEql(self.hotkeys[hotkeyIndex(action)], binding)) {
                 return action;
             }
         }
@@ -306,7 +405,7 @@ pub const Bindings = struct {
         return self.keyboard[port][actionIndex(action)];
     }
 
-    pub fn hotkeyBinding(self: *const Bindings, action: HotkeyAction) ?KeyboardInput {
+    pub fn hotkeyBinding(self: *const Bindings, action: HotkeyAction) HotkeyBinding {
         return self.hotkeys[hotkeyIndex(action)];
     }
 
@@ -350,7 +449,7 @@ pub const Bindings = struct {
 
         for (hotkey_actions) |action| {
             try writer.print("hotkey.{s} = ", .{hotkeyActionName(action)});
-            try writeOptionalInputName(writer, self.hotkeyBinding(action));
+            try writeHotkeyBinding(writer, self.hotkeyBinding(action));
             try writer.writeByte('\n');
         }
     }
@@ -379,8 +478,8 @@ pub const Bindings = struct {
         }
         if (std.mem.startsWith(u8, lhs, "hotkey.")) {
             const action = parseHotkeyAction(lhs["hotkey.".len..]) orelse return error.UnknownHotkeyAction;
-            const input = if (std.ascii.eqlIgnoreCase(rhs, "none")) null else parseKeyboardInput(rhs) orelse return error.UnknownKeyboardInput;
-            self.setHotkey(action, input);
+            const binding = try parseHotkeyBinding(rhs);
+            self.hotkeys[hotkeyIndex(action)] = binding;
             return;
         }
         if (std.mem.startsWith(u8, lhs, "controller.")) {
@@ -437,6 +536,21 @@ pub fn keyboardInputName(input: KeyboardInput) []const u8 {
     return @tagName(input);
 }
 
+pub fn hotkeyBindingDisplayName(buffer: []u8, binding: HotkeyBinding) ![]const u8 {
+    const input = binding.input orelse return std.fmt.bufPrint(buffer, "NONE", .{});
+
+    var stream = std.io.fixedBufferStream(buffer);
+    const writer = stream.writer();
+
+    if (binding.modifiers.ctrl) try writer.writeAll("CTRL+");
+    if (binding.modifiers.alt) try writer.writeAll("ALT+");
+    if (binding.modifiers.shift) try writer.writeAll("SHIFT+");
+    if (binding.modifiers.gui) try writer.writeAll("GUI+");
+    try writeKeyboardInputDisplay(writer, input);
+
+    return stream.getWritten();
+}
+
 pub fn gamepadInputName(input: GamepadInput) []const u8 {
     return @tagName(input);
 }
@@ -455,6 +569,12 @@ fn actionIndex(action: Action) usize {
 
 fn hotkeyIndex(action: HotkeyAction) usize {
     return @intFromEnum(action);
+}
+
+fn hotkeyBindingEql(a: HotkeyBinding, b: HotkeyBinding) bool {
+    if (a.input != b.input) return false;
+    if (a.input == null) return true;
+    return @as(u4, @bitCast(a.modifiers)) == @as(u4, @bitCast(b.modifiers));
 }
 
 fn actionToIoButton(action: Action) u16 {
@@ -524,6 +644,46 @@ fn parseHotkeyAction(name: []const u8) ?HotkeyAction {
     return null;
 }
 
+fn parseHotkeyBinding(name: []const u8) !HotkeyBinding {
+    const trimmed = std.mem.trim(u8, name, " \t\r");
+    if (std.ascii.eqlIgnoreCase(trimmed, "none")) return .{};
+
+    var binding = HotkeyBinding{};
+    var saw_input = false;
+    var tokens = std.mem.splitScalar(u8, trimmed, '+');
+    while (tokens.next()) |raw_token| {
+        const token = std.mem.trim(u8, raw_token, " \t\r");
+        if (token.len == 0) return error.InvalidHotkeyBinding;
+
+        if (std.ascii.eqlIgnoreCase(token, "shift")) {
+            binding.modifiers.shift = true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(token, "ctrl") or std.ascii.eqlIgnoreCase(token, "control")) {
+            binding.modifiers.ctrl = true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(token, "alt")) {
+            binding.modifiers.alt = true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(token, "gui") or
+            std.ascii.eqlIgnoreCase(token, "meta") or
+            std.ascii.eqlIgnoreCase(token, "super"))
+        {
+            binding.modifiers.gui = true;
+            continue;
+        }
+
+        if (saw_input) return error.InvalidHotkeyBinding;
+        binding.input = parseKeyboardInput(token) orelse return error.UnknownKeyboardInput;
+        saw_input = true;
+    }
+
+    if (!saw_input) return error.InvalidHotkeyBinding;
+    return binding;
+}
+
 fn parseKeyboardInput(name: []const u8) ?KeyboardInput {
     inline for (std.meta.fields(KeyboardInput)) |field| {
         if (std.ascii.eqlIgnoreCase(name, field.name)) {
@@ -531,6 +691,27 @@ fn parseKeyboardInput(name: []const u8) ?KeyboardInput {
         }
     }
     return null;
+}
+
+fn writeKeyboardInputDisplay(writer: anytype, input: KeyboardInput) !void {
+    switch (input) {
+        .@"return" => return writer.writeAll("ENTER"),
+        .escape => return writer.writeAll("ESC"),
+        .delete => return writer.writeAll("DELETE"),
+        .backspace => return writer.writeAll("BACKSPACE"),
+        .space => return writer.writeAll("SPACE"),
+        .tab => return writer.writeAll("TAB"),
+        .semicolon => return writer.writeAll(";"),
+        .apostrophe => return writer.writeAll("'"),
+        .comma => return writer.writeAll(","),
+        .period => return writer.writeAll("."),
+        .slash => return writer.writeAll("/"),
+        else => {},
+    }
+
+    for (@tagName(input)) |ch| {
+        try writer.writeByte(std.ascii.toUpper(ch));
+    }
 }
 
 fn parseGamepadInput(name: []const u8) ?GamepadInput {
@@ -581,6 +762,18 @@ fn writeOptionalInputName(writer: anytype, input: anytype) !void {
     }
 }
 
+fn writeHotkeyBinding(writer: anytype, binding: HotkeyBinding) !void {
+    if (binding.input) |input| {
+        if (binding.modifiers.ctrl) try writer.writeAll("ctrl+");
+        if (binding.modifiers.alt) try writer.writeAll("alt+");
+        if (binding.modifiers.shift) try writer.writeAll("shift+");
+        if (binding.modifiers.gui) try writer.writeAll("gui+");
+        try writer.writeAll(@tagName(input));
+    } else {
+        try writer.writeAll("none");
+    }
+}
+
 test "input bindings parse overrides and unbinds" {
     const bindings = try Bindings.parseContents(
         \\# Player 1 remap
@@ -591,6 +784,7 @@ test "input bindings parse overrides and unbinds" {
         \\gamepad.mode = misc1
         \\analog.gamepad_axis = 12000
         \\analog.trigger = 20000
+        \\hotkey.reload_rom = ctrl+shift+f3
         \\hotkey.registers = none
         \\hotkey.quit = backspace
         \\controller.p2 = three_button
@@ -604,9 +798,39 @@ test "input bindings parse overrides and unbinds" {
     try testing.expectEqual(@as(i16, 12_000), bindings.gamepad_axis_threshold);
     try testing.expectEqual(@as(i16, default_joystick_axis_threshold), bindings.joystick_axis_threshold);
     try testing.expectEqual(@as(i16, 20_000), bindings.trigger_threshold);
-    try testing.expect(bindings.hotkeys[@intFromEnum(HotkeyAction.registers)] == null);
-    try testing.expect(bindings.hotkeys[@intFromEnum(HotkeyAction.quit)] == .backspace);
+    try testing.expectEqual(HotkeyBinding{}, bindings.hotkeys[@intFromEnum(HotkeyAction.registers)]);
+    try testing.expectEqual(HotkeyBinding{ .input = .backspace }, bindings.hotkeys[@intFromEnum(HotkeyAction.quit)]);
+    try testing.expectEqual(
+        HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true, .ctrl = true } },
+        bindings.hotkeys[@intFromEnum(HotkeyAction.reload_rom)],
+    );
     try testing.expectEqual(ControllerType.three_button, bindings.controller_types[1]);
+}
+
+test "default hotkeys distinguish open rom soft reset and hard reload" {
+    const bindings = Bindings.defaults();
+
+    // open_rom = Ctrl+O
+    try testing.expectEqual(HotkeyBinding{ .input = .o, .modifiers = .{ .ctrl = true } }, bindings.hotkeyBinding(.open_rom));
+    // restart_rom (soft reset) = R
+    try testing.expectEqual(
+        HotkeyBinding{ .input = .r },
+        bindings.hotkeyBinding(.restart_rom),
+    );
+    // reload_rom (hard reset) = Shift+R
+    try testing.expectEqual(
+        HotkeyBinding{ .input = .r, .modifiers = .{ .shift = true } },
+        bindings.hotkeyBinding(.reload_rom),
+    );
+    try testing.expectEqual(HotkeyAction.open_rom, bindings.hotkeyForBinding(.{ .input = .o, .modifiers = .{ .ctrl = true } }).?);
+    try testing.expectEqual(
+        HotkeyAction.restart_rom,
+        bindings.hotkeyForBinding(.{ .input = .r }).?,
+    );
+    try testing.expectEqual(
+        HotkeyAction.reload_rom,
+        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .shift = true } }).?,
+    );
 }
 
 test "input bindings apply remapped inputs" {
@@ -618,7 +842,7 @@ test "input bindings apply remapped inputs" {
     bindings.setGamepad(.mode, .guide);
     bindings.setGamepadForPort(1, .c, .left_stick);
     bindings.setHotkey(.step, .backspace);
-    bindings.setHotkey(.registers, .space);
+    bindings.setHotkeyWithModifiers(.registers, .space, .{ .shift = true });
 
     try testing.expect(bindings.applyKeyboard(&io, .q, true));
     try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.X);
@@ -633,7 +857,11 @@ test "input bindings apply remapped inputs" {
     try testing.expect(bindings.applyGamepad(&io, 0, .guide, true));
     try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.Mode);
     try testing.expectEqual(HotkeyAction.step, bindings.hotkeyForKeyboard(.backspace).?);
-    try testing.expectEqual(HotkeyAction.registers, bindings.hotkeyForKeyboard(.space).?);
+    try testing.expectEqual(
+        HotkeyAction.registers,
+        bindings.hotkeyForBinding(.{ .input = .space, .modifiers = .{ .shift = true } }).?,
+    );
+    try testing.expect(bindings.hotkeyForKeyboard(.space) == null);
 }
 
 test "input bindings release mapped keyboard inputs for both ports" {
@@ -655,7 +883,7 @@ test "input bindings write contents round trip" {
     var bindings = Bindings.defaults();
     bindings.setKeyboard(.a, .q);
     bindings.setKeyboardForPort(1, .start, null);
-    bindings.setHotkey(.quit, .backspace);
+    bindings.setHotkeyWithModifiers(.quit, .backspace, .{ .ctrl = true });
     bindings.setControllerType(1, .three_button);
     bindings.setGamepadAxisThreshold(12_345);
 
@@ -666,9 +894,29 @@ test "input bindings write contents round trip" {
     const round_tripped = try Bindings.parseContents(output.items);
     try testing.expectEqual(@as(?KeyboardInput, .q), round_tripped.keyboardBinding(0, .a));
     try testing.expectEqual(@as(?KeyboardInput, null), round_tripped.keyboardBinding(1, .start));
-    try testing.expectEqual(@as(?KeyboardInput, .backspace), round_tripped.hotkeyBinding(.quit));
+    try testing.expectEqual(
+        HotkeyBinding{ .input = .backspace, .modifiers = .{ .ctrl = true } },
+        round_tripped.hotkeyBinding(.quit),
+    );
     try testing.expectEqual(ControllerType.three_button, round_tripped.controller_types[1]);
     try testing.expectEqual(@as(i16, 12_345), round_tripped.gamepad_axis_threshold);
+}
+
+test "hotkey bindings format display names with modifiers" {
+    var buffer: [32]u8 = undefined;
+
+    try testing.expectEqualStrings("SHIFT+F3", try hotkeyBindingDisplayName(
+        buffer[0..],
+        .{ .input = .f3, .modifiers = .{ .shift = true } },
+    ));
+
+    try testing.expectEqualStrings("NONE", try hotkeyBindingDisplayName(buffer[0..], .{}));
+}
+
+test "input bindings reject hotkey entries without a primary key" {
+    try testing.expectError(error.InvalidHotkeyBinding, Bindings.parseContents(
+        \\hotkey.restart_rom = shift
+    ));
 }
 
 test "input bindings reject out-of-range analog thresholds" {

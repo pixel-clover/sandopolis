@@ -31,6 +31,10 @@ const RamType = enum {
 };
 
 const sonic_and_knuckles_serial = "GM MK-1563 ";
+const ssf_console_prefix = "SEGA SSF";
+const ssf_bank_size: u32 = 512 * 1024;
+const ssf_switchable_bank_count: usize = 7;
+const ssf_max_page_mask: u8 = 0x3F;
 const force_8kb_sram_checksums = [_]u32{
     0x8135702C,
     0xF509145F,
@@ -41,6 +45,48 @@ const force_32kb_sram_checksums = [_]u32{
     0xA4F2F011,
 };
 const forced_sram_start_address: u32 = 0x200001;
+
+const SsfMapper = struct {
+    bank_registers: [ssf_switchable_bank_count]u8 = .{ 1, 2, 3, 4, 5, 6, 7 },
+
+    fn registerIndex(address: u32) ?usize {
+        if (address < 0xA130F3 or address > 0xA130FF or (address & 1) == 0) return null;
+
+        const index: usize = @intCast((address - 0xA130F3) / 2);
+        if (index >= ssf_switchable_bank_count) return null;
+        return index;
+    }
+
+    fn translateRomAddress(self: *const SsfMapper, address: u32) u32 {
+        if (address < ssf_bank_size) return address;
+        if (address >= ssf_bank_size * (ssf_switchable_bank_count + 1)) return address;
+
+        const bank_index: usize = @intCast((address / ssf_bank_size) - 1);
+        const page = self.bank_registers[bank_index];
+        return @as(u32, page) * ssf_bank_size + (address & (ssf_bank_size - 1));
+    }
+
+    fn writeRegisterByte(self: *SsfMapper, address: u32, value: u8) bool {
+        const index = registerIndex(address) orelse return false;
+        self.bank_registers[index] = value & ssf_max_page_mask;
+        return true;
+    }
+};
+
+const Mapper = union(enum) {
+    none,
+    ssf: SsfMapper,
+};
+
+fn detectMapper(rom: []const u8) Mapper {
+    if (rom.len >= 0x100 + ssf_console_prefix.len and
+        std.mem.startsWith(u8, rom[0x100..@min(rom.len, 0x110)], ssf_console_prefix))
+    {
+        return .{ .ssf = .{} };
+    }
+
+    return .none;
+}
 
 const Ram = struct {
     data: ?[]u8,
@@ -232,8 +278,18 @@ const Ram = struct {
 };
 
 pub const Cartridge = struct {
+    pub const RamState = struct {
+        ram_type: u8,
+        persistent: bool,
+        dirty: bool,
+        mapped: bool,
+        start_address: u32,
+        end_address: u32,
+    };
+
     rom: []u8,
     ram: Ram,
+    mapper: Mapper,
     save_path: ?[]u8,
     source_path: ?[]u8,
 
@@ -308,6 +364,7 @@ pub const Cartridge = struct {
         var cartridge = Cartridge{
             .rom = rom_data,
             .ram = try Ram.initFromRomHeader(allocator, rom_data, checksum),
+            .mapper = detectMapper(rom_data),
             .save_path = null,
             .source_path = source_path,
         };
@@ -350,9 +407,17 @@ pub const Cartridge = struct {
         return .{
             .rom = rom,
             .ram = ram,
+            .mapper = self.mapper,
             .save_path = save_path,
             .source_path = source_path,
         };
+    }
+
+    pub fn resetHardwareState(self: *Cartridge) void {
+        self.mapper = detectMapper(self.rom);
+        if (self.ram.hasStorage()) {
+            self.ram.setMapped(self.ram.start_address >= self.rom.len);
+        }
     }
 
     fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
@@ -396,9 +461,15 @@ pub const Cartridge = struct {
 
     pub fn readRomByte(self: *const Cartridge, address: u32) u8 {
         if (self.rom.len == 0) return 0;
+
+        const mapped_address = switch (self.mapper) {
+            .none => address,
+            .ssf => |mapper| mapper.translateRomAddress(address),
+        };
+
         const rom_len_u32: u32 = @intCast(self.rom.len);
-        if (address >= rom_len_u32) return 0;
-        return self.rom[@intCast(address)];
+        if (mapped_address >= rom_len_u32) return 0;
+        return self.rom[@intCast(mapped_address)];
     }
 
     pub fn writeRegisterByte(self: *Cartridge, address: u32, value: u8) bool {
@@ -406,6 +477,14 @@ pub const Cartridge = struct {
             self.ram.setMapped((value & 1) != 0);
             return true;
         }
+
+        switch (self.mapper) {
+            .none => {},
+            .ssf => |*mapper| {
+                if (mapper.writeRegisterByte(address, value)) return true;
+            },
+        }
+
         return false;
     }
 
@@ -433,6 +512,43 @@ pub const Cartridge = struct {
         return self.source_path;
     }
 
+    pub fn romBytes(self: *const Cartridge) []const u8 {
+        return self.rom;
+    }
+
+    pub fn ramBytes(self: *const Cartridge) ?[]const u8 {
+        return self.ram.data;
+    }
+
+    pub fn captureRamState(self: *const Cartridge) RamState {
+        return .{
+            .ram_type = @intFromEnum(self.ram.ram_type),
+            .persistent = self.ram.persistent,
+            .dirty = self.ram.dirty,
+            .mapped = self.ram.mapped,
+            .start_address = self.ram.start_address,
+            .end_address = self.ram.end_address,
+        };
+    }
+
+    pub fn restoreRamState(self: *Cartridge, state: RamState, saved_ram: ?[]const u8) error{InvalidSaveState}!void {
+        const next_ram = self.ram.data;
+        if ((saved_ram != null) != (next_ram != null)) return error.InvalidSaveState;
+
+        if (saved_ram) |saved_ram_bytes| {
+            const next_ram_bytes = next_ram orelse return error.InvalidSaveState;
+            if (next_ram_bytes.len != saved_ram_bytes.len) return error.InvalidSaveState;
+            if (@intFromEnum(self.ram.ram_type) != state.ram_type) return error.InvalidSaveState;
+            std.mem.copyForwards(u8, next_ram_bytes, saved_ram_bytes);
+        }
+
+        self.ram.persistent = state.persistent;
+        self.ram.dirty = state.dirty;
+        self.ram.mapped = state.mapped;
+        self.ram.start_address = state.start_address;
+        self.ram.end_address = state.end_address;
+    }
+
     pub fn readByte(self: *const Cartridge, address: u32) ?u8 {
         return self.ram.readByte(address);
     }
@@ -449,3 +565,237 @@ pub const Cartridge = struct {
         return self.ram.writeWord(address, value);
     }
 };
+
+fn makeBasicGenesisRom(allocator: std.mem.Allocator, rom_len: usize) ![]u8 {
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    return rom;
+}
+
+fn makeRomWithSramHeader(
+    allocator: std.mem.Allocator,
+    rom_len: usize,
+    ram_type: u8,
+    start_address: u32,
+    end_address: u32,
+) ![]u8 {
+    var rom = try makeBasicGenesisRom(allocator, rom_len);
+    rom[0x1B0] = 'R';
+    rom[0x1B1] = 'A';
+    rom[0x1B2] = ram_type;
+    rom[0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x1B4..0x1B8], start_address, .big);
+    std.mem.writeInt(u32, rom[0x1B8..0x1BC], end_address, .big);
+    return rom;
+}
+
+fn writeSerial(rom: []u8, base: usize, serial: []const u8) void {
+    @memcpy(rom[base + 0x180 .. base + 0x180 + serial.len], serial);
+}
+
+fn readBusVisibleByte(cartridge: *const Cartridge, address: u32) u8 {
+    return cartridge.readByte(address) orelse cartridge.readRomByte(address);
+}
+
+fn makeSsfMapperRom(allocator: std.mem.Allocator, bank_count: usize) ![]u8 {
+    const bank_size = 512 * 1024;
+    const rom_len = bank_count * bank_size;
+    var rom = try allocator.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x108], "SEGA SSF");
+
+    const marker_offset = 0x0400;
+    for (0..bank_count) |bank| {
+        rom[bank * bank_size + marker_offset] = @truncate(bank);
+    }
+
+    return rom;
+}
+
+test "cartridge odd-byte sram past end of rom is auto-mapped" {
+    const rom = try makeRomWithSramHeader(std.testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.hasRam());
+    try std.testing.expect(cartridge.isRamMapped());
+    try std.testing.expect(cartridge.isRamPersistent());
+
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0x5A));
+    try std.testing.expectEqual(@as(u8, 0x5A), cartridge.readByte(0x0020_0001).?);
+    try std.testing.expectEqual(@as(u16, 0x5A5A), cartridge.readWord(0x0020_0000).?);
+}
+
+test "forced 8kb sram checksum maps odd-byte persistent ram without header" {
+    const rom = try makeBasicGenesisRom(std.testing.allocator, 0x100000);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytesWithChecksum(std.testing.allocator, rom, 0x8135702C);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.hasRam());
+    try std.testing.expect(cartridge.isRamMapped());
+    try std.testing.expect(cartridge.isRamPersistent());
+
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0xA5));
+    try std.testing.expect(cartridge.writeByte(0x0020_3FFF, 0x5A));
+    try std.testing.expectEqual(@as(u8, 0xA5), cartridge.readByte(0x0020_0001).?);
+    try std.testing.expectEqual(@as(u8, 0x5A), cartridge.readByte(0x0020_3FFF).?);
+    try std.testing.expectEqual(@as(u16, 0xA5A5), cartridge.readWord(0x0020_0000).?);
+}
+
+test "forced 32kb sram checksum maps full odd-byte 20ffff range without header" {
+    const rom = try makeBasicGenesisRom(std.testing.allocator, 0x100000);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytesWithChecksum(std.testing.allocator, rom, 0xA4F2F011);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.hasRam());
+    try std.testing.expect(cartridge.isRamMapped());
+    try std.testing.expect(cartridge.isRamPersistent());
+
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0x12));
+    try std.testing.expect(cartridge.writeByte(0x0020_FFFF, 0x34));
+    try std.testing.expectEqual(@as(u8, 0x12), cartridge.readByte(0x0020_0001).?);
+    try std.testing.expectEqual(@as(u8, 0x34), cartridge.readByte(0x0020_FFFF).?);
+    try std.testing.expectEqual(@as(u16, 0x3434), cartridge.readWord(0x0020_FFFE).?);
+}
+
+test "sonic and knuckles lock-on cartridge header enables locked-on sram" {
+    var rom = try std.testing.allocator.alloc(u8, 0x400000);
+    defer std.testing.allocator.free(rom);
+    @memset(rom, 0);
+
+    @memcpy(rom[0x100..0x104], "SEGA");
+    writeSerial(rom, 0, "GM MK-1563 ");
+
+    @memcpy(rom[0x200000 + 0x100 .. 0x200000 + 0x104], "SEGA");
+    writeSerial(rom, 0x200000, "GM MK-1079 ");
+    rom[0x200000 + 0x1B0] = 'R';
+    rom[0x200000 + 0x1B1] = 'A';
+    rom[0x200000 + 0x1B2] = 0xF8;
+    rom[0x200000 + 0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x200000 + 0x1B4 .. 0x200000 + 0x1B8], 0x200001, .big);
+    std.mem.writeInt(u32, rom[0x200000 + 0x1B8 .. 0x200000 + 0x1BC], 0x203FFF, .big);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.hasRam());
+    try std.testing.expect(!cartridge.isRamMapped());
+
+    try std.testing.expect(cartridge.writeRegisterWord(0x00A1_30F0, 0x0001));
+    try std.testing.expect(cartridge.isRamMapped());
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0xA5));
+    try std.testing.expectEqual(@as(u8, 0xA5), cartridge.readByte(0x0020_0001).?);
+}
+
+test "cartridge sram map register toggles rom fallback" {
+    var rom = try makeRomWithSramHeader(std.testing.allocator, 0x400000, 0xF8, 0x200001, 0x203FFF);
+    defer std.testing.allocator.free(rom);
+    rom[0x200001] = 0x33;
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.hasRam());
+    try std.testing.expect(!cartridge.isRamMapped());
+    try std.testing.expectEqual(@as(u8, 0x33), readBusVisibleByte(&cartridge, 0x0020_0001));
+
+    try std.testing.expect(!cartridge.writeByte(0x0020_0001, 0xAA));
+    try std.testing.expectEqual(@as(u8, 0x33), readBusVisibleByte(&cartridge, 0x0020_0001));
+
+    try std.testing.expect(cartridge.writeRegisterWord(0x00A1_30F0, 0x0001));
+    try std.testing.expect(cartridge.isRamMapped());
+
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0xAA));
+    try std.testing.expectEqual(@as(u8, 0xAA), readBusVisibleByte(&cartridge, 0x0020_0001));
+
+    try std.testing.expect(cartridge.writeRegisterWord(0x00A1_30F0, 0x0000));
+    try std.testing.expect(!cartridge.isRamMapped());
+    try std.testing.expectEqual(@as(u8, 0x33), readBusVisibleByte(&cartridge, 0x0020_0001));
+
+    try std.testing.expect(cartridge.writeRegisterWord(0x00A1_30F0, 0x0001));
+    try std.testing.expectEqual(@as(u8, 0xAA), readBusVisibleByte(&cartridge, 0x0020_0001));
+}
+
+test "cartridge sixteen-bit sram stores both bytes of a word" {
+    const rom = try makeRomWithSramHeader(std.testing.allocator, 0x100000, 0xE0, 0x200000, 0x20FFFF);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.hasRam());
+    try std.testing.expect(cartridge.isRamMapped());
+
+    try std.testing.expect(cartridge.writeWord(0x0020_0000, 0x1234));
+    try std.testing.expectEqual(@as(u16, 0x1234), cartridge.readWord(0x0020_0000).?);
+    try std.testing.expectEqual(@as(u8, 0x12), cartridge.readByte(0x0020_0000).?);
+    try std.testing.expectEqual(@as(u8, 0x34), cartridge.readByte(0x0020_0001).?);
+}
+
+test "cartridge ram snapshot restores bytes and mapping state" {
+    const rom = try makeRomWithSramHeader(std.testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
+    defer std.testing.allocator.free(rom);
+
+    var source = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer source.deinit(std.testing.allocator);
+
+    try std.testing.expect(source.writeByte(0x0020_0001, 0xA5));
+    try std.testing.expect(source.writeRegisterByte(0xA130F1, 0));
+    try std.testing.expect(!source.isRamMapped());
+
+    const ram_state = source.captureRamState();
+
+    var restored = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer restored.deinit(std.testing.allocator);
+
+    try restored.restoreRamState(ram_state, source.ramBytes());
+
+    try std.testing.expect(!restored.isRamMapped());
+    try std.testing.expect(restored.writeRegisterByte(0xA130F1, 1));
+    try std.testing.expectEqual(@as(u8, 0xA5), restored.readByte(0x0020_0001).?);
+}
+
+test "cartridge reset restores default ssf mapper banks" {
+    const rom = try makeSsfMapperRom(std.testing.allocator, 16);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    const marker_offset: u32 = 0x0400;
+    try std.testing.expectEqual(@as(u8, 1), cartridge.readRomByte(0x080000 + marker_offset));
+
+    try std.testing.expect(cartridge.writeRegisterByte(0xA130F3, 10));
+    try std.testing.expectEqual(@as(u8, 10), cartridge.readRomByte(0x080000 + marker_offset));
+
+    cartridge.resetHardwareState();
+    try std.testing.expectEqual(@as(u8, 1), cartridge.readRomByte(0x080000 + marker_offset));
+}
+
+test "cartridge reset restores default sram mapping state" {
+    const rom = try makeBasicGenesisRom(std.testing.allocator, 0x200000);
+    defer std.testing.allocator.free(rom);
+    rom[0x1B0] = 'R';
+    rom[0x1B1] = 'A';
+    rom[0x1B2] = 0xF8;
+    rom[0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x1B4..0x1B8], 0x00200001, .big);
+    std.mem.writeInt(u32, rom[0x1B8..0x1BC], 0x00203FFF, .big);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.isRamMapped());
+    try std.testing.expect(cartridge.writeRegisterByte(0xA130F1, 0));
+    try std.testing.expect(!cartridge.isRamMapped());
+
+    cartridge.resetHardwareState();
+    try std.testing.expect(cartridge.isRamMapped());
+}

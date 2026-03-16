@@ -7,6 +7,7 @@ const z80 = @import("cpu/z80.zig");
 const input_io = @import("input/io.zig");
 const input_mapping = @import("input/mapping.zig");
 const recording_gif = @import("recording/gif.zig");
+const recording_screenshot = @import("recording/screenshot.zig");
 const state_file = @import("state_file.zig");
 const video_fifo = @import("video/fifo.zig");
 const video_timing = @import("video/timing.zig");
@@ -21,6 +22,7 @@ comptime {
     _ = input_io;
     _ = input_mapping;
     _ = recording_gif;
+    _ = recording_screenshot;
     _ = state_file;
     _ = video_fifo;
     _ = video_timing;

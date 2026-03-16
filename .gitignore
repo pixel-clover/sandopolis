@@ -103,3 +103,6 @@ NOTES.md
 .zig-cache-unit/
 .zig-global-cache/
 sandopolis_*.gif
+sandopolis_*.wav
+sandopolis_*.cfg
+sandopolis_*.bmp

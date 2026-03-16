@@ -15,6 +15,7 @@ pub const CpuState = struct {
 pub const RomMetadata = struct {
     console: ?[]const u8,
     title: ?[]const u8,
+    country_codes: ?[]const u8,
     reset_stack_pointer: u32,
     reset_program_counter: u32,
 };
@@ -63,6 +64,10 @@ pub const Machine = struct {
         self.handle.machine.reset();
     }
 
+    pub fn softReset(self: *Machine) void {
+        self.handle.machine.softReset();
+    }
+
     pub fn flushPersistentStorage(self: *Machine) !void {
         try self.handle.machine.flushPersistentStorage();
     }
@@ -86,7 +91,7 @@ pub const Machine = struct {
     }
 
     pub fn framebuffer(self: *const Machine) []const u32 {
-        return self.handle.machine.framebuffer()[0..];
+        return self.handle.machine.framebuffer();
     }
 
     pub fn romMetadata(self: *const Machine) RomMetadata {
@@ -94,6 +99,7 @@ pub const Machine = struct {
         return .{
             .console = metadata.console,
             .title = metadata.title,
+            .country_codes = metadata.country_codes,
             .reset_stack_pointer = metadata.reset_stack_pointer,
             .reset_program_counter = metadata.reset_program_counter,
         };

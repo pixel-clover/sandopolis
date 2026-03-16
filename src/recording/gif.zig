@@ -5,19 +5,22 @@ pub const GifRecorder = struct {
     file: std.fs.File,
     frame_count: u32,
     delay_cs: u16,
+    height: u16,
 
     out_buf: [out_buf_size]u8 = undefined,
     out_len: usize = 0,
 
     const width = 320;
-    const height = 224;
-    const pixel_count = width * height;
+    const max_height = 240;
+    const max_pixel_count = width * max_height;
     const max_colors: u16 = 256;
     const color_depth: u3 = 7;
     const min_code_size: u8 = 8;
     const out_buf_size = 64 * 1024;
 
-    pub fn start(path: []const u8, fps: u16) !GifRecorder {
+    pub fn start(path: []const u8, fps: u16, height: u16) !GifRecorder {
+        if (height == 0 or height > max_height) return error.InvalidFrameHeight;
+
         const file = try std.fs.cwd().createFile(path, .{});
         errdefer file.close();
 
@@ -27,12 +30,13 @@ pub const GifRecorder = struct {
             .file = file,
             .frame_count = 0,
             .delay_cs = delay_cs,
+            .height = height,
         };
 
         self.bufWrite("GIF89a");
 
         self.bufWriteU16(@intCast(width));
-        self.bufWriteU16(@intCast(height));
+        self.bufWriteU16(height);
         self.bufWriteByte(0x80 | (@as(u8, color_depth) << 4) | color_depth);
         self.bufWriteByte(0);
         self.bufWriteByte(0);
@@ -47,7 +51,10 @@ pub const GifRecorder = struct {
         return self;
     }
 
-    pub fn addFrame(self: *GifRecorder, framebuffer: *const [pixel_count]u32) !void {
+    pub fn addFrame(self: *GifRecorder, framebuffer: []const u32) !void {
+        const pixel_count = width * @as(usize, self.height);
+        if (framebuffer.len != pixel_count) return error.InvalidFrameSize;
+
         if (self.frame_count > 0) {
             const pos = self.file.getPos() catch 0;
             if (pos > 0) self.file.seekTo(pos - 1) catch {};
@@ -58,7 +65,7 @@ pub const GifRecorder = struct {
 
         var color_map: [4096]ColorEntry = [_]ColorEntry{.{ .color = 0, .index = 0, .used = false }} ** 4096;
 
-        var indices: [pixel_count]u8 = undefined;
+        var indices: [max_pixel_count]u8 = undefined;
 
         for (framebuffer, 0..) |pixel, i| {
             const color = pixel & 0x00FFFFFF;
@@ -74,7 +81,7 @@ pub const GifRecorder = struct {
         self.bufWriteU16(0);
         self.bufWriteU16(0);
         self.bufWriteU16(@intCast(width));
-        self.bufWriteU16(@intCast(height));
+        self.bufWriteU16(self.height);
         self.bufWriteByte(0x80 | @as(u8, color_depth));
 
         for (0..max_colors) |ci| {
@@ -86,7 +93,7 @@ pub const GifRecorder = struct {
 
         self.bufWriteByte(min_code_size);
         try self.flushBuf();
-        try lzwCompress(self, &indices);
+        try lzwCompress(self, indices[0..pixel_count]);
         self.bufWriteByte(0x00);
 
         self.bufWriteByte(0x3B);
@@ -209,7 +216,7 @@ fn lzwHash(prefix: u16, suffix: u8) u13 {
     return @truncate((@as(u32, prefix) << 8 ^ @as(u32, suffix)) *% 2654435761);
 }
 
-fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
+fn lzwCompress(rec: *GifRecorder, data: []const u8) !void {
     const clear_code: u16 = 256;
     const eoi_code: u16 = 257;
     const first_code: u16 = 258;
@@ -227,6 +234,7 @@ fn lzwCompress(rec: *GifRecorder, data: *const [320 * 224]u8) !void {
 
     try emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
 
+    if (data.len == 0) return;
     var prefix: u16 = data[0];
     for (data[1..]) |byte| {
         var h: usize = lzwHash(prefix, byte);
@@ -324,8 +332,8 @@ test "GIF recorder creates valid single-frame GIF" {
 
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_output.gif");
     defer testing.allocator.free(tmp_path);
-    var recorder = try GifRecorder.start(tmp_path, 60);
-    try recorder.addFrame(&framebuffer);
+    var recorder = try GifRecorder.start(tmp_path, 60, 224);
+    try recorder.addFrame(framebuffer[0..]);
     recorder.finish();
 
     const file = try tmp.dir.openFile("test_output.gif", .{});
@@ -344,13 +352,13 @@ test "GIF recorder handles multiple frames" {
 
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_multi.gif");
     defer testing.allocator.free(tmp_path);
-    var recorder = try GifRecorder.start(tmp_path, 30);
+    var recorder = try GifRecorder.start(tmp_path, 30, 224);
 
     var fb: [320 * 224]u32 = undefined;
     for (0..3) |frame| {
         const shade: u32 = @intCast(frame * 80);
         @memset(&fb, 0xFF000000 | (shade << 16) | (shade << 8) | shade);
-        try recorder.addFrame(&fb);
+        try recorder.addFrame(fb[0..]);
     }
     recorder.finish();
 
@@ -368,17 +376,40 @@ test "GIF recorder handles noisy framebuffer without overflow" {
 
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_noisy.gif");
     defer testing.allocator.free(tmp_path);
-    var recorder = try GifRecorder.start(tmp_path, 60);
+    var recorder = try GifRecorder.start(tmp_path, 60, 224);
 
     var fb: [320 * 224]u32 = undefined;
     for (0..fb.len) |i| {
         const v: u32 = @truncate(i *% 2654435761);
         fb[i] = 0xFF000000 | (v & 0x00FFFFFF);
     }
-    try recorder.addFrame(&fb);
+    try recorder.addFrame(fb[0..]);
     recorder.finish();
 
     const file = try tmp.dir.openFile("test_noisy.gif", .{});
+    defer file.close();
+    const stat = try file.stat();
+    try std.testing.expect(stat.size > 1000);
+}
+
+test "GIF recorder accepts 240-line frames" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_240.gif");
+    defer testing.allocator.free(tmp_path);
+    var recorder = try GifRecorder.start(tmp_path, 50, 240);
+
+    var fb: [320 * 240]u32 = undefined;
+    for (0..240) |y| {
+        const shade: u32 = @intCast(y);
+        @memset(fb[y * 320 .. (y + 1) * 320], 0xFF000000 | (shade << 8));
+    }
+
+    try recorder.addFrame(fb[0..]);
+    recorder.finish();
+
+    const file = try tmp.dir.openFile("test_240.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);

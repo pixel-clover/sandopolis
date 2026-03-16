@@ -1,10 +1,7 @@
 const Io = @import("../input/io.zig").Io;
 
 pub fn readVersionRegister(io: *const Io, pal_mode: bool) u8 {
-    _ = io;
-    var value: u8 = 0x20 | 0x80;
-    if (pal_mode) value |= 0x40;
-    return value;
+    return io.readVersionRegister(pal_mode);
 }
 
 pub fn readRegisterByte(io: *Io, pal_mode: bool, address: u32) u8 {
@@ -16,8 +13,16 @@ pub fn readRegisterByte(io: *Io, pal_mode: bool, address: u32) u8 {
         0x08, 0x09 => io.read(0x09),
         0x0A, 0x0B => io.read(0x0B),
         0x0C, 0x0D => io.read(0x0D),
-        0x0E, 0x0F, 0x14, 0x15, 0x1A, 0x1B => 0xFF,
-        else => 0x00,
+        0x0E, 0x0F => io.readTxData(0),
+        0x10, 0x11 => io.readRxData(0),
+        0x12, 0x13 => io.readSerialControl(0),
+        0x14, 0x15 => io.readTxData(1),
+        0x16, 0x17 => io.readRxData(1),
+        0x18, 0x19 => io.readSerialControl(1),
+        0x1A, 0x1B => io.readTxData(2),
+        0x1C, 0x1D => io.readRxData(2),
+        0x1E, 0x1F => io.readSerialControl(2),
+        else => unreachable,
     };
 }
 
@@ -29,6 +34,12 @@ pub fn writeRegisterByte(io: *Io, address: u32, value: u8) void {
         0x08, 0x09 => io.write(0x09, value),
         0x0A, 0x0B => io.write(0x0B, value),
         0x0C, 0x0D => io.write(0x0D, value),
-        else => {},
+        0x0E, 0x0F => io.writeTxData(0, value),
+        0x12, 0x13 => io.writeSerialControl(0, value),
+        0x14, 0x15 => io.writeTxData(1, value),
+        0x18, 0x19 => io.writeSerialControl(1, value),
+        0x1A, 0x1B => io.writeTxData(2, value),
+        0x1E, 0x1F => io.writeSerialControl(2, value),
+        else => unreachable,
     }
 }

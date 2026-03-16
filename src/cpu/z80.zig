@@ -16,7 +16,9 @@ pub const Z80 = struct {
     pub const State = c.Jgz80State;
 
     pub const HostReadFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
+    pub const HostPeekFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
+    pub const HostM68kBusAccessFn = *const fn (userdata: ?*anyopaque, pre_access_master_cycles: u32) callconv(.c) void;
 
     pub fn init() Z80 {
         return .{ .handle = c.jgz80_create() };
@@ -50,6 +52,10 @@ pub const Z80 = struct {
         if (self.handle) |h| c.jgz80_reset(h);
     }
 
+    pub fn softReset(self: *Z80) void {
+        if (self.handle) |h| c.jgz80_soft_reset(h);
+    }
+
     pub fn step(self: *Z80, cycles: u32) void {
         if (self.handle) |h| c.jgz80_step(h, cycles);
     }
@@ -68,8 +74,15 @@ pub const Z80 = struct {
         if (self.handle) |h| c.jgz80_write_byte(h, addr, val);
     }
 
-    pub fn setHostCallbacks(self: *Z80, userdata: ?*anyopaque, host_read: HostReadFn, host_write: HostWriteFn) void {
-        if (self.handle) |h| c.jgz80_set_host_callbacks(h, host_read, host_write, userdata);
+    pub fn setHostCallbacks(
+        self: *Z80,
+        userdata: ?*anyopaque,
+        host_read: HostReadFn,
+        host_peek: HostPeekFn,
+        host_write: HostWriteFn,
+        host_m68k_bus_access: HostM68kBusAccessFn,
+    ) void {
+        if (self.handle) |h| c.jgz80_set_host_callbacks(h, host_read, host_peek, host_write, host_m68k_bus_access, userdata);
     }
 
     pub fn getBank(self: *const Z80) u16 {
@@ -147,6 +160,27 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn pendingYmWriteCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_ym_write_count(h);
+        return 0;
+    }
+
+    pub fn pendingYmDacCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_ym_dac_count(h);
+        return 0;
+    }
+
+    pub fn pendingPsgCommandCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_psg_command_count(h);
+        return 0;
+    }
+
+    pub fn hasPendingAudibleEvents(self: *const Z80) bool {
+        return self.pendingYmWriteCount() != 0 or
+            self.pendingYmDacCount() != 0 or
+            self.pendingPsgCommandCount() != 0;
+    }
+
     pub fn takeYmWrites(self: *Z80, dest: []YmWriteEvent) usize {
         if (dest.len == 0) return 0;
         if (self.handle) |h| return c.jgz80_take_ym_writes(h, dest.ptr, @intCast(dest.len));
@@ -169,6 +203,20 @@ pub const Z80 = struct {
         if (dest.len == 0) return 0;
         if (self.handle) |h| return c.jgz80_take_psg_commands(h, dest.ptr, @intCast(dest.len));
         return 0;
+    }
+
+    pub fn discardPendingAudioEvents(self: *Z80) void {
+        var ym_writes: [64]YmWriteEvent = undefined;
+        while (self.takeYmWrites(ym_writes[0..]) != 0) {}
+
+        var ym_dac_samples: [64]YmDacSampleEvent = undefined;
+        while (self.takeYmDacSamples(ym_dac_samples[0..]) != 0) {}
+
+        var ym_resets: [16]YmResetEvent = undefined;
+        while (self.takeYmResets(ym_resets[0..]) != 0) {}
+
+        var psg_commands: [64]PsgCommandEvent = undefined;
+        while (self.takePsgCommands(psg_commands[0..]) != 0) {}
     }
 
     pub fn setAudioMasterOffset(self: *Z80, master_offset: u32) void {
@@ -204,6 +252,11 @@ pub const Z80 = struct {
         return 0x0100;
     }
 
+    pub fn isBusReqAsserted(self: *const Z80) bool {
+        if (self.handle) |h| return c.jgz80_bus_req_asserted(@constCast(h)) != 0;
+        return false;
+    }
+
     pub fn canRun(self: *const Z80) bool {
         return self.readBusReq() != 0x0000 and self.readReset() != 0x0000;
     }
@@ -215,6 +268,15 @@ pub const Z80 = struct {
     pub fn readReset(self: *const Z80) u16 {
         if (self.handle) |h| return c.jgz80_read_reset(@constCast(h));
         return 0x0100;
+    }
+
+    pub fn isResetLineAsserted(self: *const Z80) bool {
+        if (self.handle) |h| return c.jgz80_reset_line_asserted(@constCast(h)) != 0;
+        return false;
+    }
+
+    pub fn setResetLineAsserted(self: *Z80, asserted: bool) void {
+        if (self.handle) |h| c.jgz80_set_reset_line_asserted(h, @intFromBool(asserted));
     }
 };
 
@@ -248,7 +310,7 @@ test "z80 clone preserves and decouples RAM contents" {
     try std.testing.expectEqual(@as(u8, 0xAB), cloned.readByte(0x0000));
 }
 
-test "z80 audio events retain scheduler master offsets" {
+test "direct z80 audio writes retain explicit master offsets" {
     var z80 = Z80.init();
     defer z80.deinit();
 
@@ -276,9 +338,141 @@ test "z80 audio events retain scheduler master offsets" {
     try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
 }
 
-test "z80 reset emits a timed ym reset event without dropping earlier ym audio events" {
+test "z80 pending audible event helper ignores reset-only events" {
     var z80 = Z80.init();
     defer z80.deinit();
+
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+
+    z80.writeReset(0);
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+
+    z80.writeByte(0x7F11, 0x90);
+    try std.testing.expect(z80.hasPendingAudibleEvents());
+
+    var psg_events: [1]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+
+    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
+}
+
+test "z80 can discard all pending audio event queues" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x4000, 0x2A);
+    z80.writeByte(0x4001, 0x56);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x0F);
+    z80.writeByte(0x7F11, 0x90);
+    z80.writeReset(0);
+
+    try std.testing.expect(z80.hasPendingAudibleEvents());
+    try std.testing.expectEqual(@as(u16, 1), z80.pendingYmWriteCount());
+    try std.testing.expectEqual(@as(u16, 1), z80.pendingYmDacCount());
+    try std.testing.expectEqual(@as(u16, 1), z80.pendingPsgCommandCount());
+
+    z80.discardPendingAudioEvents();
+
+    try std.testing.expect(!z80.hasPendingAudibleEvents());
+    try std.testing.expectEqual(@as(u16, 0), z80.pendingYmWriteCount());
+    try std.testing.expectEqual(@as(u16, 0), z80.pendingYmDacCount());
+    try std.testing.expectEqual(@as(u16, 0), z80.pendingPsgCommandCount());
+
+    var ym_reset_events: [1]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 0), z80.takeYmResets(ym_reset_events[0..]));
+}
+
+test "z80 instruction writes stamp ym events at the in-instruction access time" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x0000, 0x32);
+    z80.writeByte(0x0001, 0x01);
+    z80.writeByte(0x0002, 0x40);
+
+    var state = z80.captureState();
+    state.pc = 0x0000;
+    state.af = 0x5600;
+    z80.restoreState(&state);
+
+    try std.testing.expectEqual(@as(u32, 13), z80.stepInstruction());
+
+    var ym_events: [1]Z80.YmWriteEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12 + (10 * clock.z80_divider)), ym_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x22), ym_events[0].reg);
+    try std.testing.expectEqual(@as(u8, 0x56), ym_events[0].value);
+}
+
+test "z80 instruction writes stamp psg events at the in-instruction access time" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x0000, 0x77);
+
+    var state = z80.captureState();
+    state.pc = 0x0000;
+    state.hl = 0x7F11;
+    state.af = 0x9000;
+    z80.restoreState(&state);
+
+    try std.testing.expectEqual(@as(u32, 7), z80.stepInstruction());
+
+    var psg_events: [1]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12 + (4 * clock.z80_divider)), psg_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
+}
+
+test "z80 hard reset restores integrated psg power-on latch and attenuation" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+
+    z80.writeByte(0x7F11, 0x07);
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 7), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+
+    z80.writeByte(0x7F11, 0x9F);
+    z80.reset();
+
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+
+    var psg_events: [2]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_events[0..]));
+
+    z80.writeByte(0x7F11, 0x05);
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(0));
+    try std.testing.expectEqual(@as(u8, 5), z80.getPsgVolume(1));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(2));
+    try std.testing.expectEqual(@as(u8, 0), z80.getPsgVolume(3));
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expectEqual(@as(u8, 0x05), psg_events[0].value);
+}
+
+test "z80 reset line edges emit timed ym reset events without dropping earlier ym audio events" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    var state = z80.captureState();
+    state.pc = 0x0042;
+    z80.restoreState(&state);
 
     z80.setAudioMasterOffset(9);
     z80.writeByte(0x4000, 0x2A);
@@ -288,18 +482,82 @@ test "z80 reset emits a timed ym reset event without dropping earlier ym audio e
 
     z80.setAudioMasterOffset(27);
     z80.writeReset(0);
+    try std.testing.expectEqual(@as(u16, 0x0042), z80.getPc());
+
+    z80.setAudioMasterOffset(45);
+    z80.writeReset(0x0100);
+    try std.testing.expectEqual(@as(u16, 0x0000), z80.getPc());
+
+    var ym_events: [2]Z80.YmWriteEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
+    try std.testing.expectEqual(@as(u32, 9), ym_events[0].master_offset);
+
+    var ym_dac_events: [2]Z80.YmDacSampleEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmDacSamples(ym_dac_events[0..]));
+    try std.testing.expectEqual(@as(u32, 9), ym_dac_events[0].master_offset);
+
+    var ym_reset_events: [2]Z80.YmResetEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 2), z80.takeYmResets(ym_reset_events[0..]));
+    try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
+    try std.testing.expectEqual(@as(u32, 45), ym_reset_events[1].master_offset);
+}
+
+test "z80 soft reset preserves ram and psg state while resetting ym and bank state" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.writeByte(0x0000, 0xAB);
+    z80.writeByte(0x7F11, 0x9F);
+
+    var state = z80.captureState();
+    state.bank = 0x0123;
+    z80.restoreState(&state);
+
+    z80.setAudioMasterOffset(9);
+    z80.writeByte(0x4000, 0x22);
+    z80.writeByte(0x4001, 0x33);
+
+    z80.setAudioMasterOffset(27);
+    z80.softReset();
+
+    try std.testing.expectEqual(@as(u8, 0xAB), z80.readByte(0x0000));
+    try std.testing.expectEqual(@as(u16, 0), z80.getBank());
+    try std.testing.expectEqual(@as(u8, 0x9F), z80.getPsgLast());
+    try std.testing.expectEqual(@as(u8, 0x0F), z80.getPsgVolume(0));
 
     var ym_events: [1]Z80.YmWriteEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
     try std.testing.expectEqual(@as(u32, 9), ym_events[0].master_offset);
 
-    var ym_dac_events: [1]Z80.YmDacSampleEvent = undefined;
-    try std.testing.expectEqual(@as(usize, 1), z80.takeYmDacSamples(ym_dac_events[0..]));
-    try std.testing.expectEqual(@as(u32, 9), ym_dac_events[0].master_offset);
+    var psg_events: [1]Z80.PsgCommandEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
+    try std.testing.expectEqual(@as(u32, 0), psg_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x9F), psg_events[0].value);
 
     var ym_reset_events: [1]Z80.YmResetEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmResets(ym_reset_events[0..]));
     try std.testing.expectEqual(@as(u32, 27), ym_reset_events[0].master_offset);
+}
+
+test "z80 external reset line gate blocks execution until released" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.writeByte(0x0000, 0x00);
+    z80.reset();
+    z80.setResetLineAsserted(true);
+
+    try std.testing.expectEqual(@as(u16, 0x0000), z80.readReset());
+    try std.testing.expectEqual(@as(u32, 0), z80.stepInstruction());
+
+    z80.setResetLineAsserted(false);
+    try std.testing.expectEqual(@as(u16, 0x0100), z80.readReset());
+    try std.testing.expectEqual(@as(u32, 4), z80.stepInstruction());
+
+    z80.softReset();
+    z80.setResetLineAsserted(true);
+    try std.testing.expectEqual(@as(u16, 0x0000), z80.readReset());
+    try std.testing.expectEqual(@as(u32, 0), z80.stepInstruction());
 }
 
 test "z80 ym status read exposes busy on data writes" {

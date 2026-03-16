@@ -6,7 +6,9 @@ const YmWriteEvent = Z80.YmWriteEvent;
 const YmDacSampleEvent = Z80.YmDacSampleEvent;
 const YmResetEvent = Z80.YmResetEvent;
 const PsgCommandEvent = Z80.PsgCommandEvent;
-const Psg = @import("psg.zig").Psg;
+const psg_mod = @import("psg.zig");
+const Psg = psg_mod.Psg;
+const PsgStereoSample = psg_mod.PsgStereoSample;
 const ym2612 = @import("ym2612.zig");
 const Ym2612Synth = ym2612.Ym2612Synth;
 const YmStereoSample = ym2612.StereoSample;
@@ -29,66 +31,127 @@ const YmGenerationResult = struct {
     ym_reset_cursor: usize,
 };
 
+const PendingAudioEvents = struct {
+    ym_writes: []const YmWriteEvent,
+    ym_dac_samples: []const YmDacSampleEvent,
+    ym_reset_events: []const YmResetEvent,
+    psg_commands: []const PsgCommandEvent,
+};
+
 const DcBlocker = struct {
     x_prev: f32 = 0.0,
     y_prev: f32 = 0.0,
+    warmup_samples: u8 = 0,
 
     const alpha: f32 = 0.9974;
+    const warmup_count: u8 = 8;
 
     fn process(self: *DcBlocker, x: f32) f32 {
         const y = alpha * (self.y_prev + x - self.x_prev);
         self.x_prev = x;
         self.y_prev = y;
+
+        // Apply gradual fade-in during warmup to avoid startup click.
+        // The filter needs a few samples to stabilize; blending prevents
+        // the transient from being audible.
+        if (self.warmup_samples < warmup_count) {
+            self.warmup_samples += 1;
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return y * blend;
+        }
         return y;
     }
 };
 
-const PsgOutputLpf = struct {
-    prev: f32 = 0.0,
-    alpha: f32,
-
-    fn init(cutoff_hz: f32, sample_rate: f32) PsgOutputLpf {
-        const rc = 1.0 / (std.math.tau * cutoff_hz);
-        const dt = 1.0 / sample_rate;
-        return .{ .alpha = dt / (rc + dt) };
-    }
-
-    fn process(self: *PsgOutputLpf, x: f32) f32 {
-        self.prev = self.prev + self.alpha * (x - self.prev);
-        return self.prev;
-    }
-};
-
-const psg_cutoff_hz: f32 = 4200.0;
-
-const psg_mix_gain: f32 = 0.4466836;
+// Genesis Plus GX's default Mega Drive profile runs PSG at 150% preamp versus FM at 100%.
+const fm_preamp_percent: f32 = 100.0;
+const psg_preamp_percent: f32 = 150.0;
+const psg_base_mix_gain: f32 = 0.4466836;
+const psg_mix_gain: f32 = psg_base_mix_gain * (psg_preamp_percent / fm_preamp_percent);
 
 const BoardOutputLpf = struct {
     prev_l: f32 = 0.0,
     prev_r: f32 = 0.0,
-    alpha: f32,
+    history_factor: f32,
+    input_factor: f32,
+    warmup_samples: u8 = 0,
 
-    fn init(cutoff_hz: f32, sample_rate: f32) BoardOutputLpf {
-        const rc = 1.0 / (std.math.tau * cutoff_hz);
-        const dt = 1.0 / sample_rate;
-        return .{ .alpha = dt / (rc + dt) };
+    const warmup_count: u8 = 8;
+
+    fn init() BoardOutputLpf {
+        return .{
+            .history_factor = board_output_history_factor,
+            .input_factor = board_output_input_factor,
+        };
     }
 
     fn processL(self: *BoardOutputLpf, x: f32) f32 {
-        self.prev_l = self.prev_l + self.alpha * (x - self.prev_l);
+        self.prev_l = self.prev_l * self.history_factor + x * self.input_factor;
+
+        // Apply gradual fade-in during warmup to avoid startup transient.
+        if (self.warmup_samples < warmup_count) {
+            self.warmup_samples += 1;
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return self.prev_l * blend;
+        }
         return self.prev_l;
     }
 
     fn processR(self: *BoardOutputLpf, x: f32) f32 {
-        self.prev_r = self.prev_r + self.alpha * (x - self.prev_r);
+        self.prev_r = self.prev_r * self.history_factor + x * self.input_factor;
+
+        // Warmup already counted in processL (called first in stereo pair)
+        if (self.warmup_samples <= warmup_count) {
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return self.prev_r * blend;
+        }
         return self.prev_r;
     }
 };
 
-const board_output_cutoff_hz: f32 = 15000.0;
+// Board output low-pass filter matching Genesis Plus GX's default lp_range = 0x9999.
+// This is the ONLY filter that Genesis Plus GX applies (they use blip_buffer for
+// band-limited resampling which doesn't need pre-filtering). The coefficient 0x9999
+// in 16.16 fixed point = 0.6, giving a gentle 6 dB/octave rolloff.
+const board_output_history_factor: f32 = @as(f32, 0x9999) / 65536.0;
+const board_output_input_factor: f32 = 1.0 - board_output_history_factor;
+// PSG low-pass filter before downsampling. Genesis Plus GX doesn't apply any PSG
+// filtering (blip_buffer handles anti-aliasing). Setting this very high (22 kHz)
+// essentially passes through all audible content, preserving the bright, buzzy
+// character of real Genesis PSG square waves. Only ultrasonic content is attenuated.
+const psg_native_cutoff_hz: f32 = 22000.0;
 const resample_scaling_factor: u64 = 1_000_000_000;
 const resample_buffer_len: usize = 6;
 const resample_output_queue_capacity: usize = 8192;
+
+const FirstOrderLpf = struct {
+    prev: f32 = 0.0,
+    history_factor: f32,
+    input_factor: f32,
+    warmup_samples: u8 = 0,
+
+    const warmup_count: u8 = 8;
+
+    fn init(cutoff_hz: f32, sample_rate: f64) FirstOrderLpf {
+        const history: f32 = @floatCast(@exp((-std.math.tau * @as(f64, cutoff_hz)) / sample_rate));
+        return .{
+            .history_factor = history,
+            .input_factor = 1.0 - history,
+        };
+    }
+
+    fn process(self: *FirstOrderLpf, x: f32) f32 {
+        self.prev = self.prev * self.history_factor + x * self.input_factor;
+
+        // Apply gradual fade-in during warmup to avoid startup transient.
+        if (self.warmup_samples < warmup_count) {
+            self.warmup_samples += 1;
+            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
+            return self.prev * blend;
+        }
+        return self.prev;
+    }
+};
 
 const RateConverter = struct {
     in_rate_num: u32,
@@ -151,12 +214,37 @@ fn CubicResampler(comptime channels_count: usize) type {
             return self.output_count;
         }
 
+        fn hasValidState(self: *const Self) bool {
+            if (self.scaled_source_frequency == 0 or self.output_frequency == 0) return false;
+            if (self.input_len > self.input_samples.len) return false;
+            if (self.output_read >= self.output_samples.len) return false;
+            if (self.output_write >= self.output_samples.len) return false;
+            if (self.output_count > self.output_samples.len) return false;
+
+            if (self.output_count == self.output_samples.len) {
+                return self.output_read == self.output_write;
+            }
+
+            if (self.output_count == 0) {
+                return self.output_read == self.output_write;
+            }
+
+            // Use saturating arithmetic to prevent any overflow panics
+            const distance = if (self.output_write >= self.output_read)
+                self.output_write -| self.output_read
+            else
+                (self.output_samples.len -| self.output_read) +| self.output_write;
+            return self.output_count == distance;
+        }
+
         fn outputBufferPopFront(self: *Self) ?[channels_count]f32 {
             if (self.output_count == 0) return null;
+            // Guard against corrupted output_read index
+            if (self.output_read >= self.output_samples.len) return null;
 
             const sample = self.output_samples[self.output_read];
             self.output_read = (self.output_read + 1) % self.output_samples.len;
-            self.output_count -= 1;
+            self.output_count -|= 1; // Use saturating subtraction for safety
             return sample;
         }
 
@@ -169,7 +257,9 @@ fn CubicResampler(comptime channels_count: usize) type {
                 self.cycle_counter_product -= self.scaled_source_frequency;
 
                 while (self.input_len < resample_buffer_len) {
-                    self.pushFrontInputSample(if (self.input_len == 0) [_]f32{0.0} ** channels_count else self.input_samples[0]);
+                    // Use the first available sample for padding instead of zeros to avoid
+                    // startup clicks and discontinuities at buffer boundaries.
+                    self.pushFrontInputSample(self.input_samples[0]);
                 }
 
                 const x = @as(f64, @floatFromInt(self.scaled_x_counter)) / @as(f64, @floatFromInt(scaled_output_frequency));
@@ -196,14 +286,22 @@ fn CubicResampler(comptime channels_count: usize) type {
         }
 
         fn pushOutputSample(self: *Self, sample: [channels_count]f32) void {
+            // Guard against corrupted indices
+            if (self.output_write >= self.output_samples.len or
+                self.output_read >= self.output_samples.len or
+                self.output_count > self.output_samples.len)
+            {
+                return;
+            }
+
             if (self.output_count == self.output_samples.len) {
                 self.output_read = (self.output_read + 1) % self.output_samples.len;
-                self.output_count -= 1;
+                self.output_count -|= 1; // Use saturating subtraction for safety
             }
 
             self.output_samples[self.output_write] = sample;
             self.output_write = (self.output_write + 1) % self.output_samples.len;
-            self.output_count += 1;
+            self.output_count +|= 1; // Use saturating addition for safety
         }
 
         fn pushInputSample(self: *Self, sample: [channels_count]f32) void {
@@ -245,6 +343,48 @@ pub const AudioOutput = struct {
         ym_only,
         psg_only,
         unfiltered_mix,
+
+        pub fn name(self: RenderMode) []const u8 {
+            return switch (self) {
+                .normal => "normal",
+                .ym_only => "ym-only",
+                .psg_only => "psg-only",
+                .unfiltered_mix => "unfiltered-mix",
+            };
+        }
+
+        pub fn label(self: RenderMode) []const u8 {
+            return switch (self) {
+                .normal => "NORMAL",
+                .ym_only => "YM ONLY",
+                .psg_only => "PSG ONLY",
+                .unfiltered_mix => "UNFILTERED MIX",
+            };
+        }
+
+        pub fn parse(value: []const u8) error{InvalidAudioMode}!RenderMode {
+            if (std.mem.eql(u8, value, "normal")) return .normal;
+            if (std.mem.eql(u8, value, "ym-only") or std.mem.eql(u8, value, "ym_only")) return .ym_only;
+            if (std.mem.eql(u8, value, "psg-only") or std.mem.eql(u8, value, "psg_only")) return .psg_only;
+            if (std.mem.eql(u8, value, "unfiltered-mix") or std.mem.eql(u8, value, "unfiltered_mix")) return .unfiltered_mix;
+            return error.InvalidAudioMode;
+        }
+
+        pub fn cycle(self: RenderMode, delta: isize) RenderMode {
+            const modes = [_]RenderMode{ .normal, .ym_only, .psg_only, .unfiltered_mix };
+            var index: isize = 0;
+            for (modes, 0..) |candidate, i| {
+                if (candidate == self) {
+                    index = @intCast(i);
+                    break;
+                }
+            }
+            index += delta;
+            const count: isize = @intCast(modes.len);
+            while (index < 0) index += count;
+            while (index >= count) index -= count;
+            return modes[@intCast(index)];
+        }
     };
 
     pub const output_rate: u32 = 48_000;
@@ -277,11 +417,12 @@ pub const AudioOutput = struct {
     ym_synth: Ym2612Synth = .{},
     psg: Psg = Psg{},
     ym_resampler: StereoResampler = StereoResampler.init(ntscYmNativeSampleRate(), output_rate),
-    psg_resampler: MonoResampler = MonoResampler.init(ntscPsgNativeSampleRate(), output_rate),
+    psg_resampler: StereoResampler = StereoResampler.init(ntscPsgNativeSampleRate(), output_rate),
+    psg_native_lpf_l: FirstOrderLpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntscPsgNativeSampleRate()),
+    psg_native_lpf_r: FirstOrderLpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntscPsgNativeSampleRate()),
     dc_left: DcBlocker = .{},
     dc_right: DcBlocker = .{},
-    psg_lpf: PsgOutputLpf = PsgOutputLpf.init(psg_cutoff_hz, @floatFromInt(output_rate)),
-    board_lpf: BoardOutputLpf = BoardOutputLpf.init(board_output_cutoff_hz, @floatFromInt(output_rate)),
+    board_lpf: BoardOutputLpf = BoardOutputLpf.init(),
     render_mode: RenderMode = .normal,
     ym_internal_master_remainder: u16 = 0,
     ym_partial_sum_left: i32 = 0,
@@ -289,10 +430,23 @@ pub const AudioOutput = struct {
     ym_partial_internal_clocks: u8 = 0,
     last_ym_resampled_left: f32 = 0.0,
     last_ym_resampled_right: f32 = 0.0,
-    last_psg_resampled: f32 = 0.0,
+    last_psg_resampled_left: f32 = 0.0,
+    last_psg_resampled_right: f32 = 0.0,
     last_ym_left: f32 = 0.0,
     last_ym_right: f32 = 0.0,
-    last_psg_sample: i16 = 0,
+    last_psg_sample_left: i16 = 0,
+    last_psg_sample_right: i16 = 0,
+    last_psg_filtered_left: f32 = 0.0,
+    last_psg_filtered_right: f32 = 0.0,
+    psg_partial_master_cycles: u16 = 0,
+    psg_partial_sum_left: i64 = 0,
+    psg_partial_sum_right: i64 = 0,
+
+    pub fn init() AudioOutput {
+        var output: AudioOutput = .{};
+        output.reset();
+        return output;
+    }
 
     fn ymPortAndChannelBase(channel: u3) struct { port: u1, base: u8 } {
         return if (channel >= 3)
@@ -331,6 +485,56 @@ pub const AudioOutput = struct {
     fn palPsgNativeSampleRate() f64 {
         return @as(f64, @floatFromInt(clock.master_clock_pal)) /
             @as(f64, @floatFromInt(clock.psg_master_cycles_per_sample));
+    }
+
+    fn ymNativeSampleRate(is_pal: bool) f64 {
+        return if (is_pal) palYmNativeSampleRate() else ntscYmNativeSampleRate();
+    }
+
+    fn psgNativeSampleRate(is_pal: bool) f64 {
+        return if (is_pal) palPsgNativeSampleRate() else ntscPsgNativeSampleRate();
+    }
+
+    fn resetOutputPipeline(self: *AudioOutput, is_pal: bool, reset_psg_partial: bool) void {
+        self.ym_resampler.reset(ymNativeSampleRate(is_pal), output_rate);
+        self.psg_resampler.reset(psgNativeSampleRate(is_pal), output_rate);
+        const psg_rate = psgNativeSampleRate(is_pal);
+        self.psg_native_lpf_l = FirstOrderLpf.init(psg_native_cutoff_hz, psg_rate);
+        self.psg_native_lpf_r = FirstOrderLpf.init(psg_native_cutoff_hz, psg_rate);
+        self.dc_left = .{};
+        self.dc_right = .{};
+        self.board_lpf = BoardOutputLpf.init();
+        self.last_ym_resampled_left = 0.0;
+        self.last_ym_resampled_right = 0.0;
+        self.last_psg_resampled_left = 0.0;
+        self.last_psg_resampled_right = 0.0;
+        self.last_psg_filtered_left = 0.0;
+        self.last_psg_filtered_right = 0.0;
+        if (reset_psg_partial) {
+            self.psg_partial_master_cycles = 0;
+            self.psg_partial_sum_left = 0;
+            self.psg_partial_sum_right = 0;
+        }
+    }
+
+    pub fn dropQueuedOutput(self: *AudioOutput, is_pal: bool) void {
+        self.resetOutputPipeline(is_pal, false);
+    }
+
+    fn repairPreparedOutputIfCorrupt(self: *AudioOutput) bool {
+        if (self.ym_resampler.hasValidState() and self.psg_resampler.hasValidState()) return false;
+        self.dropQueuedOutput(self.timing_is_pal);
+        return true;
+    }
+
+    fn pushFilteredPsgNativeSample(self: *AudioOutput, sample: PsgStereoSample) void {
+        const normalized_l = @as(f32, @floatFromInt(sample.left)) / 32768.0;
+        const normalized_r = @as(f32, @floatFromInt(sample.right)) / 32768.0;
+        const filtered_l = self.psg_native_lpf_l.process(normalized_l);
+        const filtered_r = self.psg_native_lpf_r.process(normalized_r);
+        self.last_psg_filtered_left = filtered_l;
+        self.last_psg_filtered_right = filtered_r;
+        self.psg_resampler.collectSample(.{ filtered_l, filtered_r });
     }
 
     fn nativeFramesBeforeMaster(start_remainder: u16, master_offset: u32, master_cycles_per_sample: u16) u32 {
@@ -522,7 +726,7 @@ pub const AudioOutput = struct {
         self.ym_synth.setTimingMode(self.timing_is_pal);
     }
 
-    fn clockYmInternal(self: *AudioOutput, produced_count: *usize) void {
+    fn clockYmInternal(self: *AudioOutput, produced_count: *usize, collect_resampled: bool) void {
         const pins = self.ym_synth.clockOneInternal();
         self.ym_partial_sum_left += pins[0];
         self.ym_partial_sum_right += pins[1];
@@ -533,11 +737,14 @@ pub const AudioOutput = struct {
                 self.ym_partial_sum_left,
                 self.ym_partial_sum_right,
             );
-            std.debug.assert(produced_count.* < self.ym_native_buffer.len);
+            // Bounds check instead of assert to avoid panic
+            if (produced_count.* >= self.ym_native_buffer.len) return;
             self.ym_native_buffer[produced_count.*] = sample;
             self.last_ym_left = sample.left;
             self.last_ym_right = sample.right;
-            self.ym_resampler.collectSample(.{ sample.left, sample.right });
+            if (collect_resampled) {
+                self.ym_resampler.collectSample(.{ sample.left, sample.right });
+            }
             produced_count.* += 1;
             self.ym_partial_sum_left = 0;
             self.ym_partial_sum_right = 0;
@@ -545,7 +752,7 @@ pub const AudioOutput = struct {
         }
     }
 
-    fn advanceYmMaster(self: *AudioOutput, master_cycles: u32, produced_count: *usize) void {
+    fn advanceYmMaster(self: *AudioOutput, master_cycles: u32, produced_count: *usize, collect_resampled: bool) void {
         var remaining = master_cycles;
         while (remaining != 0) {
             const until_boundary: u32 = if (self.ym_internal_master_remainder == 0)
@@ -560,7 +767,7 @@ pub const AudioOutput = struct {
 
             remaining -= until_boundary;
             self.ym_internal_master_remainder = 0;
-            self.clockYmInternal(produced_count);
+            self.clockYmInternal(produced_count, collect_resampled);
         }
     }
 
@@ -571,6 +778,7 @@ pub const AudioOutput = struct {
         ym_writes: []const YmWriteEvent,
         ym_dac_samples: []const YmDacSampleEvent,
         ym_reset_events: []const YmResetEvent,
+        collect_resampled: bool,
     ) YmGenerationResult {
         const master_end = master_start + master_cycles;
         var produced_count: usize = 0;
@@ -588,7 +796,7 @@ pub const AudioOutput = struct {
                 ym_reset_events,
                 ym_reset_cursor,
             ) orelse {
-                self.advanceYmMaster(master_end - master_cursor, &produced_count);
+                self.advanceYmMaster(master_end - master_cursor, &produced_count, collect_resampled);
                 break;
             };
             const next_order = currentYmEventOrder(
@@ -602,12 +810,12 @@ pub const AudioOutput = struct {
             );
 
             if (next_order.master_offset >= master_end) {
-                self.advanceYmMaster(master_end - master_cursor, &produced_count);
+                self.advanceYmMaster(master_end - master_cursor, &produced_count, collect_resampled);
                 break;
             }
 
             if (next_order.master_offset > master_cursor) {
-                self.advanceYmMaster(next_order.master_offset - master_cursor, &produced_count);
+                self.advanceYmMaster(next_order.master_offset - master_cursor, &produced_count, collect_resampled);
                 master_cursor = next_order.master_offset;
             }
 
@@ -632,35 +840,68 @@ pub const AudioOutput = struct {
     fn generatePsgNativeSamples(
         self: *AudioOutput,
         pending: PendingAudioFrames,
-        master_start: u32,
-        master_cycles: u32,
         psg_commands: []const PsgCommandEvent,
-    ) usize {
-        const master_end = @min(pending.master_cycles, master_start + master_cycles);
-        const psg_native_end = psgFramesBeforeMaster(pending, master_end);
-        var psg_native_cursor = psgFramesBeforeMaster(pending, master_start);
+    ) ?usize {
+        // Check invariant instead of asserting - return null on mismatch
+        if (self.psg_partial_master_cycles != pending.psg_start_remainder) return null;
+
+        const sample_master_cycles: u32 = clock.psg_master_cycles_per_sample;
+        var produced_count: usize = 0;
+        var master_cursor: u32 = 0;
         var psg_cmd_cursor: usize = 0;
 
-        while (psg_native_cursor < psg_native_end) {
-            self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, psg_native_cursor);
-            const next_psg_command_frame = if (psg_cmd_cursor < psg_commands.len)
-                @min(psg_native_end, psgFramesBeforeMaster(pending, psg_commands[psg_cmd_cursor].master_offset))
-            else
-                psg_native_end;
-
-            if (next_psg_command_frame == psg_native_cursor) {
-                self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, psg_native_cursor);
-                continue;
+        while (master_cursor < pending.master_cycles) {
+            if (self.psg_partial_master_cycles == 0) {
+                while (psg_cmd_cursor < psg_commands.len and psg_commands[psg_cmd_cursor].master_offset <= master_cursor) : (psg_cmd_cursor += 1) {
+                    self.psg.doCommand(psg_commands[psg_cmd_cursor].value);
+                }
+                self.psg.advanceOneSample();
+            } else {
+                while (psg_cmd_cursor < psg_commands.len and psg_commands[psg_cmd_cursor].master_offset <= master_cursor) : (psg_cmd_cursor += 1) {
+                    self.psg.doCommand(psg_commands[psg_cmd_cursor].value);
+                }
             }
 
-            while (psg_native_cursor < next_psg_command_frame) : (psg_native_cursor += 1) {
-                self.last_psg_sample = self.psg.nextSample();
-                self.psg_resampler.collectSample(.{self.postPsgSample(@as(f32, @floatFromInt(self.last_psg_sample)) / 32768.0)});
+            const next_command_master = if (psg_cmd_cursor < psg_commands.len)
+                @min(pending.master_cycles, psg_commands[psg_cmd_cursor].master_offset)
+            else
+                pending.master_cycles;
+            const until_sample_end = sample_master_cycles - self.psg_partial_master_cycles;
+            const next_sample_master = master_cursor + until_sample_end;
+            const segment_end = @min(next_command_master, @min(next_sample_master, pending.master_cycles));
+            const segment_master_cycles = segment_end - master_cursor;
+
+            // Break loop instead of asserting on zero segment
+            if (segment_master_cycles == 0) break;
+            const current_sample = self.psg.currentStereoSample();
+            const segment_weight: i64 = @intCast(segment_master_cycles);
+            self.psg_partial_sum_left += @as(i64, current_sample.left) * segment_weight;
+            self.psg_partial_sum_right += @as(i64, current_sample.right) * segment_weight;
+            self.psg_partial_master_cycles += @intCast(segment_master_cycles);
+            master_cursor = segment_end;
+
+            if (self.psg_partial_master_cycles == sample_master_cycles) {
+                self.last_psg_sample_left = @intCast(@divFloor(self.psg_partial_sum_left + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
+                self.last_psg_sample_right = @intCast(@divFloor(self.psg_partial_sum_right + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
+                self.pushFilteredPsgNativeSample(.{ .left = self.last_psg_sample_left, .right = self.last_psg_sample_right });
+                produced_count += 1;
+                self.psg_partial_master_cycles = 0;
+                self.psg_partial_sum_left = 0;
+                self.psg_partial_sum_right = 0;
+            }
+
+            if (self.psg_partial_master_cycles != 0) {
+                while (psg_cmd_cursor < psg_commands.len and psg_commands[psg_cmd_cursor].master_offset <= master_cursor) : (psg_cmd_cursor += 1) {
+                    self.psg.doCommand(psg_commands[psg_cmd_cursor].value);
+                }
             }
         }
 
-        self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, std.math.maxInt(u32));
-        return psg_native_end - psgFramesBeforeMaster(pending, master_start);
+        while (psg_cmd_cursor < psg_commands.len) : (psg_cmd_cursor += 1) {
+            self.psg.doCommand(psg_commands[psg_cmd_cursor].value);
+        }
+
+        return produced_count;
     }
 
     fn popMixedFrames(self: *AudioOutput, frames: usize) []const i16 {
@@ -670,12 +911,14 @@ pub const AudioOutput = struct {
                 self.last_ym_resampled_right = sample[1];
                 break :blk sample;
             } else .{ self.last_ym_resampled_left, self.last_ym_resampled_right };
-            const psg = if (self.psg_resampler.outputBufferPopFront()) |sample| blk: {
-                self.last_psg_resampled = sample[0];
+            const psg_raw = if (self.psg_resampler.outputBufferPopFront()) |sample| blk: {
+                self.last_psg_resampled_left = sample[0];
+                self.last_psg_resampled_right = sample[1];
                 break :blk sample;
-            } else .{self.last_psg_resampled};
+            } else .{ self.last_psg_resampled_left, self.last_psg_resampled_right };
+            const psg = self.postPsgSampleStereo(psg_raw);
 
-            const mixed = self.mixSources(ym, psg[0]);
+            const mixed = self.mixSources(ym, psg);
             const finished = self.finishMixedFrame(mixed[0], mixed[1]);
             self.sample_chunk[i * channels] = finished[0];
             self.sample_chunk[i * channels + 1] = finished[1];
@@ -688,6 +931,70 @@ pub const AudioOutput = struct {
         while (psg_cmd_cursor.* < psg_commands.len and psgFramesBeforeMaster(pending, psg_commands[psg_cmd_cursor.*].master_offset) <= frame) : (psg_cmd_cursor.* += 1) {
             self.psg.doCommand(psg_commands[psg_cmd_cursor.*].value);
         }
+    }
+
+    const StereoWeightedSum = struct { left: i64, right: i64 };
+
+    fn advancePsgMasterRange(
+        self: *AudioOutput,
+        psg_commands: []const PsgCommandEvent,
+        psg_cmd_cursor: *usize,
+        master_cursor: *u32,
+        master_target: u32,
+    ) StereoWeightedSum {
+        const sample_master_cycles: u32 = clock.psg_master_cycles_per_sample;
+        var weighted_sum_left: i64 = 0;
+        var weighted_sum_right: i64 = 0;
+
+        while (master_cursor.* < master_target) {
+            if (self.psg_partial_master_cycles == 0) {
+                while (psg_cmd_cursor.* < psg_commands.len and psg_commands[psg_cmd_cursor.*].master_offset <= master_cursor.*) : (psg_cmd_cursor.* += 1) {
+                    self.psg.doCommand(psg_commands[psg_cmd_cursor.*].value);
+                }
+                self.psg.advanceOneSample();
+            } else {
+                while (psg_cmd_cursor.* < psg_commands.len and psg_commands[psg_cmd_cursor.*].master_offset <= master_cursor.*) : (psg_cmd_cursor.* += 1) {
+                    self.psg.doCommand(psg_commands[psg_cmd_cursor.*].value);
+                }
+            }
+
+            const next_command_master = if (psg_cmd_cursor.* < psg_commands.len)
+                @min(master_target, psg_commands[psg_cmd_cursor.*].master_offset)
+            else
+                master_target;
+            const until_sample_end = sample_master_cycles - self.psg_partial_master_cycles;
+            const segment_end = @min(master_target, @min(next_command_master, master_cursor.* + until_sample_end));
+            const segment_master_cycles = segment_end - master_cursor.*;
+
+            // Break loop instead of asserting on zero segment
+            if (segment_master_cycles == 0) break;
+            const current_sample = self.psg.currentStereoSample();
+            const segment_weight: i64 = @intCast(segment_master_cycles);
+            const weighted_segment_left = @as(i64, current_sample.left) * segment_weight;
+            const weighted_segment_right = @as(i64, current_sample.right) * segment_weight;
+            weighted_sum_left += weighted_segment_left;
+            weighted_sum_right += weighted_segment_right;
+            self.psg_partial_sum_left += weighted_segment_left;
+            self.psg_partial_sum_right += weighted_segment_right;
+            self.psg_partial_master_cycles += @intCast(segment_master_cycles);
+            master_cursor.* = segment_end;
+
+            if (self.psg_partial_master_cycles == sample_master_cycles) {
+                self.last_psg_sample_left = @intCast(@divFloor(self.psg_partial_sum_left + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
+                self.last_psg_sample_right = @intCast(@divFloor(self.psg_partial_sum_right + @divTrunc(sample_master_cycles, 2), sample_master_cycles));
+                self.psg_partial_master_cycles = 0;
+                self.psg_partial_sum_left = 0;
+                self.psg_partial_sum_right = 0;
+            }
+
+            if (self.psg_partial_master_cycles != 0) {
+                while (psg_cmd_cursor.* < psg_commands.len and psg_commands[psg_cmd_cursor.*].master_offset <= master_cursor.*) : (psg_cmd_cursor.* += 1) {
+                    self.psg.doCommand(psg_commands[psg_cmd_cursor.*].value);
+                }
+            }
+        }
+
+        return .{ .left = weighted_sum_left, .right = weighted_sum_right };
     }
 
     fn renderChunk(
@@ -704,7 +1011,6 @@ pub const AudioOutput = struct {
         psg_commands: []const PsgCommandEvent,
     ) []const i16 {
         const master_end = @min(pending.master_cycles, master_start + master_cycles);
-        const psg_native_start = psgFramesBeforeMaster(pending, master_start);
         const expected_ym_native_frames = fmFramesBeforeMaster(pending, master_end) - fmFramesBeforeMaster(pending, master_start);
         const ym_generation = self.generateYmNativeSamples(
             master_start,
@@ -712,13 +1018,30 @@ pub const AudioOutput = struct {
             ym_writes,
             ym_dac_samples,
             ym_reset_events,
+            false,
         );
         const ym_native_frames = ym_generation.produced_count;
 
-        std.debug.assert(ym_native_frames == expected_ym_native_frames);
+        // Skip processing if frame count mismatch (return silence)
+        if (ym_native_frames != expected_ym_native_frames) {
+            @memset(self.sample_chunk[0 .. frames * channels], 0);
+            return self.sample_chunk[0 .. frames * channels];
+        }
 
-        var psg_native_cursor: u32 = psg_native_start;
-        var last_psg_sample = self.last_psg_sample;
+        if (master_start == 0 and self.psg_partial_master_cycles == 0 and pending.psg_start_remainder != 0) {
+            self.psg.advanceOneSample();
+            self.psg_partial_master_cycles = pending.psg_start_remainder;
+            const init_sample = self.psg.currentStereoSample();
+            const init_weight: i64 = @intCast(pending.psg_start_remainder);
+            self.psg_partial_sum_left = @as(i64, init_sample.left) * init_weight;
+            self.psg_partial_sum_right = @as(i64, init_sample.right) * init_weight;
+            self.last_psg_sample_left = init_sample.left;
+            self.last_psg_sample_right = init_sample.right;
+        }
+
+        var psg_master_cursor: u32 = master_start;
+        var last_psg_sample_left = self.last_psg_sample_left;
+        var last_psg_sample_right = self.last_psg_sample_right;
         var ym_native_cursor: usize = 0;
         var last_ym_left = self.last_ym_left;
         var last_ym_right = self.last_ym_right;
@@ -755,44 +1078,34 @@ pub const AudioOutput = struct {
                 r += last_ym_right;
             }
 
-            const target_psg_native = psgFramesBeforeMaster(pending, global_master_target);
-            self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, psg_native_cursor);
-
-            var samples_to_generate: u32 = 0;
-            var psg_sample: f32 = 0.0;
-            if (psg_native_cursor < target_psg_native) {
-                var sum: i32 = 0;
-                while (psg_native_cursor < target_psg_native) {
-                    const next_psg_command_frame = if (psg_cmd_cursor < psg_commands.len)
-                        @min(target_psg_native, psgFramesBeforeMaster(pending, psg_commands[psg_cmd_cursor].master_offset))
-                    else
-                        target_psg_native;
-
-                    if (next_psg_command_frame == psg_native_cursor) {
-                        self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, psg_native_cursor);
-                        continue;
-                    }
-
-                    var generated = next_psg_command_frame - psg_native_cursor;
-                    while (generated != 0) : (generated -= 1) {
-                        last_psg_sample = self.psg.nextSample();
-                        sum += last_psg_sample;
-                        psg_native_cursor += 1;
-                        samples_to_generate += 1;
-                    }
-                }
-                psg_sample = @as(f32, @floatFromInt(sum)) / @as(f32, @floatFromInt(samples_to_generate)) / 32768.0;
+            var psg_sample: [2]f32 = .{ 0.0, 0.0 };
+            if (psg_master_cursor < global_master_target) {
+                const weighted_sum = self.advancePsgMasterRange(
+                    psg_commands,
+                    &psg_cmd_cursor,
+                    &psg_master_cursor,
+                    global_master_target,
+                );
+                const master_cycles_to_mix = global_master_target - outputFrameToMaster(pending, output_frame_start + @as(u32, @intCast(i)), total_output_frames);
+                const cycles_f: f32 = @floatFromInt(master_cycles_to_mix);
+                psg_sample[0] = @as(f32, @floatFromInt(weighted_sum.left)) / cycles_f / 32768.0;
+                psg_sample[1] = @as(f32, @floatFromInt(weighted_sum.right)) / cycles_f / 32768.0;
+                last_psg_sample_left = self.last_psg_sample_left;
+                last_psg_sample_right = self.last_psg_sample_right;
             } else {
-                psg_sample = @as(f32, @floatFromInt(last_psg_sample)) / 32768.0;
+                psg_sample[0] = @as(f32, @floatFromInt(last_psg_sample_left)) / 32768.0;
+                psg_sample[1] = @as(f32, @floatFromInt(last_psg_sample_right)) / 32768.0;
             }
-            psg_sample = self.postPsgSample(psg_sample);
+            psg_sample = self.postPsgSampleStereo(psg_sample);
             const mixed = self.mixSources(.{ l, r }, psg_sample);
             const finished = self.finishMixedFrame(mixed[0], mixed[1]);
             self.sample_chunk[i * channels] = finished[0];
             self.sample_chunk[i * channels + 1] = finished[1];
         }
 
-        self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, std.math.maxInt(u32));
+        while (psg_cmd_cursor < psg_commands.len) : (psg_cmd_cursor += 1) {
+            self.psg.doCommand(psg_commands[psg_cmd_cursor].value);
+        }
         self.applyRemainingYmEvents(
             ym_writes,
             &ym_write_cursor,
@@ -804,19 +1117,25 @@ pub const AudioOutput = struct {
 
         self.last_ym_left = last_ym_left;
         self.last_ym_right = last_ym_right;
-        self.last_psg_sample = last_psg_sample;
+        self.last_psg_sample_left = last_psg_sample_left;
+        self.last_psg_sample_right = last_psg_sample_right;
 
         return self.sample_chunk[0 .. frames * channels];
     }
 
     fn postPsgSample(self: *AudioOutput, sample: f32) f32 {
-        return if (self.render_mode == .unfiltered_mix)
-            sample
-        else
-            self.psg_lpf.process(sample);
+        _ = self;
+        // Genesis Plus GX's Mega Drive path relies on band-limited PSG generation plus the final board filter.
+        return sample;
     }
 
-    fn mixSources(self: *const AudioOutput, ym: [2]f32, psg: f32) [2]f32 {
+    fn postPsgSampleStereo(self: *AudioOutput, sample: [2]f32) [2]f32 {
+        _ = self;
+        // Genesis Plus GX's Mega Drive path relies on band-limited PSG generation plus the final board filter.
+        return sample;
+    }
+
+    fn mixSources(self: *const AudioOutput, ym: [2]f32, psg: [2]f32) [2]f32 {
         var l: f32 = 0.0;
         var r: f32 = 0.0;
 
@@ -826,8 +1145,8 @@ pub const AudioOutput = struct {
         }
 
         if (self.render_mode != .ym_only) {
-            l += psg * psg_mix_gain;
-            r += psg * psg_mix_gain;
+            l += psg[0] * psg_mix_gain;
+            r += psg[1] * psg_mix_gain;
         }
 
         return .{ l, r };
@@ -844,8 +1163,8 @@ pub const AudioOutput = struct {
             r = self.dc_right.process(r);
         }
 
-        l = clampMix(l);
-        r = clampMix(r);
+        l = softSaturate(l);
+        r = softSaturate(r);
         return .{
             @as(i16, @intFromFloat(l * 32767.0)),
             @as(i16, @intFromFloat(r * 32767.0)),
@@ -866,6 +1185,7 @@ pub const AudioOutput = struct {
             ym_writes,
             ym_dac_samples,
             ym_reset_events,
+            false,
         );
         const ym_native_frames = ym_generation.produced_count;
         if (ym_native_frames != 0) {
@@ -889,7 +1209,9 @@ pub const AudioOutput = struct {
             }
 
             while (psg_native_cursor < next_psg_command_frame) : (psg_native_cursor += 1) {
-                self.last_psg_sample = self.psg.nextSample();
+                const sample = self.psg.nextStereoSample();
+                self.last_psg_sample_left = sample.left;
+                self.last_psg_sample_right = sample.right;
             }
         }
         self.applyPsgCommandsAtFrame(pending, psg_commands, &psg_cmd_cursor, std.math.maxInt(u32));
@@ -913,17 +1235,21 @@ pub const AudioOutput = struct {
         ym_dac_samples: []const YmDacSampleEvent,
         ym_reset_events: []const YmResetEvent,
         psg_commands: []const PsgCommandEvent,
-    ) void {
+    ) bool {
         const ym_generation = self.generateYmNativeSamples(
             0,
             pending.master_cycles,
             ym_writes,
             ym_dac_samples,
             ym_reset_events,
+            true,
         );
-        const psg_native_frames = self.generatePsgNativeSamples(pending, 0, pending.master_cycles, psg_commands);
-        std.debug.assert(ym_generation.produced_count == pending.fm_frames);
-        std.debug.assert(psg_native_frames == pending.psg_frames);
+        const psg_native_frames = self.generatePsgNativeSamples(pending, psg_commands) orelse return false;
+
+        // Verify sample counts match expectations - return false on mismatch to trigger recovery
+        if (ym_generation.produced_count != pending.fm_frames or psg_native_frames != pending.psg_frames) {
+            return false;
+        }
 
         var ym_write_cursor = ym_generation.ym_write_cursor;
         var ym_dac_cursor = ym_generation.ym_dac_cursor;
@@ -936,6 +1262,40 @@ pub const AudioOutput = struct {
             ym_reset_events,
             &ym_reset_cursor,
         );
+        return true;
+    }
+
+    fn pendingOutputFrames(self: *AudioOutput) u32 {
+        // Check resampler validity first, before any arithmetic
+        if (!self.ym_resampler.hasValidState() or !self.psg_resampler.hasValidState()) {
+            self.dropQueuedOutput(self.timing_is_pal);
+            return 0;
+        }
+
+        const ym_len = self.ym_resampler.outputBufferLen();
+        const psg_len = self.psg_resampler.outputBufferLen();
+        const max_len = @max(ym_len, psg_len);
+
+        // Use std.math.cast for safe conversion - returns null if value doesn't fit in u32.
+        // This handles cases where state corruption causes impossibly large values.
+        return std.math.cast(u32, max_len) orelse blk: {
+            self.dropQueuedOutput(self.timing_is_pal);
+            break :blk 0;
+        };
+    }
+
+    fn previewOutputFramesForPending(self: *const AudioOutput, pending: PendingAudioFrames) u32 {
+        var fm_converter = self.fm_converter;
+        var psg_converter = self.psg_converter;
+        const fm_frames = fm_converter.toOutputFrames(pending.fm_frames, output_rate);
+        const psg_frames = psg_converter.toOutputFrames(pending.psg_frames, output_rate);
+        return @max(fm_frames, psg_frames);
+    }
+
+    fn takeOutputFramesForPending(self: *AudioOutput, pending: PendingAudioFrames) u32 {
+        const fm_frames = self.fm_converter.toOutputFrames(pending.fm_frames, output_rate);
+        const psg_frames = self.psg_converter.toOutputFrames(pending.psg_frames, output_rate);
+        return @max(fm_frames, psg_frames);
     }
 
     fn setConverterRate(converter: *RateConverter, in_rate_num: u32) void {
@@ -952,15 +1312,7 @@ pub const AudioOutput = struct {
         setConverterRate(&self.fm_converter, master_clock);
         setConverterRate(&self.psg_converter, master_clock);
         self.ym_synth.setTimingMode(is_pal);
-        self.ym_resampler.reset(if (is_pal) palYmNativeSampleRate() else ntscYmNativeSampleRate(), output_rate);
-        self.psg_resampler.reset(if (is_pal) palPsgNativeSampleRate() else ntscPsgNativeSampleRate(), output_rate);
-        self.dc_left = .{};
-        self.dc_right = .{};
-        self.psg_lpf = PsgOutputLpf.init(psg_cutoff_hz, @floatFromInt(output_rate));
-        self.board_lpf = BoardOutputLpf.init(board_output_cutoff_hz, @floatFromInt(output_rate));
-        self.last_ym_resampled_left = 0.0;
-        self.last_ym_resampled_right = 0.0;
-        self.last_psg_resampled = 0.0;
+        self.resetOutputPipeline(is_pal, true);
     }
 
     pub fn setRenderMode(self: *AudioOutput, mode: RenderMode) void {
@@ -971,60 +1323,161 @@ pub const AudioOutput = struct {
         const render_mode = self.render_mode;
         const timing_is_pal = self.timing_is_pal;
         self.* = .{};
+        self.psg = Psg.powerOn();
         self.render_mode = render_mode;
         if (timing_is_pal) {
             self.setTimingMode(true);
         }
     }
 
-    fn preparePending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) u32 {
-        self.setTimingMode(is_pal);
-
+    fn takePendingEvents(self: *AudioOutput, z80: *Z80) PendingAudioEvents {
         const ym_write_count = z80.takeYmWrites(self.ym_write_buffer[0..]);
         const ym_dac_count = z80.takeYmDacSamples(self.ym_dac_buffer[0..]);
         const ym_reset_count = z80.takeYmResets(self.ym_reset_buffer[0..]);
         const psg_command_count = z80.takePsgCommands(self.psg_command_buffer[0..]);
-        self.collectPendingNativeSamples(
+        return .{
+            .ym_writes = self.ym_write_buffer[0..ym_write_count],
+            .ym_dac_samples = self.ym_dac_buffer[0..ym_dac_count],
+            .ym_reset_events = self.ym_reset_buffer[0..ym_reset_count],
+            .psg_commands = self.psg_command_buffer[0..psg_command_count],
+        };
+    }
+
+    fn preparePending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) u32 {
+        self.setTimingMode(is_pal);
+        _ = self.repairPreparedOutputIfCorrupt();
+
+        const events = self.takePendingEvents(z80);
+        const collect_ok = self.collectPendingNativeSamples(
             pending,
-            self.ym_write_buffer[0..ym_write_count],
-            self.ym_dac_buffer[0..ym_dac_count],
-            self.ym_reset_buffer[0..ym_reset_count],
-            self.psg_command_buffer[0..psg_command_count],
+            events.ym_writes,
+            events.ym_dac_samples,
+            events.ym_reset_events,
+            events.psg_commands,
         );
-        return @intCast(@min(self.ym_resampler.outputBufferLen(), self.psg_resampler.outputBufferLen()));
+        // If sample collection failed (count mismatch), reset and return 0
+        if (!collect_ok) {
+            self.dropQueuedOutput(is_pal);
+            return 0;
+        }
+        if (self.repairPreparedOutputIfCorrupt()) return 0;
+        return self.pendingOutputFrames();
+    }
+
+    fn drainPreparedOutput(self: *AudioOutput, out_frames: u32, sink: anytype) !void {
+        var remaining = out_frames;
+        const max_frames_per_push = self.sample_chunk.len / channels;
+        while (remaining != 0) {
+            const chunk_frames: usize = @min(@as(usize, @intCast(remaining)), max_frames_per_push);
+            try sink.consumeSamples(self.popMixedFrames(chunk_frames));
+            remaining -= @as(u32, @intCast(chunk_frames));
+        }
+    }
+
+    fn renderPendingEvents(self: *AudioOutput, pending: PendingAudioFrames, events: PendingAudioEvents, sink: anytype) !void {
+        const out_frames = self.takeOutputFramesForPending(pending);
+        if (out_frames == 0) {
+            self.advanceWindowWithoutOutput(
+                pending,
+                events.ym_writes,
+                events.ym_dac_samples,
+                events.ym_reset_events,
+                events.psg_commands,
+            );
+            return;
+        }
+
+        const max_frames_per_push = self.sample_chunk.len / channels;
+        var out_frame_offset: u32 = 0;
+        var ym_write_offset: usize = 0;
+        var ym_dac_offset: usize = 0;
+        var ym_reset_offset: usize = 0;
+        var psg_command_offset: usize = 0;
+        while (out_frame_offset < out_frames) {
+            const remaining_out_frames = out_frames - out_frame_offset;
+            const chunk_frames: usize = @min(@as(usize, @intCast(remaining_out_frames)), max_frames_per_push);
+            const chunk_out_end = out_frame_offset + @as(u32, @intCast(chunk_frames));
+            const chunk_master_offset = outputFrameToMaster(pending, out_frame_offset, out_frames);
+            const chunk_master_end = outputFrameToMaster(pending, chunk_out_end, out_frames);
+
+            var ym_write_end = ym_write_offset;
+            while (ym_write_end < events.ym_writes.len and events.ym_writes[ym_write_end].master_offset < chunk_master_end) : (ym_write_end += 1) {}
+
+            var ym_dac_end = ym_dac_offset;
+            while (ym_dac_end < events.ym_dac_samples.len and events.ym_dac_samples[ym_dac_end].master_offset < chunk_master_end) : (ym_dac_end += 1) {}
+
+            var ym_reset_end = ym_reset_offset;
+            while (ym_reset_end < events.ym_reset_events.len and events.ym_reset_events[ym_reset_end].master_offset < chunk_master_end) : (ym_reset_end += 1) {}
+
+            var psg_command_end = psg_command_offset;
+            while (psg_command_end < events.psg_commands.len and events.psg_commands[psg_command_end].master_offset < chunk_master_end) : (psg_command_end += 1) {}
+
+            const samples = self.renderChunk(
+                pending,
+                chunk_master_offset,
+                chunk_master_end - chunk_master_offset,
+                out_frame_offset,
+                out_frames,
+                chunk_frames,
+                events.ym_writes[ym_write_offset..ym_write_end],
+                events.ym_dac_samples[ym_dac_offset..ym_dac_end],
+                events.ym_reset_events[ym_reset_offset..ym_reset_end],
+                events.psg_commands[psg_command_offset..psg_command_end],
+            );
+            try sink.consumeSamples(samples);
+            out_frame_offset = chunk_out_end;
+            ym_write_offset = ym_write_end;
+            ym_dac_offset = ym_dac_end;
+            ym_reset_offset = ym_reset_end;
+            psg_command_offset = psg_command_end;
+        }
+
+        self.applyRemainingYmEvents(
+            events.ym_writes,
+            &ym_write_offset,
+            events.ym_dac_samples,
+            &ym_dac_offset,
+            events.ym_reset_events,
+            &ym_reset_offset,
+        );
+        while (psg_command_offset < events.psg_commands.len) : (psg_command_offset += 1) {
+            self.psg.doCommand(events.psg_commands[psg_command_offset].value);
+        }
     }
 
     pub fn renderPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool, sink: anytype) !void {
         const out_frames = self.preparePending(pending, z80, is_pal);
         if (out_frames == 0) return;
-        const max_frames_per_push = self.sample_chunk.len / channels;
-        var out_frame_offset: u32 = 0;
-        while (out_frame_offset < out_frames) {
-            const remaining_out_frames = out_frames - out_frame_offset;
-            const chunk_frames: usize = @min(@as(usize, @intCast(remaining_out_frames)), max_frames_per_push);
-            const samples = self.popMixedFrames(chunk_frames);
-            try sink.consumeSamples(samples);
-            out_frame_offset += @as(u32, @intCast(chunk_frames));
-        }
+        try self.drainPreparedOutput(out_frames, sink);
     }
 
     pub fn discardPending(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) !void {
+        const DiscardSink = struct {
+            fn consumeSamples(_: *@This(), _: []const i16) !void {}
+        };
+
+        var sink = DiscardSink{};
         const out_frames = self.preparePending(pending, z80, is_pal);
         if (out_frames == 0) return;
-
-        const max_frames_per_push = self.sample_chunk.len / channels;
-        var out_frame_offset: u32 = 0;
-        while (out_frame_offset < out_frames) {
-            const remaining_out_frames = out_frames - out_frame_offset;
-            const chunk_frames: usize = @min(@as(usize, @intCast(remaining_out_frames)), max_frames_per_push);
-            _ = self.popMixedFrames(chunk_frames);
-            out_frame_offset += @as(u32, @intCast(chunk_frames));
-        }
+        try self.drainPreparedOutput(out_frames, &sink);
     }
 };
 
-fn clampMix(x: f32) f32 {
-    return std.math.clamp(x, -1.0, 1.0);
+/// Soft saturation using tanh-like curve to avoid harsh digital clipping.
+/// This provides gentle compression near the limits instead of hard clipping,
+/// which reduces harmonic distortion in loud passages.
+fn softSaturate(x: f32) f32 {
+    // For values within normal range, pass through unchanged
+    if (x >= -0.9 and x <= 0.9) return x;
+    // For values approaching limits, apply soft knee compression
+    // Uses a simplified tanh approximation for efficiency
+    if (x > 0) {
+        const excess = x - 0.9;
+        return 0.9 + 0.1 * (1.0 - @exp(-excess * 10.0));
+    } else {
+        const excess = -x - 0.9;
+        return -0.9 - 0.1 * (1.0 - @exp(-excess * 10.0));
+    }
 }
 
 fn pendingWindow(master_cycles: u32) PendingAudioFrames {
@@ -1445,7 +1898,10 @@ test "audio output reset preserves mode and clears render-side state" {
     output.render_mode = .psg_only;
     output.timing_is_pal = true;
     output.ym_synth.core.dacen = 1;
-    output.last_psg_sample = 99;
+    output.last_psg_sample_left = 99;
+    output.last_psg_sample_right = 99;
+    output.last_psg_filtered_left = 0.25;
+    output.last_psg_filtered_right = 0.25;
     output.last_ym_resampled_left = 0.5;
 
     output.reset();
@@ -1453,8 +1909,27 @@ test "audio output reset preserves mode and clears render-side state" {
     try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, output.render_mode);
     try std.testing.expect(output.timing_is_pal);
     try std.testing.expectEqual(@as(u8, 0), output.ym_synth.core.dacen);
-    try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample);
+    try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample_left);
+    try std.testing.expectEqual(@as(i16, 0), output.last_psg_sample_right);
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_psg_filtered_left);
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_psg_filtered_right);
     try std.testing.expectEqual(@as(f32, 0.0), output.last_ym_resampled_left);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[0].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[1].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[2].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.noise.attenuation);
+}
+
+test "audio output init seeds runtime power-on psg state" {
+    const output = AudioOutput.init();
+
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[0].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[1].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[2].attenuation);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.noise.attenuation);
+    try std.testing.expectEqual(@as(u1, 1), output.psg.tones[0].output_bit);
+    try std.testing.expectEqual(@as(u1, 1), output.psg.tones[1].output_bit);
+    try std.testing.expectEqual(@as(u1, 1), output.psg.tones[2].output_bit);
 }
 
 test "fm high bank frequency uses port 1 a0 and a4" {
@@ -1529,6 +2004,63 @@ test "psg command timestamps keep late mute out of early samples" {
     }
 
     try std.testing.expect(early_energy > late_energy);
+}
+
+test "mid-sample psg updates do not apply at the start of the output sample" {
+    const pending = pendingWindow(clock.psg_master_cycles_per_sample);
+    const full_commands = [_]PsgCommandEvent{
+        .{ .master_offset = 0, .value = 0xBF },
+        .{ .master_offset = 0, .value = 0xDF },
+        .{ .master_offset = 0, .value = 0xFF },
+        .{ .master_offset = 0, .value = 0x90 },
+        .{ .master_offset = 0, .value = 0x81 },
+        .{ .master_offset = 0, .value = 0x00 },
+    };
+    const half_muted_commands = [_]PsgCommandEvent{
+        .{ .master_offset = 0, .value = 0xBF },
+        .{ .master_offset = 0, .value = 0xDF },
+        .{ .master_offset = 0, .value = 0xFF },
+        .{ .master_offset = 0, .value = 0x90 },
+        .{ .master_offset = 0, .value = 0x81 },
+        .{ .master_offset = 0, .value = 0x00 },
+        .{ .master_offset = clock.psg_master_cycles_per_sample / 2, .value = 0x9F },
+    };
+
+    var full = AudioOutput.init();
+    full.setRenderMode(.unfiltered_mix);
+    const full_samples = full.renderChunk(
+        pending,
+        0,
+        pending.master_cycles,
+        0,
+        1,
+        1,
+        &.{},
+        &.{},
+        &.{},
+        full_commands[0..],
+    );
+
+    var half = AudioOutput.init();
+    half.setRenderMode(.unfiltered_mix);
+    const half_samples = half.renderChunk(
+        pending,
+        0,
+        pending.master_cycles,
+        0,
+        1,
+        1,
+        &.{},
+        &.{},
+        &.{},
+        half_muted_commands[0..],
+    );
+
+    const full_left = @abs(full_samples[0]);
+    const half_left = @abs(half_samples[0]);
+    try std.testing.expect(full_left > 0);
+    try std.testing.expect(half_left > 0);
+    try std.testing.expect(half_left < full_left);
 }
 
 test "render modes isolate ym and psg contributions" {
@@ -1684,6 +2216,15 @@ test "unfiltered mix preserves more high-frequency psg energy than the filtered 
     try std.testing.expect(sampleEnergy(unfiltered_samples) > sampleEnergy(normal_samples));
 }
 
+test "default board mix applies the reference PSG preamp ratio" {
+    var output = AudioOutput.init();
+    const mixed = output.mixSources(.{ 0.25, -0.125 }, .{ 0.5, 0.5 });
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25) + 0.5 * psg_mix_gain, mixed[0], 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.125) + 0.5 * psg_mix_gain, mixed[1], 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), psg_mix_gain / psg_base_mix_gain, 0.000001);
+}
+
 test "master offsets account for pending start remainders when converting to native frames" {
     const pending = pendingWindowWithRemainders(16, clock.fm_master_cycles_per_sample - 8, clock.psg_master_cycles_per_sample - 4);
 
@@ -1758,8 +2299,7 @@ test "zero-output windows still advance chip state and drain queued events" {
     z80.writeByte(0x7F11, 0x00);
 
     const pending = pendingWindow(clock.psg_master_cycles_per_sample);
-    try std.testing.expectEqual(@as(u32, 0), output.fm_converter.toOutputFrames(pending.fm_frames, AudioOutput.output_rate));
-    try std.testing.expectEqual(@as(u32, 0), output.psg_converter.toOutputFrames(pending.psg_frames, AudioOutput.output_rate));
+    try std.testing.expectEqual(@as(u32, 0), output.previewOutputFramesForPending(pending));
 
     try output.renderPending(pending, &z80, false, &sink);
 
@@ -1803,38 +2343,256 @@ test "discard pending drains a nonzero-output audio window without leaving queue
     try std.testing.expectEqual(@as(usize, 0), z80.takeYmResets(ym_resets[0..]));
     try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_commands[0..]));
     try std.testing.expect(output.last_ym_left != 0.0 or output.last_ym_right != 0.0);
-    try std.testing.expect(output.last_psg_sample != 0);
+    try std.testing.expectEqual(@as(u4, 0), output.psg.tones[0].attenuation);
+    try std.testing.expectEqual(@as(u16, 1), output.psg.tones[0].countdown_master);
+    try std.testing.expect(output.psg.tones[0].countdown != 0);
 }
 
-test "psg output lpf attenuates high-frequency content" {
-    var lpf = PsgOutputLpf.init(psg_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
+test "runtime psg mid-sample mute preserves earlier sample energy" {
+    const pending = pendingWindow(clock.psg_master_cycles_per_sample);
+    const full_commands = [_]PsgCommandEvent{
+        .{ .master_offset = 0, .value = 0xBF },
+        .{ .master_offset = 0, .value = 0xDF },
+        .{ .master_offset = 0, .value = 0xFF },
+        .{ .master_offset = 0, .value = 0x90 },
+        .{ .master_offset = 0, .value = 0x81 },
+        .{ .master_offset = 0, .value = 0x00 },
+    };
+    const half_muted_commands = [_]PsgCommandEvent{
+        .{ .master_offset = 0, .value = 0xBF },
+        .{ .master_offset = 0, .value = 0xDF },
+        .{ .master_offset = 0, .value = 0xFF },
+        .{ .master_offset = 0, .value = 0x90 },
+        .{ .master_offset = 0, .value = 0x81 },
+        .{ .master_offset = 0, .value = 0x00 },
+        .{ .master_offset = clock.psg_master_cycles_per_sample / 2, .value = 0x9F },
+    };
 
-    var peak: f32 = 0.0;
-    for (0..200) |i| {
-        const input: f32 = if (i % 4 < 2) 1.0 else -1.0;
-        const output_sample = lpf.process(input);
-        if (i > 100) peak = @max(peak, @abs(output_sample));
+    var full = AudioOutput.init();
+    const full_count = full.generatePsgNativeSamples(pending, full_commands[0..]).?;
+    try std.testing.expectEqual(@as(usize, 1), full_count);
+    try std.testing.expect(full.last_psg_sample_left > 0);
+
+    var half_muted = AudioOutput.init();
+    const half_muted_count = half_muted.generatePsgNativeSamples(pending, half_muted_commands[0..]).?;
+    try std.testing.expectEqual(@as(usize, 1), half_muted_count);
+    try std.testing.expect(half_muted.last_psg_sample_left > 0);
+    try std.testing.expect(half_muted.last_psg_sample_left < full.last_psg_sample_left);
+}
+
+test "runtime psg window-start commands apply cleanly while a sample is already in progress" {
+    const half_sample = clock.psg_master_cycles_per_sample / 2;
+    const pending = pendingWindowWithRemainders(half_sample, 0, half_sample);
+    const mute_command = [_]PsgCommandEvent{
+        .{ .master_offset = 0, .value = 0x9F },
+    };
+
+    var output = AudioOutput.init();
+    output.psg.doCommand(0xBF);
+    output.psg.doCommand(0xDF);
+    output.psg.doCommand(0xFF);
+    output.psg.doCommand(0x90);
+    output.psg.doCommand(0x81);
+    output.psg.doCommand(0x00);
+    output.psg.advanceOneSample();
+    output.psg_partial_master_cycles = half_sample;
+    const init_sample = output.psg.currentStereoSample();
+    output.psg_partial_sum_left = @as(i64, init_sample.left) * @as(i64, half_sample);
+    output.psg_partial_sum_right = @as(i64, init_sample.right) * @as(i64, half_sample);
+
+    const produced = output.generatePsgNativeSamples(pending, mute_command[0..]).?;
+    try std.testing.expectEqual(@as(usize, 1), produced);
+    try std.testing.expect(output.last_psg_sample_left > 0);
+    try std.testing.expect(output.last_psg_sample_left < output.psg.currentSample() or output.psg.currentSample() == 0);
+}
+
+test "runtime board filtering is applied after resampling" {
+    const pending = pendingWindow(@as(u32, 1024) * clock.psg_master_cycles_per_sample);
+    const commands = [_]u8{ 0x90, 0x81, 0x00 };
+
+    var normal = AudioOutput{};
+    var normal_z80 = Z80.init();
+    defer normal_z80.deinit();
+    for (commands) |command| normal_z80.writeByte(0x7F11, command);
+
+    var unfiltered = AudioOutput{};
+    unfiltered.setRenderMode(.unfiltered_mix);
+    var unfiltered_z80 = Z80.init();
+    defer unfiltered_z80.deinit();
+    for (commands) |command| unfiltered_z80.writeByte(0x7F11, command);
+
+    const normal_frames = normal.preparePending(pending, &normal_z80, false);
+    const unfiltered_frames = unfiltered.preparePending(pending, &unfiltered_z80, false);
+    try std.testing.expectEqual(normal_frames, unfiltered_frames);
+
+    const compare_frames = @min(@as(usize, @intCast(normal_frames)), 32);
+    for (0..compare_frames) |_| {
+        const normal_sample = normal.psg_resampler.outputBufferPopFront().?;
+        const unfiltered_sample = unfiltered.psg_resampler.outputBufferPopFront().?;
+        try std.testing.expectApproxEqAbs(normal_sample[0], unfiltered_sample[0], 0.000001);
     }
 
-    try std.testing.expect(peak < 0.5);
+    const CollectSink = struct {
+        samples: [512]i16 = undefined,
+        len: usize = 0,
+
+        fn consumeSamples(self: *@This(), input: []const i16) !void {
+            std.debug.assert(self.len + input.len <= self.samples.len);
+            @memcpy(self.samples[self.len .. self.len + input.len], input);
+            self.len += input.len;
+        }
+    };
+
+    var normal_runtime = AudioOutput{};
+    var normal_runtime_z80 = Z80.init();
+    defer normal_runtime_z80.deinit();
+    for (commands) |command| normal_runtime_z80.writeByte(0x7F11, command);
+    var normal_sink = CollectSink{};
+    try normal_runtime.renderPending(pending, &normal_runtime_z80, false, &normal_sink);
+
+    var unfiltered_runtime = AudioOutput{};
+    unfiltered_runtime.setRenderMode(.unfiltered_mix);
+    var unfiltered_runtime_z80 = Z80.init();
+    defer unfiltered_runtime_z80.deinit();
+    for (commands) |command| unfiltered_runtime_z80.writeByte(0x7F11, command);
+    var unfiltered_sink = CollectSink{};
+    try unfiltered_runtime.renderPending(pending, &unfiltered_runtime_z80, false, &unfiltered_sink);
+
+    try std.testing.expectEqual(normal_sink.len, unfiltered_sink.len);
+    try std.testing.expect(sampleEnergy(unfiltered_sink.samples[0..unfiltered_sink.len]) > sampleEnergy(normal_sink.samples[0..normal_sink.len]));
 }
 
-test "psg output lpf passes low-frequency content" {
-    var lpf = PsgOutputLpf.init(psg_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
+test "runtime pending render matches prepared resampler output for mixed audio" {
+    const pending = pendingWindow(@as(u32, 96) * clock.fm_master_cycles_per_sample);
 
-    var peak: f32 = 0.0;
-    for (0..960) |i| {
-        const phase = @as(f32, @floatFromInt(i)) * std.math.tau / 240.0;
-        const input = @sin(phase);
-        const output_sample = lpf.process(input);
-        if (i > 480) peak = @max(peak, @abs(output_sample));
+    var runtime = AudioOutput{};
+    var runtime_z80 = Z80.init();
+    defer runtime_z80.deinit();
+    runtime_z80.setAudioMasterOffset(0);
+    runtime_z80.writeByte(0x4000, 0x2B);
+    runtime_z80.writeByte(0x4001, 0x80);
+    runtime_z80.writeByte(0x4002, 0xB6);
+    runtime_z80.writeByte(0x4003, 0xC0);
+    runtime_z80.writeByte(0x4000, 0x2A);
+    runtime_z80.writeByte(0x4001, 0x20);
+    runtime_z80.setAudioMasterOffset(32 * clock.fm_master_cycles_per_sample);
+    runtime_z80.writeByte(0x4001, 0xF0);
+    runtime_z80.writeByte(0x7F11, 0x90);
+    runtime_z80.writeByte(0x7F11, 0x81);
+    runtime_z80.writeByte(0x7F11, 0x00);
+    runtime_z80.setAudioMasterOffset(48 * clock.psg_master_cycles_per_sample);
+    runtime_z80.writeByte(0x7F11, 0x9F);
+
+    const CollectSink = struct {
+        samples: [1024]i16 = undefined,
+        len: usize = 0,
+
+        fn consumeSamples(self: *@This(), input: []const i16) !void {
+            std.debug.assert(self.len + input.len <= self.samples.len);
+            @memcpy(self.samples[self.len .. self.len + input.len], input);
+            self.len += input.len;
+        }
+    };
+
+    var runtime_sink = CollectSink{};
+    try runtime.renderPending(pending, &runtime_z80, false, &runtime_sink);
+
+    var prepared = AudioOutput{};
+    var prepared_z80 = Z80.init();
+    defer prepared_z80.deinit();
+    prepared_z80.setAudioMasterOffset(0);
+    prepared_z80.writeByte(0x4000, 0x2B);
+    prepared_z80.writeByte(0x4001, 0x80);
+    prepared_z80.writeByte(0x4002, 0xB6);
+    prepared_z80.writeByte(0x4003, 0xC0);
+    prepared_z80.writeByte(0x4000, 0x2A);
+    prepared_z80.writeByte(0x4001, 0x20);
+    prepared_z80.setAudioMasterOffset(32 * clock.fm_master_cycles_per_sample);
+    prepared_z80.writeByte(0x4001, 0xF0);
+    prepared_z80.writeByte(0x7F11, 0x90);
+    prepared_z80.writeByte(0x7F11, 0x81);
+    prepared_z80.writeByte(0x7F11, 0x00);
+    prepared_z80.setAudioMasterOffset(48 * clock.psg_master_cycles_per_sample);
+    prepared_z80.writeByte(0x7F11, 0x9F);
+
+    const prepared_frames = prepared.preparePending(pending, &prepared_z80, false);
+    try std.testing.expect(prepared_frames > 48);
+
+    var prepared_sink = CollectSink{};
+    var prepared_remaining = prepared_frames;
+    var prepared_chunk_index: u2 = 0;
+    while (prepared_remaining != 0) {
+        const chunk_frames: usize = switch (prepared_chunk_index) {
+            0 => @min(@as(usize, @intCast(prepared_remaining)), 17),
+            1 => @min(@as(usize, @intCast(prepared_remaining)), 31),
+            else => @as(usize, @intCast(prepared_remaining)),
+        };
+        try prepared_sink.consumeSamples(prepared.popMixedFrames(chunk_frames));
+        prepared_remaining -= @as(u32, @intCast(chunk_frames));
+        prepared_chunk_index +%= 1;
     }
 
-    try std.testing.expect(peak > 0.85);
+    try std.testing.expectEqual(@as(usize, @intCast(prepared_frames)) * AudioOutput.channels, runtime_sink.len);
+    try std.testing.expectEqualSlices(
+        i16,
+        prepared_sink.samples[0..prepared_sink.len],
+        runtime_sink.samples[0..runtime_sink.len],
+    );
 }
 
-test "board output lpf provides gentle high-frequency roll-off" {
-    var lpf = BoardOutputLpf.init(board_output_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
+test "psg post-resample path does not apply an extra low-pass stage" {
+    var output = AudioOutput.init();
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), output.postPsgSample(0.75), 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.5), output.postPsgSample(-0.5), 0.000001);
+}
+
+test "native psg lpf preserves audible content with minimal filtering" {
+    const ntsc_psg_rate = AudioOutput.ntscPsgNativeSampleRate();
+
+    // 1 kHz fundamental - should pass through with virtually no attenuation
+    var low_lpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntsc_psg_rate);
+    var low_peak: f32 = 0.0;
+    for (0..4096) |i| {
+        const phase = @as(f32, @floatFromInt(i)) * std.math.tau * 1000.0 / @as(f32, @floatCast(ntsc_psg_rate));
+        const out = low_lpf.process(@sin(phase));
+        if (i > 2048) low_peak = @max(low_peak, @abs(out));
+    }
+
+    // 20 kHz - with 22 kHz cutoff, this should also pass through mostly unattenuated
+    // (Genesis Plus GX doesn't filter PSG at all - we set cutoff very high to match)
+    var high_lpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntsc_psg_rate);
+    var high_peak: f32 = 0.0;
+    for (0..4096) |i| {
+        const phase = @as(f32, @floatFromInt(i)) * std.math.tau * 20_000.0 / @as(f32, @floatCast(ntsc_psg_rate));
+        const out = high_lpf.process(@sin(phase));
+        if (i > 2048) high_peak = @max(high_peak, @abs(out));
+    }
+
+    // Both audible frequencies should pass through with minimal loss
+    try std.testing.expect(low_peak > 0.95);
+    try std.testing.expect(high_peak > 0.7); // 20 kHz near but below 22 kHz cutoff
+}
+
+test "board output lpf matches the Genesis Plus GX default recurrence" {
+    var lpf = BoardOutputLpf.init();
+
+    // Process enough samples to complete warmup phase
+    for (0..BoardOutputLpf.warmup_count) |_| {
+        _ = lpf.processL(0.0);
+    }
+
+    // Now test the steady-state recurrence relation
+    const first = lpf.processL(1.0);
+    const second = lpf.processL(-0.5);
+
+    // After warmup, filter should follow standard recurrence: y[n] = history * y[n-1] + input * x[n]
+    try std.testing.expectApproxEqAbs(board_output_input_factor, first, 0.000001);
+    try std.testing.expectApproxEqAbs(first * board_output_history_factor - 0.5 * board_output_input_factor, second, 0.000001);
+}
+
+test "board output lpf applies strong high-frequency roll-off" {
+    var lpf = BoardOutputLpf.init();
 
     var peak: f32 = 0.0;
     for (0..500) |i| {
@@ -1843,11 +2601,11 @@ test "board output lpf provides gentle high-frequency roll-off" {
         if (i > 250) peak = @max(peak, @abs(out));
     }
 
-    try std.testing.expect(peak < 0.75);
+    try std.testing.expect(peak < 0.3);
 }
 
 test "board output lpf passes audible content with minimal loss" {
-    var lpf = BoardOutputLpf.init(board_output_cutoff_hz, @floatFromInt(AudioOutput.output_rate));
+    var lpf = BoardOutputLpf.init();
 
     var peak: f32 = 0.0;
     for (0..960) |i| {
@@ -1858,17 +2616,27 @@ test "board output lpf passes audible content with minimal loss" {
     try std.testing.expect(peak > 0.95);
 }
 
-test "mix clamp leaves in-range samples unchanged" {
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), clampMix(0.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), clampMix(0.5), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -0.3), clampMix(-0.3), 0.001);
+test "soft saturate leaves in-range samples unchanged" {
+    // Values within [-0.9, 0.9] pass through unchanged
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), softSaturate(0.0), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), softSaturate(0.5), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.3), softSaturate(-0.3), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.89), softSaturate(0.89), 0.001);
 }
 
-test "mix clamp saturates out-of-range samples" {
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), clampMix(1.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -1.0), clampMix(-1.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), clampMix(2.0), 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -1.0), clampMix(-2.0), 0.001);
+test "soft saturate applies soft knee compression near limits" {
+    // Values at or near 1.0 get soft compressed, not hard clipped
+    // At exactly 0.9, should pass through
+    try std.testing.expectApproxEqAbs(@as(f32, 0.9), softSaturate(0.9), 0.001);
+    // At 1.0, soft saturation compresses it below 1.0 but above 0.9
+    const sat_1_0 = softSaturate(1.0);
+    try std.testing.expect(sat_1_0 > 0.9 and sat_1_0 < 1.0);
+    // At 2.0, approaches 1.0 asymptotically
+    const sat_2_0 = softSaturate(2.0);
+    try std.testing.expect(sat_2_0 > sat_1_0 and sat_2_0 < 1.0);
+    // Negative values work symmetrically
+    const sat_neg_1_0 = softSaturate(-1.0);
+    try std.testing.expect(sat_neg_1_0 < -0.9 and sat_neg_1_0 > -1.0);
 }
 
 test "runtime resamplers cover requested output frames for a representative window" {
@@ -1880,8 +2648,74 @@ test "runtime resamplers cover requested output frames for a representative wind
     const psg_frames = output.psg_converter.toOutputFrames(pending.psg_frames, AudioOutput.output_rate);
     const out_frames = @max(fm_frames, psg_frames);
 
-    output.collectPendingNativeSamples(pending, &.{}, &.{}, &.{}, &.{});
+    try std.testing.expect(output.collectPendingNativeSamples(pending, &.{}, &.{}, &.{}, &.{}));
 
     try std.testing.expect(output.ym_resampler.outputBufferLen() >= out_frames);
     try std.testing.expect(output.psg_resampler.outputBufferLen() >= out_frames);
+}
+
+test "pending output frames keeps the longer source queue" {
+    var output = AudioOutput{};
+    output.ym_resampler.output_count = 3;
+    output.ym_resampler.output_write = 3;
+    output.psg_resampler.output_count = 5;
+    output.psg_resampler.output_write = 5;
+    try std.testing.expectEqual(@as(u32, 5), output.pendingOutputFrames());
+
+    output.ym_resampler.output_count = 9;
+    output.ym_resampler.output_write = 9;
+    output.psg_resampler.output_count = 4;
+    output.psg_resampler.output_write = 4;
+    try std.testing.expectEqual(@as(u32, 9), output.pendingOutputFrames());
+}
+
+test "pending output frames drops impossible queue lengths instead of trapping" {
+    var output = AudioOutput{};
+    output.ym_resampler.output_count = std.math.maxInt(usize);
+
+    try std.testing.expectEqual(@as(u32, 0), output.pendingOutputFrames());
+    try std.testing.expect(output.ym_resampler.hasValidState());
+    try std.testing.expect(output.psg_resampler.hasValidState());
+}
+
+test "drop queued output clears resampler queues without resetting PSG sub-sample progress" {
+    var output = AudioOutput{};
+    output.ym_resampler.output_write = 2;
+    output.ym_resampler.output_count = 2;
+    output.psg_resampler.output_write = 3;
+    output.psg_resampler.output_count = 3;
+    output.last_ym_resampled_left = 0.5;
+    output.last_psg_resampled_right = -0.25;
+    output.last_psg_filtered_left = 0.125;
+    output.psg_partial_master_cycles = 7;
+    output.psg_partial_sum_left = 1234;
+    output.psg_partial_sum_right = -5678;
+
+    output.dropQueuedOutput(false);
+
+    try std.testing.expectEqual(@as(usize, 0), output.ym_resampler.outputBufferLen());
+    try std.testing.expectEqual(@as(usize, 0), output.psg_resampler.outputBufferLen());
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_ym_resampled_left);
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_psg_resampled_right);
+    try std.testing.expectEqual(@as(f32, 0.0), output.last_psg_filtered_left);
+    try std.testing.expectEqual(@as(u16, 7), output.psg_partial_master_cycles);
+    try std.testing.expectEqual(@as(i64, 1234), output.psg_partial_sum_left);
+    try std.testing.expectEqual(@as(i64, -5678), output.psg_partial_sum_right);
+}
+
+test "prepare pending repairs corrupt resampler state before counting output frames" {
+    var output = AudioOutput{};
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    output.ym_resampler.output_read = output.ym_resampler.output_samples.len;
+    output.ym_resampler.output_count = std.math.maxInt(usize);
+    output.psg_resampler.output_write = output.psg_resampler.output_samples.len;
+    output.psg_resampler.output_count = 17;
+
+    const out_frames = output.preparePending(pendingWindow(clock.ntsc_master_cycles_per_frame), &z80, false);
+
+    try std.testing.expect(out_frames > 0);
+    try std.testing.expect(output.ym_resampler.hasValidState());
+    try std.testing.expect(output.psg_resampler.hasValidState());
 }

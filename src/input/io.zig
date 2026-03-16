@@ -13,6 +13,8 @@ pub const Io = struct {
 
     data: [3]u8,
     ctrl: [3]u8,
+    tx_data: [3]u8,
+    serial_ctrl: [3]u8,
 
     pad: [2]u16,
     th_flip_count: [2]u2,
@@ -20,23 +22,27 @@ pub const Io = struct {
     cycles_until_th_high: [2]u32,
     controller_th: [2]bool,
     controller_types: [2]ControllerType,
+    version_is_overseas: bool,
 
     pub fn init() Io {
         return Io{
             .data = [_]u8{0} ** 3,
             .ctrl = [_]u8{0} ** 3,
+            .tx_data = .{ 0xFF, 0xFF, 0xFB },
+            .serial_ctrl = [_]u8{0} ** 3,
             .pad = [_]u16{0xFFFF} ** 2,
             .th_flip_count = [_]u2{0} ** 2,
             .flip_reset_counter = [_]u32{0} ** 2,
             .cycles_until_th_high = [_]u32{0} ** 2,
             .controller_th = [_]bool{true} ** 2,
             .controller_types = [_]ControllerType{.six_button} ** 2,
+            .version_is_overseas = true,
         };
     }
 
     pub fn read(self: *Io, address: u32) u8 {
         switch (address & 0xFF) {
-            0x01 => return 0xA0,
+            0x01 => return self.readVersionRegister(false),
             0x03 => return self.readData(0),
             0x05 => return self.readData(1),
             0x07 => return self.data[2],
@@ -57,6 +63,52 @@ pub const Io = struct {
             0x0D => self.ctrl[2] = value,
             else => {},
         }
+    }
+
+    pub fn readVersionRegister(self: *const Io, pal_mode: bool) u8 {
+        var value: u8 = 0x20;
+        if (self.version_is_overseas) value |= 0x80;
+        if (pal_mode) value |= 0x40;
+        return value;
+    }
+
+    pub fn readTxData(self: *const Io, port: usize) u8 {
+        return self.tx_data[port];
+    }
+
+    pub fn readRxData(_: *const Io, _: usize) u8 {
+        return 0;
+    }
+
+    pub fn readSerialControl(self: *const Io, port: usize) u8 {
+        return self.serial_ctrl[port];
+    }
+
+    pub fn writeTxData(self: *Io, port: usize, value: u8) void {
+        self.tx_data[port] = value;
+    }
+
+    pub fn writeSerialControl(self: *Io, port: usize, value: u8) void {
+        self.serial_ctrl[port] = value & 0xF8;
+    }
+
+    pub fn versionIsOverseas(self: *const Io) bool {
+        return self.version_is_overseas;
+    }
+
+    pub fn setVersionIsOverseas(self: *Io, overseas: bool) void {
+        self.version_is_overseas = overseas;
+    }
+
+    pub fn resetForHardware(self: *Io) void {
+        const pad = self.pad;
+        const controller_types = self.controller_types;
+        const version_is_overseas = self.version_is_overseas;
+
+        self.* = Io.init();
+        self.pad = pad;
+        self.controller_types = controller_types;
+        self.version_is_overseas = version_is_overseas;
     }
 
     fn readData(self: *const Io, port: usize) u8 {
@@ -237,4 +289,49 @@ test "three-button controllers ignore the six-button identification cycle" {
 
     io.write(0x03, 0x00);
     try testing.expectEqual(@as(u8, 0x33), io.read(0x03));
+}
+
+test "hardware reset clears transient io state but preserves controller wiring and held inputs" {
+    var io = Io.init();
+    io.setControllerType(0, .three_button);
+    io.setVersionIsOverseas(false);
+    io.setButton(0, Io.Button.A, true);
+    io.write(0x09, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    try testing.expect(io.th_flip_count[0] != 0);
+    try testing.expectEqual(@as(u8, 0x40), io.ctrl[0]);
+
+    io.resetForHardware();
+
+    try testing.expectEqual(Io.ControllerType.three_button, io.getControllerType(0));
+    try testing.expect(!io.versionIsOverseas());
+    try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.A);
+    try testing.expectEqual(@as(u8, 0), io.ctrl[0]);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+    try testing.expect(io.controller_th[0]);
+}
+
+test "serial and tx registers keep hardware defaults and serial control masks low status bits" {
+    var io = Io.init();
+
+    try testing.expectEqual(@as(u8, 0xFF), io.readTxData(0));
+    try testing.expectEqual(@as(u8, 0xFF), io.readTxData(1));
+    try testing.expectEqual(@as(u8, 0xFB), io.readTxData(2));
+    try testing.expectEqual(@as(u8, 0x00), io.readRxData(0));
+    try testing.expectEqual(@as(u8, 0x00), io.readSerialControl(2));
+
+    io.writeTxData(1, 0x5A);
+    io.writeSerialControl(2, 0xA7);
+
+    try testing.expectEqual(@as(u8, 0x5A), io.readTxData(1));
+    try testing.expectEqual(@as(u8, 0xA0), io.readSerialControl(2));
+
+    io.resetForHardware();
+
+    try testing.expectEqual(@as(u8, 0xFF), io.readTxData(0));
+    try testing.expectEqual(@as(u8, 0xFF), io.readTxData(1));
+    try testing.expectEqual(@as(u8, 0xFB), io.readTxData(2));
+    try testing.expectEqual(@as(u8, 0x00), io.readSerialControl(2));
 }

@@ -21,6 +21,7 @@ zig build test
 
 ```bash
 make test-unit
+make test-frontend
 make test-integration
 make test-regression
 make test-property
@@ -30,6 +31,7 @@ Or
 
 ```bash
 zig build test-unit
+zig build test-frontend
 zig build test-integration
 zig build test-regression
 zig build test-property
