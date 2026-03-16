@@ -19,7 +19,7 @@ Priorities, in order:
 - Ensure the project is modular and components are decoupled with clean APIs and interfaces.
 - Keep emulator state instance-bound inside the existing structs (`Bus`, `Vdp`, `Io`, `Z80`, `Cpu`, and `AudioOutput`).
 - Avoid introducing a new global mutable state.
-- Keep SDL/frontend logic in `src/main.zig`; keep core emulation logic in `src/`.
+- Keep SDL/frontend logic in `src/main.zig` and `src/frontend/`; keep core emulation logic in `src/`.
 - Keep SDL3 portable in the build graph: use the Zig-native SDL3 build (`castholm/SDL`) plus `zsdl` bindings, and do not hard-code platform binary
   artifacts such as `lib/libSDL3.so` in `build.zig`.
 - Add comments only when they clarify non-obvious hardware behavior or timing.
@@ -43,11 +43,11 @@ Quick examples:
 - `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
 - `src/audio/`: YM2612 FM synthesizer, SN76489 PSG emulation, rate conversion, DC-blocking filters, and the output mixing pipeline.
 - `src/input/`: controller I/O and configurable input mapping.
-- `src/recording/`: GIF animation recording with LZW compression and crash-safe output.
+- `src/recording/`: GIF animation recording with LZW compression and crash-safe output, WAV audio recording, and BMP screenshot capture.
 - `src/video/`: VDP and video timing/rendering logic.
 - `src/frontend/`: SDL frontend helpers including config, UI state, save manager, menu, dialog, toast, and performance overlay logic.
 - `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
-- `src/`: remaining core emulator modules (`machine.zig`, etc.).
+- `src/`: remaining core emulator modules (`machine.zig`, `cli.zig`, `performance_profile.zig`, `rom_metadata.zig`, `state_file.zig`, etc.).
 - `tests/`: non-unit suites only:
     - `integration_tests.zig`
     - `regression_tests.zig`
@@ -56,7 +56,7 @@ Quick examples:
 - `roms/`: local ROMs for manual testing only; this directory may be absent.
 - `tools/`: developer-only utilities that are not part of the shipped emulator runtime.
 - `external/`: optional checked-out third-party source trees used for developer tooling or reference comparison, not default runtime dependencies.
-- `tmp/`: scratch/reference material only; do not treat it as Sandopolis source, and it may be absent.
+- `tmp/`: scratch/reference material only; do not treat it as the Sandopolis source, and it may be missing.
 - `build.zig.zon`: source dependencies only. Avoid adding checked-in platform binary packages when an upstream source dependency is available.
 
 ## Testing Layout Rules

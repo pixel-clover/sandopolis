@@ -50,6 +50,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Startup home screen with recent-ROM history and remembered open-directory state
 - [x] Modal save manager for persistent state slots with runtime metadata and delete support
 - [x] GIF animation recording support
+- [x] WAV audio recording (for debugging)
+- [x] BMP screenshot capture
 - [x] Save-state previews/screenshots and fuller settings menus beyond the current keyboard/gamepad home, pause, and save-manager flow
 - [ ] More controller I/O edge-case coverage and broader peripheral support
 

@@ -39,8 +39,7 @@ Footage of Sandopolis running a few games:
 
 - Accurate Sega Genesis/Mega Drive emulation
 - Very portable; can be built and run on any platform that Zig supports
-- Configurable gameplay input, frontend hotkeys, and rendering settings
-- Supports ROM loading at runtime, recent-ROM history, a save-state manager, quick state save/load, persistent state slots, and keyboard rebinding
+- Very configurable, including gameplay input, frontend hotkeys, and rendering settings
 - Has a permissive license that allows commercial use
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
@@ -54,11 +53,11 @@ See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
 ### Quickstart
 
-#### Download the latest release
+#### Download the Latest Release
 
 You can download the latest pre-build binaries from the project's [releases page](https://github.com/pixel-clover/sandopolis/releases).
 
-#### Build Sandopolis from source
+#### Build Sandopolis from Source
 
 Alternatively, you can build the emulator from source by following the steps below.
 
@@ -74,43 +73,24 @@ cd sandopolis
 > `git clone --recursive https://github.com/pixel-clover/sandopolis.git`.
 > Note that you also need to have `git-lfs` installed to download some of the files like test ROMs.
 
-##### 2. Build the Sandopolis binary
+##### 2. Build the Sandopolis Binary
 
 ```bash
+# This can take some time
 zig build -Doptimize=ReleaseFast
 ```
 
-##### 3. Run the emulator with a ROM
-
-```bash
-# Start the emulator with a ROM
-./zig-out/bin/sandopolis <path-to-rom>
-```
-
-If the default SDL renderer is unstable on your system, try:
-
-```bash
-./zig-out/bin/sandopolis --renderer software <path-to-rom>
-```
-
-Sandopolis now auto-selects PAL/NTSC timing and the console region bits from the ROM header when the region is clear. You can still override timing manually:
-
-```bash
-./zig-out/bin/sandopolis --pal <path-to-rom>
-./zig-out/bin/sandopolis --ntsc <path-to-rom>
-```
-
-Useful frontend hotkeys:
-
-- `F3`: open ROM dialog
-- `Shift+F3`: soft reset console
-- `Ctrl+Shift+F3`: hard reset and reload current ROM
-
-If you launch Sandopolis without a ROM, it now starts in a frontend home screen with `Open ROM`, recent-ROM entries, settings, help, and quit actions. Frontend actions such as save/load state, recording, fullscreen, and ROM loads also show short on-screen status toasts. Persistent states also have a modal save manager: pause, press `Enter`, then use `Up`/`Down` to pick a slot, `F8` to save, `Enter` or `F9` to load, and `Delete` to remove a slot. Each persistent slot also writes a small `.preview` sidecar and the save manager shows the captured screenshot for the selected slot. The frontend is gamepad-driven too: `Guide` opens or closes the pause flow, the home screen and save manager accept `D-pad` navigation plus `A`/`Start` confirm, and the save manager maps `X` to save and `Y` to delete. There is also a settings modal for runtime-safe frontend controls such as aspect mode, integer scaling, fullscreen, audio render mode, and the performance HUD. Recent ROM history, the last-open directory, and frontend video settings are stored in `sandopolis_frontend.cfg` (or the path from `SANDOPOLIS_FRONTEND_CONFIG`).
+If the build is successful, you can find the built binary at `zig-out/bin/`.
 
 > [!NOTE]
 > To build from source, you mainly need to have Zig and Git installed.
 > The current version of the emulator is developed and tested using Zig 0.15.2.
+
+#### Run the Emulator
+
+```bash
+sandopolis
+```
 
 ---
 
@@ -141,12 +121,17 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution
 
 #### Reference Implementations
 
-Sandopolis implementation logic was checked with the following emulators for findings errors and verifying correctness:
+Sandopolis implementation logic was checked with the following emulators for finding errors and verifying correctness:
 
 * [Genesis-Plus-GX](https://github.com/ekeeke/Genesis-Plus-GX)
 * [clownmdemu-core](https://github.com/Clownacy/clownmdemu-core)
 * [kiwi](https://github.com/drx/kiwi)
 * [jgenesis](https://github.com/jsgroth/jgenesis/tree/master/backend/genesis-core)
+
+#### Other Resources
+
+* [mega-drive-genesis](https://www.copetti.org/writings/consoles/mega-drive-genesis/)
+* [mega-drive-architecture](https://rasterscroll.com/mdgraphics/mega-drive-architecture/)
 
 ### License
 
