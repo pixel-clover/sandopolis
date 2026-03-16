@@ -24,12 +24,12 @@ Footage of Sandopolis running a few games:
 
 <table>
   <tr>
-    <td align="center"><img alt="SK demo" src="docs/assets/gif/003_sk_optimized.gif" height="500"><br>Sonic &amp; Knuckles</td>
-    <td align="center"><img alt="ROS demo" src="docs/assets/gif/002_ros_optimized.gif" height="500"><br>The Revenge of Shinobi</td>
+    <td align="center"><img alt="SK demo" src="docs/assets/gif/003_sk_optimized.gif" height="200%"><br>Sonic &amp; Knuckles</td>
+    <td align="center"><img alt="ROS demo" src="docs/assets/gif/002_ros_optimized.gif" height="200%"><br>The Revenge of Shinobi</td>
   </tr>
   <tr>
-    <td align="center"><img alt="GA2 demo" src="docs/assets/gif/001_ga2_optimized.gif" height="500"><br>Golden Axe II</td>
-    <td align="center"><img alt="SOR demo" src="docs/assets/gif/004_sor_optimized.gif" height="500"><br>Streets of Rage</td>
+    <td align="center"><img alt="GA2 demo" src="docs/assets/gif/001_ga2_optimized.gif" height="200%"><br>Golden Axe II</td>
+    <td align="center"><img alt="SOR demo" src="docs/assets/gif/004_sor_optimized.gif" height="200%"><br>Streets of Rage</td>
   </tr>
 </table>
 
@@ -91,6 +91,10 @@ If the build is successful, you can find the built binary at `zig-out/bin/`.
 ```bash
 sandopolis
 ```
+
+<div align="center">
+<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.3.png" height="200%">
+</div>
 
 ---
 
