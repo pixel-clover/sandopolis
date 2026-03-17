@@ -395,7 +395,7 @@ pub fn applyPowerOnResetTiming(self: *Vdp) void {
 }
 
 pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
-    if (line >= visible_lines) return false;
+    if (line > visible_lines) return false;
     self.hint_counter -= 1;
     if (self.hint_counter < 0) {
         self.hint_counter = @intCast(self.regs[10]);

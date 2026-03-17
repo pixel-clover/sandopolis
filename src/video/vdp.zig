@@ -295,6 +295,32 @@ pub const Vdp = struct {
         self.sprite_cache_valid = true;
     }
 
+    pub fn preParseSpritesForLine(self: *Vdp, line: u16) void {
+        if (!self.isDisplayEnabled()) return;
+        const tile_h: u8 = self.tileHeight();
+        const max_sprites = self.maxSpritesPerLine();
+        const max_total = self.maxSpritesTotal();
+        self.ensureSpriteCache();
+
+        var sprites_on_line: u8 = 0;
+        var sprite_index: u8 = 0;
+        var count: u8 = 0;
+        while (count < max_total) : (count += 1) {
+            const entry = self.sprite_cache_entries[sprite_index];
+            const sprite_v_px = @as(i32, entry.v_size) * @as(i32, tile_h);
+            const y_in = @as(i32, @intCast(line)) - @as(i32, entry.y_pos);
+            if (y_in >= 0 and y_in < sprite_v_px) {
+                sprites_on_line += 1;
+                if (sprites_on_line > max_sprites) {
+                    self.sprite_overflow = true;
+                    return;
+                }
+            }
+            sprite_index = entry.link;
+            if (sprite_index == 0 or sprite_index >= max_total) break;
+        }
+    }
+
     pub fn isDisplayEnabled(self: *const Vdp) bool {
         return (self.regs[1] & 0x40) != 0;
     }

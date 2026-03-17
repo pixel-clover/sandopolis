@@ -2251,6 +2251,8 @@ pub fn main() !void {
     if (!cli_config.should_run) return;
 
     const cli = cli_config;
+    defer if (cli.rom_path) |p| allocator.free(p);
+    defer if (cli.renderer_name) |p| allocator.free(p);
     const rom_path = cli.rom_path;
 
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
@@ -4688,51 +4690,66 @@ test "audio-enabled runs do not use uncapped boot frames" {
     try std.testing.expectEqual(@as(u32, 240), uncappedBootFrames(false));
 }
 
-fn runCliTest(args: []const []const u8) !CliConfig {
+const CliTestResult = struct {
+    config: CliConfig,
+
+    fn deinit(self: CliTestResult) void {
+        if (self.config.rom_path) |p| std.testing.allocator.free(p);
+        if (self.config.renderer_name) |p| std.testing.allocator.free(p);
+    }
+};
+
+fn runCliTest(args: []const []const u8) !CliTestResult {
     const chilli = @import("chilli");
     var config = CliConfig{};
     const cmd = try createCliCommand(std.testing.allocator);
     defer cmd.deinit();
     var failed_cmd: ?*const chilli.Command = null;
     try cmd.execute(args, @ptrCast(&config), &failed_cmd);
-    return config;
+    return .{ .config = config };
 }
 
 test "cli parser accepts audio mode before rom path" {
-    const config = try runCliTest(&.{ "--audio-mode=psg-only", "roms/test.bin" });
-    try std.testing.expectEqualStrings("roms/test.bin", config.rom_path.?);
-    try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, config.audio_mode);
+    const result = try runCliTest(&.{ "--audio-mode=psg-only", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, result.config.audio_mode);
 }
 
 test "cli parser accepts renderer override before rom path" {
-    const config = try runCliTest(&.{ "--renderer=software", "roms/test.bin" });
-    try std.testing.expectEqualStrings("roms/test.bin", config.rom_path.?);
-    try std.testing.expectEqualStrings("software", config.renderer_name.?);
-    try std.testing.expectEqual(AudioOutput.RenderMode.normal, config.audio_mode);
+    const result = try runCliTest(&.{ "--renderer=software", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqualStrings("software", result.config.renderer_name.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.normal, result.config.audio_mode);
 }
 
 test "cli parser accepts pal timing override" {
-    const config = try runCliTest(&.{ "--pal", "roms/test.bin" });
-    try std.testing.expectEqualStrings("roms/test.bin", config.rom_path.?);
-    try std.testing.expectEqual(TimingModeOption.pal, config.timing_mode);
+    const result = try runCliTest(&.{ "--pal", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(TimingModeOption.pal, result.config.timing_mode);
 }
 
 test "cli parser accepts ntsc timing override" {
-    const config = try runCliTest(&.{ "--ntsc", "roms/test.bin" });
-    try std.testing.expectEqualStrings("roms/test.bin", config.rom_path.?);
-    try std.testing.expectEqual(TimingModeOption.ntsc, config.timing_mode);
+    const result = try runCliTest(&.{ "--ntsc", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(TimingModeOption.ntsc, result.config.timing_mode);
 }
 
 test "cli parser accepts spaced audio mode after rom path" {
-    const config = try runCliTest(&.{ "roms/test.bin", "--audio-mode", "unfiltered-mix" });
-    try std.testing.expectEqualStrings("roms/test.bin", config.rom_path.?);
-    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, config.audio_mode);
+    const result = try runCliTest(&.{ "roms/test.bin", "--audio-mode", "unfiltered-mix" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, result.config.audio_mode);
 }
 
 test "cli parser accepts spaced renderer override after rom path" {
-    const config = try runCliTest(&.{ "roms/test.bin", "--renderer", "opengl" });
-    try std.testing.expectEqualStrings("roms/test.bin", config.rom_path.?);
-    try std.testing.expectEqualStrings("opengl", config.renderer_name.?);
+    const result = try runCliTest(&.{ "roms/test.bin", "--renderer", "opengl" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqualStrings("opengl", result.config.renderer_name.?);
 }
 
 test "cli parser rejects invalid audio mode values" {

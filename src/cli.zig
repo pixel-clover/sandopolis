@@ -17,9 +17,10 @@ pub const Config = struct {
 fn exec(ctx: chilli.CommandContext) !void {
     const config: *Config = ctx.getContextData(Config).?;
 
-    // Positional: ROM path
+    // Positional: ROM path — dupe via app_allocator so it outlives
+    // the process-arg memory that chilli frees when run() returns.
     const rom_arg = try ctx.getArg("rom_file", []const u8);
-    config.rom_path = if (rom_arg.len > 0) rom_arg else null;
+    config.rom_path = if (rom_arg.len > 0) try ctx.app_allocator.dupe(u8, rom_arg) else null;
 
     // --audio-mode
     const audio_str = try ctx.getFlag("audio-mode", []const u8);
@@ -28,9 +29,9 @@ fn exec(ctx: chilli.CommandContext) !void {
             return error.InvalidAudioMode;
     }
 
-    // --renderer
+    // --renderer — dupe for same reason as rom_path
     const renderer_str = try ctx.getFlag("renderer", []const u8);
-    config.renderer_name = if (renderer_str.len > 0) renderer_str else null;
+    config.renderer_name = if (renderer_str.len > 0) try ctx.app_allocator.dupe(u8, renderer_str) else null;
 
     // --pal / --ntsc (mutually exclusive)
     const pal = try ctx.getFlag("pal", bool);

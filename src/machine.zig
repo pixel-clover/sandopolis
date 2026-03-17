@@ -374,6 +374,10 @@ pub const Machine = struct {
             self.bus.z80.clearIrq();
         }
 
+        if (render_visible and line < visible_lines) {
+            self.bus.vdp.preParseSpritesForLine(line);
+        }
+
         const hint_master_cycles = self.bus.vdp.hInterruptMasterCycles();
         const hblank_start_master_cycles = self.bus.vdp.hblankStartMasterCycles();
         self.bus.vdp.hblank = start_master_cycles >= hblank_start_master_cycles;
