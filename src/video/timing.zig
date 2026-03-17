@@ -59,6 +59,12 @@ pub fn hblankStartMasterCycles(self: *const Vdp) u16 {
     return if (self.isH40()) 0x015A * 8 else 0x0108 * 10;
 }
 
+/// Delay between VBLANK flag set and VInt firing, matching Genesis Plus GX.
+/// Games like Dracula, OutRunners, and VR Troopers depend on this gap.
+pub fn vIntMasterCycles(self: *const Vdp) u16 {
+    return if (self.isH40()) 788 else 770;
+}
+
 fn effectiveScanlineForVCounter(self: *const Vdp, scanline: u16, line_master_cycle: u16) u16 {
     if (line_master_cycle < hInterruptMasterCycles(self)) return scanline;
 

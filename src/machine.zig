@@ -365,12 +365,7 @@ pub const Machine = struct {
         counters: ?*CoreFrameCounters,
     ) void {
         const entering_vblank = self.bus.vdp.setScanlineState(line, visible_lines, total_lines);
-        if (entering_vblank and self.bus.vdp.isVBlankInterruptEnabled()) {
-            self.cpu.requestInterrupt(6);
-        }
-        if (entering_vblank) {
-            self.bus.z80.assertIrq(0xFF);
-        } else if (!self.bus.vdp.vint_pending) {
+        if (!entering_vblank and !self.bus.vdp.vint_pending) {
             self.bus.z80.clearIrq();
         }
 
@@ -382,34 +377,49 @@ pub const Machine = struct {
         const hblank_start_master_cycles = self.bus.vdp.hblankStartMasterCycles();
         self.bus.vdp.hblank = start_master_cycles >= hblank_start_master_cycles;
 
+        // Collect all scanline events and sort by time. VInt fires at a specific
+        // cycle offset into the vblank entry line (matching Genesis Plus GX), not
+        // at cycle 0. This lets HInt fire first when both occur on the same line.
+        var events: [3]u16 = undefined;
+        var event_count: u8 = 0;
+        events[event_count] = hint_master_cycles;
+        event_count += 1;
+        events[event_count] = hblank_start_master_cycles;
+        event_count += 1;
+        const vint_master_cycles: u16 = if (entering_vblank) self.bus.vdp.vIntMasterCycles() else master_cycles_per_line;
+        if (entering_vblank) {
+            events[event_count] = vint_master_cycles;
+            event_count += 1;
+        }
+
+        // Sort events (simple insertion sort for 2-3 elements).
+        var i: u8 = 1;
+        while (i < event_count) : (i += 1) {
+            var j = i;
+            while (j > 0 and events[j] < events[j - 1]) : (j -= 1) {
+                const tmp = events[j];
+                events[j] = events[j - 1];
+                events[j - 1] = tmp;
+            }
+        }
+
         var current_master_cycles = start_master_cycles;
-        const first_event_master_cycles = @min(hint_master_cycles, hblank_start_master_cycles);
-        const second_event_master_cycles = @max(hint_master_cycles, hblank_start_master_cycles);
-
-        if (current_master_cycles < first_event_master_cycles) {
-            scheduler.runMasterSlice(
-                self.bus.schedulerRuntime(),
-                self.cpu.schedulerRuntime(),
-                &self.m68k_sync,
-                first_event_master_cycles - current_master_cycles,
-            );
-            current_master_cycles = first_event_master_cycles;
-        }
-        if (first_event_master_cycles > start_master_cycles) {
-            self.applyScanlineEvent(line, visible_lines, hint_master_cycles, hblank_start_master_cycles, first_event_master_cycles);
-        }
-
-        if (current_master_cycles < second_event_master_cycles) {
-            scheduler.runMasterSlice(
-                self.bus.schedulerRuntime(),
-                self.cpu.schedulerRuntime(),
-                &self.m68k_sync,
-                second_event_master_cycles - current_master_cycles,
-            );
-            current_master_cycles = second_event_master_cycles;
-        }
-        if (second_event_master_cycles > start_master_cycles and second_event_master_cycles != first_event_master_cycles) {
-            self.applyScanlineEvent(line, visible_lines, hint_master_cycles, hblank_start_master_cycles, second_event_master_cycles);
+        var prev_event: u16 = start_master_cycles;
+        for (events[0..event_count]) |event_mc| {
+            if (event_mc == prev_event and event_mc != events[0]) continue; // skip duplicates
+            if (current_master_cycles < event_mc) {
+                scheduler.runMasterSlice(
+                    self.bus.schedulerRuntime(),
+                    self.cpu.schedulerRuntime(),
+                    &self.m68k_sync,
+                    event_mc - current_master_cycles,
+                );
+                current_master_cycles = event_mc;
+            }
+            if (event_mc > start_master_cycles or event_mc == events[0]) {
+                self.applyScanlineEvent(line, visible_lines, entering_vblank, hint_master_cycles, hblank_start_master_cycles, vint_master_cycles, event_mc);
+            }
+            prev_event = event_mc;
         }
 
         if (current_master_cycles < master_cycles_per_line) {
@@ -432,8 +442,10 @@ pub const Machine = struct {
         self: *Machine,
         line: u16,
         visible_lines: u16,
+        entering_vblank: bool,
         hint_master_cycles: u16,
         hblank_start_master_cycles: u16,
+        vint_master_cycles: u16,
         event_master_cycles: u16,
     ) void {
         if (hblank_start_master_cycles == event_master_cycles) {
@@ -441,6 +453,12 @@ pub const Machine = struct {
         }
         if (hint_master_cycles == event_master_cycles and self.bus.vdp.consumeHintForLine(line, visible_lines)) {
             self.cpu.requestInterrupt(4);
+        }
+        if (entering_vblank and vint_master_cycles == event_master_cycles) {
+            if (self.bus.vdp.isVBlankInterruptEnabled()) {
+                self.cpu.requestInterrupt(6);
+            }
+            self.bus.z80.assertIrq(0xFF);
         }
     }
 

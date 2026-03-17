@@ -665,6 +665,11 @@ fn renderSpritesToBuffer(
     const max_total = self.maxSpritesTotal();
     self.ensureSpriteCache();
 
+    // Collision buffer covers the full 512-pixel internal coordinate space.
+    // On real hardware, the VDP detects sprite overlap across all positions,
+    // including off-screen pixels outside the visible display area.
+    var collision_buf = [_]u8{0} ** 512;
+
     var sprites_on_line: u8 = 0;
     var pixel_budget_used: u16 = 0;
     var sprite_masked = false;
@@ -716,10 +721,6 @@ fn renderSpritesToBuffer(
                 var screen_tile_x: u16 = 0;
                 while (screen_tile_x < h_size_u16) : (screen_tile_x += 1) {
                     const tile_screen_start = @as(i32, entry.x_pos) + (@as(i32, screen_tile_x) * 8);
-                    var screen_x = @max(tile_screen_start, 0);
-                    const tile_screen_end = @min(tile_screen_start + 8, screen_w_i32);
-                    if (screen_x >= tile_screen_end) continue;
-
                     const tile_x: u16 = if (entry.x_flip) h_size_u16 - 1 - screen_tile_x else screen_tile_x;
                     const tile_index: u16 = entry.tile_base +% (tile_x *% v_size_u16) +% tile_y;
                     const pattern_row_addr = (@as(u32, tile_index) * tile_sz) + (@as(u32, fine_y) * 4);
@@ -730,31 +731,44 @@ fn renderSpritesToBuffer(
                         self.vramReadByte(@intCast((pattern_row_addr + 3) & 0xFFFF)),
                     };
 
-                    while (screen_x < tile_screen_end) : (screen_x += 1) {
-                        const offset_in_tile: u8 = @intCast(screen_x - tile_screen_start);
-                        const sprite_px = (screen_tile_x * 8) + offset_in_tile;
+                    // Iterate over all 8 pixels in the tile for collision detection,
+                    // including off-screen pixels. Only draw visible ones to the framebuffer.
+                    var px_in_tile: u8 = 0;
+                    while (px_in_tile < 8) : (px_in_tile += 1) {
+                        const sprite_px = (screen_tile_x * 8) + px_in_tile;
                         if (sprite_px >= draw_width_px) {
                             sprite_limit_hit = true;
                             break;
                         }
 
-                        if (self.active_execution_counters) |counters| {
-                            counters.render_sprite_pixels += 1;
-                        }
-                        const fine_x: u8 = if (entry.x_flip) @as(u8, 7) - offset_in_tile else offset_in_tile;
+                        const fine_x: u8 = if (entry.x_flip) @as(u8, 7) - px_in_tile else px_in_tile;
                         const pattern_byte = pattern_row[fine_x >> 1];
                         const color_idx: u8 = if ((fine_x & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
                         if (color_idx == 0) continue;
+
+                        // Collision detection in the full 512-pixel internal space.
+                        const col_x: i32 = tile_screen_start + px_in_tile;
+                        const raw_x = @as(u32, @intCast(col_x + 128));
+                        if (raw_x < 512) {
+                            if (collision_buf[raw_x] != 0) {
+                                self.sprite_collision = true;
+                            }
+                            collision_buf[raw_x] = 1;
+                        }
+
+                        // Only render to the framebuffer for visible pixels.
+                        const screen_x = tile_screen_start + @as(i32, px_in_tile);
+                        if (screen_x < 0 or screen_x >= screen_w_i32) continue;
+
+                        if (self.active_execution_counters) |counters| {
+                            counters.render_sprite_pixels += 1;
+                        }
                         if (self.active_execution_counters) |counters| {
                             counters.render_sprite_opaque_pixels += 1;
                         }
 
                         const sx: usize = @intCast(screen_x);
                         const palette_index = (entry.palette * 16) + color_idx;
-
-                        if (source_buf[sx] == 3) {
-                            self.sprite_collision = true;
-                        }
 
                         if (sh_mode and entry.palette == 3 and color_idx == 14) {
                             sh_buf[sx] = SH_NORMAL;

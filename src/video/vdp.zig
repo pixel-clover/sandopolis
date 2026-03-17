@@ -428,6 +428,7 @@ pub const Vdp = struct {
     pub const consumeHintForLine = timing_mod.consumeHintForLine;
     pub const hInterruptMasterCycles = timing_mod.hInterruptMasterCycles;
     pub const hblankStartMasterCycles = timing_mod.hblankStartMasterCycles;
+    pub const vIntMasterCycles = timing_mod.vIntMasterCycles;
     pub const adjustedLineState = timing_mod.adjustedLineState;
 
     pub fn debugDump(self: *const Vdp) void {
