@@ -1090,10 +1090,30 @@ fn handleFrontendGamepadInput(
     core_profile_frames_remaining: *u32,
     window: *zsdl3.Window,
     frame_counter: *u32,
+    debugger: *debugger_mod.DebuggerState,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
 ) FrontendGamepadCommand {
+    // Debugger gamepad handling (checked first when debugger is active)
+    if (ui.show_debugger) {
+        if (pressed) {
+            switch (input) {
+                .east, .back => {
+                    debugger.toggle();
+                    ui.show_debugger = debugger.active;
+                },
+                .south => debugger.stepOnce(),
+                .dpad_left, .left_shoulder => debugger.prevTab(),
+                .dpad_right, .right_shoulder => debugger.nextTab(),
+                .dpad_up => debugger.adjustMemoryAddress(-256),
+                .dpad_down => debugger.adjustMemoryAddress(256),
+                else => {},
+            }
+        }
+        return .consumed;
+    }
+
     const settings_result = handleSettingsGamepadInput(
         ui,
         settings,
@@ -1664,8 +1684,12 @@ fn handlePersistentStateAction(
         },
         .load_state_file => {
             var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
-                std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
+                if (err == error.FileNotFound) {
+                    notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
+                } else {
+                    std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                    notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
+                }
                 return true;
             };
             errdefer next_machine.deinit(allocator);
@@ -1720,6 +1744,7 @@ fn handleFrontendGamepadTransitions(
     core_profile_frames_remaining: *u32,
     window: *zsdl3.Window,
     frame_counter: *u32,
+    debugger: *debugger_mod.DebuggerState,
     notifications: FrontendNotifications,
     transitions: anytype,
 ) FrontendGamepadCommand {
@@ -1745,6 +1770,7 @@ fn handleFrontendGamepadTransitions(
                 core_profile_frames_remaining,
                 window,
                 frame_counter,
+                debugger,
                 transition.input,
                 transition.pressed,
                 notifications,
@@ -2452,6 +2478,7 @@ pub fn main() !void {
                                 &core_profile_frames_remaining,
                                 window,
                                 &frame_counter,
+                                &debugger_state,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2521,6 +2548,7 @@ pub fn main() !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &debugger_state,
                             notifications,
                             transitions,
                         ),
@@ -2579,6 +2607,7 @@ pub fn main() !void {
                                 &core_profile_frames_remaining,
                                 window,
                                 &frame_counter,
+                                &debugger_state,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2645,6 +2674,7 @@ pub fn main() !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &debugger_state,
                             notifications,
                             transitions,
                         ),
@@ -2703,6 +2733,7 @@ pub fn main() !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &debugger_state,
                             notifications,
                             transitions,
                         ),
@@ -2822,20 +2853,33 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    // Debugger controls (F12 toggle, F10 step, Tab switch)
-                    if (pressed and scancode == .f12) {
+                    // Debugger controls (F10 toggle, Space step, Tab switch tabs)
+                    if (pressed and scancode == .f10) {
                         debugger_state.toggle();
                         frontend_ui.show_debugger = debugger_state.active;
                         continue;
                     }
                     if (pressed and frontend_ui.show_debugger and debugger_state.active) {
-                        switch (scancode) {
-                            .f10 => debugger_state.stepOnce(),
-                            .tab => debugger_state.nextTab(),
-                            .pageup => debugger_state.adjustMemoryAddress(-256),
-                            .pagedown => debugger_state.adjustMemoryAddress(256),
-                            else => {},
-                        }
+                        const consumed = switch (scancode) {
+                            .space => blk: {
+                                debugger_state.stepOnce();
+                                break :blk true;
+                            },
+                            .tab => blk: {
+                                debugger_state.nextTab();
+                                break :blk true;
+                            },
+                            .pageup => blk: {
+                                debugger_state.adjustMemoryAddress(-256);
+                                break :blk true;
+                            },
+                            .pagedown => blk: {
+                                debugger_state.adjustMemoryAddress(256);
+                                break :blk true;
+                            },
+                            else => false,
+                        };
+                        if (consumed) continue;
                     }
 
                     if (pressed) {
@@ -4400,6 +4444,7 @@ test "guide button toggles pause and resumes overlays" {
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 0;
     var core_profile_frames_remaining: u32 = 0;
+    var dbg_state = debugger_mod.DebuggerState{};
     const fake_window: *zsdl3.Window = @ptrFromInt(1);
 
     switch (handleFrontendGamepadInput(
@@ -4422,6 +4467,7 @@ test "guide button toggles pause and resumes overlays" {
         &core_profile_frames_remaining,
         fake_window,
         &frame_counter,
+        &dbg_state,
         .guide,
         true,
         .{},
@@ -4453,6 +4499,7 @@ test "guide button toggles pause and resumes overlays" {
         &core_profile_frames_remaining,
         fake_window,
         &frame_counter,
+        &dbg_state,
         .guide,
         true,
         .{},

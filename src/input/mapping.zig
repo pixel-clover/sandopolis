@@ -206,8 +206,8 @@ pub const Bindings = struct {
         bindings.setKeyboard(.x, .q);
         bindings.setKeyboard(.y, .w);
         bindings.setKeyboard(.z, .e);
-        bindings.setKeyboard(.mode, .tab);
-        bindings.setKeyboard(.start, .@"return");
+        bindings.setKeyboard(.mode, .v);
+        bindings.setKeyboard(.start, .space);
 
         bindings.setKeyboardForPort(1, .up, .i);
         bindings.setKeyboardForPort(1, .down, .k);
@@ -266,9 +266,8 @@ pub const Bindings = struct {
         bindings.setHotkeyWithModifiers(.record_wav, .f12, .{ .shift = true }); // Shift+F12 = record audio
         bindings.setHotkeyWithModifiers(.screenshot, .f12, .{ .ctrl = true }); // Ctrl+F12 = screenshot
 
-        // Debug controls
-        bindings.setHotkey(.step, .backspace); // Backspace = step CPU
-        bindings.setHotkey(.registers, .f10); // F10 = show registers
+        // Note: F10 = debugger toggle (hardcoded in main.zig)
+        // Space = step instruction when debugger is active (hardcoded in main.zig)
 
         return bindings;
     }

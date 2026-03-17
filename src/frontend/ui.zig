@@ -181,10 +181,10 @@ pub const help_right_sections = [_]MenuSection{
         },
     },
     .{
-        .header = "DEBUG",
+        .header = "DEBUG AND CAPTURE",
         .items = &[_]OverlayLine{
-            .{ .hotkey = .{ .action = .step, .label = "STEP CPU" } },
-            .{ .hotkey = .{ .action = .registers, .label = "REGISTERS" } },
+            .{ .text = "F10        DEBUGGER" },
+            .{ .text = "SPACE      STEP (IN DEBUGGER)" },
             .{ .hotkey = .{ .action = .record_gif, .label = "RECORD GIF" } },
             .{ .hotkey = .{ .action = .record_wav, .label = "RECORD WAV" } },
             .{ .hotkey = .{ .action = .screenshot, .label = "SCREENSHOT" } },
@@ -461,12 +461,14 @@ pub fn renderTwoColumnOverlay(
     if (footer) |foot| {
         content_width = @max(content_width, textWidth(foot, scale));
     }
-    const total_width = content_width + padding * 2.0;
-    const total_height = padding * 2.0 + header_height + content_height + footer_height;
+    const vw: f32 = @floatFromInt(viewport.w);
+    const vh: f32 = @floatFromInt(viewport.h);
+    const total_width = @min(content_width + padding * 2.0, vw);
+    const total_height = @min(padding * 2.0 + header_height + content_height + footer_height, vh);
 
     const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - total_width) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - total_height) * 0.5,
+        .x = @max(0.0, (vw - total_width) * 0.5),
+        .y = @max(0.0, (vh - total_height) * 0.5),
         .w = total_width,
         .h = total_height,
     };
@@ -644,11 +646,15 @@ pub fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !voi
         max_width = @max(max_width, textWidth(line, scale));
     }
 
+    const dvw: f32 = @floatFromInt(viewport.w);
+    const dvh: f32 = @floatFromInt(viewport.h);
+    const dialog_w = @min(max_width + padding * 2.0, dvw);
+    const dialog_h = @min(padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)), dvh);
     const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 4.0 * scale + line_height * @as(f32, @floatFromInt(lines.len)),
+        .x = @max(0.0, (dvw - dialog_w) * 0.5),
+        .y = @max(0.0, (dvh - dialog_h) * 0.5),
+        .w = dialog_w,
+        .h = dialog_h,
     };
 
     try renderPanel(
@@ -748,7 +754,7 @@ pub fn renderHomeOverlay(
     const subtitle = "OPEN A ROM TO START";
     const empty_recent_note = "NO RECENT ROMS YET";
     const footer_a = "DPAD MOVE  A OR START SELECT";
-    const footer_b = "F3 OPEN DIALOG  F1 HELP  ESC QUIT";
+    const footer_b = "CTRL+O OPEN ROM  F1 HELP  ESC QUIT";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
     const line_height = 10.0 * scale;
@@ -777,11 +783,15 @@ pub fn renderHomeOverlay(
     }
 
     const body_lines = 3 + note_count + item_count;
+    const hvw: f32 = @floatFromInt(viewport.w);
+    const hvh: f32 = @floatFromInt(viewport.h);
+    const home_w = @min(max_width + padding * 2.0, hvw);
+    const home_h = @min(padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)), hvh);
     const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 6.0 * scale + line_height * @as(f32, @floatFromInt(body_lines)),
+        .x = @max(0.0, (hvw - home_w) * 0.5),
+        .y = @max(0.0, (hvh - home_h) * 0.5),
+        .w = home_w,
+        .h = home_h,
     };
 
     try renderPanel(
