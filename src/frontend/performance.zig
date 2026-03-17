@@ -393,11 +393,11 @@ pub fn formatSpikeWindowLine(buffer: []u8, summary: *const SpikeWindowSummary) !
 // HUD Rendering
 pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const HudState) !void {
     const title = "PERF HUD";
-    const scale = ui.overlayScale(viewport);
+    const scale = @min(ui.overlayScale(viewport), 2.0);
     const padding = 8.0 * scale;
     const line_height = 10.0 * scale;
 
-    var metric_buffers: [19][16]u8 = undefined;
+    var metric_buffers: [12][16]u8 = undefined;
     const fps_text = try formatRateHzTenths(metric_buffers[0][0..], perf.last_present_ns);
     const avg_fps_text = try formatRateHzTenths(metric_buffers[1][0..], perf.average_present_ns);
     const target_fps_text = try formatRateHzTenths(metric_buffers[2][0..], perf.last_target_ns);
@@ -413,55 +413,23 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
         try formatDurationMsTenths(metric_buffers[11][0..], queued_ns)
     else
         "OFF";
-    const emu_text = try formatDurationMsTenths(metric_buffers[12][0..], perf.last_phases.emulation_ns);
-    const emu_avg_text = try formatDurationMsTenths(metric_buffers[13][0..], perf.average_phases.emulation_ns);
-    const audio_cpu_text = try formatDurationMsTenths(metric_buffers[14][0..], perf.last_phases.audio_ns);
-    const audio_cpu_avg_text = try formatDurationMsTenths(metric_buffers[15][0..], perf.average_phases.audio_ns);
-    const other_text = try formatDurationMsTenths(metric_buffers[16][0..], perf.last_other_ns);
-    const other_avg_text = try formatDurationMsTenths(metric_buffers[17][0..], perf.average_other_ns);
-    const core_sample_text = try std.fmt.bufPrint(metric_buffers[18][0..], "1/{d}+B{d}", .{ core_sample_period, core_burst_frames });
 
-    var line_buffers: [27][72]u8 = undefined;
-    var lines: [27][]const u8 = undefined;
+    var line_buffers: [11][72]u8 = undefined;
+    var lines: [11][]const u8 = undefined;
     lines[0] = try std.fmt.bufPrint(&line_buffers[0], "FPS {s} / {s}", .{ fps_text, target_fps_text });
     lines[1] = try std.fmt.bufPrint(&line_buffers[1], "FPS AVG {s}", .{avg_fps_text});
     lines[2] = try std.fmt.bufPrint(&line_buffers[2], "WORK {s} / {s} MS", .{ work_text, target_text });
     lines[3] = try std.fmt.bufPrint(&line_buffers[3], "AVG {s} MS", .{avg_text});
-    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "EMU {s} / {s} MS", .{ emu_text, emu_avg_text });
-    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "OTHER {s} / {s} MS", .{ other_text, other_avg_text });
-    lines[6] = try std.fmt.bufPrint(&line_buffers[6], "CORE SAMP {s}", .{core_sample_text});
-    lines[7] = try std.fmt.bufPrint(&line_buffers[7], "68K INS {d} / {d}", .{ perf.last_core_counters.m68k_instructions, perf.average_core_counters.m68k_instructions });
-    lines[8] = try std.fmt.bufPrint(&line_buffers[8], "Z80 INS {d} / {d}", .{ perf.last_core_counters.z80_instructions, perf.average_core_counters.z80_instructions });
-    lines[9] = try std.fmt.bufPrint(&line_buffers[9], "XFER {d} / {d}", .{ perf.last_core_counters.transfer_slots, perf.average_core_counters.transfer_slots });
-    lines[10] = try std.fmt.bufPrint(&line_buffers[10], "ACCESS {d} / {d}", .{ perf.last_core_counters.access_slots, perf.average_core_counters.access_slots });
-    lines[11] = try std.fmt.bufPrint(&line_buffers[11], "DMA WORDS {d} / {d}", .{ perf.last_core_counters.dma_words, perf.average_core_counters.dma_words });
-    lines[12] = try std.fmt.bufPrint(&line_buffers[12], "SCANLINES {d} / {d}", .{ perf.last_core_counters.render_scanlines, perf.average_core_counters.render_scanlines });
-    lines[13] = try std.fmt.bufPrint(&line_buffers[13], "SPR ENTS {d} / {d}", .{ perf.last_core_counters.render_sprite_entries, perf.average_core_counters.render_sprite_entries });
-    lines[14] = try std.fmt.bufPrint(&line_buffers[14], "SPR PIX {d} / {d}", .{ perf.last_core_counters.render_sprite_pixels, perf.average_core_counters.render_sprite_pixels });
-    lines[15] = try std.fmt.bufPrint(&line_buffers[15], "SPR OPAQ {d} / {d}", .{ perf.last_core_counters.render_sprite_opaque_pixels, perf.average_core_counters.render_sprite_opaque_pixels });
-    lines[16] = try std.fmt.bufPrint(&line_buffers[16], "AUD CPU {s} / {s} MS", .{ audio_cpu_text, audio_cpu_avg_text });
-    lines[17] = try std.fmt.bufPrint(&line_buffers[17], "UPLOAD {d} / {d} US", .{
-        (perf.last_phases.upload_ns + 500) / 1000,
-        (perf.average_phases.upload_ns + 500) / 1000,
-    });
-    lines[18] = try std.fmt.bufPrint(&line_buffers[18], "DRAW {d} / {d} US", .{
-        (perf.last_phases.draw_ns + 500) / 1000,
-        (perf.average_phases.draw_ns + 500) / 1000,
-    });
-    lines[19] = try std.fmt.bufPrint(&line_buffers[19], "PRESENT {d} / {d} US", .{
-        (perf.last_phases.present_call_ns + 500) / 1000,
-        (perf.average_phases.present_call_ns + 500) / 1000,
-    });
-    lines[20] = try std.fmt.bufPrint(&line_buffers[20], "SLEEP {s} MS", .{sleep_text});
-    lines[21] = try std.fmt.bufPrint(&line_buffers[21], "OVER {s} MS", .{overrun_text});
-    lines[22] = try std.fmt.bufPrint(&line_buffers[22], "SLOW {d} {s} PCT", .{ perf.slow_frame_count, slow_percent_text });
-    lines[23] = try std.fmt.bufPrint(&line_buffers[23], "WORST WORK {s} MS", .{worst_work_text});
-    lines[24] = try std.fmt.bufPrint(&line_buffers[24], "WORST OVR {s} MS", .{worst_overrun_text});
-    lines[25] = if (perf.last_audio_queued_bytes == null)
+    lines[4] = try std.fmt.bufPrint(&line_buffers[4], "SLEEP {s} MS", .{sleep_text});
+    lines[5] = try std.fmt.bufPrint(&line_buffers[5], "OVER {s} MS", .{overrun_text});
+    lines[6] = try std.fmt.bufPrint(&line_buffers[6], "SLOW {d} {s} PCT", .{ perf.slow_frame_count, slow_percent_text });
+    lines[7] = try std.fmt.bufPrint(&line_buffers[7], "WORST WORK {s} MS", .{worst_work_text});
+    lines[8] = try std.fmt.bufPrint(&line_buffers[8], "WORST OVR {s} MS", .{worst_overrun_text});
+    lines[9] = if (perf.last_audio_queued_bytes == null)
         "AUDIO OFF"
     else
-        try std.fmt.bufPrint(&line_buffers[25], "AUDIO {s} MS", .{audio_text});
-    lines[26] = "F12 RESET";
+        try std.fmt.bufPrint(&line_buffers[9], "AUDIO {s} MS", .{audio_text});
+    lines[10] = "F12 RESET";
 
     var max_width = ui.textWidth(title, scale);
     for (lines) |line| {
