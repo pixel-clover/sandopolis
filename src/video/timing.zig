@@ -333,7 +333,6 @@ fn computeHCounterShaped(self: *const Vdp) u8 {
 }
 
 pub fn readHVCounter(self: *Vdp) u16 {
-    self.pending_command = false;
     if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
         return self.hv_latched;
     }
@@ -341,7 +340,6 @@ pub fn readHVCounter(self: *Vdp) u16 {
 }
 
 pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
-    self.pending_command = false;
     if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
         return self.hv_latched;
     }
