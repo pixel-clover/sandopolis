@@ -18,6 +18,7 @@ const WavRecorder = @import("recording/wav.zig").WavRecorder;
 const screenshot = @import("recording/screenshot.zig");
 const StateFile = @import("state_file.zig");
 const ui_render = @import("frontend/ui.zig");
+const debugger_mod = @import("frontend/debugger.zig");
 const perf_monitor = @import("frontend/performance.zig");
 const config_module = @import("frontend/config.zig");
 const saves_module = @import("frontend/saves.zig");
@@ -2207,7 +2208,7 @@ fn renderFrontendOverlay(
     // Show status bar when paused or help is open (not during gameplay or when other panels are open)
     const show_blocking_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.dialog_active or ui.show_keyboard_editor;
     const show_status_bar = has_rom and (ui.paused or ui.show_help) and !show_blocking_panel and !ui.show_performance_hud;
-    if (!ui.show_performance_hud and !show_panel and !show_toast) return;
+    if (!ui.show_performance_hud and !ui.show_debugger and !show_panel and !show_toast) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
@@ -2398,6 +2399,7 @@ pub fn main() !void {
     var save_manager = SaveManagerState{};
     var frontend_toast = FrontendToast{};
     var performance_hud = PerformanceHudState{};
+    var debugger_state = debugger_mod.DebuggerState{};
     var performance_spike_log = PerformanceSpikeLogState{};
     var core_profile_frames_remaining: u32 = 0;
     var file_dialog_state = FileDialogState{};
@@ -2820,6 +2822,22 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
+                    // Debugger controls (F12 toggle, F10 step, Tab switch)
+                    if (pressed and scancode == .f12) {
+                        debugger_state.toggle();
+                        frontend_ui.show_debugger = debugger_state.active;
+                        continue;
+                    }
+                    if (pressed and frontend_ui.show_debugger and debugger_state.active) {
+                        switch (scancode) {
+                            .f10 => debugger_state.stepOnce(),
+                            .tab => debugger_state.nextTab(),
+                            .pageup => debugger_state.adjustMemoryAddress(-256),
+                            .pagedown => debugger_state.adjustMemoryAddress(256),
+                            else => {},
+                        }
+                    }
+
                     if (pressed) {
                         if (hotkey_action) |action| {
                             const notifications = FrontendNotifications{
@@ -3083,6 +3101,10 @@ pub fn main() !void {
                 machine.runFrame();
             }
             frame_phases.emulation_ns = (std.time.Instant.now() catch emulation_start).since(emulation_start);
+        } else if (debugger_state.active and debugger_state.shouldStep()) {
+            // Single-step: run one M68K instruction
+            var testing_view = machine.testing();
+            _ = testing_view.runCpuCycles(1);
         }
 
         if (!emulation_paused) {
@@ -3167,6 +3189,11 @@ pub fn main() !void {
             &performance_hud,
             if (current_rom_path.len != 0) current_rom_path.slice() else null,
         );
+        if (frontend_ui.show_debugger and debugger_state.active) {
+            const dbg_viewport = try zsdl3.getRenderViewport(renderer);
+            try zsdl3.setRenderDrawBlendMode(renderer, .blend);
+            try debugger_mod.render(renderer, dbg_viewport, &machine, &debugger_state);
+        }
         frame_phases.draw_ns = (std.time.Instant.now() catch draw_start).since(draw_start);
         const present_call_start = std.time.Instant.now() catch frame_timer;
         zsdl3.renderPresent(renderer);

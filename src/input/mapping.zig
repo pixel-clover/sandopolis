@@ -745,6 +745,7 @@ fn controllerTypeName(controller_type: ControllerType) []const u8 {
     return switch (controller_type) {
         .three_button => "three_button",
         .six_button => "six_button",
+        .ea_4way_play => "ea_4way_play",
     };
 }
 

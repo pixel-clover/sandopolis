@@ -1213,6 +1213,7 @@ fn writeTargetWord(self: *Vdp, code: u8, addr: u16, value: u16) void {
         0x3 => {
             self.dbg_cram_writes += 1;
             const idx = addr & 0x7E;
+            self.recordCramDot(self.transfer_line_master_cycle, value);
             // CRAM stores 9-bit color in format ----BBB0GGG0RRR0.
             // Mask out unused bits so readback returns canonical values.
             const masked = value & 0x0EEE;
@@ -1340,6 +1341,7 @@ fn progressDmaFill(self: *Vdp, access_slots: u32) void {
             0x3 => {
                 self.dbg_cram_writes += 1;
                 const idx = self.addr & 0x7E;
+                self.recordCramDot(self.transfer_line_master_cycle, fill_word);
                 const masked = fill_word & 0x0EEE;
                 self.cram[idx] = @intCast((masked >> 8) & 0xFF);
                 self.cram[idx + 1] = @intCast(masked & 0xFF);
@@ -1457,6 +1459,7 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
 
                 if (transferSlotIsAccess(self, slot_event.slot_idx, phaseIsBlanking(self, phase))) {
                     if (self.active_execution_counters) |counters| counters.access_slots += 1;
+                    self.transfer_line_master_cycle = phase.line_master_cycle;
                     serviceAccessSlot(self);
                 }
 
@@ -1519,6 +1522,7 @@ pub fn writeControl(self: *Vdp, value: u16) void {
             if (reg == 0 and ((self.regs[0] & 0x02) != 0) and ((data & 0x02) == 0)) {
                 self.hv_latched_valid = false;
             }
+            self.recordRegChange(@intCast(reg), data);
             self.regs[reg] = data;
         }
         self.pending_command = false;

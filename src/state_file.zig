@@ -38,6 +38,7 @@ fn storageIntType(comptime T: type) type {
 }
 
 fn skipSaveStateField(comptime Parent: type, comptime field_name: []const u8) bool {
+    @setEvalBranchQuota(10000);
     if (!@hasDecl(Parent, "save_state_skip_fields")) return false;
 
     inline for (@field(Parent, "save_state_skip_fields")) |skip_name| {

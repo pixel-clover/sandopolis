@@ -16,6 +16,7 @@ pub const FrontendUi = struct {
     dialog_active: bool = false,
     show_keyboard_editor: bool = false,
     show_performance_hud: bool = false,
+    show_debugger: bool = false,
     delete_confirm_pending: bool = false, // Waiting for delete confirmation
 
     pub fn emulationPaused(self: *const FrontendUi) bool {

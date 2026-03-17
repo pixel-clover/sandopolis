@@ -11,11 +11,30 @@ pub const Vdp = struct {
         "sprite_cache_valid",
         "sprite_cache_base",
         "sprite_cache_total",
+        "cram_dot_events",
+        "cram_dot_event_count",
+        "reg_change_events",
+        "reg_change_event_count",
     };
 
     pub const framebuffer_width: usize = 320;
     pub const max_framebuffer_height: usize = 240;
     pub const sprite_cache_entry_count: usize = 80;
+    pub const max_cram_dot_events: usize = 20;
+
+    pub const CramDotEvent = struct {
+        pixel_x: u16,
+        written_word: u16,
+    };
+
+    pub const max_reg_change_events: usize = 16;
+
+    pub const RegChangeEvent = struct {
+        pixel_x: u16,
+        reg: u8,
+        old_value: u8,
+        new_value: u8,
+    };
 
     pub const SpriteCacheEntry = struct {
         y_pos: i16 = 0,
@@ -93,6 +112,10 @@ pub const Vdp = struct {
     sprite_cache_valid: bool,
     sprite_cache_base: u16,
     sprite_cache_total: u8,
+    cram_dot_events: [max_cram_dot_events]CramDotEvent,
+    cram_dot_event_count: u8,
+    reg_change_events: [max_reg_change_events]RegChangeEvent,
+    reg_change_event_count: u8,
 
     pub const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
 
@@ -213,6 +236,10 @@ pub const Vdp = struct {
             .sprite_cache_valid = false,
             .sprite_cache_base = 0,
             .sprite_cache_total = 0,
+            .cram_dot_events = [_]CramDotEvent{.{ .pixel_x = 0, .written_word = 0 }} ** max_cram_dot_events,
+            .cram_dot_event_count = 0,
+            .reg_change_events = [_]RegChangeEvent{.{ .pixel_x = 0, .reg = 0, .old_value = 0, .new_value = 0 }} ** max_reg_change_events,
+            .reg_change_event_count = 0,
         };
     }
 
@@ -389,6 +416,66 @@ pub const Vdp = struct {
         if (addr_u32 >= sprite_base and addr_u32 < sprite_end) {
             self.invalidateSpriteCache();
         }
+    }
+
+    pub fn recordCramDot(self: *Vdp, line_master_cycle: u16, written_word: u16) void {
+        if (self.vblank or self.hblank or !self.isDisplayEnabled()) return;
+        if (self.cram_dot_event_count >= max_cram_dot_events) return;
+
+        const hblank_start = self.hblankStartMasterCycles();
+        if (line_master_cycle >= hblank_start) return;
+
+        // Convert master cycle to pixel position
+        // H40: 8 master cycles per pixel, H32: 10 master cycles per pixel
+        const pixel: u16 = if (self.isH40())
+            line_master_cycle / 8
+        else
+            line_master_cycle / 10;
+
+        const screen_w = self.screenWidth();
+        if (pixel >= screen_w) return;
+
+        self.cram_dot_events[self.cram_dot_event_count] = .{
+            .pixel_x = pixel,
+            .written_word = written_word,
+        };
+        self.cram_dot_event_count += 1;
+    }
+
+    pub fn recordRegChange(self: *Vdp, reg_index: u8, new_value: u8) void {
+        if (self.vblank or self.hblank) return;
+        if (self.reg_change_event_count >= max_reg_change_events) return;
+
+        // Track registers that affect rendering:
+        // 0: palette mode, 1: display enable, 7: backdrop color (output pass)
+        // 2: plane A base, 4: plane B base, 11: scroll mode, 13: hscroll table,
+        // 16: plane size, 17: window H split, 18: window V split (plane pass)
+        switch (reg_index) {
+            0, 1, 2, 4, 7, 11, 13, 16, 17, 18 => {},
+            else => return,
+        }
+
+        const old_value = self.regs[reg_index];
+        if (old_value == new_value) return;
+
+        const hblank_start = self.hblankStartMasterCycles();
+        if (self.line_master_cycle >= hblank_start) return;
+
+        const pixel: u16 = if (self.isH40())
+            self.line_master_cycle / 8
+        else
+            self.line_master_cycle / 10;
+
+        const screen_w = self.screenWidth();
+        if (pixel >= screen_w) return;
+
+        self.reg_change_events[self.reg_change_event_count] = .{
+            .pixel_x = pixel,
+            .reg = reg_index,
+            .old_value = old_value,
+            .new_value = new_value,
+        };
+        self.reg_change_event_count += 1;
     }
 
     pub const renderScanline = render.renderScanline;

@@ -52,6 +52,13 @@ fn paletteColorWord(self: *const Vdp, index: u8) u16 {
     return color;
 }
 
+fn isPlaneDependentReg(reg: u8) bool {
+    return switch (reg) {
+        2, 4, 11, 13, 16, 17, 18 => true,
+        else => false,
+    };
+}
+
 fn windowBaseAddress(self: *const Vdp) u32 {
     return if (self.isH40())
         (@as(u32, self.regs[3]) << 10) & 0xF000
@@ -191,7 +198,32 @@ fn planeVScrollForPixel(self: *const Vdp, x: u16, hscroll_shift: u4, plane_a: bo
 pub fn renderScanline(self: *Vdp, line: u16) void {
     const screen_w = self.screenWidth();
     if (line >= Vdp.max_framebuffer_height) return;
-    if (!self.isDisplayEnabled()) {
+
+    // Capture per-scanline event logs before clearing.
+    const cram_dot_count = self.cram_dot_event_count;
+    const cram_dot_events = self.cram_dot_events;
+    self.cram_dot_event_count = 0;
+
+    const reg_change_count = self.reg_change_event_count;
+    const reg_change_events = self.reg_change_events;
+    self.reg_change_event_count = 0;
+
+    // Undo register changes to reconstruct start-of-line state.
+    // The current regs reflect end-of-line state after all 68K execution.
+    var saved_regs: [32]u8 = undefined;
+    if (reg_change_count > 0) {
+        saved_regs = self.regs;
+        var i: usize = reg_change_count;
+        while (i > 0) {
+            i -= 1;
+            self.regs[reg_change_events[i].reg] = reg_change_events[i].old_value;
+        }
+    }
+    defer if (reg_change_count > 0) {
+        self.regs = saved_regs;
+    };
+
+    if (!self.isDisplayEnabled() and reg_change_count == 0) {
         const line_start = @as(usize, line) * Vdp.framebuffer_width;
         const backdrop = getPaletteColor(self, self.regs[7] & 0x3F);
         for (0..Vdp.framebuffer_width) |x| {
@@ -206,26 +238,6 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
     const tile_h_mask = self.tileHeightMask();
     const tile_sz = self.tileSizeBytes();
 
-    const plane_a_base = @as(u32, self.regs[2] & 0x38) << 10;
-    const plane_b_base = @as(u32, self.regs[4] & 0x07) << 13;
-
-    const plane_width_tiles: u16 = switch (self.regs[16] & 0x3) {
-        0 => 32,
-        1 => 64,
-        3 => 128,
-        else => 32,
-    };
-    const plane_height_tiles: u16 = switch ((self.regs[16] >> 4) & 0x3) {
-        0 => 32,
-        1 => 64,
-        3 => 128,
-        else => 32,
-    };
-    const plane_width_px: i32 = @as(i32, plane_width_tiles) * 8;
-    const plane_height_px: i32 = @as(i32, plane_height_tiles) * @as(i32, tile_h);
-
-    const backdrop_idx = self.regs[7] & 0x3F;
-    const hscroll_base = (@as(u16, self.regs[13]) & 0x3F) << 10;
     const line_start = @as(usize, line) * Vdp.framebuffer_width;
 
     var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
@@ -238,52 +250,165 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         @memset(&sh_buf, SH_NORMAL);
     }
 
-    const window_layout = windowLayoutForLine(self, line, screen_w);
+    // Render planes in segments, applying register changes at boundaries.
+    // Plane-affecting registers: 2 (plane A base), 4 (plane B base),
+    // 11 (scroll mode), 13 (hscroll table), 16 (plane size), 17/18 (window).
+    {
+        var seg_start: u16 = 0;
+        while (seg_start < screen_w) {
+            // Apply all register changes at or before seg_start
+            for (0..@as(usize, reg_change_count)) |ei| {
+                const evt = reg_change_events[ei];
+                if (evt.pixel_x <= seg_start and isPlaneDependentReg(evt.reg)) {
+                    self.regs[evt.reg] = evt.new_value;
+                }
+            }
 
-    renderPlaneToBuffer(self, line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 1, 0, screen_w);
+            // Find next plane-affecting register change boundary
+            var seg_end = screen_w;
+            for (0..@as(usize, reg_change_count)) |ei| {
+                const evt = reg_change_events[ei];
+                if (evt.pixel_x > seg_start and isPlaneDependentReg(evt.reg)) {
+                    seg_end = @min(seg_end, evt.pixel_x);
+                    break;
+                }
+            }
 
-    if (window_layout.plane_a.enabled()) {
-        renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, window_layout.plane_a.start_x, window_layout.plane_a.end_x);
-    }
-    if (window_layout.window.enabled()) {
-        renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, window_layout.window.start_x, window_layout.window.end_x);
+            // Read plane parameters from current register state
+            const plane_a_base = @as(u32, self.regs[2] & 0x38) << 10;
+            const plane_b_base = @as(u32, self.regs[4] & 0x07) << 13;
+            const plane_width_tiles: u16 = switch (self.regs[16] & 0x3) {
+                0 => 32,
+                1 => 64,
+                3 => 128,
+                else => 32,
+            };
+            const plane_height_tiles: u16 = switch ((self.regs[16] >> 4) & 0x3) {
+                0 => 32,
+                1 => 64,
+                3 => 128,
+                else => 32,
+            };
+            const plane_width_px: i32 = @as(i32, plane_width_tiles) * 8;
+            const plane_height_px: i32 = @as(i32, plane_height_tiles) * @as(i32, tile_h);
+            const hscroll_base = (@as(u16, self.regs[13]) & 0x3F) << 10;
+
+            const window_layout = windowLayoutForLine(self, line, screen_w);
+
+            // Clamp window layout spans to segment bounds
+            const seg_plane_b_start = seg_start;
+            const seg_plane_b_end = seg_end;
+
+            renderPlaneToBuffer(self, line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 1, seg_plane_b_start, seg_plane_b_end);
+
+            if (window_layout.plane_a.enabled()) {
+                const pa_start = @max(window_layout.plane_a.start_x, seg_start);
+                const pa_end = @min(window_layout.plane_a.end_x, seg_end);
+                if (pa_start < pa_end) {
+                    renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, pa_start, pa_end);
+                }
+            }
+            if (window_layout.window.enabled()) {
+                const win_start = @max(window_layout.window.start_x, seg_start);
+                const win_end = @min(window_layout.window.end_x, seg_end);
+                if (win_start < win_end) {
+                    renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, win_start, win_end);
+                }
+            }
+
+            seg_start = seg_end;
+        }
+
+        // Restore regs to the state expected by the output pass (undo plane-only changes).
+        // The output pass will replay ALL events from the beginning.
+        if (reg_change_count > 0) {
+            // Reset to start-of-line state for the output pass
+            var k: usize = reg_change_count;
+            while (k > 0) {
+                k -= 1;
+                self.regs[reg_change_events[k].reg] = reg_change_events[k].old_value;
+            }
+        }
     }
 
     renderSpritesToBuffer(self, line, tile_h, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode);
 
-    for (0..@as(usize, screen_w)) |x| {
-        const pal_idx = pixel_buf[x];
-        if (sh_mode) {
-            if (pal_idx == 0) {
-                self.framebuffer[line_start + x] = getPaletteColorShadow(self, backdrop_idx);
-            } else {
-                self.framebuffer[line_start + x] = switch (sh_buf[x]) {
-                    SH_SHADOW => getPaletteColorShadow(self, pal_idx),
-                    SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
-                    else => getPaletteColor(self, pal_idx),
-                };
+    // Segmented output pass: apply register changes at the correct pixel positions.
+    // This handles mid-line backdrop color changes, display enable toggles, and palette mode.
+    {
+        var event_cursor: u8 = 0;
+        var seg_start: u16 = 0;
+        while (seg_start < screen_w) {
+            // Find next segment boundary
+            var seg_end = screen_w;
+            while (event_cursor < reg_change_count) {
+                const evt = reg_change_events[event_cursor];
+                if (evt.pixel_x > seg_start) {
+                    seg_end = @min(seg_end, evt.pixel_x);
+                    break;
+                }
+                // Apply register changes at or before seg_start
+                self.regs[evt.reg] = evt.new_value;
+                event_cursor += 1;
             }
-        } else {
-            if (pal_idx == 0) {
-                self.framebuffer[line_start + x] = getPaletteColor(self, backdrop_idx);
-            } else {
-                self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
+
+            const display_on = self.isDisplayEnabled();
+            const seg_backdrop_idx = self.regs[7] & 0x3F;
+            const seg_sh = self.isShadowHighlightEnabled();
+
+            for (@as(usize, seg_start)..@as(usize, seg_end)) |x| {
+                const pal_idx = pixel_buf[x];
+                if (!display_on) {
+                    self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
+                } else if (seg_sh) {
+                    if (pal_idx == 0) {
+                        self.framebuffer[line_start + x] = getPaletteColorShadow(self, seg_backdrop_idx);
+                    } else {
+                        self.framebuffer[line_start + x] = switch (sh_buf[x]) {
+                            SH_SHADOW => getPaletteColorShadow(self, pal_idx),
+                            SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
+                            else => getPaletteColor(self, pal_idx),
+                        };
+                    }
+                } else {
+                    if (pal_idx == 0) {
+                        self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
+                    } else {
+                        self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
+                    }
+                }
             }
+            seg_start = seg_end;
         }
     }
+
     if (screen_w < Vdp.framebuffer_width) {
-        const backdrop = getPaletteColor(self, backdrop_idx);
+        const final_backdrop = getPaletteColor(self, self.regs[7] & 0x3F);
         for (@as(usize, screen_w)..Vdp.framebuffer_width) |x| {
-            self.framebuffer[line_start + x] = backdrop;
+            self.framebuffer[line_start + x] = final_backdrop;
         }
     }
 
     if ((self.regs[0] & 0x20) != 0) {
-        const clipped_backdrop = getPaletteColor(self, backdrop_idx);
+        const clipped_backdrop = getPaletteColor(self, self.regs[7] & 0x3F);
         const clip_width = @min(@as(usize, 8), @as(usize, screen_w));
         for (0..clip_width) |x| {
             self.framebuffer[line_start + x] = clipped_backdrop;
         }
+    }
+
+    // Apply CRAM dot artifacts.
+    for (0..@as(usize, cram_dot_count)) |event_idx| {
+        const event = cram_dot_events[event_idx];
+        if (event.pixel_x >= screen_w) continue;
+        const px: usize = event.pixel_x;
+        const display_pal_idx = if (pixel_buf[px] == 0) (self.regs[7] & 0x3F) else pixel_buf[px];
+        const display_word = paletteColorWord(self, display_pal_idx);
+        const dot_word = (event.written_word | display_word) & 0x0EEE;
+        const b3: u3 = @intCast((dot_word >> 9) & 0x7);
+        const g3: u3 = @intCast((dot_word >> 5) & 0x7);
+        const r3: u3 = @intCast((dot_word >> 1) & 0x7);
+        self.framebuffer[line_start + px] = 0xFF000000 | (@as(u32, color_lut[r3]) << 16) | (@as(u32, color_lut[g3]) << 8) | color_lut[b3];
     }
 }
 
