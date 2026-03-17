@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const bus_save_state = @import("bus/save_state.zig");
 const clock = @import("clock.zig");
+const rom_paths = @import("rom_paths.zig");
 const Machine = @import("machine.zig").Machine;
 const Cpu = @import("cpu/cpu.zig").Cpu;
 const Z80 = @import("cpu/z80.zig").Z80;
@@ -209,14 +210,18 @@ fn captureBusState(machine: *const Machine) BusState {
 
 pub fn defaultPathForMachine(allocator: std.mem.Allocator, machine: *const Machine) ![]u8 {
     if (machine.bus.sourcePath()) |source_path| {
-        return replaceExtension(allocator, source_path, ".state");
+        return rom_paths.romDataPath(allocator, source_path, "quick.state");
     }
     return allocator.dupe(u8, default_state_name);
 }
 
 pub fn pathForMachineSlot(allocator: std.mem.Allocator, machine: *const Machine, slot: u8) ![]u8 {
     const normalized = normalizePersistentStateSlot(slot);
-    const default_path = try defaultPathForMachine(allocator, machine);
+    if (machine.bus.sourcePath()) |source_path| {
+        return rom_paths.statePath(allocator, source_path, normalized);
+    }
+    // Fallback: use old naming for ROMs loaded without a path
+    const default_path = try allocator.dupe(u8, default_state_name);
     defer allocator.free(default_path);
     return pathForSlot(allocator, default_path, normalized);
 }
@@ -348,15 +353,15 @@ test "default state path derives from ROM source path, numbered slots, and fallb
 
     const derived_path = try defaultPathForMachine(allocator, &machine);
     defer allocator.free(derived_path);
-    try testing.expectEqualStrings("roms/test.state", derived_path);
+    try testing.expectEqualStrings("roms/test/quick.state", derived_path);
 
     const derived_slot1_path = try pathForMachineSlot(allocator, &machine, 1);
     defer allocator.free(derived_slot1_path);
-    try testing.expectEqualStrings("roms/test.slot1.state", derived_slot1_path);
+    try testing.expectEqualStrings("roms/test/slot1.state", derived_slot1_path);
 
     const derived_slot_path = try pathForMachineSlot(allocator, &machine, 3);
     defer allocator.free(derived_slot_path);
-    try testing.expectEqualStrings("roms/test.slot3.state", derived_slot_path);
+    try testing.expectEqualStrings("roms/test/slot3.state", derived_slot_path);
 
     try testing.expectEqual(@as(u8, 2), nextPersistentStateSlot(1));
     try testing.expectEqual(@as(u8, 1), nextPersistentStateSlot(persistent_state_slot_count));

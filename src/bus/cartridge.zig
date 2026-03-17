@@ -1,5 +1,6 @@
 const std = @import("std");
 const eeprom_i2c = @import("eeprom_i2c.zig");
+const rom_paths = @import("../rom_paths.zig");
 
 fn looksLikeGenesis(rom: []const u8) bool {
     if (rom.len < 0x104) return false;
@@ -488,12 +489,7 @@ pub const Cartridge = struct {
     }
 
     fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
-        const extension = std.fs.path.extension(rom_path);
-        if (extension.len == 0) {
-            return std.fmt.allocPrint(allocator, "{s}.sav", .{rom_path});
-        }
-
-        return std.fmt.allocPrint(allocator, "{s}.sav", .{rom_path[0 .. rom_path.len - extension.len]});
+        return rom_paths.sramPath(allocator, rom_path);
     }
 
     fn loadPersistentStorage(self: *Cartridge) !void {

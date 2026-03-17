@@ -17,6 +17,7 @@ const GifRecorder = @import("recording/gif.zig").GifRecorder;
 const WavRecorder = @import("recording/wav.zig").WavRecorder;
 const screenshot = @import("recording/screenshot.zig");
 const StateFile = @import("state_file.zig");
+const rom_paths = @import("rom_paths.zig");
 const ui_render = @import("frontend/ui.zig");
 const debugger_mod = @import("frontend/debugger.zig");
 const perf_monitor = @import("frontend/performance.zig");
@@ -2984,7 +2985,7 @@ pub fn main() !void {
                                         notifyFrontend(notifications, .success, "GIF RECORDING STOPPED", .{});
                                     } else {
                                         const fps: u16 = if (machine.palMode()) 25 else 30;
-                                        const path = gifOutputPath() orelse {
+                                        const path = gifOutputPath(if (current_rom_path.len != 0) current_rom_path.slice() else "") orelse {
                                             std.debug.print("No available GIF output slot (001-999 all exist)\n", .{});
                                             notifyFrontend(notifications, .failure, "NO AVAILABLE GIF SLOT", .{});
                                             continue;
@@ -3016,7 +3017,7 @@ pub fn main() !void {
                                         if (audio) |*a| {
                                             a.syncRecordedPlayback(null);
                                         }
-                                        const path = wavOutputPath() orelse {
+                                        const path = wavOutputPath(if (current_rom_path.len != 0) current_rom_path.slice() else "") orelse {
                                             std.debug.print("No available WAV output slot (001-999 all exist)\n", .{});
                                             notifyFrontend(notifications, .failure, "NO AVAILABLE WAV SLOT", .{});
                                             continue;
@@ -3033,7 +3034,7 @@ pub fn main() !void {
                                 },
                                 .screenshot => {
                                     if (frontend_ui.show_help) continue;
-                                    const path = screenshotOutputPath() orelse {
+                                    const path = screenshotOutputPath(if (current_rom_path.len != 0) current_rom_path.slice() else "") orelse {
                                         std.debug.print("No available screenshot slot (001-999 all exist)\n", .{});
                                         notifyFrontend(notifications, .failure, "NO AVAILABLE SCREENSHOT SLOT", .{});
                                         continue;
@@ -4895,41 +4896,76 @@ test "console region auto-detection defaults to overseas for multi-region countr
     try std.testing.expectEqualStrings("Overseas/export (auto default)", resolved.description);
 }
 
-fn gifOutputPath() ?[48]u8 {
-    var buf: [48]u8 = [_]u8{0} ** 48;
+fn gifOutputPath(current_rom: []const u8) ?[256]u8 {
+    if (current_rom.len > 0) {
+        if (rom_paths.nextOutputPath(current_rom, "gif")) |path| {
+            // Ensure directory exists
+            const stem = std.fs.path.stem(current_rom);
+            const parent = std.fs.path.dirname(current_rom);
+            var dir_buf: [256]u8 = undefined;
+            const dir = (if (parent) |p|
+                std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
+            else
+                std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
+            std.fs.cwd().makePath(dir) catch {};
+            return path;
+        }
+    }
+    // Fallback to CWD
+    var buf: [256]u8 = [_]u8{0} ** 256;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch {
-            return buf;
-        };
+        std.fs.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
 
-fn wavOutputPath() ?[48]u8 {
-    var buf: [48]u8 = [_]u8{0} ** 48;
+fn wavOutputPath(current_rom: []const u8) ?[256]u8 {
+    if (current_rom.len > 0) {
+        if (rom_paths.nextOutputPath(current_rom, "wav")) |path| {
+            const stem = std.fs.path.stem(current_rom);
+            const parent = std.fs.path.dirname(current_rom);
+            var dir_buf: [256]u8 = undefined;
+            const dir = (if (parent) |p|
+                std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
+            else
+                std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
+            std.fs.cwd().makePath(dir) catch {};
+            return path;
+        }
+    }
+    var buf: [256]u8 = [_]u8{0} ** 256;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch {
-            return buf;
-        };
+        std.fs.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
 
-fn screenshotOutputPath() ?[48]u8 {
-    var buf: [48]u8 = [_]u8{0} ** 48;
+fn screenshotOutputPath(current_rom: []const u8) ?[256]u8 {
+    if (current_rom.len > 0) {
+        if (rom_paths.nextOutputPath(current_rom, "bmp")) |path| {
+            const stem = std.fs.path.stem(current_rom);
+            const parent = std.fs.path.dirname(current_rom);
+            var dir_buf: [256]u8 = undefined;
+            const dir = (if (parent) |p|
+                std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
+            else
+                std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
+            std.fs.cwd().makePath(dir) catch {};
+            return path;
+        }
+    }
+    var buf: [256]u8 = [_]u8{0} ** 256;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.bmp", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch {
-            return buf;
-        };
+        std.fs.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
@@ -4937,7 +4973,7 @@ fn screenshotOutputPath() ?[48]u8 {
 test "gif output path returns optional type" {
     // Verify the function returns an optional - this tests the fix for the
     // bug where returning non-null on exhausted slots would overwrite files
-    const ResultType = @TypeOf(gifOutputPath());
+    const ResultType = @TypeOf(gifOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
@@ -4945,7 +4981,7 @@ test "gif output path returns optional type" {
 test "wav output path returns optional type" {
     // Verify the function returns an optional - this tests the fix for the
     // bug where returning non-null on exhausted slots would overwrite files
-    const ResultType = @TypeOf(wavOutputPath());
+    const ResultType = @TypeOf(wavOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
@@ -4953,7 +4989,7 @@ test "wav output path returns optional type" {
 test "screenshot output path returns optional type" {
     // Verify the function returns an optional - this tests the fix for the
     // bug where returning non-null on exhausted slots would overwrite files
-    const ResultType = @TypeOf(screenshotOutputPath());
+    const ResultType = @TypeOf(screenshotOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
