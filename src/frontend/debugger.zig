@@ -93,6 +93,10 @@ fn memoryRowCount(content_h: f32, line_h: f32) usize {
     return @min(rows, 32);
 }
 
+/// Maximum bytes per row in the memory hex view. The line buffer in
+/// renderMemoryTab is sized to fit this; update both if raising it.
+const max_bytes_per_row: usize = 16;
+
 /// Compute how many hex bytes per row fit in the available content width.
 fn memoryBytesPerRow(content_w: f32, glyph_w: f32) usize {
     // "XXXXXX " prefix = 7 chars, then each byte = "XX " = 3 chars (last one 2)
@@ -290,7 +294,8 @@ fn renderMemoryTab(
     for (0..row_count) |row| {
         if (y + line_h > max_y) break;
         const row_addr = (state.memory_address +% @as(u32, @intCast(row * bytes_per_row))) & 0xFFFFFF;
-        var line_buf: [80]u8 = undefined;
+        // 7 (address + space) + bytes_per_row * 3 (hex + space); 80 is enough for max_bytes_per_row=16.
+        var line_buf: [7 + max_bytes_per_row * 3]u8 = undefined;
         var pos: usize = 0;
 
         const addr_str = std.fmt.bufPrint(line_buf[pos..], "{X:0>6} ", .{row_addr}) catch break;
@@ -301,7 +306,8 @@ fn renderMemoryTab(
             const byte = readByteSafe(machine, byte_addr);
             const hex = std.fmt.bufPrint(line_buf[pos..], "{X:0>2}", .{byte}) catch break;
             pos += hex.len;
-            if (col < bytes_per_row - 1 and pos < line_buf.len) {
+            if (col < bytes_per_row - 1) {
+                if (pos >= line_buf.len) break;
                 line_buf[pos] = ' ';
                 pos += 1;
             }

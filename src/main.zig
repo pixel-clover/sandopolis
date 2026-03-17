@@ -1828,6 +1828,7 @@ const updateGamepadAxisState = gamepad.updateGamepadAxisState;
 const updateJoystickAxisState = gamepad.updateJoystickAxisState;
 const updateHatState = gamepad.updateHatState;
 const applyInputTransitions = gamepad.applyTransitions;
+const applyReleaseTransitionsOnly = gamepad.applyReleaseTransitionsOnly;
 
 fn handleFrontendGamepadTransitions(
     ui: *FrontendUi,
@@ -2231,9 +2232,9 @@ fn renderSettingsOverlay(
     const title = "SETTINGS";
     const controls_a = "UP DOWN MOVE  LEFT RIGHT ADJUST";
     const controls_b = "ENTER APPLY  ESC BACK  PAD B CLOSE";
-    const heading_video = "▬ VIDEO";
-    const heading_audio = "♪ AUDIO";
-    const heading_system = "⚙ SYSTEM";
+    const heading_video = "VIDEO";
+    const heading_audio = "AUDIO";
+    const heading_system = "SYSTEM";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
     const line_height = 10.0 * scale;
@@ -2341,7 +2342,7 @@ fn renderSettingsOverlay(
     try drawOverlayText(renderer, text_x, y, scale, info_color, audio_output_line);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, heading_color, "◉ INPUT");
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "INPUT");
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p1_type, selected_color, normal_color), action_lines[4]);
     y += line_height;
@@ -2359,7 +2360,7 @@ fn renderSettingsOverlay(
     try drawOverlayText(renderer, text_x, y, scale, info_color, config_path);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, heading_color, "◆ UI");
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "UI");
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .font_face, selected_color, normal_color), action_lines[7]);
     y += line_height * 2.0;
@@ -2710,7 +2711,7 @@ pub fn main() !void {
                             .unhandled => {},
                         }
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused() and pressed) continue;
                     if (gamepadInputFromButton(button)) |mapped_button| {
                         _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
@@ -2781,7 +2782,10 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused()) {
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        continue;
+                    }
                     applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_button_down, zsdl3.EventType.joystick_button_up => {
@@ -2845,7 +2849,7 @@ pub fn main() !void {
                             .unhandled => {},
                         }
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused() and pressed) continue;
                     if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
                         _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
@@ -2913,7 +2917,10 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused()) {
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        continue;
+                    }
                     applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_hat_motion => {
@@ -2975,7 +2982,10 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused()) {
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        continue;
+                    }
                     applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
@@ -3285,7 +3295,7 @@ pub fn main() !void {
                             continue;
                         }
                     }
-                    if (!frontend_ui.emulationPaused()) {
+                    if (!frontend_ui.emulationPaused() or !pressed) {
                         if (hotkey_binding) |binding| {
                             const mapped_key = binding.input orelse continue;
                             _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
@@ -3435,6 +3445,7 @@ pub fn main() !void {
             frontend_config.video_scale_mode,
         );
         try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, &dest_rect);
+        frontend_toast.advance(frontend_frame_counter);
         try renderFrontendOverlay(
             renderer,
             &frontend_ui,

@@ -127,6 +127,76 @@ Flags:
 
 Project documentation is available [here](https://pixel-clover.github.io/sandopolis/).
 
+### Default Controls
+
+All controls can be remapped in the keyboard editor (F8).
+
+#### Keyboard — Player 1
+
+The Genesis 6-button controller has two rows of face buttons:
+
+```
+  X  Y  Z          Q  W  E
+  A  B  C    →     A  S  D
+  Start            Enter
+  Mode             V
+  D-Pad            Arrow Keys
+```
+
+#### Keyboard — Player 2
+
+```
+  X  Y  Z          ;  '  /
+  A  B  C    →     U  O  P
+  Start            Right Shift
+  Mode             .
+  D-Pad            I/K/J/L
+```
+
+#### Gamepad (Xbox / PlayStation layout)
+
+Both player 1 and player 2 use the same mapping on their respective controllers:
+
+| Gamepad Button          | Genesis Button |
+|-------------------------|----------------|
+| South (A / Cross)       | B              |
+| East (B / Circle)       | C              |
+| West (X / Square)       | A              |
+| North (Y / Triangle)    | Y              |
+| Left Shoulder (LB / L1) | X              |
+| Right Shoulder (RB / R1)| Z              |
+| Back (Select)           | Mode           |
+| Start                   | Start          |
+| D-Pad                   | D-Pad          |
+
+> [!TIP]
+> The bottom face button (A / Cross) is mapped to Genesis **B**, which is the primary
+> action button in most games (e.g. jump in Sonic). This matches the convention used
+> by RetroArch and other Genesis emulators.
+
+#### Hotkeys
+
+| Key            | Action              |
+|----------------|----------------------|
+| Escape         | Pause / Menu         |
+| F1             | Help                 |
+| Ctrl+O         | Open ROM             |
+| Ctrl+R         | Soft Reset           |
+| Ctrl+Shift+R   | Hard Reset / Reload  |
+| F5             | Quick Save State     |
+| F7             | Quick Load State     |
+| F2             | Save State to File   |
+| F4             | Load State from File |
+| F3             | Next State Slot      |
+| F6             | Performance HUD      |
+| F8             | Keyboard Editor      |
+| F9             | Reset Perf Stats     |
+| F11            | Fullscreen           |
+| F12            | Record GIF           |
+| Shift+F12      | Record WAV           |
+| Ctrl+F12       | Screenshot           |
+| Ctrl+Q         | Quit                 |
+
 ---
 
 ### Contributing

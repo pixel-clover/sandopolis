@@ -844,7 +844,7 @@ test "machine binding helpers update and release controller state" {
     machine.releaseKeyboardBindings(&bindings);
     try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
 
-    _ = machine.applyGamepadBindings(&bindings, 0, .east, true);
+    _ = machine.applyGamepadBindings(&bindings, 0, .south, true);
     try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.B);
 
     machine.releaseGamepadBindings(&bindings, 0);

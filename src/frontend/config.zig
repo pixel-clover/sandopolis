@@ -238,12 +238,29 @@ pub const FrontendConfig = struct {
     }
 
     pub fn saveToFile(self: *const FrontendConfig, path: []const u8) !void {
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-        defer file.close();
-        var buffer: [4096]u8 = undefined;
-        var writer = file.writer(&buffer);
-        try self.writeContents(&writer.interface);
-        try writer.interface.flush();
+        // Write to a temporary file first, then atomically rename over the
+        // real config so a crash mid-write cannot lose the previous config.
+        var tmp_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}.tmp", .{path}) catch
+            return error.NameTooLong;
+        {
+            var file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+            defer file.close();
+            var buffer: [4096]u8 = undefined;
+            var writer = file.writer(&buffer);
+            try self.writeContents(&writer.interface);
+            try writer.interface.flush();
+        }
+        std.fs.cwd().rename(tmp_path, path) catch {
+            // Rename failed (e.g. cross-device); fall back to direct write.
+            std.fs.cwd().deleteFile(tmp_path) catch {};
+            var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+            defer file.close();
+            var buffer: [4096]u8 = undefined;
+            var writer = file.writer(&buffer);
+            try self.writeContents(&writer.interface);
+            try writer.interface.flush();
+        };
     }
 
     pub fn recentRom(self: *const FrontendConfig, index: usize) []const u8 {

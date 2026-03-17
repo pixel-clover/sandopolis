@@ -207,7 +207,7 @@ pub const Bindings = struct {
         bindings.setKeyboard(.y, .w);
         bindings.setKeyboard(.z, .e);
         bindings.setKeyboard(.mode, .v);
-        bindings.setKeyboard(.start, .space);
+        bindings.setKeyboard(.start, .@"return");
 
         bindings.setKeyboardForPort(1, .up, .i);
         bindings.setKeyboardForPort(1, .down, .k);
@@ -227,12 +227,12 @@ pub const Bindings = struct {
             bindings.setGamepadForPort(port, .down, .dpad_down);
             bindings.setGamepadForPort(port, .left, .dpad_left);
             bindings.setGamepadForPort(port, .right, .dpad_right);
-            bindings.setGamepadForPort(port, .a, .south);
-            bindings.setGamepadForPort(port, .b, .east);
-            bindings.setGamepadForPort(port, .c, .right_shoulder);
-            bindings.setGamepadForPort(port, .x, .west);
+            bindings.setGamepadForPort(port, .a, .west);
+            bindings.setGamepadForPort(port, .b, .south);
+            bindings.setGamepadForPort(port, .c, .east);
+            bindings.setGamepadForPort(port, .x, .left_shoulder);
             bindings.setGamepadForPort(port, .y, .north);
-            bindings.setGamepadForPort(port, .z, .left_shoulder);
+            bindings.setGamepadForPort(port, .z, .right_shoulder);
             bindings.setGamepadForPort(port, .mode, .back);
             bindings.setGamepadForPort(port, .start, .start);
         }
@@ -244,9 +244,9 @@ pub const Bindings = struct {
         bindings.setHotkeyWithModifiers(.open_rom, .o, .{ .ctrl = true }); // Ctrl+O to open (standard)
         bindings.setHotkey(.toggle_fullscreen, .f11); // F11 fullscreen (standard)
 
-        // Reset controls - R for reset
-        bindings.setHotkey(.restart_rom, .r); // R = soft reset
-        bindings.setHotkeyWithModifiers(.reload_rom, .r, .{ .shift = true }); // Shift+R = hard reset
+        // Reset controls - Ctrl+R for reset (unmodified R is too close to gameplay keys)
+        bindings.setHotkeyWithModifiers(.restart_rom, .r, .{ .ctrl = true }); // Ctrl+R = soft reset
+        bindings.setHotkeyWithModifiers(.reload_rom, .r, .{ .ctrl = true, .shift = true }); // Ctrl+Shift+R = hard reset
 
         // Save states - F5/F7 quick, F2/F4 file, F3 slot
         bindings.setHotkey(.save_quick_state, .f5); // F5 = quick save (common convention)
@@ -820,24 +820,24 @@ test "default hotkeys distinguish open rom soft reset and hard reload" {
 
     // open_rom = Ctrl+O
     try testing.expectEqual(HotkeyBinding{ .input = .o, .modifiers = .{ .ctrl = true } }, bindings.hotkeyBinding(.open_rom));
-    // restart_rom (soft reset) = R
+    // restart_rom (soft reset) = Ctrl+R
     try testing.expectEqual(
-        HotkeyBinding{ .input = .r },
+        HotkeyBinding{ .input = .r, .modifiers = .{ .ctrl = true } },
         bindings.hotkeyBinding(.restart_rom),
     );
-    // reload_rom (hard reset) = Shift+R
+    // reload_rom (hard reset) = Ctrl+Shift+R
     try testing.expectEqual(
-        HotkeyBinding{ .input = .r, .modifiers = .{ .shift = true } },
+        HotkeyBinding{ .input = .r, .modifiers = .{ .ctrl = true, .shift = true } },
         bindings.hotkeyBinding(.reload_rom),
     );
     try testing.expectEqual(HotkeyAction.open_rom, bindings.hotkeyForBinding(.{ .input = .o, .modifiers = .{ .ctrl = true } }).?);
     try testing.expectEqual(
         HotkeyAction.restart_rom,
-        bindings.hotkeyForBinding(.{ .input = .r }).?,
+        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .ctrl = true } }).?,
     );
     try testing.expectEqual(
         HotkeyAction.reload_rom,
-        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .shift = true } }).?,
+        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .ctrl = true, .shift = true } }).?,
     );
 }
 
