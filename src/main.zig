@@ -2231,9 +2231,9 @@ fn renderSettingsOverlay(
     const title = "SETTINGS";
     const controls_a = "UP DOWN MOVE  LEFT RIGHT ADJUST";
     const controls_b = "ENTER APPLY  ESC BACK  PAD B CLOSE";
-    const heading_video = "VIDEO";
-    const heading_audio = "AUDIO";
-    const heading_system = "SYSTEM";
+    const heading_video = "▬ VIDEO";
+    const heading_audio = "♪ AUDIO";
+    const heading_system = "⚙ SYSTEM";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
     const line_height = 10.0 * scale;
@@ -2273,7 +2273,7 @@ fn renderSettingsOverlay(
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
 
-    const row_count: usize = 27;
+    const row_count: usize = 32;
     const stw: f32 = @floatFromInt(viewport.w);
     const sth: f32 = @floatFromInt(viewport.h);
     const settings_w = @min(max_width + padding * 2.0, stw);
@@ -2341,7 +2341,7 @@ fn renderSettingsOverlay(
     try drawOverlayText(renderer, text_x, y, scale, info_color, audio_output_line);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, heading_color, "INPUT");
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "◉ INPUT");
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p1_type, selected_color, normal_color), action_lines[4]);
     y += line_height;
@@ -2359,7 +2359,7 @@ fn renderSettingsOverlay(
     try drawOverlayText(renderer, text_x, y, scale, info_color, config_path);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, heading_color, "UI");
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "◆ UI");
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .font_face, selected_color, normal_color), action_lines[7]);
     y += line_height * 2.0;

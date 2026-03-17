@@ -214,7 +214,7 @@ pub const EventDisposition = enum {
 };
 
 // Format a home menu item for display
-// Icons: [ = folder, ] = disk, * = gear, ( = help, { = controller
+// Icons: ◇ = folder, ◉ = disk, ⚙ = gear, ℹ = help, ✕ = quit
 pub fn formatHomeMenuItem(
     buffer: []u8,
     cfg: *const FrontendConfig,
@@ -223,14 +223,14 @@ pub fn formatHomeMenuItem(
 ) ![]const u8 {
     const prefix = if (selected) "> " else "  ";
     return switch (action) {
-        .open_rom => std.fmt.bufPrint(buffer, "{s}[ OPEN ROM", .{prefix}),
-        .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}] {s}", .{
+        .open_rom => std.fmt.bufPrint(buffer, "{s}◇ OPEN ROM", .{prefix}),
+        .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}◉ {s}", .{
             prefix,
             std.fs.path.basename(cfg.recentRom(index)),
         }),
-        .show_settings => std.fmt.bufPrint(buffer, "{s}* SETTINGS", .{prefix}),
-        .show_help => std.fmt.bufPrint(buffer, "{s}( HELP AND HOTKEYS", .{prefix}),
-        .quit => std.fmt.bufPrint(buffer, "{s}! QUIT", .{prefix}),
+        .show_settings => std.fmt.bufPrint(buffer, "{s}⚙ SETTINGS", .{prefix}),
+        .show_help => std.fmt.bufPrint(buffer, "{s}ℹ HELP AND HOTKEYS", .{prefix}),
+        .quit => std.fmt.bufPrint(buffer, "{s}✕ QUIT", .{prefix}),
     };
 }
 
@@ -287,15 +287,15 @@ pub fn formatSettingsActionLine(
 ) ![]const u8 {
     const prefix = if (selected) "> " else "  ";
     return switch (action) {
-        .video_aspect_mode => std.fmt.bufPrint(buffer, "{s}ASPECT {s}", .{ prefix, aspect_mode.label() }),
-        .video_scale_mode => std.fmt.bufPrint(buffer, "{s}SCALING {s}", .{ prefix, scale_mode.label() }),
-        .fullscreen => std.fmt.bufPrint(buffer, "{s}FULLSCREEN {s}", .{ prefix, if (fullscreen) "ON" else "OFF" }),
-        .audio_render_mode => std.fmt.bufPrint(buffer, "{s}AUDIO MODE {s}", .{ prefix, audio_mode.label() }),
-        .controller_p1_type => std.fmt.bufPrint(buffer, "{s}P1 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[0]) }),
-        .controller_p2_type => std.fmt.bufPrint(buffer, "{s}P2 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[1]) }),
-        .performance_hud => std.fmt.bufPrint(buffer, "{s}PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
-        .font_face => std.fmt.bufPrint(buffer, "{s}FONT {s}", .{ prefix, font_face.label() }),
-        .close => std.fmt.bufPrint(buffer, "{s}CLOSE SETTINGS", .{prefix}),
+        .video_aspect_mode => std.fmt.bufPrint(buffer, "{s}⊟ ASPECT {s}", .{ prefix, aspect_mode.label() }),
+        .video_scale_mode => std.fmt.bufPrint(buffer, "{s}⊞ SCALING {s}", .{ prefix, scale_mode.label() }),
+        .fullscreen => std.fmt.bufPrint(buffer, "{s}⊡ FULLSCREEN {s}", .{ prefix, if (fullscreen) "ON" else "OFF" }),
+        .audio_render_mode => std.fmt.bufPrint(buffer, "{s}♫ AUDIO MODE {s}", .{ prefix, audio_mode.label() }),
+        .controller_p1_type => std.fmt.bufPrint(buffer, "{s}◉ P1 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[0]) }),
+        .controller_p2_type => std.fmt.bufPrint(buffer, "{s}◉ P2 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[1]) }),
+        .performance_hud => std.fmt.bufPrint(buffer, "{s}📊 PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
+        .font_face => std.fmt.bufPrint(buffer, "{s}✎ FONT {s}", .{ prefix, font_face.label() }),
+        .close => std.fmt.bufPrint(buffer, "{s}◄ CLOSE SETTINGS", .{prefix}),
     };
 }
 

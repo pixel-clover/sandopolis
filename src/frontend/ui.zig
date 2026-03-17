@@ -123,7 +123,7 @@ pub const MenuSection = struct {
 // Pause menu sections
 pub const pause_left_sections = [_]MenuSection{
     .{
-        .header = "ACTIONS",
+        .header = "▶ ACTIONS",
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .toggle_pause, .label = "RESUME" } },
             .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM" } },
@@ -132,7 +132,7 @@ pub const pause_left_sections = [_]MenuSection{
         },
     },
     .{
-        .header = "SYSTEM",
+        .header = "⚙ SYSTEM",
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD" } },
             .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERF HUD" } },
@@ -143,7 +143,7 @@ pub const pause_left_sections = [_]MenuSection{
 
 pub const pause_right_sections = [_]MenuSection{
     .{
-        .header = "SAVE STATES",
+        .header = "💾 SAVE STATES",
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .save_quick_state, .label = "QUICK SAVE" } },
             .{ .hotkey = .{ .action = .load_quick_state, .label = "QUICK LOAD" } },
@@ -157,7 +157,7 @@ pub const pause_right_sections = [_]MenuSection{
 // Help menu sections
 pub const help_left_sections = [_]MenuSection{
     .{
-        .header = "EMULATION",
+        .header = "▶ EMULATION",
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .toggle_help, .label = "CLOSE HELP" } },
             .{ .hotkey = .{ .action = .toggle_pause, .label = "PAUSE/RESUME" } },
@@ -167,7 +167,7 @@ pub const help_left_sections = [_]MenuSection{
         },
     },
     .{
-        .header = "DISPLAY",
+        .header = "▬ DISPLAY",
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .toggle_fullscreen, .label = "FULLSCREEN" } },
             .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERF HUD" } },
@@ -178,7 +178,7 @@ pub const help_left_sections = [_]MenuSection{
 
 pub const help_right_sections = [_]MenuSection{
     .{
-        .header = "SAVE STATES",
+        .header = "💾 SAVE STATES",
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .save_quick_state, .label = "QUICK SAVE" } },
             .{ .hotkey = .{ .action = .load_quick_state, .label = "QUICK LOAD" } },
@@ -188,7 +188,7 @@ pub const help_right_sections = [_]MenuSection{
         },
     },
     .{
-        .header = "DEBUG AND CAPTURE",
+        .header = "⚒ DEBUG AND CAPTURE",
         .items = &[_]OverlayLine{
             .{ .text = "F10        DEBUGGER" },
             .{ .text = "SPACE      STEP (IN DEBUGGER)" },
@@ -644,7 +644,7 @@ pub fn renderPauseOverlay(
         renderer,
         viewport,
         bindings,
-        "% PAUSED",
+        "⏸ PAUSED",
         "ENTER SAVE MANAGER  |  TAB SETTINGS",
         "PAD: A SAVE MGR  B RESUME  X SETTINGS  Y HELP",
         &pause_left_sections,
