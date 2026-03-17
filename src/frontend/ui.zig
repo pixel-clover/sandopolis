@@ -637,7 +637,7 @@ pub fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !voi
     };
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
-    const line_height = 9.0 * scale;
+    const line_height = 10.0 * scale;
 
     var max_width = textWidth(title, scale);
     for (lines) |line| {
@@ -751,7 +751,7 @@ pub fn renderHomeOverlay(
     const footer_b = "F3 OPEN DIALOG  F1 HELP  ESC QUIT";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
-    const line_height = 9.0 * scale;
+    const line_height = 10.0 * scale;
     const item_count = HomeMenuState.itemCount(cfg);
     const note_count: usize = if (cfg.recent_rom_count == 0) 1 else 0;
 
@@ -839,7 +839,7 @@ pub fn renderKeyboardEditorOverlay(
         "UP DOWN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE";
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
-    const row_height = 10.0 * scale;
+    const line_height = 10.0 * scale;
     const header_height = 28.0 * scale;
     const footer_height = 18.0 * scale;
     const visible_rows = @min(@as(usize, 11), BindingEditorState.selectionCount());
@@ -848,7 +848,7 @@ pub fn renderKeyboardEditorOverlay(
         .x = 12.0 * scale,
         .y = 12.0 * scale,
         .w = @as(f32, @floatFromInt(viewport.w)) - 24.0 * scale,
-        .h = header_height + footer_height + @as(f32, @floatFromInt(visible_rows)) * row_height + padding * 2.0,
+        .h = header_height + footer_height + @as(f32, @floatFromInt(visible_rows)) * line_height + padding * 2.0,
     };
 
     try renderPanel(
@@ -891,7 +891,7 @@ pub fn renderKeyboardEditorOverlay(
             .x = panel.x + padding - 3.0 * scale,
             .y = y - 1.0 * scale,
             .w = panel.w - padding * 2.0 + 6.0 * scale,
-            .h = row_height,
+            .h = line_height,
         };
         if (selected) {
             const pulse_alpha = Animation.pulseAlpha(.{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 }, frame_number, 0xE0, 0xF2);
@@ -913,7 +913,7 @@ pub fn renderKeyboardEditorOverlay(
             text_color,
             line,
         );
-        y += row_height;
+        y += line_height;
     }
 
     const status_color: zsdl3.Color = switch (editor.status) {

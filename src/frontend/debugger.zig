@@ -68,10 +68,10 @@ pub fn render(
     const scale = ui.overlayScale(viewport);
     const line_h = 10.0 * scale;
     const padding = 10.0 * scale;
-    const char_w = 6.0 * scale;
+    const glyph_w = 6.0 * scale;
 
     // Panel dimensions — right-aligned
-    const panel_w: f32 = char_w * 42 + padding * 2;
+    const panel_w: f32 = glyph_w * 42 + padding * 2;
     const panel_h: f32 = line_h * 28 + padding * 2;
     const panel_x: f32 = @as(f32, @floatFromInt(viewport.w)) - panel_w - padding;
     const panel_y: f32 = padding;
@@ -88,15 +88,15 @@ pub fn render(
         const mem_color = if (state.tab == .memory) ui.Colors.cyan else ui.Colors.text_muted;
         const vdp_color = if (state.tab == .vdp) ui.Colors.cyan else ui.Colors.text_muted;
         try ui.drawText(renderer, content_x, y, scale, cpu_color, "CPU");
-        try ui.drawText(renderer, content_x + char_w * 6, y, scale, mem_color, "MEMORY");
-        try ui.drawText(renderer, content_x + char_w * 15, y, scale, vdp_color, "VDP");
+        try ui.drawText(renderer, content_x + glyph_w * 6, y, scale, mem_color, "MEMORY");
+        try ui.drawText(renderer, content_x + glyph_w * 15, y, scale, vdp_color, "VDP");
         y += line_h * 1.5;
     }
 
     switch (state.tab) {
-        .cpu => try renderCpuTab(renderer, machine, content_x, y, scale, line_h, char_w),
-        .memory => try renderMemoryTab(renderer, machine, state, content_x, y, scale, line_h, char_w),
-        .vdp => try renderVdpTab(renderer, machine, content_x, y, scale, line_h, char_w),
+        .cpu => try renderCpuTab(renderer, machine, content_x, y, scale, line_h),
+        .memory => try renderMemoryTab(renderer, machine, state, content_x, y, scale, line_h),
+        .vdp => try renderVdpTab(renderer, machine, content_x, y, scale, line_h),
     }
 
     // Footer
@@ -111,7 +111,6 @@ fn renderCpuTab(
     start_y: f32,
     scale: f32,
     line_h: f32,
-    char_w: f32,
 ) !void {
     var y = start_y;
     var buf: [64]u8 = undefined;
@@ -177,7 +176,6 @@ fn renderCpuTab(
         try ui.drawText(renderer, x, y, scale, color, dis_text);
         y += line_h;
     }
-    _ = char_w;
 }
 
 fn renderMemoryTab(
@@ -188,7 +186,6 @@ fn renderMemoryTab(
     start_y: f32,
     scale: f32,
     line_h: f32,
-    char_w: f32,
 ) !void {
     var y = start_y;
     var buf: [80]u8 = undefined;
@@ -224,7 +221,6 @@ fn renderMemoryTab(
         try ui.drawText(renderer, x, y, scale, ui.Colors.text_primary, line_buf[0..pos]);
         y += line_h;
     }
-    _ = char_w;
 }
 
 fn renderVdpTab(
@@ -234,7 +230,6 @@ fn renderVdpTab(
     start_y: f32,
     scale: f32,
     line_h: f32,
-    char_w: f32,
 ) !void {
     var y = start_y;
     var buf: [64]u8 = undefined;
@@ -279,7 +274,6 @@ fn renderVdpTab(
         const dma_text = std.fmt.bufPrint(&buf, "DMA SRC={X:0>6} REM={d}", .{ vdp.dma_source_addr & 0xFFFFFF, vdp.dma_remaining }) catch "???";
         try ui.drawText(renderer, x, y, scale, ui.Colors.orange, dma_text);
     }
-    _ = char_w;
 }
 
 fn readByteSafe(machine: *const Machine, address: u32) u8 {

@@ -250,7 +250,7 @@ pub fn formatSettingsActionLine(
     audio_mode: AudioOutput.RenderMode,
     performance_hud: bool,
 ) ![]const u8 {
-    const prefix = if (selected) "> " else "| ";
+    const prefix = if (selected) "> " else "  ";
     return switch (action) {
         .video_aspect_mode => std.fmt.bufPrint(buffer, "{s}ASPECT {s}", .{ prefix, aspect_mode.label() }),
         .video_scale_mode => std.fmt.bufPrint(buffer, "{s}SCALING {s}", .{ prefix, scale_mode.label() }),

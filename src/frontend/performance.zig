@@ -395,7 +395,7 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
     const title = "PERF HUD";
     const scale = ui.overlayScale(viewport);
     const padding = 8.0 * scale;
-    const line_height = 9.0 * scale;
+    const line_height = 10.0 * scale;
 
     var metric_buffers: [19][16]u8 = undefined;
     const fps_text = try formatRateHzTenths(metric_buffers[0][0..], perf.last_present_ns);
