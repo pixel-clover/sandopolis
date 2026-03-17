@@ -58,15 +58,15 @@ pub fn nextOutputPath(rom_path: []const u8, extension: []const u8) ?[256]u8 {
     while (i <= 999) : (i += 1) {
         const name = if (parent) |p|
             std.fmt.bufPrint(&result, "{s}{c}{s}{c}{s}_{d:0>3}.{s}", .{
-                p,           std.fs.path.sep,
-                stem,        std.fs.path.sep,
-                stem,        i,
+                p,         std.fs.path.sep,
+                stem,      std.fs.path.sep,
+                stem,      i,
                 extension,
             }) catch return null
         else
             std.fmt.bufPrint(&result, "{s}{c}{s}_{d:0>3}.{s}", .{
-                stem,        std.fs.path.sep,
-                stem,        i,
+                stem,      std.fs.path.sep,
+                stem,      i,
                 extension,
             }) catch return null;
         result[name.len] = 0;

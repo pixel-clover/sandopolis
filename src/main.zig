@@ -18,6 +18,8 @@ const WavRecorder = @import("recording/wav.zig").WavRecorder;
 const screenshot = @import("recording/screenshot.zig");
 const StateFile = @import("state_file.zig");
 const rom_paths = @import("rom_paths.zig");
+const unified_config = @import("unified_config.zig");
+const config_path_mod = @import("config_path.zig");
 const ui_render = @import("frontend/ui.zig");
 const debugger_mod = @import("frontend/debugger.zig");
 const perf_monitor = @import("frontend/performance.zig");
@@ -33,6 +35,7 @@ const AudioInit = struct {
     stream: *zsdl3.AudioStream,
     output: AudioOutput,
     startup_mute_active: bool = true,
+    startup_mute_warmup_frames: u8 = 0,
     playback_shadow: [playback_shadow_capacity]i16 = undefined,
     playback_shadow_len: usize = 0,
 
@@ -42,7 +45,15 @@ const AudioInit = struct {
         if (self.startupMuteActive()) {
             const saw_audible_activity = z80.hasPendingAudibleEvents();
             try self.output.discardPending(pending, z80, is_pal);
-            if (saw_audible_activity) self.clearStartupMute();
+            if (saw_audible_activity) {
+                // Warm up filters for several frames before unmuting.
+                // This prevents the DC blocker transient "beep" on state load.
+                if (self.startup_mute_warmup_frames < 8) {
+                    self.startup_mute_warmup_frames += 1;
+                } else {
+                    self.clearStartupMute();
+                }
+            }
             return;
         }
 
@@ -91,6 +102,7 @@ const AudioInit = struct {
 
     fn armStartupMute(self: *AudioInit) void {
         self.startup_mute_active = true;
+        self.startup_mute_warmup_frames = 0;
     }
 
     fn clearStartupMute(self: *AudioInit) void {
@@ -268,9 +280,17 @@ const OverlayLine = ui_render.OverlayLine;
 const renderStatusBar = ui_render.renderStatusBar;
 
 fn persistFrontendConfig(frontend_config: *const FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
+    // Save via unified config when possible (preserves input bindings alongside frontend settings)
     frontend_config.saveToFile(frontend_config_path) catch |err| {
-        std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
-        notifyFrontend(notifications, .failure, "FAILED TO SAVE FRONTEND CONFIG", .{});
+        std.debug.print("Failed to save config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
+        notifyFrontend(notifications, .failure, "FAILED TO SAVE CONFIG", .{});
+    };
+}
+
+fn persistUnifiedConfig(frontend_config: *const FrontendConfig, bindings: *const InputBindings.Bindings, path: []const u8, notifications: FrontendNotifications) void {
+    unified_config.save(frontend_config, bindings, path) catch |err| {
+        std.debug.print("Failed to save config {s}: {s}\n", .{ path, @errorName(err) });
+        notifyFrontend(notifications, .failure, "FAILED TO SAVE CONFIG", .{});
     };
 }
 
@@ -1503,7 +1523,8 @@ fn handleBindingEditorKey(
     editor: *BindingEditorState,
     bindings: *InputBindings.Bindings,
     machine: *Machine,
-    input_config_path: ?[]const u8,
+    unified_cfg_path: []const u8,
+    frontend_cfg: *const FrontendConfig,
     scancode: zsdl3.Scancode,
     hotkey_binding: ?InputBindings.HotkeyBinding,
     pressed: bool,
@@ -1559,13 +1580,12 @@ fn handleBindingEditorKey(
         .down => editor.move(1),
         .@"return" => editor.beginCapture(),
         .f5 => {
-            const path = input_config_path orelse InputBindings.default_config_name;
-            bindings.saveToFile(path) catch |err| {
-                std.debug.print("Failed to save input config {s}: {s}\n", .{ path, @errorName(err) });
+            unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch |err| {
+                std.debug.print("Failed to save config {s}: {s}\n", .{ unified_cfg_path, @errorName(err) });
                 editor.setStatus(.failed, "FAILED TO SAVE CONFIG");
                 return true;
             };
-            std.debug.print("Saved input config: {s}\n", .{path});
+            std.debug.print("Saved config: {s}\n", .{unified_cfg_path});
             editor.setStatus(.success, "CONFIG SAVED");
         },
         else => {},
@@ -1962,8 +1982,6 @@ fn renderSaveManagerOverlay(
     preview_width_required = @max(preview_width_required, preview_frame_width);
     preview_width_required = @max(preview_width_required, overlayTextWidth(preview_note, scale));
     preview_width_required = @max(preview_width_required, overlayTextWidth(preview_name, scale));
-    var max_width = overlayTextWidth(title, scale);
-    max_width = @max(max_width, list_width + preview_gap + preview_width_required);
 
     for (0..save_manager_slot_count) |slot_index| {
         const slot_number: u8 = @intCast(slot_index + 1);
@@ -1977,19 +1995,36 @@ fn renderSaveManagerOverlay(
         path_lines[slot_index] = try formatSaveManagerPathLine(path_buffers[slot_index][0..], metadata);
         list_width = @max(list_width, overlayTextWidth(summary_lines[slot_index], scale));
         list_width = @max(list_width, overlayTextWidth(path_lines[slot_index], scale));
+    }
+
+    const svw: f32 = @floatFromInt(viewport.w);
+    const svh: f32 = @floatFromInt(viewport.h);
+
+    // Hide preview column if viewport is too narrow for two-column layout
+    const two_col_width = list_width + preview_gap + preview_width_required + padding * 2.0;
+    const show_preview = two_col_width <= svw;
+
+    var max_width = overlayTextWidth(title, scale);
+    if (show_preview) {
         max_width = @max(max_width, list_width + preview_gap + preview_width_required);
+    } else {
+        max_width = @max(max_width, list_width);
     }
 
     const row_height = summary_height + path_height + row_gap;
     const header_height = 13.0 * scale + summary_height * 2.0 + row_gap;
     const list_height = row_height * @as(f32, @floatFromInt(save_manager_slot_count));
-    const preview_block_height = summary_height + row_gap + preview_frame_height + row_gap + path_height * 2.0;
-    const content_height = @max(list_height, preview_block_height);
+    const content_height = if (show_preview) blk: {
+        const preview_block_height = summary_height + row_gap + preview_frame_height + row_gap + path_height * 2.0;
+        break :blk @max(list_height, preview_block_height);
+    } else list_height;
+    const panel_w = @min(max_width + padding * 2.0, svw);
+    const panel_h = @min(padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height, svh);
     const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height)) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height,
+        .x = @max(0.0, (svw - panel_w) * 0.5),
+        .y = @max(0.0, (svh - panel_h) * 0.5),
+        .w = panel_w,
+        .h = panel_h,
     };
 
     try renderOverlayPanel(
@@ -2046,44 +2081,46 @@ fn renderSaveManagerOverlay(
         y += path_height + row_gap;
     }
 
-    const preview_x = text_x + list_width + preview_gap;
-    var preview_y = panel.y + padding + header_height;
-    try drawOverlayText(
-        renderer,
-        preview_x + (preview_width_required - overlayTextWidth(preview_title, scale)) * 0.5,
-        preview_y,
-        scale,
-        UiColors.cyan,
-        preview_title,
-    );
-    preview_y += summary_height + row_gap;
+    if (show_preview) {
+        const preview_x = text_x + list_width + preview_gap;
+        var preview_y = panel.y + padding + header_height;
+        try drawOverlayText(
+            renderer,
+            preview_x + (preview_width_required - overlayTextWidth(preview_title, scale)) * 0.5,
+            preview_y,
+            scale,
+            UiColors.cyan,
+            preview_title,
+        );
+        preview_y += summary_height + row_gap;
 
-    const preview_frame = zsdl3.FRect{
-        .x = preview_x + (preview_width_required - preview_frame_width) * 0.5,
-        .y = preview_y,
-        .w = preview_frame_width,
-        .h = preview_frame_height,
-    };
-    try renderSaveManagerPreview(renderer, preview_frame, selected_metadata, scale);
-    preview_y += preview_frame_height + row_gap;
+        const preview_frame = zsdl3.FRect{
+            .x = preview_x + (preview_width_required - preview_frame_width) * 0.5,
+            .y = preview_y,
+            .w = preview_frame_width,
+            .h = preview_frame_height,
+        };
+        try renderSaveManagerPreview(renderer, preview_frame, selected_metadata, scale);
+        preview_y += preview_frame_height + row_gap;
 
-    try drawOverlayText(
-        renderer,
-        preview_x + (preview_width_required - overlayTextWidth(preview_note, scale)) * 0.5,
-        preview_y,
-        scale,
-        UiColors.text_muted,
-        preview_note,
-    );
-    preview_y += path_height;
-    try drawOverlayText(
-        renderer,
-        preview_x + (preview_width_required - overlayTextWidth(preview_name, scale)) * 0.5,
-        preview_y,
-        scale,
-        UiColors.orange,
-        preview_name,
-    );
+        try drawOverlayText(
+            renderer,
+            preview_x + (preview_width_required - overlayTextWidth(preview_note, scale)) * 0.5,
+            preview_y,
+            scale,
+            UiColors.text_muted,
+            preview_note,
+        );
+        preview_y += path_height;
+        try drawOverlayText(
+            renderer,
+            preview_x + (preview_width_required - overlayTextWidth(preview_name, scale)) * 0.5,
+            preview_y,
+            scale,
+            UiColors.orange,
+            preview_name,
+        );
+    }
 }
 
 // Re-export performance HUD rendering from frontend/performance.zig
@@ -2108,7 +2145,7 @@ fn renderSettingsOverlay(
     const heading_system = "SYSTEM";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
-    const line_height = 9.0 * scale;
+    const line_height = 10.0 * scale;
 
     var action_buffers: [settings_menu_actions.len][96]u8 = undefined;
     var action_lines: [settings_menu_actions.len][]const u8 = undefined;
@@ -2144,11 +2181,15 @@ fn renderSettingsOverlay(
     }
 
     const row_count: usize = 18;
+    const stw: f32 = @floatFromInt(viewport.w);
+    const sth: f32 = @floatFromInt(viewport.h);
+    const settings_w = @min(max_width + padding * 2.0, stw);
+    const settings_h = @min(padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)), sth);
     const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)),
+        .x = @max(0.0, (stw - settings_w) * 0.5),
+        .y = @max(0.0, (sth - settings_h) * 0.5),
+        .w = settings_w,
+        .h = settings_h,
     };
 
     try renderOverlayPanel(
@@ -2373,18 +2414,16 @@ pub fn main() !void {
         std.debug.print("Loading dummy backend ROM for the idle frontend shell.\n", .{});
     }
 
-    const input_config_path = try InputBindings.defaultConfigPath(allocator);
-    defer if (input_config_path) |path| allocator.free(path);
+    // Load unified config (frontend settings + input bindings in one file)
+    const config_file_path = try config_path_mod.resolveConfigPath(allocator);
+    defer allocator.free(config_file_path);
+    const loaded_config = try unified_config.load(allocator, config_file_path);
+    var input_bindings = loaded_config.bindings;
+    var frontend_config = loaded_config.frontend;
+    std.debug.print("Config: {s}\n", .{config_file_path});
 
-    var input_bindings = InputBindings.Bindings.defaults();
-    if (input_config_path) |path| {
-        input_bindings = try InputBindings.Bindings.loadFromFile(allocator, path);
-        std.debug.print("Loaded input config: {s}\n", .{path});
-    }
-
-    const frontend_config_path = try defaultFrontendConfigPath(allocator);
-    defer allocator.free(frontend_config_path);
-    var frontend_config = try FrontendConfig.loadFromFile(allocator, frontend_config_path);
+    // Unified config path is used for all saves
+    const frontend_config_path = config_file_path;
 
     var machine = try Machine.init(allocator, rom_path);
     defer {
@@ -2823,7 +2862,8 @@ pub fn main() !void {
                         &binding_editor,
                         &input_bindings,
                         &machine,
-                        input_config_path,
+                        config_file_path,
+                        &frontend_config,
                         scancode,
                         hotkey_binding,
                         pressed,
@@ -3737,6 +3777,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
     var bindings = InputBindings.Bindings.defaults();
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
+    const test_cfg_path = "test_sandopolis.cfg";
+    var test_frontend_cfg = FrontendConfig{};
 
     _ = machine.applyKeyboardBindings(&bindings, .a, true);
     try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
@@ -3746,7 +3788,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
@@ -3755,9 +3798,9 @@ test "binding editor opens releases inputs and rebinds selected action" {
     try std.testing.expect(ui.emulationPaused());
     try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(editor.capture_mode);
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .v, .{ .input = .v }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .v, .{ .input = .v }, true));
     try std.testing.expect(!editor.capture_mode);
     try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, .v), bindings.keyboardBinding(0, .up));
 
@@ -3766,7 +3809,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
@@ -3782,20 +3826,23 @@ test "binding editor clears hotkeys during capture" {
     var bindings = InputBindings.Bindings.defaults();
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
+    const test_cfg_path = "test_sandopolis.cfg";
+    var test_frontend_cfg = FrontendConfig{};
 
     try std.testing.expect(handleBindingEditorKey(
         &ui,
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
     ));
     editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len;
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .delete, .{ .input = .delete }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .delete, .{ .input = .delete }, true));
     try std.testing.expectEqual(InputBindings.HotkeyBinding{}, bindings.hotkeyBinding(.toggle_help));
 }
 
@@ -3807,25 +3854,29 @@ test "binding editor captures modifier hotkeys" {
     var bindings = InputBindings.Bindings.defaults();
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
+    const test_cfg_path = "test_sandopolis.cfg";
+    var test_frontend_cfg = FrontendConfig{};
 
     try std.testing.expect(handleBindingEditorKey(
         &ui,
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
     ));
     editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(handleBindingEditorKey(
         &ui,
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f3,
         .{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
         true,
@@ -3948,9 +3999,16 @@ test "audio init stays muted until it sees audible startup activity" {
     z80.writeByte(0x7F11, 0x90);
     try std.testing.expect(z80.hasPendingAudibleEvents());
 
+    // First frame with audible events starts warmup but stays muted
     try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false, null);
+    try std.testing.expect(audio.startupMuteActive());
+
+    // Warmup requires several frames of audible activity before unmuting
+    for (0..8) |_| {
+        z80.writeByte(0x7F11, 0x90);
+        try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false, null);
+    }
     try std.testing.expect(!audio.startupMuteActive());
-    try std.testing.expect(!z80.hasPendingAudibleEvents());
 }
 
 test "audio backlog threshold trips at the queued audio budget" {
@@ -4042,8 +4100,8 @@ test "persistent state helper saves and restores machine state" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -4052,17 +4110,16 @@ test "persistent state helper saves and restores machine state" {
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
-    const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, persistent_state_slot);
+    const slot1_state_path = try rom_paths.statePath(allocator, rom_path, persistent_state_slot);
     defer allocator.free(slot1_state_path);
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
-    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(state_path, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -4076,8 +4133,8 @@ test "persistent state helper cycles slots and keeps files separate" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -4088,28 +4145,28 @@ test "persistent state helper cycles slots and keeps files separate" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
@@ -4122,9 +4179,9 @@ test "save manager metadata tracks slot files and deletions" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
-    const slot2_state_path = try StateFile.pathForSlot(allocator, state_path, 2);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
+    const slot2_state_path = try rom_paths.statePath(allocator, rom_path, 2);
     defer allocator.free(slot2_state_path);
     const slot2_preview_path = try resolveStatePreviewPath(allocator, slot2_state_path);
     defer allocator.free(slot2_preview_path);
@@ -4142,7 +4199,7 @@ test "save manager metadata tracks slot files and deletions" {
         allocator,
         .save_state_file,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         null,
         &gif_recorder,
@@ -4157,7 +4214,7 @@ test "save manager metadata tracks slot files and deletions" {
         allocator,
         .save_state_file,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         null,
         &gif_recorder,
@@ -4167,7 +4224,7 @@ test "save manager metadata tracks slot files and deletions" {
     ));
 
     var save_manager = SaveManagerState{};
-    try save_manager.refresh(allocator, &machine, state_path);
+    try save_manager.refresh(allocator, &machine, rom_path);
 
     try std.testing.expect(save_manager.slotMetadata(1).exists);
     try std.testing.expect(save_manager.slotMetadata(2).exists);
@@ -4176,12 +4233,12 @@ test "save manager metadata tracks slot files and deletions" {
     try std.testing.expect(save_manager.slotMetadata(2).preview.available);
     try std.testing.expect(save_manager.slotMetadata(1).size_bytes != 0);
     try std.testing.expect(save_manager.slotMetadata(1).modified_ns != 0);
-    try std.testing.expectEqualStrings("frontend.slot1.state", std.fs.path.basename(save_manager.slotMetadata(1).path.slice()));
-    try std.testing.expectEqualStrings("frontend.slot2.state", std.fs.path.basename(save_manager.slotMetadata(2).path.slice()));
+    try std.testing.expectEqualStrings("slot1.state", std.fs.path.basename(save_manager.slotMetadata(1).path.slice()));
+    try std.testing.expectEqualStrings("slot2.state", std.fs.path.basename(save_manager.slotMetadata(2).path.slice()));
     try std.fs.cwd().access(slot2_preview_path, .{});
 
-    try std.testing.expect(deletePersistentStateFile(allocator, &machine, state_path, 2, .{}));
-    try save_manager.refresh(allocator, &machine, state_path);
+    try std.testing.expect(deletePersistentStateFile(allocator, &machine, rom_path, 2, .{}));
+    try save_manager.refresh(allocator, &machine, rom_path);
     try std.testing.expect(!save_manager.slotMetadata(2).exists);
     try std.testing.expect(!save_manager.slotMetadata(2).preview.available);
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot2_preview_path, .{}));
@@ -4521,9 +4578,9 @@ test "save manager gamepad controls save load delete and close" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
-    const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, 1);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
+    const slot1_state_path = try rom_paths.statePath(allocator, rom_path, 1);
     defer allocator.free(slot1_state_path);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
@@ -4542,7 +4599,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4565,7 +4622,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4586,7 +4643,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4606,7 +4663,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4627,7 +4684,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4649,7 +4706,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4671,7 +4728,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,

@@ -45,6 +45,14 @@ pub const VideoAspectMode = enum {
         };
     }
 
+    pub fn configValue(self: VideoAspectMode) []const u8 {
+        return switch (self) {
+            .stretch => "stretch",
+            .four_three => "4:3",
+            .square_pixels => "square",
+        };
+    }
+
     pub fn parse(value: []const u8) error{InvalidVideoAspect}!VideoAspectMode {
         if (std.mem.eql(u8, value, "stretch")) return .stretch;
         if (std.mem.eql(u8, value, "4:3") or std.mem.eql(u8, value, "four_three")) return .four_three;
@@ -84,6 +92,13 @@ pub const VideoScaleMode = enum {
         return switch (self) {
             .fit => "FIT",
             .whole_pixels => "WHOLE",
+        };
+    }
+
+    pub fn configValue(self: VideoScaleMode) []const u8 {
+        return switch (self) {
+            .fit => "fit",
+            .whole_pixels => "whole",
         };
     }
 

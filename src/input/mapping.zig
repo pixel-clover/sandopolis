@@ -462,6 +462,14 @@ pub const Bindings = struct {
         try writer.interface.flush();
     }
 
+    /// Apply a single "key = value" config line. Silently ignores malformed lines.
+    pub fn applyConfigLine(self: *Bindings, line: []const u8) void {
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        self.applyAssignment(lhs, rhs) catch {};
+    }
+
     fn applyAssignment(self: *Bindings, lhs: []const u8, rhs: []const u8) !void {
         if (std.mem.startsWith(u8, lhs, "keyboard.")) {
             const target = try parsePortAction(lhs["keyboard.".len..]);
