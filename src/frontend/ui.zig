@@ -192,12 +192,16 @@ pub const help_right_sections = [_]MenuSection{
     },
 };
 
-/// Calculate overlay scale factor based on viewport size
+/// Calculate overlay scale factor based on viewport size.
+/// Scales continuously from 1.0 to 4.0 based on the smaller viewport dimension,
+/// avoiding jarring jumps when the window is resized.
 pub fn overlayScale(viewport: zsdl3.Rect) f32 {
-    const min_dimension = @min(viewport.w, viewport.h);
-    if (min_dimension < 360) return 1.0;
-    if (min_dimension < 720) return 2.0;
-    return 3.0;
+    const min_dim: f32 = @floatFromInt(@min(viewport.w, viewport.h));
+    const min_scale = 1.0;
+    const max_scale = 4.0;
+    const low = 240.0; // min_dim where scale bottoms out at 1.0
+    const high = 1080.0; // min_dim where scale tops out at 4.0
+    return std.math.clamp(min_scale + (max_scale - min_scale) * (min_dim - low) / (high - low), min_scale, max_scale);
 }
 
 /// Get bitmap glyph rows for a character (5x7 pixel font)
