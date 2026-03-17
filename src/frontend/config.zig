@@ -127,6 +127,55 @@ pub const VideoScaleMode = enum {
     }
 };
 
+pub const FontFace = enum {
+    jbm_regular,
+    jbm_light,
+    jbm_medium,
+    jbm_thin,
+
+    pub fn name(self: FontFace) []const u8 {
+        return switch (self) {
+            .jbm_regular => "jbm_regular",
+            .jbm_light => "jbm_light",
+            .jbm_medium => "jbm_medium",
+            .jbm_thin => "jbm_thin",
+        };
+    }
+
+    pub fn label(self: FontFace) []const u8 {
+        return switch (self) {
+            .jbm_regular => "JBM REGULAR",
+            .jbm_light => "JBM LIGHT",
+            .jbm_medium => "JBM MEDIUM",
+            .jbm_thin => "JBM THIN",
+        };
+    }
+
+    pub fn parse(value: []const u8) error{InvalidFontFace}!FontFace {
+        if (std.mem.eql(u8, value, "jbm_regular")) return .jbm_regular;
+        if (std.mem.eql(u8, value, "jbm_light")) return .jbm_light;
+        if (std.mem.eql(u8, value, "jbm_medium")) return .jbm_medium;
+        if (std.mem.eql(u8, value, "jbm_thin")) return .jbm_thin;
+        return error.InvalidFontFace;
+    }
+
+    pub fn cycle(self: FontFace, delta: isize) FontFace {
+        const faces = [_]FontFace{ .jbm_regular, .jbm_light, .jbm_medium, .jbm_thin };
+        var index: isize = 0;
+        for (faces, 0..) |candidate, i| {
+            if (candidate == self) {
+                index = @intCast(i);
+                break;
+            }
+        }
+        index += delta;
+        const count: isize = @intCast(faces.len);
+        while (index < 0) index += count;
+        while (index >= count) index -= count;
+        return faces[@intCast(index)];
+    }
+};
+
 // Frontend configuration
 pub const FrontendConfig = struct {
     recent_rom_count: usize = 0,
@@ -134,6 +183,7 @@ pub const FrontendConfig = struct {
     last_open_dir: PathCopy = .{},
     video_aspect_mode: VideoAspectMode = .stretch,
     video_scale_mode: VideoScaleMode = .fit,
+    font_face: FontFace = .jbm_regular,
 
     pub fn parseContents(contents: []const u8) !FrontendConfig {
         var config = FrontendConfig{};
@@ -153,6 +203,8 @@ pub const FrontendConfig = struct {
                 config.video_aspect_mode = VideoAspectMode.parse(rhs) catch config.video_aspect_mode;
             } else if (std.ascii.eqlIgnoreCase(lhs, "video_scale")) {
                 config.video_scale_mode = VideoScaleMode.parse(rhs) catch config.video_scale_mode;
+            } else if (std.ascii.eqlIgnoreCase(lhs, "font_face")) {
+                config.font_face = FontFace.parse(rhs) catch config.font_face;
             } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
                 config.appendRecentRom(rhs);
             }
@@ -179,6 +231,7 @@ pub const FrontendConfig = struct {
         }
         try writer.print("video_aspect = {s}\n", .{self.video_aspect_mode.name()});
         try writer.print("video_scale = {s}\n", .{self.video_scale_mode.name()});
+        try writer.print("font_face = {s}\n", .{self.font_face.name()});
         for (self.recent_roms[0..self.recent_rom_count]) |path| {
             try writer.print("recent_rom = {s}\n", .{path.slice()});
         }

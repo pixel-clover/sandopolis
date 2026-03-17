@@ -1,5 +1,12 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
+const font_module = @import("font.zig");
+pub const Font = font_module.Font;
+pub const FontAtlas = font_module.FontAtlas;
+pub const font_jbm_regular = font_module.font_jbm_regular;
+pub const font_jbm_light = font_module.font_jbm_light;
+pub const font_jbm_medium = font_module.font_jbm_medium;
+pub const font_jbm_thin = font_module.font_jbm_thin;
 const InputBindings = @import("../input/mapping.zig");
 const StateFile = @import("../state_file.zig");
 const toast_module = @import("toast.zig");
@@ -272,13 +279,63 @@ pub fn glyphRows(ch: u8) [7]u8 {
     };
 }
 
-/// Calculate text width in pixels
+/// Convert UI scale to font pixel height.
+pub fn fontPixelHeight(scale: f32) u16 {
+    return @intFromFloat(std.math.clamp(10.0 * scale, 8.0, 64.0));
+}
+
+/// Calculate text width in pixels using the font atlas.
+/// Falls back to estimate if no atlas is available.
 pub fn textWidth(text: []const u8, scale: f32) f32 {
+    if (active_font) |f| {
+        if (f.atlas) |*atlas| {
+            if (atlas.pixel_height == fontPixelHeight(scale)) {
+                return font_module.textWidth(atlas, text);
+            }
+        }
+    }
+    // Fallback: estimate based on scale (matches old bitmap width roughly)
     return @as(f32, @floatFromInt(text.len)) * 6.0 * scale;
 }
 
-/// Draw a single glyph at the specified position
-pub fn drawGlyph(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, ch: u8) !void {
+/// Draw text at the specified position with the given color.
+pub fn drawText(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color: zsdl3.Color, text: []const u8) !void {
+    if (active_font) |f| {
+        if (try f.getAtlas(renderer, fontPixelHeight(scale))) |atlas| {
+            try font_module.drawText(renderer, atlas, x, y, color, text);
+            return;
+        }
+    }
+    // Fallback to bitmap rendering if font not initialized
+    try drawTextBitmap(renderer, x, y, scale, color, text);
+}
+
+/// Module-level font state. Call initFont() once at startup.
+var active_font: ?*Font = null;
+
+pub fn initFont(f: *Font) void {
+    active_font = f;
+}
+
+pub fn deinitFont() void {
+    if (active_font) |f| {
+        f.deinit();
+        active_font = null;
+    }
+}
+
+/// Legacy bitmap text rendering (fallback).
+fn drawTextBitmap(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color: zsdl3.Color, text: []const u8) !void {
+    try zsdl3.setRenderDrawColor(renderer, color);
+    var cursor = x;
+    for (text) |ch| {
+        try drawGlyphBitmap(renderer, cursor, y, scale, ch);
+        cursor += 6.0 * scale;
+    }
+}
+
+/// Legacy bitmap glyph rendering (fallback).
+fn drawGlyphBitmap(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, ch: u8) !void {
     const rows = glyphRows(ch);
     for (rows, 0..) |bits, row| {
         for (0..5) |col| {
@@ -291,16 +348,6 @@ pub fn drawGlyph(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, ch: u8) 
                 .h = scale,
             });
         }
-    }
-}
-
-/// Draw text at the specified position with the given color
-pub fn drawText(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color: zsdl3.Color, text: []const u8) !void {
-    try zsdl3.setRenderDrawColor(renderer, color);
-    var cursor = x;
-    for (text) |ch| {
-        try drawGlyph(renderer, cursor, y, scale, ch);
-        cursor += 6.0 * scale;
     }
 }
 

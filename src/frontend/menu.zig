@@ -5,6 +5,7 @@ const AudioOutput = @import("../audio/output.zig").AudioOutput;
 pub const FrontendConfig = config.FrontendConfig;
 pub const VideoAspectMode = config.VideoAspectMode;
 pub const VideoScaleMode = config.VideoScaleMode;
+pub const FontFace = config.FontFace;
 
 // Frontend UI visibility state
 pub const FrontendUi = struct {
@@ -146,6 +147,7 @@ pub const SettingsMenuAction = enum {
     controller_p1_type,
     controller_p2_type,
     performance_hud,
+    font_face,
     close,
 };
 
@@ -157,6 +159,7 @@ pub const settings_menu_actions = [_]SettingsMenuAction{
     .controller_p1_type,
     .controller_p2_type,
     .performance_hud,
+    .font_face,
     .close,
 };
 
@@ -280,6 +283,7 @@ pub fn formatSettingsActionLine(
     audio_mode: AudioOutput.RenderMode,
     controller_types: [2]ControllerType,
     performance_hud: bool,
+    font_face: FontFace,
 ) ![]const u8 {
     const prefix = if (selected) "> " else "  ";
     return switch (action) {
@@ -290,6 +294,7 @@ pub fn formatSettingsActionLine(
         .controller_p1_type => std.fmt.bufPrint(buffer, "{s}P1 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[0]) }),
         .controller_p2_type => std.fmt.bufPrint(buffer, "{s}P2 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[1]) }),
         .performance_hud => std.fmt.bufPrint(buffer, "{s}PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
+        .font_face => std.fmt.bufPrint(buffer, "{s}FONT {s}", .{ prefix, font_face.label() }),
         .close => std.fmt.bufPrint(buffer, "{s}CLOSE SETTINGS", .{prefix}),
     };
 }

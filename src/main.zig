@@ -394,6 +394,8 @@ fn handleSettingsKey(
     current_audio_mode: *AudioOutput.RenderMode,
     bindings: *InputBindings.Bindings,
     machine: *Machine,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     scancode: zsdl3.Scancode,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -428,6 +430,8 @@ fn handleSettingsKey(
                 current_audio_mode,
                 bindings,
                 machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 -1,
                 notifications,
@@ -448,6 +452,8 @@ fn handleSettingsKey(
                 current_audio_mode,
                 bindings,
                 machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 1,
                 notifications,
@@ -468,6 +474,8 @@ fn handleSettingsKey(
                 current_audio_mode,
                 bindings,
                 machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 0,
                 notifications,
@@ -672,6 +680,15 @@ fn setFullscreenEnabled(window: *zsdl3.Window, enable: bool, notifications: Fron
     }
 }
 
+fn fontDataForFace(face: config_module.FontFace) []const u8 {
+    return switch (face) {
+        .jbm_regular => ui_render.font_jbm_regular,
+        .jbm_light => ui_render.font_jbm_light,
+        .jbm_medium => ui_render.font_jbm_medium,
+        .jbm_thin => ui_render.font_jbm_thin,
+    };
+}
+
 fn configurePerformanceHud(
     ui: *FrontendUi,
     perf: *PerformanceHudState,
@@ -716,6 +733,8 @@ fn applySettingsAction(
     current_audio_mode: *AudioOutput.RenderMode,
     bindings: *InputBindings.Bindings,
     machine: *Machine,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     action: SettingsMenuAction,
     delta: isize,
     notifications: FrontendNotifications,
@@ -770,6 +789,16 @@ fn applySettingsAction(
             const ct = if (delta >= 0) nextCT(bindings.controller_types[1]) else prevCT(bindings.controller_types[1]);
             bindings.controller_types[1] = ct;
             machine.bus.io.setControllerType(1, ct);
+        },
+        .font_face => {
+            const next = frontend_config.font_face.cycle(if (delta == 0) 1 else delta);
+            frontend_config.font_face = next;
+            ui_font.deinit();
+            ui_font.* = ui_render.Font.init(fontDataForFace(next));
+            ui_render.initFont(ui_font);
+            _ = renderer;
+            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            notifyFrontend(notifications, .info, "FONT {s}", .{next.label()});
         },
         .close => {
             _ = settings;
@@ -913,6 +942,8 @@ fn handleSettingsGamepadInput(
     current_audio_mode: *AudioOutput.RenderMode,
     bindings: *InputBindings.Bindings,
     machine: *Machine,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -942,6 +973,8 @@ fn handleSettingsGamepadInput(
                 current_audio_mode,
                 bindings,
                 machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 -1,
                 notifications,
@@ -962,6 +995,8 @@ fn handleSettingsGamepadInput(
                 current_audio_mode,
                 bindings,
                 machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 1,
                 notifications,
@@ -982,6 +1017,8 @@ fn handleSettingsGamepadInput(
                 current_audio_mode,
                 bindings,
                 machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 0,
                 notifications,
@@ -1143,6 +1180,8 @@ fn handleFrontendGamepadInput(
     frame_counter: *u32,
     debugger: *debugger_mod.DebuggerState,
     bindings: *InputBindings.Bindings,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -1179,6 +1218,8 @@ fn handleFrontendGamepadInput(
         current_audio_mode,
         bindings,
         machine,
+        ui_font,
+        renderer,
         input,
         pressed,
         notifications,
@@ -1810,6 +1851,8 @@ fn handleFrontendGamepadTransitions(
     frame_counter: *u32,
     debugger: *debugger_mod.DebuggerState,
     bindings: *InputBindings.Bindings,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     notifications: FrontendNotifications,
     transitions: anytype,
 ) FrontendGamepadCommand {
@@ -1837,6 +1880,8 @@ fn handleFrontendGamepadTransitions(
                 frame_counter,
                 debugger,
                 bindings,
+                ui_font,
+                renderer,
                 transition.input,
                 transition.pressed,
                 notifications,
@@ -2206,6 +2251,7 @@ fn renderSettingsOverlay(
             current_audio_mode,
             machine.bus.io.controller_types,
             ui.show_performance_hud,
+            frontend_config.font_face,
         );
     }
 
@@ -2227,7 +2273,7 @@ fn renderSettingsOverlay(
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
 
-    const row_count: usize = 24;
+    const row_count: usize = 27;
     const stw: f32 = @floatFromInt(viewport.w);
     const sth: f32 = @floatFromInt(viewport.h);
     const settings_w = @min(max_width + padding * 2.0, stw);
@@ -2269,7 +2315,7 @@ fn renderSettingsOverlay(
     const normal_color = UiColors.text_primary;
 
     // Render settings entries grouped by section
-    // action_lines[]: 0=aspect, 1=scale, 2=fullscreen, 3=audio, 4=ctrl_p1, 5=ctrl_p2, 6=perf, 7=close
+    // action_lines[]: 0=aspect, 1=scale, 2=fullscreen, 3=audio, 4=ctrl_p1, 5=ctrl_p2, 6=perf, 7=font_face, 8=close
     const actionColor = struct {
         fn f(cur: SettingsMenuAction, target: SettingsMenuAction, sel: zsdl3.Color, norm: zsdl3.Color) zsdl3.Color {
             return if (cur == target) sel else norm;
@@ -2313,7 +2359,12 @@ fn renderSettingsOverlay(
     try drawOverlayText(renderer, text_x, y, scale, info_color, config_path);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[7]);
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "UI");
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .font_face, selected_color, normal_color), action_lines[7]);
+    y += line_height * 2.0;
+
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[8]);
 }
 
 fn renderFrontendOverlay(
@@ -2423,6 +2474,12 @@ pub fn main() !void {
         std.debug.print("Renderer backend: {s}\n", .{name});
     }
 
+    // Initialize TTF font for UI overlays
+    var ui_font = ui_render.Font.init(ui_render.font_jbm_regular);
+    defer ui_font.deinit();
+    ui_render.initFont(&ui_font);
+    defer ui_render.deinitFont();
+
     var audio_userdata: u8 = 0;
     var audio: ?AudioInit = tryInitAudio(&audio_userdata);
     var current_audio_mode = cli.audio_mode;
@@ -2490,6 +2547,13 @@ pub fn main() !void {
 
     // Unified config path is used for all saves
     const frontend_config_path = config_file_path;
+
+    // Apply configured font face
+    if (frontend_config.font_face != .jbm_regular) {
+        ui_font.deinit();
+        ui_font = ui_render.Font.init(fontDataForFace(frontend_config.font_face));
+        ui_render.initFont(&ui_font);
+    }
 
     var machine = try Machine.init(allocator, rom_path);
     defer {
@@ -2617,6 +2681,8 @@ pub fn main() !void {
                                 &frame_counter,
                                 &debugger_state,
                                 &input_bindings,
+                                &ui_font,
+                                renderer,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2688,6 +2754,8 @@ pub fn main() !void {
                             &frame_counter,
                             &debugger_state,
                             &input_bindings,
+                            &ui_font,
+                            renderer,
                             notifications,
                             transitions,
                         ),
@@ -2748,6 +2816,8 @@ pub fn main() !void {
                                 &frame_counter,
                                 &debugger_state,
                                 &input_bindings,
+                                &ui_font,
+                                renderer,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2816,6 +2886,8 @@ pub fn main() !void {
                             &frame_counter,
                             &debugger_state,
                             &input_bindings,
+                            &ui_font,
+                            renderer,
                             notifications,
                             transitions,
                         ),
@@ -2876,6 +2948,8 @@ pub fn main() !void {
                             &frame_counter,
                             &debugger_state,
                             &input_bindings,
+                            &ui_font,
+                            renderer,
                             notifications,
                             transitions,
                         ),
@@ -2924,6 +2998,8 @@ pub fn main() !void {
                         &current_audio_mode,
                         &input_bindings,
                         &machine,
+                        &ui_font,
+                        renderer,
                         scancode,
                         pressed,
                         .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
@@ -4554,6 +4630,8 @@ test "settings actions persist frontend video settings" {
     var core_profile_frames_remaining: u32 = 0;
     var current_audio_mode: AudioOutput.RenderMode = .normal;
     const fake_window: *zsdl3.Window = @ptrFromInt(1);
+    var test_font = ui_render.Font{};
+    const fake_renderer: *zsdl3.Renderer = @ptrFromInt(2);
 
     applySettingsAction(
         &ui,
@@ -4568,6 +4646,8 @@ test "settings actions persist frontend video settings" {
         &current_audio_mode,
         &test_bindings,
         &test_machine,
+        &test_font,
+        fake_renderer,
         .video_aspect_mode,
         1,
         .{},
@@ -4585,6 +4665,8 @@ test "settings actions persist frontend video settings" {
         &current_audio_mode,
         &test_bindings,
         &test_machine,
+        &test_font,
+        fake_renderer,
         .video_scale_mode,
         1,
         .{},
@@ -4621,6 +4703,8 @@ test "guide button toggles pause and resumes overlays" {
     var dbg_state = debugger_mod.DebuggerState{};
     var test_bindings = InputBindings.Bindings.defaults();
     const fake_window: *zsdl3.Window = @ptrFromInt(1);
+    var test_font = ui_render.Font{};
+    const fake_renderer: *zsdl3.Renderer = @ptrFromInt(2);
 
     switch (handleFrontendGamepadInput(
         &ui,
@@ -4644,6 +4728,8 @@ test "guide button toggles pause and resumes overlays" {
         &frame_counter,
         &dbg_state,
         &test_bindings,
+        &test_font,
+        fake_renderer,
         .guide,
         true,
         .{},
@@ -4677,6 +4763,8 @@ test "guide button toggles pause and resumes overlays" {
         &frame_counter,
         &dbg_state,
         &test_bindings,
+        &test_font,
+        fake_renderer,
         .guide,
         true,
         .{},

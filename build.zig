@@ -87,6 +87,15 @@ fn pathExists(relative_path: []const u8) bool {
     return true;
 }
 
+fn addStbTruetype(step: *std.Build.Step.Compile, b: *std.Build) void {
+    step.addCSourceFiles(.{
+        .files = &.{"src/frontend/fonts/stb_impl.c"},
+        .flags = &.{"-std=c99"},
+    });
+    step.addIncludePath(b.path("src/frontend/fonts"));
+    step.root_module.addIncludePath(b.path("src/frontend/fonts"));
+}
+
 fn linkSdl3(step: *std.Build.Step.Compile, sdl3_lib: *std.Build.Step.Compile) void {
     step.linkLibrary(sdl3_lib);
     step.linkLibC();
@@ -136,6 +145,8 @@ pub fn build(b: *std.Build) void {
     addExternalCpuCores(exe, b, cpu_deps);
     linkSdl3(exe, sdl3_lib);
 
+    addStbTruetype(exe, b);
+
     b.installArtifact(exe);
 
     // Run step
@@ -164,6 +175,7 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(exe_check, b, cpu_deps);
     linkSdl3(exe_check, sdl3_lib);
+    addStbTruetype(exe_check, b);
 
     const check = b.step("check", "Check if sandopolis compiles");
     check.dependOn(&exe_check.step);

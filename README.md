@@ -146,6 +146,8 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU (Motorola 68000) emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
     * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl) and [SDL](https://github.com/castholm/SDL))
+    * [stb](https://github.com/nothings/stb/blob/master/stb_truetype.h) for the TrueType font rendering
+    * [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) for the monospace font used in the frontend
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)
 
 #### Reference Implementations
