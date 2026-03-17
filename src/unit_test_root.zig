@@ -3,6 +3,7 @@ const audio_psg = @import("audio/psg.zig");
 const audio_timing = @import("audio/timing.zig");
 const audio_ym2612 = @import("audio/ym2612.zig");
 const bus = @import("bus/bus.zig");
+const bus_eeprom_i2c = @import("bus/eeprom_i2c.zig");
 const z80 = @import("cpu/z80.zig");
 const input_io = @import("input/io.zig");
 const input_mapping = @import("input/mapping.zig");
@@ -18,6 +19,7 @@ comptime {
     _ = audio_timing;
     _ = audio_ym2612;
     _ = bus;
+    _ = bus_eeprom_i2c;
     _ = z80;
     _ = input_io;
     _ = input_mapping;

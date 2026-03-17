@@ -18,6 +18,8 @@ pub const View = struct {
     audio_timing: *AudioTiming,
     open_bus: *u16,
     runtime_state: *cpu_runtime.RuntimeState,
+    tmss_register: *[4]u8,
+    tmss_locked: *bool,
     ensure_z80_host_window_ctx: ?*anyopaque,
     ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
 
@@ -30,6 +32,8 @@ pub const View = struct {
         audio_timing: *AudioTiming,
         open_bus: *u16,
         runtime_state: *cpu_runtime.RuntimeState,
+        tmss_register: *[4]u8,
+        tmss_locked: *bool,
         ensure_z80_host_window_ctx: ?*anyopaque,
         ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
     ) View {
@@ -42,6 +46,8 @@ pub const View = struct {
             .audio_timing = audio_timing,
             .open_bus = open_bus,
             .runtime_state = runtime_state,
+            .tmss_register = tmss_register,
+            .tmss_locked = tmss_locked,
             .ensure_z80_host_window_ctx = ensure_z80_host_window_ctx,
             .ensure_z80_host_window_fn = ensure_z80_host_window_fn,
         };
@@ -58,6 +64,22 @@ pub const View = struct {
     fn isZ80WindowAddress(address: u32) bool {
         const addr = address & 0xFFFFFF;
         return addr >= 0xA00000 and addr < 0xA10000;
+    }
+
+    fn isTmssAddress(address: u32) bool {
+        const addr = address & 0xFFFFFF;
+        return addr >= 0xA14000 and addr < 0xA14004;
+    }
+
+    fn isVdpAddress(address: u32) bool {
+        const addr = address & 0xFFFFFF;
+        return addr >= 0xC00000 and addr <= 0xDFFFFF;
+    }
+
+    fn writeTmss(self: *View, address: u32, value: u8) void {
+        const offset: u2 = @truncate(address & 3);
+        self.tmss_register[offset] = value;
+        self.tmss_locked.* = !std.mem.eql(u8, self.tmss_register, "SEGA");
     }
 
     fn isZ80BusAckPage(address: u32) bool {
@@ -153,7 +175,10 @@ pub const View = struct {
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            if (self.tmss_locked.*) return self.openBusByte(addr);
             return vdp_ports.readByte(self.vdp, self.open_bus, self.runtime_state, addr);
+        } else if (addr >= 0xA14000 and addr < 0xA14004) {
+            return self.openBusByte(addr);
         } else if (addr >= 0xA10000 and addr < 0xA10020) {
             return io_window.readRegisterByte(self.io, self.vdp.pal_mode, addr);
         } else if (addr >= 0xA10020 and addr < 0xA10100) {
@@ -191,6 +216,7 @@ pub const View = struct {
             const value = io_window.readRegisterByte(self.io, self.vdp.pal_mode, addr);
             return self.latchOpenBus((@as(u16, value) << 8) | value);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            if (self.tmss_locked.*) return self.latchOpenBus(self.open_bus.*);
             return vdp_ports.readWord(self.vdp, self.open_bus, self.runtime_state, addr);
         }
 
@@ -225,6 +251,11 @@ pub const View = struct {
             return;
         }
 
+        if (isTmssAddress(addr)) {
+            self.writeTmss(addr, value);
+            return;
+        }
+
         if (addr < 0xA00000) {
             return;
         } else if (addr >= 0xE00000 and addr < 0x1000000) {
@@ -241,6 +272,7 @@ pub const View = struct {
                 io_window.writeRegisterByte(self.io, addr, value);
             }
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            if (self.tmss_locked.*) return;
             const port = addr & 0x1F;
             if (port >= 0x11 and port < 0x18 and (port & 1) == 1) {
                 self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
@@ -259,7 +291,14 @@ pub const View = struct {
         if (self.cartridge.writeRegisterWord(addr, value)) return;
         if (self.cartridge.writeWord(addr, value)) return;
 
+        if (isTmssAddress(addr)) {
+            self.writeTmss(addr, @truncate((value >> 8) & 0xFF));
+            self.writeTmss(addr | 1, @truncate(value & 0xFF));
+            return;
+        }
+
         if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
+            if (self.tmss_locked.*) return;
             const port = addr & 0x1F;
             if (port >= 0x10 and port < 0x18 and (port & 1) == 0) {
                 self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
@@ -306,6 +345,8 @@ const TestFixture = struct {
     audio_timing: AudioTiming,
     open_bus: u16,
     runtime: cpu_runtime.RuntimeState,
+    tmss_register: [4]u8,
+    tmss_locked: bool,
 
     fn init(allocator: std.mem.Allocator) !TestFixture {
         var rom = [_]u8{0} ** 0x4000;
@@ -320,6 +361,8 @@ const TestFixture = struct {
             .audio_timing = .{},
             .open_bus = 0,
             .runtime = .{},
+            .tmss_register = .{ 'S', 'E', 'G', 'A' },
+            .tmss_locked = false,
         };
     }
 
@@ -338,6 +381,8 @@ const TestFixture = struct {
             &self.audio_timing,
             &self.open_bus,
             &self.runtime,
+            &self.tmss_register,
+            &self.tmss_locked,
             null,
             TestHooks.ensureZ80HostWindow,
         );
@@ -923,4 +968,90 @@ test "cpu memory vdp status high bits come from bus open bus" {
     const status = view.read16(0x00C0_0004);
     try testing.expectEqual(@as(u16, 0xA400), status & 0xFC00);
     try testing.expectEqual(@as(u16, 0x0200), status & 0x0300);
+}
+
+test "tmss writing SEGA unlocks vdp access" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    fixture.tmss_register = .{ 0, 0, 0, 0 };
+    fixture.tmss_locked = true;
+    var view = fixture.view();
+
+    // VDP reads should return open bus when locked
+    fixture.open_bus = 0x1234;
+    try testing.expectEqual(@as(u16, 0x1234), view.read16(0x00C0_0004));
+
+    // VDP writes should be ignored when locked
+    view.write16(0x00C0_0000, 0xABCD);
+
+    // Write "SEGA" to TMSS register (two word writes)
+    view.write16(0x00A1_4000, 0x5345); // "SE"
+    try testing.expect(fixture.tmss_locked);
+    view.write16(0x00A1_4002, 0x4741); // "GA"
+    try testing.expect(!fixture.tmss_locked);
+
+    // VDP should now be accessible
+    const status = view.read16(0x00C0_0004);
+    try testing.expect((status & 0x0200) != 0); // VBlank bit should be readable
+}
+
+test "tmss wrong value keeps vdp locked" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    fixture.tmss_register = .{ 0, 0, 0, 0 };
+    fixture.tmss_locked = true;
+    var view = fixture.view();
+
+    // Write wrong value
+    view.write16(0x00A1_4000, 0x5345); // "SE"
+    view.write16(0x00A1_4002, 0x4742); // "GB" (wrong!)
+    try testing.expect(fixture.tmss_locked);
+
+    // VDP reads still return open bus
+    fixture.open_bus = 0xBEEF;
+    try testing.expectEqual(@as(u16, 0xBEEF), view.read16(0x00C0_0004));
+}
+
+test "tmss byte writes to register unlock vdp" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    fixture.tmss_register = .{ 0, 0, 0, 0 };
+    fixture.tmss_locked = true;
+    var view = fixture.view();
+
+    view.write8(0x00A1_4000, 'S');
+    view.write8(0x00A1_4001, 'E');
+    view.write8(0x00A1_4002, 'G');
+    try testing.expect(fixture.tmss_locked);
+    view.write8(0x00A1_4003, 'A');
+    try testing.expect(!fixture.tmss_locked);
+}
+
+test "tmss vdp write8 is blocked when locked" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    fixture.tmss_register = .{ 0, 0, 0, 0 };
+    fixture.tmss_locked = true;
+    var view = fixture.view();
+
+    // VDP byte write should be ignored
+    view.write8(0x00C0_0011, 0x80);
+    // PSG should not have received the command since VDP was locked
+    try testing.expectEqual(@as(u8, 0x00), fixture.z80.getPsgLast());
+
+    // Unlock
+    view.write16(0x00A1_4000, 0x5345);
+    view.write16(0x00A1_4002, 0x4741);
+
+    // Now VDP byte write should work
+    view.write8(0x00C0_0011, 0x80);
+    try testing.expectEqual(@as(u8, 0x80), fixture.z80.getPsgLast());
 }
