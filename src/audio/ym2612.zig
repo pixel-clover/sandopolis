@@ -26,10 +26,11 @@ const operator_reg_offsets = [_]u8{ 0x00, 0x08, 0x04, 0x0C };
 const internal_clock_master_cycles: u16 = @as(u16, clock.m68k_divider) * 6;
 const internal_clocks_per_sample: usize = clock.fm_master_cycles_per_sample / internal_clock_master_cycles;
 const ym_output_scale: f32 = 1.0 / 192.0;
-// YM2612 low-pass filter cutoff. Models the analog output path of the real hardware,
-// where the YM2612 DAC and board circuitry roll off high frequencies around 3-5 kHz,
-// giving the Genesis its characteristic warm FM sound.
-const ym_cutoff_hz: f32 = 5000.0;
+// YM2612 low-pass filter cutoff. Models the DAC's own analog rolloff. This is
+// intentionally higher than the ~5 kHz total hardware path because the board output
+// LPF (BoardOutputLpf, ~7 kHz 1-pole) handles the remaining filtering. Setting this
+// too low causes over-filtering when both stages cascade.
+const ym_cutoff_hz: f32 = 12000.0;
 const ym_busy_cycles: u8 = 32;
 const ym_status_latch_cycles: u32 = 300_000;
 
