@@ -95,7 +95,7 @@ sandopolis
 ```
 
 <div align="center">
-<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.3.png" width="150%">
+<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.3.png" width="100%">
 </div>
 
 Run `sandopolis --help` to see the list of available command-line options.
@@ -133,26 +133,26 @@ Project documentation is available [here](https://pixel-clover.github.io/sandopo
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to make a contribution.
 
+### License
+
+This project is licensed under the MIT License (see [LICENSE](LICENSE)).
+
 ### Acknowledgements
 
 * The logo is from [SVG Repo](https://www.svgrepo.com/svg/519365/sonic-runners) with some modifications.
 * This project uses material from the following projects and resources:
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
-    * [Chilli](https://github.com/CogitatorTech/minish) framework for CLI parsing and handling
+    * [Chilli](https://github.com/CogitatorTech/chilli) framework for CLI parsing and handling
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU (Motorola 68000) emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
     * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl) and [SDL](https://github.com/castholm/SDL))
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)
-    * [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
-
-> [!IMPORTANT]
-> Nuked-OPN2 is mainly used for testing the output of the Zig YM2612 implementation.
-> The code is not directly included in the project because its license (LGPL 2.1) is incompatible with the project's license.
 
 #### Reference Implementations
 
-Sandopolis implementation logic was checked with the following emulators for finding errors and verifying correctness:
+Sandopolis implementation logic was checked with the following implementations for finding errors and verifying correctness:
 
+* [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
 * [Genesis-Plus-GX](https://github.com/ekeeke/Genesis-Plus-GX)
 * [clownmdemu-core](https://github.com/Clownacy/clownmdemu-core)
 * [kiwi](https://github.com/drx/kiwi)
@@ -162,7 +162,3 @@ Sandopolis implementation logic was checked with the following emulators for fin
 
 * [mega-drive-genesis](https://www.copetti.org/writings/consoles/mega-drive-genesis/)
 * [mega-drive-architecture](https://rasterscroll.com/mdgraphics/mega-drive-architecture/)
-
-### License
-
-This project is licensed under the MIT License (see [LICENSE](LICENSE)).

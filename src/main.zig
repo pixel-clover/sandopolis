@@ -392,6 +392,8 @@ fn handleSettingsKey(
     window: *zsdl3.Window,
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
+    bindings: *InputBindings.Bindings,
+    machine: *Machine,
     scancode: zsdl3.Scancode,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -424,6 +426,8 @@ fn handleSettingsKey(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
                 settings.currentAction(),
                 -1,
                 notifications,
@@ -442,6 +446,8 @@ fn handleSettingsKey(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
                 settings.currentAction(),
                 1,
                 notifications,
@@ -460,6 +466,8 @@ fn handleSettingsKey(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
                 settings.currentAction(),
                 0,
                 notifications,
@@ -706,10 +714,14 @@ fn applySettingsAction(
     window: *zsdl3.Window,
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
+    bindings: *InputBindings.Bindings,
+    machine: *Machine,
     action: SettingsMenuAction,
     delta: isize,
     notifications: FrontendNotifications,
 ) void {
+    const nextCT = menu_module.nextControllerType;
+    const prevCT = menu_module.prevControllerType;
     switch (action) {
         .video_aspect_mode => {
             const next_mode = frontend_config.video_aspect_mode.cycle(if (delta == 0) 1 else delta);
@@ -748,6 +760,16 @@ fn applySettingsAction(
             } else {
                 notifyFrontend(notifications, .info, "PERF HUD OFF", .{});
             }
+        },
+        .controller_p1_type => {
+            const ct = if (delta >= 0) nextCT(bindings.controller_types[0]) else prevCT(bindings.controller_types[0]);
+            bindings.controller_types[0] = ct;
+            machine.bus.io.setControllerType(0, ct);
+        },
+        .controller_p2_type => {
+            const ct = if (delta >= 0) nextCT(bindings.controller_types[1]) else prevCT(bindings.controller_types[1]);
+            bindings.controller_types[1] = ct;
+            machine.bus.io.setControllerType(1, ct);
         },
         .close => {
             _ = settings;
@@ -889,6 +911,8 @@ fn handleSettingsGamepadInput(
     window: *zsdl3.Window,
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
+    bindings: *InputBindings.Bindings,
+    machine: *Machine,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -916,6 +940,8 @@ fn handleSettingsGamepadInput(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
                 settings.currentAction(),
                 -1,
                 notifications,
@@ -934,6 +960,8 @@ fn handleSettingsGamepadInput(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
                 settings.currentAction(),
                 1,
                 notifications,
@@ -952,6 +980,8 @@ fn handleSettingsGamepadInput(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
                 settings.currentAction(),
                 0,
                 notifications,
@@ -1112,6 +1142,7 @@ fn handleFrontendGamepadInput(
     window: *zsdl3.Window,
     frame_counter: *u32,
     debugger: *debugger_mod.DebuggerState,
+    bindings: *InputBindings.Bindings,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -1146,6 +1177,8 @@ fn handleFrontendGamepadInput(
         window,
         audio,
         current_audio_mode,
+        bindings,
+        machine,
         input,
         pressed,
         notifications,
@@ -1547,12 +1580,22 @@ fn handleBindingEditorKey(
             .escape => editor.cancelCapture(),
             .delete => editor.clearSelected(bindings),
             else => {
-                if (editor.currentTarget() == .hotkey and isHotkeyModifierScancode(scancode)) {
+                if (editor.capture_gamepad) {
+                    // In gamepad capture mode, keyboard events cancel or clear
+                    editor.setStatus(.neutral, "PRESS A GAMEPAD BUTTON");
+                } else if (editor.currentTarget().isHeader()) {
+                    // Skip
+                } else if (switch (editor.currentTarget()) {
+                    .hotkey => true,
+                    else => false,
+                } and isHotkeyModifierScancode(scancode)) {
                     editor.setStatus(.failed, "PRESS A NON-MODIFIER KEY");
                 } else if (keyboardInputFromScancode(scancode)) |input| {
                     switch (editor.currentTarget()) {
-                        .player_action => editor.assign(bindings, input),
+                        .keyboard_action => editor.assign(bindings, input),
                         .hotkey => editor.assignHotkey(bindings, hotkey_binding orelse .{ .input = input }),
+                        .gamepad_action => editor.setStatus(.failed, "USE GAMEPAD BUTTON"),
+                        .section_header => {},
                     }
                 } else {
                     editor.setStatus(.failed, "KEY NOT SUPPORTED");
@@ -1766,6 +1809,7 @@ fn handleFrontendGamepadTransitions(
     window: *zsdl3.Window,
     frame_counter: *u32,
     debugger: *debugger_mod.DebuggerState,
+    bindings: *InputBindings.Bindings,
     notifications: FrontendNotifications,
     transitions: anytype,
 ) FrontendGamepadCommand {
@@ -1792,6 +1836,7 @@ fn handleFrontendGamepadTransitions(
                 window,
                 frame_counter,
                 debugger,
+                bindings,
                 transition.input,
                 transition.pressed,
                 notifications,
@@ -2136,6 +2181,7 @@ fn renderSettingsOverlay(
     window: *zsdl3.Window,
     audio_enabled: bool,
     current_audio_mode: AudioOutput.RenderMode,
+    config_path: []const u8,
 ) !void {
     const title = "SETTINGS";
     const controls_a = "UP DOWN MOVE  LEFT RIGHT ADJUST";
@@ -2158,6 +2204,7 @@ fn renderSettingsOverlay(
             frontend_config.video_scale_mode,
             fullscreenEnabled(window),
             current_audio_mode,
+            machine.bus.io.controller_types,
             ui.show_performance_hud,
         );
     }
@@ -2176,11 +2223,11 @@ fn renderSettingsOverlay(
     max_width = @max(max_width, overlayTextWidth(controls_a, scale));
     max_width = @max(max_width, overlayTextWidth(controls_b, scale));
     for (action_lines) |line| max_width = @max(max_width, overlayTextWidth(line, scale));
-    for ([_][]const u8{ heading_video, heading_audio, heading_system, renderer_line, audio_output_line, timing_line, region_line }) |line| {
+    for ([_][]const u8{ heading_video, heading_audio, heading_system, renderer_line, audio_output_line, timing_line, region_line, config_path }) |line| {
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
 
-    const row_count: usize = 18;
+    const row_count: usize = 24;
     const stw: f32 = @floatFromInt(viewport.w);
     const sth: f32 = @floatFromInt(viewport.h);
     const settings_w = @min(max_width + padding * 2.0, stw);
@@ -2221,34 +2268,52 @@ fn renderSettingsOverlay(
     const selected_color = UiColors.text_selected;
     const normal_color = UiColors.text_primary;
 
+    // Render settings entries grouped by section
+    // action_lines[]: 0=aspect, 1=scale, 2=fullscreen, 3=audio, 4=ctrl_p1, 5=ctrl_p2, 6=perf, 7=close
+    const actionColor = struct {
+        fn f(cur: SettingsMenuAction, target: SettingsMenuAction, sel: zsdl3.Color, norm: zsdl3.Color) zsdl3.Color {
+            return if (cur == target) sel else norm;
+        }
+    }.f;
+    const cur = settings.currentAction();
+
     try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_video);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .video_aspect_mode) selected_color else normal_color, action_lines[0]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .video_aspect_mode, selected_color, normal_color), action_lines[0]);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .video_scale_mode) selected_color else normal_color, action_lines[1]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .video_scale_mode, selected_color, normal_color), action_lines[1]);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .fullscreen) selected_color else normal_color, action_lines[2]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .fullscreen, selected_color, normal_color), action_lines[2]);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, renderer_line);
     y += line_height * 2.0;
 
     try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_audio);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .audio_render_mode) selected_color else normal_color, action_lines[3]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .audio_render_mode, selected_color, normal_color), action_lines[3]);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, audio_output_line);
     y += line_height * 2.0;
 
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "INPUT");
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p1_type, selected_color, normal_color), action_lines[4]);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p2_type, selected_color, normal_color), action_lines[5]);
+    y += line_height * 2.0;
+
     try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_system);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .performance_hud) selected_color else normal_color, action_lines[4]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .performance_hud, selected_color, normal_color), action_lines[6]);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, timing_line);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, region_line);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, info_color, config_path);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .close) selected_color else normal_color, action_lines[5]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[7]);
 }
 
 fn renderFrontendOverlay(
@@ -2269,6 +2334,7 @@ fn renderFrontendOverlay(
     persistent_state_slot: u8,
     perf: *const PerformanceHudState,
     current_rom_path: ?[]const u8,
+    config_path: []const u8,
 ) !void {
     const show_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.paused or ui.show_help or ui.dialog_active or ui.show_keyboard_editor;
     const show_toast = toast.visible(frontend_frame_number);
@@ -2294,9 +2360,9 @@ fn renderFrontendOverlay(
     if (ui.dialog_active) {
         try renderDialogOverlay(renderer, viewport);
     } else if (ui.show_keyboard_editor) {
-        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number);
+        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number, config_path);
     } else if (ui.show_settings) {
-        try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode);
+        try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode, config_path);
     } else if (ui.show_save_manager) {
         try renderSaveManagerOverlay(renderer, viewport, save_manager, persistent_state_slot, frontend_frame_number);
     } else if (ui.show_help) {
@@ -2491,6 +2557,37 @@ pub fn main() !void {
                     const pressed = (event.type == zsdl3.EventType.gamepad_button_down);
                     const button = event.gbutton.button;
                     const port = findGamepadPort(&gamepads, event.gbutton.which) orelse continue;
+
+                    // Binding editor gamepad capture
+                    if (frontend_ui.show_keyboard_editor and binding_editor.capture_mode and binding_editor.capture_gamepad) {
+                        const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
+                        if (pressed_gp) {
+                            if (gamepadInputFromButton(button)) |gp_input| {
+                                binding_editor.assignGamepad(&input_bindings, gp_input);
+                            }
+                        }
+                        continue;
+                    }
+                    // Binding editor navigation via gamepad (when open but not capturing)
+                    if (frontend_ui.show_keyboard_editor and !binding_editor.capture_mode) {
+                        const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
+                        if (pressed_gp) {
+                            if (gamepadInputFromButton(button)) |gp_input| {
+                                switch (gp_input) {
+                                    .dpad_up => binding_editor.move(-1),
+                                    .dpad_down => binding_editor.move(1),
+                                    .south => binding_editor.beginCapture(),
+                                    .east, .back => {
+                                        frontend_ui.show_keyboard_editor = false;
+                                        binding_editor.close();
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     if (gamepadInputFromButton(button)) |mapped_button| {
                         const notifications = FrontendNotifications{
                             .toast = &frontend_toast,
@@ -2519,6 +2616,7 @@ pub fn main() !void {
                                 window,
                                 &frame_counter,
                                 &debugger_state,
+                                &input_bindings,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2589,6 +2687,7 @@ pub fn main() !void {
                             window,
                             &frame_counter,
                             &debugger_state,
+                            &input_bindings,
                             notifications,
                             transitions,
                         ),
@@ -2648,6 +2747,7 @@ pub fn main() !void {
                                 window,
                                 &frame_counter,
                                 &debugger_state,
+                                &input_bindings,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2715,6 +2815,7 @@ pub fn main() !void {
                             window,
                             &frame_counter,
                             &debugger_state,
+                            &input_bindings,
                             notifications,
                             transitions,
                         ),
@@ -2774,6 +2875,7 @@ pub fn main() !void {
                             window,
                             &frame_counter,
                             &debugger_state,
+                            &input_bindings,
                             notifications,
                             transitions,
                         ),
@@ -2820,6 +2922,8 @@ pub fn main() !void {
                         window,
                         if (audio) |*a| a else null,
                         &current_audio_mode,
+                        &input_bindings,
+                        &machine,
                         scancode,
                         pressed,
                         .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
@@ -3273,6 +3377,7 @@ pub fn main() !void {
             persistent_state_slot,
             &performance_hud,
             if (current_rom_path.len != 0) current_rom_path.slice() else null,
+            config_file_path,
         );
         if (frontend_ui.show_debugger and debugger_state.active) {
             const dbg_viewport = try zsdl3.getRenderViewport(renderer);
@@ -3840,7 +3945,9 @@ test "binding editor clears hotkeys during capture" {
         .{ .input = .f8 },
         true,
     ));
-    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len;
+    // Navigate to first hotkey entry (after all keyboard/gamepad sections + headers)
+    const hotkey_start = 5 + InputBindings.player_count * InputBindings.all_actions.len * 2;
+    editor.selected_index = hotkey_start;
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .delete, .{ .input = .delete }, true));
     try std.testing.expectEqual(InputBindings.HotkeyBinding{}, bindings.hotkeyBinding(.toggle_help));
@@ -3868,7 +3975,8 @@ test "binding editor captures modifier hotkeys" {
         .{ .input = .f8 },
         true,
     ));
-    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
+    const hotkey_base = 5 + InputBindings.player_count * InputBindings.all_actions.len * 2;
+    editor.selected_index = hotkey_base + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(handleBindingEditorKey(
         &ui,
@@ -4437,6 +4545,10 @@ test "settings actions persist frontend video settings" {
     var ui = FrontendUi{ .show_settings = true };
     var settings = SettingsMenuState{};
     var config = FrontendConfig{};
+    var test_bindings = InputBindings.Bindings.defaults();
+    const rom = [_]u8{0} ** 0x400;
+    var test_machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer test_machine.deinit(allocator);
     var perf = PerformanceHudState{};
     var spike_log = PerformanceSpikeLogState{};
     var core_profile_frames_remaining: u32 = 0;
@@ -4454,6 +4566,8 @@ test "settings actions persist frontend video settings" {
         fake_window,
         null,
         &current_audio_mode,
+        &test_bindings,
+        &test_machine,
         .video_aspect_mode,
         1,
         .{},
@@ -4469,6 +4583,8 @@ test "settings actions persist frontend video settings" {
         fake_window,
         null,
         &current_audio_mode,
+        &test_bindings,
+        &test_machine,
         .video_scale_mode,
         1,
         .{},
@@ -4503,6 +4619,7 @@ test "guide button toggles pause and resumes overlays" {
     var frame_counter: u32 = 0;
     var core_profile_frames_remaining: u32 = 0;
     var dbg_state = debugger_mod.DebuggerState{};
+    var test_bindings = InputBindings.Bindings.defaults();
     const fake_window: *zsdl3.Window = @ptrFromInt(1);
 
     switch (handleFrontendGamepadInput(
@@ -4526,6 +4643,7 @@ test "guide button toggles pause and resumes overlays" {
         fake_window,
         &frame_counter,
         &dbg_state,
+        &test_bindings,
         .guide,
         true,
         .{},
@@ -4558,6 +4676,7 @@ test "guide button toggles pause and resumes overlays" {
         fake_window,
         &frame_counter,
         &dbg_state,
+        &test_bindings,
         .guide,
         true,
         .{},

@@ -570,7 +570,7 @@ fn trimLine(raw_line: []const u8) []const u8 {
     return std.mem.trim(u8, line_without_comment, " \t\r");
 }
 
-fn actionIndex(action: Action) usize {
+pub fn actionIndex(action: Action) usize {
     return @intFromEnum(action);
 }
 

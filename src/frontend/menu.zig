@@ -143,6 +143,8 @@ pub const SettingsMenuAction = enum {
     video_scale_mode,
     fullscreen,
     audio_render_mode,
+    controller_p1_type,
+    controller_p2_type,
     performance_hud,
     close,
 };
@@ -152,6 +154,8 @@ pub const settings_menu_actions = [_]SettingsMenuAction{
     .video_scale_mode,
     .fullscreen,
     .audio_render_mode,
+    .controller_p1_type,
+    .controller_p2_type,
     .performance_hud,
     .close,
 };
@@ -239,6 +243,32 @@ pub fn homeMenuActionForIndex(selected_index: usize, cfg: *const FrontendConfig)
     return .quit;
 }
 
+pub const ControllerType = @import("../input/io.zig").Io.ControllerType;
+
+fn controllerTypeLabel(ct: ControllerType) []const u8 {
+    return switch (ct) {
+        .three_button => "3-BUTTON",
+        .six_button => "6-BUTTON",
+        .ea_4way_play => "4-WAY PLAY",
+    };
+}
+
+pub fn nextControllerType(ct: ControllerType) ControllerType {
+    return switch (ct) {
+        .three_button => .six_button,
+        .six_button => .ea_4way_play,
+        .ea_4way_play => .three_button,
+    };
+}
+
+pub fn prevControllerType(ct: ControllerType) ControllerType {
+    return switch (ct) {
+        .three_button => .ea_4way_play,
+        .six_button => .three_button,
+        .ea_4way_play => .six_button,
+    };
+}
+
 // Format a settings menu action line for display
 pub fn formatSettingsActionLine(
     buffer: []u8,
@@ -248,6 +278,7 @@ pub fn formatSettingsActionLine(
     scale_mode: VideoScaleMode,
     fullscreen: bool,
     audio_mode: AudioOutput.RenderMode,
+    controller_types: [2]ControllerType,
     performance_hud: bool,
 ) ![]const u8 {
     const prefix = if (selected) "> " else "  ";
@@ -256,6 +287,8 @@ pub fn formatSettingsActionLine(
         .video_scale_mode => std.fmt.bufPrint(buffer, "{s}SCALING {s}", .{ prefix, scale_mode.label() }),
         .fullscreen => std.fmt.bufPrint(buffer, "{s}FULLSCREEN {s}", .{ prefix, if (fullscreen) "ON" else "OFF" }),
         .audio_render_mode => std.fmt.bufPrint(buffer, "{s}AUDIO MODE {s}", .{ prefix, audio_mode.label() }),
+        .controller_p1_type => std.fmt.bufPrint(buffer, "{s}P1 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[0]) }),
+        .controller_p2_type => std.fmt.bufPrint(buffer, "{s}P2 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[1]) }),
         .performance_hud => std.fmt.bufPrint(buffer, "{s}PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
         .close => std.fmt.bufPrint(buffer, "{s}CLOSE SETTINGS", .{prefix}),
     };

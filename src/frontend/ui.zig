@@ -841,16 +841,19 @@ pub fn renderKeyboardEditorOverlay(
     editor: *const BindingEditorState,
     bindings: *const InputBindings.Bindings,
     frame_number: u64,
+    config_path: []const u8,
 ) !void {
-    const title = "KEYBOARD EDITOR";
-    const controls = if (editor.capture_mode)
+    const title = "INPUT EDITOR";
+    const controls = if (editor.capture_mode and editor.capture_gamepad)
+        "PRESS A GAMEPAD BUTTON  ESC CANCEL  DEL CLEAR"
+    else if (editor.capture_mode)
         "PRESS A KEY  ESC CANCEL  DEL CLEAR"
     else
-        "UP DOWN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE";
+        "UP/DN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE";
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
     const line_height = 10.0 * scale;
-    const header_height = 28.0 * scale;
+    const header_height = 38.0 * scale;
     const footer_height = 18.0 * scale;
     const visible_rows = @min(@as(usize, 11), BindingEditorState.selectionCount());
 
@@ -885,6 +888,14 @@ pub fn renderKeyboardEditorOverlay(
         Colors.text_muted,
         controls,
     );
+    try drawText(
+        renderer,
+        panel.x + padding,
+        panel.y + padding + 22.0 * scale,
+        scale,
+        Colors.text_secondary,
+        config_path,
+    );
 
     const first_visible = if (editor.selected_index < visible_rows / 2)
         @as(usize, 0)
@@ -903,7 +914,7 @@ pub fn renderKeyboardEditorOverlay(
             .w = panel.w - padding * 2.0 + 6.0 * scale,
             .h = line_height,
         };
-        if (selected) {
+        if (selected and !bindingEditorTargetForIndex(index).isHeader()) {
             const pulse_alpha = Animation.pulseAlpha(.{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 }, frame_number, 0xE0, 0xF2);
             try zsdl3.setRenderDrawColor(renderer, pulse_alpha);
             try zsdl3.renderFillRect(renderer, row_rect);
@@ -911,18 +922,18 @@ pub fn renderKeyboardEditorOverlay(
             try zsdl3.renderRect(renderer, row_rect);
         }
 
+        const target = bindingEditorTargetForIndex(index);
         var line_buffer: [96]u8 = undefined;
-        const line = try bindingEditorRowText(line_buffer[0..], bindings, bindingEditorTargetForIndex(index));
-        const base_color: zsdl3.Color = if (selected) Colors.text_selected else Colors.text_primary;
-        const text_color = if (selected) Animation.pulseColor(base_color, frame_number, 0.85, 1.0) else base_color;
-        try drawText(
-            renderer,
-            panel.x + padding,
-            y,
-            scale,
-            text_color,
-            line,
-        );
+        const line = try bindingEditorRowText(line_buffer[0..], bindings, target);
+
+        if (target.isHeader()) {
+            // Section headers: accent color, no selection highlight
+            try drawText(renderer, panel.x + padding, y, scale, Colors.cyan, line);
+        } else {
+            const base_color: zsdl3.Color = if (selected) Colors.text_selected else Colors.text_primary;
+            const text_color = if (selected) Animation.pulseColor(base_color, frame_number, 0.85, 1.0) else base_color;
+            try drawText(renderer, panel.x + padding, y, scale, text_color, line);
+        }
         y += line_height;
     }
 
