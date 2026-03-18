@@ -205,6 +205,14 @@ pub const Z80 = struct {
         return 0;
     }
 
+    /// Returns the total number of audio buffer overflow events since the last
+    /// call and resets all overflow counters. Nonzero means audio events were
+    /// silently dropped because a ring buffer was full.
+    pub fn takeOverflowCounts(self: *Z80) u32 {
+        if (self.handle) |h| return c.jgz80_take_overflow_counts(h, null, null, null, null);
+        return 0;
+    }
+
     pub fn discardPendingAudioEvents(self: *Z80) void {
         var ym_writes: [64]YmWriteEvent = undefined;
         while (self.takeYmWrites(ym_writes[0..]) != 0) {}

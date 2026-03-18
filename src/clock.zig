@@ -20,6 +20,12 @@ pub const fm_master_cycles_per_sample: u16 = @as(u16, m68k_divider) * 6 * 6 * 4;
 
 pub const psg_master_cycles_per_sample: u16 = @as(u16, z80_divider) * 16;
 
+pub const refresh_interval: u32 = 128;
+
+/// Wait cycles added per refresh event, indexed by (ppc >> 21) & 7.
+/// ROM regions get 2, RAM gets 3, I/O gets 0.
+pub const refresh_wait_by_region: [8]u32 = .{ 2, 2, 2, 2, 0, 0, 0, 3 };
+
 pub inline fn m68kCyclesToMaster(cycles: u32) u32 {
     return cycles * m68k_divider;
 }

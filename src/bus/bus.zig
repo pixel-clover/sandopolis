@@ -27,6 +27,8 @@ pub const Bus = struct {
     audio_timing: AudioTiming,
     timing_state: z80_timing.State,
     open_bus: u16,
+    tmss_register: [4]u8,
+    tmss_locked: bool,
     cpu_runtime_state: cpu_runtime.RuntimeState,
     active_execution_counters: ?*CoreFrameCounters,
 
@@ -51,10 +53,17 @@ pub const Bus = struct {
             .audio_timing = .{},
             .timing_state = .{},
             .open_bus = 0,
+            .tmss_register = .{ 0, 0, 0, 0 },
+            .tmss_locked = false,
             .cpu_runtime_state = .{},
             .active_execution_counters = null,
         };
         return bus;
+    }
+
+    pub fn writeTmss(self: *Bus, offset: u2, value: u8) void {
+        self.tmss_register[offset] = value;
+        self.tmss_locked = !std.mem.eql(u8, &self.tmss_register, "SEGA");
     }
 
     pub fn hasCartridgeRam(self: *const Bus) bool {
@@ -134,6 +143,8 @@ pub const Bus = struct {
             &self.audio_timing,
             &self.open_bus,
             &self.cpu_runtime_state,
+            &self.tmss_register,
+            &self.tmss_locked,
             self,
             ensureZ80HostWindowCallback,
         );
@@ -308,6 +319,8 @@ pub const Bus = struct {
             .audio_timing = self.audio_timing,
             .timing_state = self.timing_state,
             .open_bus = self.open_bus,
+            .tmss_register = self.tmss_register,
+            .tmss_locked = self.tmss_locked,
             .cpu_runtime_state = .{},
             .active_execution_counters = null,
         };
@@ -347,6 +360,8 @@ pub const Bus = struct {
         self.audio_timing = .{};
         self.timing_state = .{};
         self.open_bus = 0;
+        self.tmss_register = .{ 'S', 'E', 'G', 'A' };
+        self.tmss_locked = false;
         self.cpu_runtime_state = .{};
         self.ensureZ80HostWindow();
     }
@@ -358,6 +373,8 @@ pub const Bus = struct {
         self.z80.setResetLineAsserted(true);
         self.timing_state = .{};
         self.open_bus = 0;
+        self.tmss_register = .{ 'S', 'E', 'G', 'A' };
+        self.tmss_locked = false;
         self.cpu_runtime_state = .{};
         self.ensureZ80HostWindow();
     }
@@ -450,6 +467,14 @@ pub const Bus = struct {
         return self.vdp.nextTransferStepMasterCycles();
     }
 
+    pub fn recordRefreshCycles(self: *Bus, m68k_cycles: u32, ppc: u32) void {
+        self.timing_state.applyRefreshPenalty(m68k_cycles, ppc);
+    }
+
+    pub fn resetRefreshCounter(self: *Bus) void {
+        self.timing_state.resetRefreshCounter();
+    }
+
     pub fn setPendingM68kWaitMasterCycles(self: *Bus, master_cycles: u32) void {
         self.timing_state.setPendingM68kWaitMasterCycles(master_cycles);
     }
@@ -470,6 +495,8 @@ pub const Bus = struct {
             .audio_timing = self.audio_timing,
             .timing_state = self.captureTimingState(),
             .open_bus = self.open_bus,
+            .tmss_register = self.tmss_register,
+            .tmss_locked = self.tmss_locked,
             .cartridge_ram = self.cartridge.captureRamState(),
         };
     }
@@ -482,7 +509,10 @@ pub const Bus = struct {
         self.audio_timing = state.audio_timing;
         self.restoreTimingState(state.timing_state);
         self.open_bus = state.open_bus;
+        self.tmss_register = state.tmss_register;
+        self.tmss_locked = state.tmss_locked;
         try self.cartridge.restoreRamState(state.cartridge_ram, cartridge_ram_bytes);
+        self.timing_state.z80_cached_can_run = self.z80.canRun();
     }
 
     pub fn clearPendingAudioTransferState(self: *Bus) void {
@@ -505,6 +535,13 @@ pub const Bus = struct {
 
     pub fn step(self: *Bus, m68k_cycles: u32) void {
         self.stepMaster(clock.m68kCyclesToMaster(m68k_cycles));
+    }
+
+    /// Refresh the cached Z80 canRun flag from the actual Z80 state.
+    /// Call after directly modifying Z80 bus/reset state outside the
+    /// normal bus control write path.
+    pub fn syncZ80RunCache(self: *Bus) void {
+        self.timing_state.z80_cached_can_run = self.z80.canRun();
     }
 };
 
@@ -652,6 +689,7 @@ test "z80 68k-bus stall is applied before the next instruction" {
     defer bus.deinit(testing.allocator);
 
     bus.z80.reset();
+    bus.syncZ80RunCache();
     bus.z80.writeByte(0x0000, 0x3A);
     bus.z80.writeByte(0x0001, 0x00);
     bus.z80.writeByte(0x0002, 0x80);
@@ -688,6 +726,7 @@ test "mid-instruction z80 stall flush is charged against later master slices" {
     defer bus.deinit(testing.allocator);
 
     bus.z80.reset();
+    bus.syncZ80RunCache();
     bus.z80.writeByte(0x0000, 0x34); // INC (HL)
 
     var state = bus.z80.captureState();
@@ -811,6 +850,7 @@ test "banked access offsets advance vdp state before the first z80 host read" {
     try testing.expect(expected_counter_byte != @as(u8, @truncate(bus.vdp.readHVCounterAdjusted(0))));
 
     bus.z80.reset();
+    bus.syncZ80RunCache();
     bus.z80.writeByte(0x0000, 0x3A); // LD A,(nn)
     bus.z80.writeByte(0x0001, 0x09);
     bus.z80.writeByte(0x0002, 0x80);

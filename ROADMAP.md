@@ -13,45 +13,60 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Z80 CPU via jgz80 C bridge with host callbacks
 - [x] Frame scheduler with per-line HINT/HBlank/VBlank event handling
 - [x] Z80 bus control with BUSREQ/RESET and 68K window gating
-- [ ] Per-access 68K/Z80 arbitration and wait-state behavior in shared bus windows
+- [x] Coarse-grain 68K/Z80 bus arbitration with wait-state delays for Z80 window access
+- [x] Per-access wait cycle tracking for VDP FIFO and Z80 window within multi-access instructions
+- [ ] Sub-instruction Z80 timing advancement during 68K multi-access instructions
+- [ ] Dynamic arbitration during VDP DMA with shared bus windows
 
 ### Video Display Processor
 
 - [x] VDP registers, VRAM/CRAM/VSRAM, and pattern/tile rendering
-- [x] Plane A/B with scrolling, sprites with SAT parsing, and priority handling
-- [x] DMA with 68K-to-VDP transfers, fill, and VRAM copy
+- [x] Plane A/B with scrolling (full-screen, per-8-line, per-column), window plane, and priority handling
+- [x] Sprites with SAT parsing, 7-layer priority, per-line count/dot overflow, and x=0 masking
+- [x] DMA with 68K-to-VDP transfers, fill, VRAM copy, and access-slot-accurate timing
+- [x] FIFO emulation with 4-entry queue, latency tracking, and write-ahead projection
 - [x] Shadow/highlight mode with special sprite palette handling
-- [x] Sprite limits with per-line count/dot overflow and x=0 masking
 - [x] H32/H40 mode, interlace mode 2, display enable blanking, and VRAM read buffer
-- [x] Status register with VInt, sprite overflow/collision, and FIFO flags
-- [x] DMA timing
-- [x] FIFO emulation
-- [ ] More hardware-accurate CRAM-dot, border, and mid-scanline timing behavior
-- [ ] More hardware-accurate VDP interrupt/status edge cases and DMA/FIFO corner cases
-- [ ] Broader validation against demanding hardware demos and VDP-focused test ROMs
+- [x] Status register with VInt, sprite overflow/collision, FIFO flags, and HV counter-latch
+- [x] Pre-line sprite overflow detection visible to CPU during scanline execution
+- [x] CRAM pixel-granule updates during active display (CRAM dot behavior)
+- [x] Mid-scanline register change re-scan (backdrop, display enable, palette mode, plane base, scroll mode, window split)
+- [ ] Right-edge border rendering and overscan area coloring
+- [x] HInt/VInt priority ordering when both are pending on the same line
+- [ ] Sprite horizontal wrap-around and clip-box edge cases at screen boundaries
+- [ ] Validation: TiTAN Overdrive 2 renders without glitches
+- [ ] Validation: `cram_flicker.bin` test ROM passes
+- [ ] Validation: `vctest.bin` HV counter accuracy
 
 ### Audio Subsystem
 
 - [x] Audio timing with master-clock accumulation and rate conversion
-- [x] Output pipeline with timestamped event application, stereo mixing, and SDL3 playback
-- [x] SN76489 PSG with chip-accurate emulation, reachable from both Z80 and M68K paths
-- [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, timers, and die-accurate ROM tables
-- [x] Audio filtering with low-pass on YM2612 output and DC-blocking on the final mix
-- [ ] Reduce remaining YM2612 mismatches against reference output and hardware edge cases
-- [ ] Improve final mix, filtering, and resampling to better match console output character
+- [x] Output pipeline with timestamped event application, cubic hermite resampling, stereo mixing, and SDL3 playback
+- [x] SN76489 PSG with chip-accurate emulation, stereo panning, reachable from both Z80 and M68K paths
+- [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM tables
+- [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
+- [x] Audio filtering with YM2612 low-pass (5 kHz analog path model), board output LPF, and DC-blocking on the final mix
+- [x] Debug render modes (YM-only, PSG-only, unfiltered mix)
+- [ ] Compare YM2612 output against Nuked-OPN2 reference for key titles (Sonic, Streets of Rage, Thunderforce IV)
+- [ ] Validate CSM mode percussion synthesis against hardware recordings
+- [ ] Investigate blip-buffer-style band-limited synthesis as an alternative to cubic resampling
+- [ ] PSG/FM gain balance tuning against hardware capture measurements
 
 ### Input and Interaction
 
 - [x] Keyboard and gamepad bindings for two players with hotkeys
 - [x] Controller I/O with timed TH behavior and 3/6-button protocol
-- [x] SRAM support with persistent `.sav` load/store
+- [x] SRAM support with persistent `.sav` load/store, write-protect register, and I2C EEPROM (24Cxx series)
+- [x] TMSS (Trademark Security System) register gating VDP access
 - [x] Configurable input mapping via a config file with keyboard, gamepad, and analog threshold settings
 - [x] Resizable window and fullscreen toggle
 - [x] Startup home screen with recent-ROM history and remembered open-directory state
 - [x] Modal save manager for persistent state slots with runtime metadata and delete support
-- [x] GIF animation recording support
-- [x] Save-state previews/screenshots and fuller settings menus beyond the current keyboard/gamepad home, pause, and save-manager flow
-- [ ] More controller I/O edge-case coverage and broader peripheral support
+- [x] GIF animation recording, WAV audio recording, and BMP screenshot capture
+- [x] Save-state previews/screenshots and pause the flow
+- [x] EA 4-Way Play multitap adapter (4-player support)
+- [ ] Sega Mouse peripheral support
+- [ ] 6-button controller TH counter reset timing edge cases
 
 ### Compatibility and Tooling
 
@@ -60,12 +75,17 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Boot smoke test with ROM startup progression check
 - [x] Test ROM collection in `tests/testroms/`
 - [x] Deliberate public and testing facades that keep SDL frontend code out of the core runtime path
-- [ ] Reduce remaining scheduler, bus, and VDP timing mismatches exposed by hardware test ROMs and stress demos
-- [ ] Debugger with single stepping, breakpoints, and register/memory inspection
-- [ ] Expand compatibility regression coverage with broader external ROM and test-ROM suites
+- [x] Debugger: M68K single stepping with F10, register display (D0-D7, A0-A7, PC, SR flags)
+- [x] Debugger: memory hex dump viewer with page navigation
+- [x] Debugger: VDP state viewer (24 registers, mode/scanline/flags, DMA status)
+- [ ] Debugger: instruction-level breakpoints
+- [ ] Debugger: tile/sprite/plane visualizer
+- [ ] Expand the regression suite with Overdrive 2, Ings VDP tests, and community test ROMs
+- [ ] ROM header CRC validation and game database lookup
 
 ### Future Goals
 
-- [ ] Sega CD and 32X subsystem support
+- [ ] Sega CD subsystem support
+- [ ] 32X subsystem support
 - [ ] Browser/WebAssembly build and frontend path
 - [ ] Libretro core packaging and integration

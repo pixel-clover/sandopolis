@@ -1,6 +1,7 @@
 const std = @import("std");
 const Vdp = @import("../video/vdp.zig").Vdp;
 const StateFile = @import("../state_file.zig");
+const rom_paths = @import("../rom_paths.zig");
 const Machine = @import("../machine.zig").Machine;
 const config = @import("config.zig");
 
@@ -153,8 +154,9 @@ pub fn resolvePersistentStatePath(
     explicit_state_path: ?[]const u8,
     persistent_state_slot: u8,
 ) ![]u8 {
+    // Use per-ROM data directory when a ROM path is available
     if (explicit_state_path) |path| {
-        return StateFile.pathForSlot(allocator, path, persistent_state_slot);
+        return rom_paths.statePath(allocator, path, persistent_state_slot);
     }
     return StateFile.pathForMachineSlot(allocator, machine, persistent_state_slot);
 }

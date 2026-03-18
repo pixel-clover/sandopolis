@@ -391,6 +391,172 @@ const ssg_alternate_writes = ssg_setup_writes ++ [_]ScheduledWrite{
     scheduled(2048, 0, 0x28, 0x00),
 };
 
+const ssg_alternate_hold_writes = ssg_setup_writes ++ [_]ScheduledWrite{
+    scheduled(28, 0, 0x9C, 0x0B),
+    scheduled(29, 0, 0x28, 0xF0),
+    scheduled(2048, 0, 0x28, 0x00),
+};
+
+const ssg_inverted_repeat_writes = ssg_setup_writes ++ [_]ScheduledWrite{
+    scheduled(28, 0, 0x9C, 0x0C),
+    scheduled(29, 0, 0x28, 0xF0),
+    scheduled(2048, 0, 0x28, 0x00),
+};
+
+const ssg_inverted_hold_writes = ssg_setup_writes ++ [_]ScheduledWrite{
+    scheduled(28, 0, 0x9C, 0x0D),
+    scheduled(29, 0, 0x28, 0xF0),
+    scheduled(2048, 0, 0x28, 0x00),
+};
+
+const ssg_inverted_alternate_writes = ssg_setup_writes ++ [_]ScheduledWrite{
+    scheduled(28, 0, 0x9C, 0x0E),
+    scheduled(29, 0, 0x28, 0xF0),
+    scheduled(2048, 0, 0x28, 0x00),
+};
+
+const ssg_inverted_alternate_hold_writes = ssg_setup_writes ++ [_]ScheduledWrite{
+    scheduled(28, 0, 0x9C, 0x0F),
+    scheduled(29, 0, 0x28, 0xF0),
+    scheduled(2048, 0, 0x28, 0x00),
+};
+
+// Detune test: DT1=7 (maximum detune) on all operators
+const detune_max_writes = [_]ScheduledWrite{
+    scheduled(0, 0, 0xA4, 0x22),
+    scheduled(1, 0, 0xA0, 0x80),
+    scheduled(2, 0, 0xB0, 0x07),
+    scheduled(3, 0, 0xB4, 0xC0),
+    scheduled(4, 0, 0x30, 0x71), // DT1=7, MUL=1
+    scheduled(5, 0, 0x40, 0x18),
+    scheduled(6, 0, 0x50, 0x1F),
+    scheduled(7, 0, 0x60, 0x0C),
+    scheduled(8, 0, 0x70, 0x08),
+    scheduled(9, 0, 0x80, 0x24),
+    scheduled(10, 0, 0x38, 0x71),
+    scheduled(11, 0, 0x48, 0x18),
+    scheduled(12, 0, 0x58, 0x1F),
+    scheduled(13, 0, 0x68, 0x0C),
+    scheduled(14, 0, 0x78, 0x08),
+    scheduled(15, 0, 0x88, 0x24),
+    scheduled(16, 0, 0x34, 0x71),
+    scheduled(17, 0, 0x44, 0x18),
+    scheduled(18, 0, 0x54, 0x1F),
+    scheduled(19, 0, 0x64, 0x0C),
+    scheduled(20, 0, 0x74, 0x08),
+    scheduled(21, 0, 0x84, 0x24),
+    scheduled(22, 0, 0x3C, 0x71),
+    scheduled(23, 0, 0x4C, 0x00),
+    scheduled(24, 0, 0x5C, 0x1F),
+    scheduled(25, 0, 0x6C, 0x0C),
+    scheduled(26, 0, 0x7C, 0x08),
+    scheduled(27, 0, 0x8C, 0x24),
+    scheduled(28, 0, 0x28, 0xF0),
+    scheduled(1200, 0, 0x28, 0x00),
+};
+
+// Detune test: DT1=4 (negative detune) on all operators
+const detune_neg_writes = [_]ScheduledWrite{
+    scheduled(0, 0, 0xA4, 0x22),
+    scheduled(1, 0, 0xA0, 0x80),
+    scheduled(2, 0, 0xB0, 0x07),
+    scheduled(3, 0, 0xB4, 0xC0),
+    scheduled(4, 0, 0x30, 0x41), // DT1=4, MUL=1
+    scheduled(5, 0, 0x40, 0x18),
+    scheduled(6, 0, 0x50, 0x1F),
+    scheduled(7, 0, 0x60, 0x0C),
+    scheduled(8, 0, 0x70, 0x08),
+    scheduled(9, 0, 0x80, 0x24),
+    scheduled(10, 0, 0x38, 0x41),
+    scheduled(11, 0, 0x48, 0x18),
+    scheduled(12, 0, 0x58, 0x1F),
+    scheduled(13, 0, 0x68, 0x0C),
+    scheduled(14, 0, 0x78, 0x08),
+    scheduled(15, 0, 0x88, 0x24),
+    scheduled(16, 0, 0x34, 0x41),
+    scheduled(17, 0, 0x44, 0x18),
+    scheduled(18, 0, 0x54, 0x1F),
+    scheduled(19, 0, 0x64, 0x0C),
+    scheduled(20, 0, 0x74, 0x08),
+    scheduled(21, 0, 0x84, 0x24),
+    scheduled(22, 0, 0x3C, 0x41),
+    scheduled(23, 0, 0x4C, 0x00),
+    scheduled(24, 0, 0x5C, 0x1F),
+    scheduled(25, 0, 0x6C, 0x0C),
+    scheduled(26, 0, 0x7C, 0x08),
+    scheduled(27, 0, 0x8C, 0x24),
+    scheduled(28, 0, 0x28, 0xF0),
+    scheduled(1200, 0, 0x28, 0x00),
+};
+
+// Envelope: maximum attack rate (rate=31) for instant attack
+const eg_max_attack_writes = [_]ScheduledWrite{
+    scheduled(0, 0, 0xA4, 0x22),
+    scheduled(1, 0, 0xA0, 0x80),
+    scheduled(2, 0, 0xB0, 0x07),
+    scheduled(3, 0, 0xB4, 0xC0),
+    scheduled(4, 0, 0x30, 0x01),
+    scheduled(5, 0, 0x40, 0x18),
+    scheduled(6, 0, 0x50, 0x1F), // AR=31
+    scheduled(7, 0, 0x60, 0x0C),
+    scheduled(8, 0, 0x70, 0x08),
+    scheduled(9, 0, 0x80, 0x24),
+    scheduled(10, 0, 0x38, 0x01),
+    scheduled(11, 0, 0x48, 0x18),
+    scheduled(12, 0, 0x58, 0x1F),
+    scheduled(13, 0, 0x68, 0x0C),
+    scheduled(14, 0, 0x78, 0x08),
+    scheduled(15, 0, 0x88, 0x24),
+    scheduled(16, 0, 0x34, 0x01),
+    scheduled(17, 0, 0x44, 0x18),
+    scheduled(18, 0, 0x54, 0x1F),
+    scheduled(19, 0, 0x64, 0x0C),
+    scheduled(20, 0, 0x74, 0x08),
+    scheduled(21, 0, 0x84, 0x24),
+    scheduled(22, 0, 0x3C, 0x01),
+    scheduled(23, 0, 0x4C, 0x00),
+    scheduled(24, 0, 0x5C, 0x1F),
+    scheduled(25, 0, 0x6C, 0x0C),
+    scheduled(26, 0, 0x7C, 0x08),
+    scheduled(27, 0, 0x8C, 0x24),
+    scheduled(28, 0, 0x28, 0xF0),
+    scheduled(1200, 0, 0x28, 0x00),
+};
+
+// Envelope: slow attack rate (rate=1) with high rate scaling (KS=3)
+const eg_slow_attack_ks_writes = [_]ScheduledWrite{
+    scheduled(0, 0, 0xA4, 0x3A), // High block for strong rate scaling
+    scheduled(1, 0, 0xA0, 0x80),
+    scheduled(2, 0, 0xB0, 0x07),
+    scheduled(3, 0, 0xB4, 0xC0),
+    scheduled(4, 0, 0x30, 0x01),
+    scheduled(5, 0, 0x40, 0x18),
+    scheduled(6, 0, 0x50, 0xC1), // AR=1, KS=3
+    scheduled(7, 0, 0x60, 0x0C),
+    scheduled(8, 0, 0x70, 0x08),
+    scheduled(9, 0, 0x80, 0x24),
+    scheduled(10, 0, 0x38, 0x01),
+    scheduled(11, 0, 0x48, 0x18),
+    scheduled(12, 0, 0x58, 0xC1),
+    scheduled(13, 0, 0x68, 0x0C),
+    scheduled(14, 0, 0x78, 0x08),
+    scheduled(15, 0, 0x88, 0x24),
+    scheduled(16, 0, 0x34, 0x01),
+    scheduled(17, 0, 0x44, 0x18),
+    scheduled(18, 0, 0x54, 0xC1),
+    scheduled(19, 0, 0x64, 0x0C),
+    scheduled(20, 0, 0x74, 0x08),
+    scheduled(21, 0, 0x84, 0x24),
+    scheduled(22, 0, 0x3C, 0x01),
+    scheduled(23, 0, 0x4C, 0x00),
+    scheduled(24, 0, 0x5C, 0xC1),
+    scheduled(25, 0, 0x6C, 0x0C),
+    scheduled(26, 0, 0x7C, 0x08),
+    scheduled(27, 0, 0x8C, 0x24),
+    scheduled(28, 0, 0x28, 0xF0),
+    scheduled(4000, 0, 0x28, 0x00),
+};
+
 const dac_step_writes = [_]ScheduledWrite{
     scheduled(0, 0, 0x2B, 0x80),
     scheduled(32, 0, 0x2A, 0x00),
@@ -530,6 +696,60 @@ const scenarios = [_]Scenario{
         .description = "Carrier operator with SSG-EG alternate enabled",
         .total_clocks = 4096,
         .writes = ssg_alternate_writes[0..],
+    },
+    .{
+        .name = "ssg-alternate-hold",
+        .description = "Carrier operator with SSG-EG alternate+hold (mode 0x0B)",
+        .total_clocks = 4096,
+        .writes = ssg_alternate_hold_writes[0..],
+    },
+    .{
+        .name = "ssg-inverted-repeat",
+        .description = "Carrier operator with SSG-EG inverted repeat (mode 0x0C)",
+        .total_clocks = 4096,
+        .writes = ssg_inverted_repeat_writes[0..],
+    },
+    .{
+        .name = "ssg-inverted-hold",
+        .description = "Carrier operator with SSG-EG inverted hold (mode 0x0D)",
+        .total_clocks = 4096,
+        .writes = ssg_inverted_hold_writes[0..],
+    },
+    .{
+        .name = "ssg-inverted-alternate",
+        .description = "Carrier operator with SSG-EG inverted alternate (mode 0x0E)",
+        .total_clocks = 4096,
+        .writes = ssg_inverted_alternate_writes[0..],
+    },
+    .{
+        .name = "ssg-inverted-alternate-hold",
+        .description = "Carrier operator with SSG-EG inverted alternate+hold (mode 0x0F)",
+        .total_clocks = 4096,
+        .writes = ssg_inverted_alternate_hold_writes[0..],
+    },
+    .{
+        .name = "detune-max",
+        .description = "All operators with DT1=7 (maximum positive detune)",
+        .total_clocks = 2048,
+        .writes = detune_max_writes[0..],
+    },
+    .{
+        .name = "detune-neg",
+        .description = "All operators with DT1=4 (maximum negative detune)",
+        .total_clocks = 2048,
+        .writes = detune_neg_writes[0..],
+    },
+    .{
+        .name = "eg-max-attack",
+        .description = "All operators with maximum attack rate (AR=31, instant attack)",
+        .total_clocks = 2048,
+        .writes = eg_max_attack_writes[0..],
+    },
+    .{
+        .name = "eg-slow-attack-ks",
+        .description = "Slow attack rate (AR=1) with high rate scaling (KS=3, high block)",
+        .total_clocks = 8192,
+        .writes = eg_slow_attack_ks_writes[0..],
     },
 };
 

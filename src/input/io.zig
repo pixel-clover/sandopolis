@@ -9,6 +9,7 @@ pub const Io = struct {
     pub const ControllerType = enum {
         three_button,
         six_button,
+        ea_4way_play,
     };
 
     data: [3]u8,
@@ -16,7 +17,7 @@ pub const Io = struct {
     tx_data: [3]u8,
     serial_ctrl: [3]u8,
 
-    pad: [2]u16,
+    pad: [4]u16,
     th_flip_count: [2]u2,
     flip_reset_counter: [2]u32,
     cycles_until_th_high: [2]u32,
@@ -30,7 +31,7 @@ pub const Io = struct {
             .ctrl = [_]u8{0} ** 3,
             .tx_data = .{ 0xFF, 0xFF, 0xFB },
             .serial_ctrl = [_]u8{0} ** 3,
-            .pad = [_]u16{0xFFFF} ** 2,
+            .pad = [_]u16{0xFFFF} ** 4,
             .th_flip_count = [_]u2{0} ** 2,
             .flip_reset_counter = [_]u32{0} ** 2,
             .cycles_until_th_high = [_]u32{0} ** 2,
@@ -111,18 +112,30 @@ pub const Io = struct {
         self.version_is_overseas = version_is_overseas;
     }
 
+    fn effectivePadIndex(self: *const Io, port: usize) usize {
+        // EA 4-Way Play: TH on port 2 selects between players
+        // TH high: port 0 → pad 0 (player A), port 1 → pad 1 (player B)
+        // TH low:  port 0 → pad 2 (player C), port 1 → pad 3 (player D)
+        if (self.controller_types[0] == .ea_4way_play or self.controller_types[1] == .ea_4way_play) {
+            const offset: usize = if (self.controller_th[1]) 0 else 2;
+            return port + offset;
+        }
+        return port;
+    }
+
     fn readData(self: *const Io, port: usize) u8 {
+        const pad_idx = self.effectivePadIndex(port);
         var controller_byte: u8 = switch (self.controllerState(port)) {
-            .th_high => @as(u8, @truncate(self.pad[port] & 0x3F)),
-            .th_low_standard => @as(u8, @truncate(self.pad[port] & 0x03)) | buttonBit(self.pad[port], Button.A, 4) | buttonBit(self.pad[port], Button.Start, 5),
-            .th_high_six_button => buttonBit(self.pad[port], Button.Z, 0) |
-                buttonBit(self.pad[port], Button.Y, 1) |
-                buttonBit(self.pad[port], Button.X, 2) |
-                buttonBit(self.pad[port], Button.Mode, 3) |
-                buttonBit(self.pad[port], Button.B, 4) |
-                buttonBit(self.pad[port], Button.C, 5),
-            .th_low_id_low => buttonBit(self.pad[port], Button.A, 4) | buttonBit(self.pad[port], Button.Start, 5),
-            .th_low_id_high => buttonBit(self.pad[port], Button.A, 4) | buttonBit(self.pad[port], Button.Start, 5) | 0x0F,
+            .th_high => @as(u8, @truncate(self.pad[pad_idx] & 0x3F)),
+            .th_low_standard => @as(u8, @truncate(self.pad[pad_idx] & 0x03)) | buttonBit(self.pad[pad_idx], Button.A, 4) | buttonBit(self.pad[pad_idx], Button.Start, 5),
+            .th_high_six_button => buttonBit(self.pad[pad_idx], Button.Z, 0) |
+                buttonBit(self.pad[pad_idx], Button.Y, 1) |
+                buttonBit(self.pad[pad_idx], Button.X, 2) |
+                buttonBit(self.pad[pad_idx], Button.Mode, 3) |
+                buttonBit(self.pad[pad_idx], Button.B, 4) |
+                buttonBit(self.pad[pad_idx], Button.C, 5),
+            .th_low_id_low => buttonBit(self.pad[pad_idx], Button.A, 4) | buttonBit(self.pad[pad_idx], Button.Start, 5),
+            .th_low_id_high => buttonBit(self.pad[pad_idx], Button.A, 4) | buttonBit(self.pad[pad_idx], Button.Start, 5) | 0x0F,
         };
         controller_byte |= @as(u8, @intFromBool(self.controller_th[port])) << th_bit;
         controller_byte &= ~self.ctrl[port];
@@ -184,7 +197,7 @@ pub const Io = struct {
     }
 
     pub fn tick(self: *Io, m68k_cycles: u32) void {
-        for (0..self.pad.len) |port| {
+        for (0..2) |port| {
             self.flip_reset_counter[port] = self.flip_reset_counter[port] -| m68k_cycles;
             if (self.flip_reset_counter[port] == 0) {
                 self.th_flip_count[port] = 0;
@@ -200,6 +213,7 @@ pub const Io = struct {
     }
 
     pub fn setButton(self: *Io, port: usize, button: u16, pressed: bool) void {
+        if (port >= self.pad.len) return;
         if (pressed) {
             self.pad[port] &= ~button;
         } else {
@@ -311,6 +325,32 @@ test "hardware reset clears transient io state but preserves controller wiring a
     try testing.expectEqual(@as(u8, 0), io.ctrl[0]);
     try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
     try testing.expect(io.controller_th[0]);
+}
+
+test "ea 4-way play multiplexes four controllers via port 2 th" {
+    var io = Io.init();
+    io.setControllerType(0, .ea_4way_play);
+    io.setControllerType(1, .ea_4way_play);
+
+    io.write(0x09, 0x40); // port 1 ctrl = TH output
+    io.write(0x0B, 0x40); // port 2 ctrl = TH output
+
+    // Player C has C button pressed, player A does not
+    io.setButton(2, Io.Button.C, true);
+
+    // TH high on port 2 → port 1 reads pad[0] (player A)
+    io.write(0x05, 0x40);
+    io.write(0x03, 0x40);
+    const a_high = io.read(0x03);
+
+    // TH low on port 2 → port 1 reads pad[2] (player C)
+    io.write(0x05, 0x00);
+    io.write(0x03, 0x40);
+    const c_high = io.read(0x03);
+
+    // In TH-high format: bit 5 = C button (active low)
+    try testing.expect((c_high & 0x20) == 0); // C pressed on player C
+    try testing.expect((a_high & 0x20) != 0); // C not pressed on player A
 }
 
 test "serial and tx registers keep hardware defaults and serial control masks low status bits" {

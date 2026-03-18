@@ -221,6 +221,23 @@ pub fn applyTransitions(
     }
 }
 
+// Apply only release transitions — used to clear stuck buttons when emulation
+// is paused while an axis/hat direction is held.
+pub fn applyReleaseTransitionsOnly(
+    bindings: *const InputBindings.Bindings,
+    machine: *Machine,
+    port: usize,
+    transitions: anytype,
+) void {
+    for (transitions) |maybe_transition| {
+        if (maybe_transition) |transition| {
+            if (!transition.pressed) {
+                _ = machine.applyGamepadBindings(bindings, port, transition.input, false);
+            }
+        }
+    }
+}
+
 // Port management functions
 pub fn findGamepadPort(gamepads: *const [InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) ?usize {
     for (gamepads, 0..) |slot, port| {

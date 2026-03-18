@@ -17,7 +17,11 @@ const GifRecorder = @import("recording/gif.zig").GifRecorder;
 const WavRecorder = @import("recording/wav.zig").WavRecorder;
 const screenshot = @import("recording/screenshot.zig");
 const StateFile = @import("state_file.zig");
+const rom_paths = @import("rom_paths.zig");
+const unified_config = @import("unified_config.zig");
+const config_path_mod = @import("config_path.zig");
 const ui_render = @import("frontend/ui.zig");
+const debugger_mod = @import("frontend/debugger.zig");
 const perf_monitor = @import("frontend/performance.zig");
 const config_module = @import("frontend/config.zig");
 const saves_module = @import("frontend/saves.zig");
@@ -31,6 +35,7 @@ const AudioInit = struct {
     stream: *zsdl3.AudioStream,
     output: AudioOutput,
     startup_mute_active: bool = true,
+    startup_mute_warmup_frames: u8 = 0,
     playback_shadow: [playback_shadow_capacity]i16 = undefined,
     playback_shadow_len: usize = 0,
 
@@ -40,7 +45,15 @@ const AudioInit = struct {
         if (self.startupMuteActive()) {
             const saw_audible_activity = z80.hasPendingAudibleEvents();
             try self.output.discardPending(pending, z80, is_pal);
-            if (saw_audible_activity) self.clearStartupMute();
+            if (saw_audible_activity) {
+                // Warm up filters for several frames before unmuting.
+                // This prevents the DC blocker transient "beep" on state load.
+                if (self.startup_mute_warmup_frames < 8) {
+                    self.startup_mute_warmup_frames += 1;
+                } else {
+                    self.clearStartupMute();
+                }
+            }
             return;
         }
 
@@ -89,6 +102,7 @@ const AudioInit = struct {
 
     fn armStartupMute(self: *AudioInit) void {
         self.startup_mute_active = true;
+        self.startup_mute_warmup_frames = 0;
     }
 
     fn clearStartupMute(self: *AudioInit) void {
@@ -265,10 +279,10 @@ const UiAnimation = ui_render.Animation;
 const OverlayLine = ui_render.OverlayLine;
 const renderStatusBar = ui_render.renderStatusBar;
 
-fn persistFrontendConfig(frontend_config: *const FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
-    frontend_config.saveToFile(frontend_config_path) catch |err| {
-        std.debug.print("Failed to save frontend config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
-        notifyFrontend(notifications, .failure, "FAILED TO SAVE FRONTEND CONFIG", .{});
+fn persistFrontendConfig(frontend_config: *const FrontendConfig, bindings: *const InputBindings.Bindings, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
+    unified_config.save(frontend_config, bindings, frontend_config_path) catch |err| {
+        std.debug.print("Failed to save config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
+        notifyFrontend(notifications, .failure, "FAILED TO SAVE CONFIG", .{});
     };
 }
 
@@ -370,6 +384,10 @@ fn handleSettingsKey(
     window: *zsdl3.Window,
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
+    bindings: *InputBindings.Bindings,
+    machine: *Machine,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     scancode: zsdl3.Scancode,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -402,6 +420,10 @@ fn handleSettingsKey(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 -1,
                 notifications,
@@ -420,6 +442,10 @@ fn handleSettingsKey(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 1,
                 notifications,
@@ -438,6 +464,10 @@ fn handleSettingsKey(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 0,
                 notifications,
@@ -567,11 +597,8 @@ const rom_dialog_filters = [_]SdlDialogFileFilter{
 };
 
 // Re-export CLI types from cli.zig
-const CliOptions = cli_module.Options;
-const ParseCliError = cli_module.ParseError;
-const printUsage = cli_module.printUsage;
-const parseCliArgs = cli_module.parseArgs;
-const cliErrorMessage = cli_module.errorMessage;
+const CliConfig = cli_module.Config;
+const createCliCommand = cli_module.createCommand;
 
 // Re-export ROM metadata types from rom_metadata.zig
 const TimingModeOption = cli_module.TimingModeOption;
@@ -625,9 +652,9 @@ fn preferredOpenRomLocation(frontend_config: *const FrontendConfig, current_rom_
     return null;
 }
 
-fn rememberLoadedRom(frontend_config: *FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications, rom_path: []const u8) void {
+fn rememberLoadedRom(frontend_config: *FrontendConfig, bindings: *const InputBindings.Bindings, frontend_config_path: []const u8, notifications: FrontendNotifications, rom_path: []const u8) void {
     frontend_config.noteLoadedRom(rom_path);
-    persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+    persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
 }
 
 const SDL_WINDOW_FULLSCREEN: u64 = 0x00000001;
@@ -643,6 +670,15 @@ fn setFullscreenEnabled(window: *zsdl3.Window, enable: bool, notifications: Fron
     } else {
         notifyFrontend(notifications, .info, "FULLSCREEN OFF", .{});
     }
+}
+
+fn fontDataForFace(face: config_module.FontFace) []const u8 {
+    return switch (face) {
+        .jbm_regular => ui_render.font_jbm_regular,
+        .jbm_light => ui_render.font_jbm_light,
+        .jbm_medium => ui_render.font_jbm_medium,
+        .jbm_thin => ui_render.font_jbm_thin,
+    };
 }
 
 fn configurePerformanceHud(
@@ -687,21 +723,27 @@ fn applySettingsAction(
     window: *zsdl3.Window,
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
+    bindings: *InputBindings.Bindings,
+    machine: *Machine,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     action: SettingsMenuAction,
     delta: isize,
     notifications: FrontendNotifications,
 ) void {
+    const nextCT = menu_module.nextControllerType;
+    const prevCT = menu_module.prevControllerType;
     switch (action) {
         .video_aspect_mode => {
             const next_mode = frontend_config.video_aspect_mode.cycle(if (delta == 0) 1 else delta);
             frontend_config.video_aspect_mode = next_mode;
-            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
             notifyFrontend(notifications, .info, "ASPECT {s}", .{next_mode.label()});
         },
         .video_scale_mode => {
             const next_mode = frontend_config.video_scale_mode.cycle(if (delta == 0) 1 else delta);
             frontend_config.video_scale_mode = next_mode;
-            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
             notifyFrontend(notifications, .info, "SCALING {s}", .{next_mode.label()});
         },
         .fullscreen => {
@@ -729,6 +771,26 @@ fn applySettingsAction(
             } else {
                 notifyFrontend(notifications, .info, "PERF HUD OFF", .{});
             }
+        },
+        .controller_p1_type => {
+            const ct = if (delta >= 0) nextCT(bindings.controller_types[0]) else prevCT(bindings.controller_types[0]);
+            bindings.controller_types[0] = ct;
+            machine.bus.io.setControllerType(0, ct);
+        },
+        .controller_p2_type => {
+            const ct = if (delta >= 0) nextCT(bindings.controller_types[1]) else prevCT(bindings.controller_types[1]);
+            bindings.controller_types[1] = ct;
+            machine.bus.io.setControllerType(1, ct);
+        },
+        .font_face => {
+            const next = frontend_config.font_face.cycle(if (delta == 0) 1 else delta);
+            frontend_config.font_face = next;
+            ui_font.deinit();
+            ui_font.* = ui_render.Font.init(fontDataForFace(next));
+            ui_render.initFont(ui_font);
+            _ = renderer;
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
+            notifyFrontend(notifications, .info, "FONT {s}", .{next.label()});
         },
         .close => {
             _ = settings;
@@ -870,6 +932,10 @@ fn handleSettingsGamepadInput(
     window: *zsdl3.Window,
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
+    bindings: *InputBindings.Bindings,
+    machine: *Machine,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -897,6 +963,10 @@ fn handleSettingsGamepadInput(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 -1,
                 notifications,
@@ -915,6 +985,10 @@ fn handleSettingsGamepadInput(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 1,
                 notifications,
@@ -933,6 +1007,10 @@ fn handleSettingsGamepadInput(
                 window,
                 audio,
                 current_audio_mode,
+                bindings,
+                machine,
+                ui_font,
+                renderer,
                 settings.currentAction(),
                 0,
                 notifications,
@@ -1092,10 +1170,33 @@ fn handleFrontendGamepadInput(
     core_profile_frames_remaining: *u32,
     window: *zsdl3.Window,
     frame_counter: *u32,
+    debugger: *debugger_mod.DebuggerState,
+    bindings: *InputBindings.Bindings,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
 ) FrontendGamepadCommand {
+    // Debugger gamepad handling (checked first when debugger is active)
+    if (ui.show_debugger) {
+        if (pressed) {
+            switch (input) {
+                .east, .back => {
+                    debugger.toggle();
+                    ui.show_debugger = debugger.active;
+                },
+                .south => debugger.stepOnce(),
+                .dpad_left, .left_shoulder => debugger.prevTab(),
+                .dpad_right, .right_shoulder => debugger.nextTab(),
+                .dpad_up => debugger.adjustMemoryAddress(-256),
+                .dpad_down => debugger.adjustMemoryAddress(256),
+                else => {},
+            }
+        }
+        return .consumed;
+    }
+
     const settings_result = handleSettingsGamepadInput(
         ui,
         settings,
@@ -1107,6 +1208,10 @@ fn handleFrontendGamepadInput(
         window,
         audio,
         current_audio_mode,
+        bindings,
+        machine,
+        ui_font,
+        renderer,
         input,
         pressed,
         notifications,
@@ -1233,13 +1338,13 @@ fn dispatchHomeScreenCommand(
                 notifyFrontend(notifications, .failure, "FAILED TO LOAD {s}", .{std.fs.path.basename(selected_path.slice())});
                 if (err == error.FileNotFound) {
                     frontend_config.removeRecentRom(index);
-                    persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+                    persistFrontendConfig(frontend_config, input_bindings, frontend_config_path, notifications);
                     home_menu.clamp(frontend_config);
                 }
                 return .handled;
             };
             current_rom_path.* = selected_path;
-            rememberLoadedRom(frontend_config, frontend_config_path, notifications, selected_path.slice());
+            rememberLoadedRom(frontend_config, input_bindings, frontend_config_path, notifications, selected_path.slice());
             home_menu.clamp(frontend_config);
             ui.show_home = false;
             ui.paused = false;
@@ -1484,7 +1589,8 @@ fn handleBindingEditorKey(
     editor: *BindingEditorState,
     bindings: *InputBindings.Bindings,
     machine: *Machine,
-    input_config_path: ?[]const u8,
+    unified_cfg_path: []const u8,
+    frontend_cfg: *const FrontendConfig,
     scancode: zsdl3.Scancode,
     hotkey_binding: ?InputBindings.HotkeyBinding,
     pressed: bool,
@@ -1507,12 +1613,22 @@ fn handleBindingEditorKey(
             .escape => editor.cancelCapture(),
             .delete => editor.clearSelected(bindings),
             else => {
-                if (editor.currentTarget() == .hotkey and isHotkeyModifierScancode(scancode)) {
+                if (editor.capture_gamepad) {
+                    // In gamepad capture mode, keyboard events cancel or clear
+                    editor.setStatus(.neutral, "PRESS A GAMEPAD BUTTON");
+                } else if (editor.currentTarget().isHeader()) {
+                    // Skip
+                } else if (switch (editor.currentTarget()) {
+                    .hotkey => true,
+                    else => false,
+                } and isHotkeyModifierScancode(scancode)) {
                     editor.setStatus(.failed, "PRESS A NON-MODIFIER KEY");
                 } else if (keyboardInputFromScancode(scancode)) |input| {
                     switch (editor.currentTarget()) {
-                        .player_action => editor.assign(bindings, input),
+                        .keyboard_action => editor.assign(bindings, input),
                         .hotkey => editor.assignHotkey(bindings, hotkey_binding orelse .{ .input = input }),
+                        .gamepad_action => editor.setStatus(.failed, "USE GAMEPAD BUTTON"),
+                        .section_header => {},
                     }
                 } else {
                     editor.setStatus(.failed, "KEY NOT SUPPORTED");
@@ -1525,12 +1641,14 @@ fn handleBindingEditorKey(
     if (scancode == .escape) {
         ui.show_keyboard_editor = false;
         editor.close();
+        unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch {};
         return true;
     }
     if (hotkey_binding) |binding| {
         if (bindings.hotkeyForBinding(binding) == .open_keyboard_editor) {
             ui.show_keyboard_editor = false;
             editor.close();
+            unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch {};
             return true;
         }
     }
@@ -1540,13 +1658,12 @@ fn handleBindingEditorKey(
         .down => editor.move(1),
         .@"return" => editor.beginCapture(),
         .f5 => {
-            const path = input_config_path orelse InputBindings.default_config_name;
-            bindings.saveToFile(path) catch |err| {
-                std.debug.print("Failed to save input config {s}: {s}\n", .{ path, @errorName(err) });
+            unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch |err| {
+                std.debug.print("Failed to save config {s}: {s}\n", .{ unified_cfg_path, @errorName(err) });
                 editor.setStatus(.failed, "FAILED TO SAVE CONFIG");
                 return true;
             };
-            std.debug.print("Saved input config: {s}\n", .{path});
+            std.debug.print("Saved config: {s}\n", .{unified_cfg_path});
             editor.setStatus(.success, "CONFIG SAVED");
         },
         else => {},
@@ -1666,8 +1783,12 @@ fn handlePersistentStateAction(
         },
         .load_state_file => {
             var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
-                std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
+                if (err == error.FileNotFound) {
+                    notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
+                } else {
+                    std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                    notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
+                }
                 return true;
             };
             errdefer next_machine.deinit(allocator);
@@ -1701,6 +1822,7 @@ const updateGamepadAxisState = gamepad.updateGamepadAxisState;
 const updateJoystickAxisState = gamepad.updateJoystickAxisState;
 const updateHatState = gamepad.updateHatState;
 const applyInputTransitions = gamepad.applyTransitions;
+const applyReleaseTransitionsOnly = gamepad.applyReleaseTransitionsOnly;
 
 fn handleFrontendGamepadTransitions(
     ui: *FrontendUi,
@@ -1722,6 +1844,10 @@ fn handleFrontendGamepadTransitions(
     core_profile_frames_remaining: *u32,
     window: *zsdl3.Window,
     frame_counter: *u32,
+    debugger: *debugger_mod.DebuggerState,
+    bindings: *InputBindings.Bindings,
+    ui_font: *ui_render.Font,
+    renderer: *zsdl3.Renderer,
     notifications: FrontendNotifications,
     transitions: anytype,
 ) FrontendGamepadCommand {
@@ -1747,6 +1873,10 @@ fn handleFrontendGamepadTransitions(
                 core_profile_frames_remaining,
                 window,
                 frame_counter,
+                debugger,
+                bindings,
+                ui_font,
+                renderer,
                 transition.input,
                 transition.pressed,
                 notifications,
@@ -1837,7 +1967,7 @@ fn renderSaveManagerPreview(
         renderer,
         frame,
         .{ .r = 0x08, .g = 0x0E, .b = 0x13, .a = 0xF0 },
-        UiColors.cyan,
+        UiColors.blue,
         scale,
     );
 
@@ -1937,8 +2067,6 @@ fn renderSaveManagerOverlay(
     preview_width_required = @max(preview_width_required, preview_frame_width);
     preview_width_required = @max(preview_width_required, overlayTextWidth(preview_note, scale));
     preview_width_required = @max(preview_width_required, overlayTextWidth(preview_name, scale));
-    var max_width = overlayTextWidth(title, scale);
-    max_width = @max(max_width, list_width + preview_gap + preview_width_required);
 
     for (0..save_manager_slot_count) |slot_index| {
         const slot_number: u8 = @intCast(slot_index + 1);
@@ -1952,19 +2080,36 @@ fn renderSaveManagerOverlay(
         path_lines[slot_index] = try formatSaveManagerPathLine(path_buffers[slot_index][0..], metadata);
         list_width = @max(list_width, overlayTextWidth(summary_lines[slot_index], scale));
         list_width = @max(list_width, overlayTextWidth(path_lines[slot_index], scale));
+    }
+
+    const svw: f32 = @floatFromInt(viewport.w);
+    const svh: f32 = @floatFromInt(viewport.h);
+
+    // Hide preview column if viewport is too narrow for two-column layout
+    const two_col_width = list_width + preview_gap + preview_width_required + padding * 2.0;
+    const show_preview = two_col_width <= svw;
+
+    var max_width = overlayTextWidth(title, scale);
+    if (show_preview) {
         max_width = @max(max_width, list_width + preview_gap + preview_width_required);
+    } else {
+        max_width = @max(max_width, list_width);
     }
 
     const row_height = summary_height + path_height + row_gap;
     const header_height = 13.0 * scale + summary_height * 2.0 + row_gap;
     const list_height = row_height * @as(f32, @floatFromInt(save_manager_slot_count));
-    const preview_block_height = summary_height + row_gap + preview_frame_height + row_gap + path_height * 2.0;
-    const content_height = @max(list_height, preview_block_height);
+    const content_height = if (show_preview) blk: {
+        const preview_block_height = summary_height + row_gap + preview_frame_height + row_gap + path_height * 2.0;
+        break :blk @max(list_height, preview_block_height);
+    } else list_height;
+    const panel_w = @min(max_width + padding * 2.0, svw);
+    const panel_h = @min(padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height, svh);
     const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height)) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 6.0 * scale + header_height + content_height,
+        .x = @max(0.0, (svw - panel_w) * 0.5),
+        .y = @max(0.0, (svh - panel_h) * 0.5),
+        .w = panel_w,
+        .h = panel_h,
     };
 
     try renderOverlayPanel(
@@ -1994,7 +2139,7 @@ fn renderSaveManagerOverlay(
     for (summary_lines, path_lines, 0..) |summary_line, path_line, slot_index| {
         const selected = slot_index + 1 == StateFile.normalizePersistentStateSlot(persistent_state_slot);
         const summary_color = if (selected)
-            UiAnimation.pulseColor(UiColors.gold, frame_number, 0.75, 1.0)
+            UiAnimation.pulseColor(UiColors.orange, frame_number, 0.75, 1.0)
         else
             UiColors.text_primary;
         try drawOverlayText(
@@ -2007,7 +2152,7 @@ fn renderSaveManagerOverlay(
         );
         y += summary_height;
         const path_color = if (selected)
-            UiAnimation.pulseColor(UiColors.orange, frame_number, 0.8, 1.0)
+            UiAnimation.pulseColor(UiColors.gold, frame_number, 0.8, 1.0)
         else
             UiColors.text_muted;
         try drawOverlayText(
@@ -2021,44 +2166,46 @@ fn renderSaveManagerOverlay(
         y += path_height + row_gap;
     }
 
-    const preview_x = text_x + list_width + preview_gap;
-    var preview_y = panel.y + padding + header_height;
-    try drawOverlayText(
-        renderer,
-        preview_x + (preview_width_required - overlayTextWidth(preview_title, scale)) * 0.5,
-        preview_y,
-        scale,
-        UiColors.cyan,
-        preview_title,
-    );
-    preview_y += summary_height + row_gap;
+    if (show_preview) {
+        const preview_x = text_x + list_width + preview_gap;
+        var preview_y = panel.y + padding + header_height;
+        try drawOverlayText(
+            renderer,
+            preview_x + (preview_width_required - overlayTextWidth(preview_title, scale)) * 0.5,
+            preview_y,
+            scale,
+            UiColors.cyan,
+            preview_title,
+        );
+        preview_y += summary_height + row_gap;
 
-    const preview_frame = zsdl3.FRect{
-        .x = preview_x + (preview_width_required - preview_frame_width) * 0.5,
-        .y = preview_y,
-        .w = preview_frame_width,
-        .h = preview_frame_height,
-    };
-    try renderSaveManagerPreview(renderer, preview_frame, selected_metadata, scale);
-    preview_y += preview_frame_height + row_gap;
+        const preview_frame = zsdl3.FRect{
+            .x = preview_x + (preview_width_required - preview_frame_width) * 0.5,
+            .y = preview_y,
+            .w = preview_frame_width,
+            .h = preview_frame_height,
+        };
+        try renderSaveManagerPreview(renderer, preview_frame, selected_metadata, scale);
+        preview_y += preview_frame_height + row_gap;
 
-    try drawOverlayText(
-        renderer,
-        preview_x + (preview_width_required - overlayTextWidth(preview_note, scale)) * 0.5,
-        preview_y,
-        scale,
-        UiColors.text_muted,
-        preview_note,
-    );
-    preview_y += path_height;
-    try drawOverlayText(
-        renderer,
-        preview_x + (preview_width_required - overlayTextWidth(preview_name, scale)) * 0.5,
-        preview_y,
-        scale,
-        UiColors.orange,
-        preview_name,
-    );
+        try drawOverlayText(
+            renderer,
+            preview_x + (preview_width_required - overlayTextWidth(preview_note, scale)) * 0.5,
+            preview_y,
+            scale,
+            UiColors.text_muted,
+            preview_note,
+        );
+        preview_y += path_height;
+        try drawOverlayText(
+            renderer,
+            preview_x + (preview_width_required - overlayTextWidth(preview_name, scale)) * 0.5,
+            preview_y,
+            scale,
+            UiColors.orange,
+            preview_name,
+        );
+    }
 }
 
 // Re-export performance HUD rendering from frontend/performance.zig
@@ -2074,6 +2221,7 @@ fn renderSettingsOverlay(
     window: *zsdl3.Window,
     audio_enabled: bool,
     current_audio_mode: AudioOutput.RenderMode,
+    config_path: []const u8,
 ) !void {
     const title = "SETTINGS";
     const controls_a = "UP DOWN MOVE  LEFT RIGHT ADJUST";
@@ -2083,7 +2231,7 @@ fn renderSettingsOverlay(
     const heading_system = "SYSTEM";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
-    const line_height = 9.0 * scale;
+    const line_height = 10.0 * scale;
 
     var action_buffers: [settings_menu_actions.len][96]u8 = undefined;
     var action_lines: [settings_menu_actions.len][]const u8 = undefined;
@@ -2096,7 +2244,9 @@ fn renderSettingsOverlay(
             frontend_config.video_scale_mode,
             fullscreenEnabled(window),
             current_audio_mode,
+            machine.bus.io.controller_types,
             ui.show_performance_hud,
+            frontend_config.font_face,
         );
     }
 
@@ -2114,23 +2264,27 @@ fn renderSettingsOverlay(
     max_width = @max(max_width, overlayTextWidth(controls_a, scale));
     max_width = @max(max_width, overlayTextWidth(controls_b, scale));
     for (action_lines) |line| max_width = @max(max_width, overlayTextWidth(line, scale));
-    for ([_][]const u8{ heading_video, heading_audio, heading_system, renderer_line, audio_output_line, timing_line, region_line }) |line| {
+    for ([_][]const u8{ heading_video, heading_audio, heading_system, renderer_line, audio_output_line, timing_line, region_line, config_path }) |line| {
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
 
-    const row_count: usize = 18;
+    const row_count: usize = 32;
+    const stw: f32 = @floatFromInt(viewport.w);
+    const sth: f32 = @floatFromInt(viewport.h);
+    const settings_w = @min(max_width + padding * 2.0, stw);
+    const settings_h = @min(padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)), sth);
     const panel = zsdl3.FRect{
-        .x = (@as(f32, @floatFromInt(viewport.w)) - (max_width + padding * 2.0)) * 0.5,
-        .y = (@as(f32, @floatFromInt(viewport.h)) - (padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)))) * 0.5,
-        .w = max_width + padding * 2.0,
-        .h = padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)),
+        .x = @max(0.0, (stw - settings_w) * 0.5),
+        .y = @max(0.0, (sth - settings_h) * 0.5),
+        .w = settings_w,
+        .h = settings_h,
     };
 
     try renderOverlayPanel(
         renderer,
         panel,
         UiColors.panel_secondary,
-        UiColors.blue,
+        UiColors.orange,
         scale,
     );
 
@@ -2139,7 +2293,7 @@ fn renderSettingsOverlay(
         panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        UiColors.blue,
+        UiColors.orange,
         title,
     );
 
@@ -2155,34 +2309,57 @@ fn renderSettingsOverlay(
     const selected_color = UiColors.text_selected;
     const normal_color = UiColors.text_primary;
 
+    // Render settings entries grouped by section
+    // action_lines[]: 0=aspect, 1=scale, 2=fullscreen, 3=audio, 4=ctrl_p1, 5=ctrl_p2, 6=perf, 7=font_face, 8=close
+    const actionColor = struct {
+        fn f(cur: SettingsMenuAction, target: SettingsMenuAction, sel: zsdl3.Color, norm: zsdl3.Color) zsdl3.Color {
+            return if (cur == target) sel else norm;
+        }
+    }.f;
+    const cur = settings.currentAction();
+
     try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_video);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .video_aspect_mode) selected_color else normal_color, action_lines[0]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .video_aspect_mode, selected_color, normal_color), action_lines[0]);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .video_scale_mode) selected_color else normal_color, action_lines[1]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .video_scale_mode, selected_color, normal_color), action_lines[1]);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .fullscreen) selected_color else normal_color, action_lines[2]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .fullscreen, selected_color, normal_color), action_lines[2]);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, renderer_line);
     y += line_height * 2.0;
 
     try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_audio);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .audio_render_mode) selected_color else normal_color, action_lines[3]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .audio_render_mode, selected_color, normal_color), action_lines[3]);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, audio_output_line);
     y += line_height * 2.0;
 
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "INPUT");
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p1_type, selected_color, normal_color), action_lines[4]);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p2_type, selected_color, normal_color), action_lines[5]);
+    y += line_height * 2.0;
+
     try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_system);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .performance_hud) selected_color else normal_color, action_lines[4]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .performance_hud, selected_color, normal_color), action_lines[6]);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, timing_line);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, region_line);
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, info_color, config_path);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, if (settings.currentAction() == .close) selected_color else normal_color, action_lines[5]);
+    try drawOverlayText(renderer, text_x, y, scale, heading_color, "UI");
+    y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .font_face, selected_color, normal_color), action_lines[7]);
+    y += line_height * 2.0;
+
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[8]);
 }
 
 fn renderFrontendOverlay(
@@ -2201,22 +2378,19 @@ fn renderFrontendOverlay(
     audio_enabled: bool,
     current_audio_mode: AudioOutput.RenderMode,
     persistent_state_slot: u8,
-    perf: *const PerformanceHudState,
     current_rom_path: ?[]const u8,
+    config_path: []const u8,
 ) !void {
     const show_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.paused or ui.show_help or ui.dialog_active or ui.show_keyboard_editor;
     const show_toast = toast.visible(frontend_frame_number);
     const has_rom = current_rom_path != null and current_rom_path.?.len > 0;
     // Show status bar when paused or help is open (not during gameplay or when other panels are open)
     const show_blocking_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.dialog_active or ui.show_keyboard_editor;
-    const show_status_bar = has_rom and (ui.paused or ui.show_help) and !show_blocking_panel and !ui.show_performance_hud;
-    if (!ui.show_performance_hud and !show_panel and !show_toast) return;
+    const show_status_bar = has_rom and (ui.paused or ui.show_help) and !show_blocking_panel;
+    if (!show_panel and !show_toast) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
-    if (ui.show_performance_hud) {
-        try renderPerformanceHud(renderer, viewport, perf);
-    }
     if (show_status_bar) {
         const rom_name = std.fs.path.basename(current_rom_path.?);
         try renderStatusBar(renderer, viewport, rom_name, persistent_state_slot, machine.palMode());
@@ -2228,9 +2402,9 @@ fn renderFrontendOverlay(
     if (ui.dialog_active) {
         try renderDialogOverlay(renderer, viewport);
     } else if (ui.show_keyboard_editor) {
-        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number);
+        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number, config_path);
     } else if (ui.show_settings) {
-        try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode);
+        try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode, config_path);
     } else if (ui.show_save_manager) {
         try renderSaveManagerOverlay(renderer, viewport, save_manager, persistent_state_slot, frontend_frame_number);
     } else if (ui.show_help) {
@@ -2247,18 +2421,16 @@ pub fn main() !void {
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var cli_config = CliConfig{};
+    const root_cmd = try createCliCommand(allocator);
+    defer root_cmd.deinit();
+    try root_cmd.run(&cli_config);
+    if (!cli_config.should_run) return;
 
-    const cli = parseCliArgs(args) catch |err| {
-        printUsage();
-        std.debug.print("Argument error: {s}\n", .{cliErrorMessage(err)});
-        return err;
-    };
-    if (cli.show_help) {
-        printUsage();
-        return;
-    }
+    const cli = cli_config;
+    defer if (cli.rom_path) |p| allocator.free(p);
+    defer if (cli.renderer_name) |p| allocator.free(p);
+    defer if (cli.config_path) |p| allocator.free(p);
     const rom_path = cli.rom_path;
 
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
@@ -2293,6 +2465,12 @@ pub fn main() !void {
     if (currentRendererName(renderer)) |name| {
         std.debug.print("Renderer backend: {s}\n", .{name});
     }
+
+    // Initialize TTF font for UI overlays
+    var ui_font = ui_render.Font.init(ui_render.font_jbm_regular);
+    defer ui_font.deinit();
+    ui_render.initFont(&ui_font);
+    defer ui_render.deinitFont();
 
     var audio_userdata: u8 = 0;
     var audio: ?AudioInit = tryInitAudio(&audio_userdata);
@@ -2351,18 +2529,36 @@ pub fn main() !void {
         std.debug.print("Loading dummy backend ROM for the idle frontend shell.\n", .{});
     }
 
-    const input_config_path = try InputBindings.defaultConfigPath(allocator);
-    defer if (input_config_path) |path| allocator.free(path);
+    // Load unified config (frontend settings + input bindings in one file)
+    const config_file_path = if (cli.config_path) |custom_path|
+        try allocator.dupe(u8, custom_path)
+    else
+        try config_path_mod.resolveConfigPath(allocator);
+    defer allocator.free(config_file_path);
+    const loaded_config = try unified_config.load(allocator, config_file_path);
+    var input_bindings = loaded_config.bindings;
+    var frontend_config = loaded_config.frontend;
+    std.debug.print("Config: {s}\n", .{config_file_path});
 
-    var input_bindings = InputBindings.Bindings.defaults();
-    if (input_config_path) |path| {
-        input_bindings = try InputBindings.Bindings.loadFromFile(allocator, path);
-        std.debug.print("Loaded input config: {s}\n", .{path});
+    // Write default config on first run if file doesn't exist
+    std.fs.cwd().access(config_file_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            unified_config.save(&frontend_config, &input_bindings, config_file_path) catch |save_err| {
+                std.debug.print("Failed to create default config file: {s}\n", .{@errorName(save_err)});
+            };
+        },
+        else => {},
+    };
+
+    // Unified config path is used for all saves
+    const frontend_config_path = config_file_path;
+
+    // Apply configured font face
+    if (frontend_config.font_face != .jbm_regular) {
+        ui_font.deinit();
+        ui_font = ui_render.Font.init(fontDataForFace(frontend_config.font_face));
+        ui_render.initFont(&ui_font);
     }
-
-    const frontend_config_path = try defaultFrontendConfigPath(allocator);
-    defer allocator.free(frontend_config_path);
-    var frontend_config = try FrontendConfig.loadFromFile(allocator, frontend_config_path);
 
     var machine = try Machine.init(allocator, rom_path);
     defer {
@@ -2404,13 +2600,14 @@ pub fn main() !void {
     var save_manager = SaveManagerState{};
     var frontend_toast = FrontendToast{};
     var performance_hud = PerformanceHudState{};
+    var debugger_state = debugger_mod.DebuggerState{};
     var performance_spike_log = PerformanceSpikeLogState{};
     var core_profile_frames_remaining: u32 = 0;
     var file_dialog_state = FileDialogState{};
     var binding_editor = BindingEditorState{};
 
     if (rom_path) |path| {
-        rememberLoadedRom(&frontend_config, frontend_config_path, .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter }, path);
+        rememberLoadedRom(&frontend_config, &input_bindings, frontend_config_path, .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter }, path);
     }
     home_menu.clamp(&frontend_config);
 
@@ -2429,6 +2626,37 @@ pub fn main() !void {
                     const pressed = (event.type == zsdl3.EventType.gamepad_button_down);
                     const button = event.gbutton.button;
                     const port = findGamepadPort(&gamepads, event.gbutton.which) orelse continue;
+
+                    // Binding editor gamepad capture
+                    if (frontend_ui.show_keyboard_editor and binding_editor.capture_mode and binding_editor.capture_gamepad) {
+                        const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
+                        if (pressed_gp) {
+                            if (gamepadInputFromButton(button)) |gp_input| {
+                                binding_editor.assignGamepad(&input_bindings, gp_input);
+                            }
+                        }
+                        continue;
+                    }
+                    // Binding editor navigation via gamepad (when open but not capturing)
+                    if (frontend_ui.show_keyboard_editor and !binding_editor.capture_mode) {
+                        const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
+                        if (pressed_gp) {
+                            if (gamepadInputFromButton(button)) |gp_input| {
+                                switch (gp_input) {
+                                    .dpad_up => binding_editor.move(-1),
+                                    .dpad_down => binding_editor.move(1),
+                                    .south => binding_editor.beginCapture(),
+                                    .east, .back => {
+                                        frontend_ui.show_keyboard_editor = false;
+                                        binding_editor.close();
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     if (gamepadInputFromButton(button)) |mapped_button| {
                         const notifications = FrontendNotifications{
                             .toast = &frontend_toast,
@@ -2456,6 +2684,10 @@ pub fn main() !void {
                                 &core_profile_frames_remaining,
                                 window,
                                 &frame_counter,
+                                &debugger_state,
+                                &input_bindings,
+                                &ui_font,
+                                renderer,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2483,7 +2715,7 @@ pub fn main() !void {
                             .unhandled => {},
                         }
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused() and pressed) continue;
                     if (gamepadInputFromButton(button)) |mapped_button| {
                         _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
@@ -2525,6 +2757,10 @@ pub fn main() !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &debugger_state,
+                            &input_bindings,
+                            &ui_font,
+                            renderer,
                             notifications,
                             transitions,
                         ),
@@ -2550,7 +2786,10 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused()) {
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        continue;
+                    }
                     applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_button_down, zsdl3.EventType.joystick_button_up => {
@@ -2583,6 +2822,10 @@ pub fn main() !void {
                                 &core_profile_frames_remaining,
                                 window,
                                 &frame_counter,
+                                &debugger_state,
+                                &input_bindings,
+                                &ui_font,
+                                renderer,
                                 mapped_button,
                                 pressed,
                                 notifications,
@@ -2610,7 +2853,7 @@ pub fn main() !void {
                             .unhandled => {},
                         }
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused() and pressed) continue;
                     if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
                         _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
@@ -2649,6 +2892,10 @@ pub fn main() !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &debugger_state,
+                            &input_bindings,
+                            &ui_font,
+                            renderer,
                             notifications,
                             transitions,
                         ),
@@ -2674,7 +2921,10 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused()) {
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        continue;
+                    }
                     applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_hat_motion => {
@@ -2707,6 +2957,10 @@ pub fn main() !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &debugger_state,
+                            &input_bindings,
+                            &ui_font,
+                            renderer,
                             notifications,
                             transitions,
                         ),
@@ -2732,7 +2986,10 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    if (frontend_ui.emulationPaused()) continue;
+                    if (frontend_ui.emulationPaused()) {
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        continue;
+                    }
                     applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
@@ -2753,6 +3010,10 @@ pub fn main() !void {
                         window,
                         if (audio) |*a| a else null,
                         &current_audio_mode,
+                        &input_bindings,
+                        &machine,
+                        &ui_font,
+                        renderer,
                         scancode,
                         pressed,
                         .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
@@ -2795,7 +3056,8 @@ pub fn main() !void {
                         &binding_editor,
                         &input_bindings,
                         &machine,
-                        input_config_path,
+                        config_file_path,
+                        &frontend_config,
                         scancode,
                         hotkey_binding,
                         pressed,
@@ -2826,6 +3088,35 @@ pub fn main() !void {
                         .handled => continue,
                         .unhandled => {},
                     }
+                    // Debugger controls (F10 toggle, Space step, Tab switch tabs)
+                    if (pressed and scancode == .f10) {
+                        debugger_state.toggle();
+                        frontend_ui.show_debugger = debugger_state.active;
+                        continue;
+                    }
+                    if (pressed and frontend_ui.show_debugger and debugger_state.active) {
+                        const consumed = switch (scancode) {
+                            .space => blk: {
+                                debugger_state.stepOnce();
+                                break :blk true;
+                            },
+                            .tab => blk: {
+                                debugger_state.nextTab();
+                                break :blk true;
+                            },
+                            .pageup => blk: {
+                                debugger_state.adjustMemoryAddress(-256);
+                                break :blk true;
+                            },
+                            .pagedown => blk: {
+                                debugger_state.adjustMemoryAddress(256);
+                                break :blk true;
+                            },
+                            else => false,
+                        };
+                        if (consumed) continue;
+                    }
+
                     if (pressed) {
                         if (hotkey_action) |action| {
                             const notifications = FrontendNotifications{
@@ -2909,15 +3200,6 @@ pub fn main() !void {
                                     performance_spike_log.reset();
                                     core_profile_frames_remaining = 0;
                                 },
-                                .step => {
-                                    if (frontend_ui.show_help) continue;
-                                    machine.runMasterSlice(clock.m68k_divider);
-                                    machine.debugDump();
-                                },
-                                .registers => {
-                                    if (frontend_ui.show_help) continue;
-                                    machine.debugDump();
-                                },
                                 .record_gif => {
                                     if (frontend_ui.show_help) continue;
                                     if (gif_recorder) |*rec| {
@@ -2928,7 +3210,7 @@ pub fn main() !void {
                                         notifyFrontend(notifications, .success, "GIF RECORDING STOPPED", .{});
                                     } else {
                                         const fps: u16 = if (machine.palMode()) 25 else 30;
-                                        const path = gifOutputPath() orelse {
+                                        const path = gifOutputPath(if (current_rom_path.len != 0) current_rom_path.slice() else "") orelse {
                                             std.debug.print("No available GIF output slot (001-999 all exist)\n", .{});
                                             notifyFrontend(notifications, .failure, "NO AVAILABLE GIF SLOT", .{});
                                             continue;
@@ -2960,7 +3242,7 @@ pub fn main() !void {
                                         if (audio) |*a| {
                                             a.syncRecordedPlayback(null);
                                         }
-                                        const path = wavOutputPath() orelse {
+                                        const path = wavOutputPath(if (current_rom_path.len != 0) current_rom_path.slice() else "") orelse {
                                             std.debug.print("No available WAV output slot (001-999 all exist)\n", .{});
                                             notifyFrontend(notifications, .failure, "NO AVAILABLE WAV SLOT", .{});
                                             continue;
@@ -2977,7 +3259,7 @@ pub fn main() !void {
                                 },
                                 .screenshot => {
                                     if (frontend_ui.show_help) continue;
-                                    const path = screenshotOutputPath() orelse {
+                                    const path = screenshotOutputPath(if (current_rom_path.len != 0) current_rom_path.slice() else "") orelse {
                                         std.debug.print("No available screenshot slot (001-999 all exist)\n", .{});
                                         notifyFrontend(notifications, .failure, "NO AVAILABLE SCREENSHOT SLOT", .{});
                                         continue;
@@ -3008,7 +3290,7 @@ pub fn main() !void {
                             continue;
                         }
                     }
-                    if (!frontend_ui.emulationPaused()) {
+                    if (!frontend_ui.emulationPaused() or !pressed) {
                         if (hotkey_binding) |binding| {
                             const mapped_key = binding.input orelse continue;
                             _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
@@ -3059,6 +3341,7 @@ pub fn main() !void {
                 current_rom_path = path;
                 rememberLoadedRom(
                     &frontend_config,
+                    &input_bindings,
                     frontend_config_path,
                     .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
                     path.slice(),
@@ -3089,6 +3372,10 @@ pub fn main() !void {
                 machine.runFrame();
             }
             frame_phases.emulation_ns = (std.time.Instant.now() catch emulation_start).since(emulation_start);
+        } else if (debugger_state.active and debugger_state.shouldStep()) {
+            // Single-step: run one M68K instruction
+            var testing_view = machine.testing();
+            _ = testing_view.runCpuCycles(1);
         }
 
         if (!emulation_paused) {
@@ -3154,6 +3441,7 @@ pub fn main() !void {
             frontend_config.video_scale_mode,
         );
         try zsdl3.renderTexture(renderer, vdp_texture, &source_rect, &dest_rect);
+        frontend_toast.advance(frontend_frame_counter);
         try renderFrontendOverlay(
             renderer,
             &frontend_ui,
@@ -3170,9 +3458,19 @@ pub fn main() !void {
             audio != null,
             current_audio_mode,
             persistent_state_slot,
-            &performance_hud,
             if (current_rom_path.len != 0) current_rom_path.slice() else null,
+            config_file_path,
         );
+        if (frontend_ui.show_performance_hud) {
+            const perf_viewport = try zsdl3.getRenderViewport(renderer);
+            try zsdl3.setRenderDrawBlendMode(renderer, .blend);
+            try renderPerformanceHud(renderer, perf_viewport, &performance_hud);
+        }
+        if (frontend_ui.show_debugger and debugger_state.active) {
+            const dbg_viewport = try zsdl3.getRenderViewport(renderer);
+            try zsdl3.setRenderDrawBlendMode(renderer, .blend);
+            try debugger_mod.render(renderer, dbg_viewport, &machine, &debugger_state);
+        }
         frame_phases.draw_ns = (std.time.Instant.now() catch draw_start).since(draw_start);
         const present_call_start = std.time.Instant.now() catch frame_timer;
         zsdl3.renderPresent(renderer);
@@ -3671,6 +3969,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
     var bindings = InputBindings.Bindings.defaults();
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
+    const test_cfg_path = "test_sandopolis.cfg";
+    var test_frontend_cfg = FrontendConfig{};
 
     _ = machine.applyKeyboardBindings(&bindings, .a, true);
     try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
@@ -3680,7 +3980,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
@@ -3689,9 +3990,9 @@ test "binding editor opens releases inputs and rebinds selected action" {
     try std.testing.expect(ui.emulationPaused());
     try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
 
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(editor.capture_mode);
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .v, .{ .input = .v }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .v, .{ .input = .v }, true));
     try std.testing.expect(!editor.capture_mode);
     try std.testing.expectEqual(@as(?InputBindings.KeyboardInput, .v), bindings.keyboardBinding(0, .up));
 
@@ -3700,7 +4001,8 @@ test "binding editor opens releases inputs and rebinds selected action" {
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
@@ -3716,20 +4018,25 @@ test "binding editor clears hotkeys during capture" {
     var bindings = InputBindings.Bindings.defaults();
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
+    const test_cfg_path = "test_sandopolis.cfg";
+    var test_frontend_cfg = FrontendConfig{};
 
     try std.testing.expect(handleBindingEditorKey(
         &ui,
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
     ));
-    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len;
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .delete, .{ .input = .delete }, true));
+    // Navigate to first hotkey entry (after all keyboard/gamepad sections + headers)
+    const hotkey_start = 5 + InputBindings.player_count * InputBindings.all_actions.len * 2;
+    editor.selected_index = hotkey_start;
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .delete, .{ .input = .delete }, true));
     try std.testing.expectEqual(InputBindings.HotkeyBinding{}, bindings.hotkeyBinding(.toggle_help));
 }
 
@@ -3741,25 +4048,30 @@ test "binding editor captures modifier hotkeys" {
     var bindings = InputBindings.Bindings.defaults();
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
+    const test_cfg_path = "test_sandopolis.cfg";
+    var test_frontend_cfg = FrontendConfig{};
 
     try std.testing.expect(handleBindingEditorKey(
         &ui,
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f8,
         .{ .input = .f8 },
         true,
     ));
-    editor.selected_index = InputBindings.player_count * InputBindings.all_actions.len + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
-    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, null, .@"return", .{ .input = .@"return" }, true));
+    const hotkey_base = 5 + InputBindings.player_count * InputBindings.all_actions.len * 2;
+    editor.selected_index = hotkey_base + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
+    try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(handleBindingEditorKey(
         &ui,
         &editor,
         &bindings,
         &machine,
-        null,
+        test_cfg_path,
+        &test_frontend_cfg,
         .f3,
         .{ .input = .f3, .modifiers = .{ .ctrl = true, .shift = true } },
         true,
@@ -3882,9 +4194,16 @@ test "audio init stays muted until it sees audible startup activity" {
     z80.writeByte(0x7F11, 0x90);
     try std.testing.expect(z80.hasPendingAudibleEvents());
 
+    // First frame with audible events starts warmup but stays muted
     try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false, null);
+    try std.testing.expect(audio.startupMuteActive());
+
+    // Warmup requires several frames of audible activity before unmuting
+    for (0..8) |_| {
+        z80.writeByte(0x7F11, 0x90);
+        try audio.handlePending(std.mem.zeroes(PendingAudioFrames), &z80, false, null);
+    }
     try std.testing.expect(!audio.startupMuteActive());
-    try std.testing.expect(!z80.hasPendingAudibleEvents());
 }
 
 test "audio backlog threshold trips at the queued audio budget" {
@@ -3976,8 +4295,8 @@ test "persistent state helper saves and restores machine state" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -3986,17 +4305,16 @@ test "persistent state helper saves and restores machine state" {
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
-    const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, persistent_state_slot);
+    const slot1_state_path = try rom_paths.statePath(allocator, rom_path, persistent_state_slot);
     defer allocator.free(slot1_state_path);
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
-    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(state_path, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -4010,8 +4328,8 @@ test "persistent state helper cycles slots and keeps files separate" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -4022,28 +4340,28 @@ test "persistent state helper cycles slots and keeps files separate" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, state_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
@@ -4056,9 +4374,9 @@ test "save manager metadata tracks slot files and deletions" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
-    const slot2_state_path = try StateFile.pathForSlot(allocator, state_path, 2);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
+    const slot2_state_path = try rom_paths.statePath(allocator, rom_path, 2);
     defer allocator.free(slot2_state_path);
     const slot2_preview_path = try resolveStatePreviewPath(allocator, slot2_state_path);
     defer allocator.free(slot2_preview_path);
@@ -4076,7 +4394,7 @@ test "save manager metadata tracks slot files and deletions" {
         allocator,
         .save_state_file,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         null,
         &gif_recorder,
@@ -4091,7 +4409,7 @@ test "save manager metadata tracks slot files and deletions" {
         allocator,
         .save_state_file,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         null,
         &gif_recorder,
@@ -4101,7 +4419,7 @@ test "save manager metadata tracks slot files and deletions" {
     ));
 
     var save_manager = SaveManagerState{};
-    try save_manager.refresh(allocator, &machine, state_path);
+    try save_manager.refresh(allocator, &machine, rom_path);
 
     try std.testing.expect(save_manager.slotMetadata(1).exists);
     try std.testing.expect(save_manager.slotMetadata(2).exists);
@@ -4110,12 +4428,12 @@ test "save manager metadata tracks slot files and deletions" {
     try std.testing.expect(save_manager.slotMetadata(2).preview.available);
     try std.testing.expect(save_manager.slotMetadata(1).size_bytes != 0);
     try std.testing.expect(save_manager.slotMetadata(1).modified_ns != 0);
-    try std.testing.expectEqualStrings("frontend.slot1.state", std.fs.path.basename(save_manager.slotMetadata(1).path.slice()));
-    try std.testing.expectEqualStrings("frontend.slot2.state", std.fs.path.basename(save_manager.slotMetadata(2).path.slice()));
+    try std.testing.expectEqualStrings("slot1.state", std.fs.path.basename(save_manager.slotMetadata(1).path.slice()));
+    try std.testing.expectEqualStrings("slot2.state", std.fs.path.basename(save_manager.slotMetadata(2).path.slice()));
     try std.fs.cwd().access(slot2_preview_path, .{});
 
-    try std.testing.expect(deletePersistentStateFile(allocator, &machine, state_path, 2, .{}));
-    try save_manager.refresh(allocator, &machine, state_path);
+    try std.testing.expect(deletePersistentStateFile(allocator, &machine, rom_path, 2, .{}));
+    try save_manager.refresh(allocator, &machine, rom_path);
     try std.testing.expect(!save_manager.slotMetadata(2).exists);
     try std.testing.expect(!save_manager.slotMetadata(2).preview.available);
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot2_preview_path, .{}));
@@ -4314,11 +4632,17 @@ test "settings actions persist frontend video settings" {
     var ui = FrontendUi{ .show_settings = true };
     var settings = SettingsMenuState{};
     var config = FrontendConfig{};
+    var test_bindings = InputBindings.Bindings.defaults();
+    const rom = [_]u8{0} ** 0x400;
+    var test_machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer test_machine.deinit(allocator);
     var perf = PerformanceHudState{};
     var spike_log = PerformanceSpikeLogState{};
     var core_profile_frames_remaining: u32 = 0;
     var current_audio_mode: AudioOutput.RenderMode = .normal;
     const fake_window: *zsdl3.Window = @ptrFromInt(1);
+    var test_font = ui_render.Font{};
+    const fake_renderer: *zsdl3.Renderer = @ptrFromInt(2);
 
     applySettingsAction(
         &ui,
@@ -4331,6 +4655,10 @@ test "settings actions persist frontend video settings" {
         fake_window,
         null,
         &current_audio_mode,
+        &test_bindings,
+        &test_machine,
+        &test_font,
+        fake_renderer,
         .video_aspect_mode,
         1,
         .{},
@@ -4346,6 +4674,10 @@ test "settings actions persist frontend video settings" {
         fake_window,
         null,
         &current_audio_mode,
+        &test_bindings,
+        &test_machine,
+        &test_font,
+        fake_renderer,
         .video_scale_mode,
         1,
         .{},
@@ -4379,7 +4711,11 @@ test "guide button toggles pause and resumes overlays" {
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 0;
     var core_profile_frames_remaining: u32 = 0;
+    var dbg_state = debugger_mod.DebuggerState{};
+    var test_bindings = InputBindings.Bindings.defaults();
     const fake_window: *zsdl3.Window = @ptrFromInt(1);
+    var test_font = ui_render.Font{};
+    const fake_renderer: *zsdl3.Renderer = @ptrFromInt(2);
 
     switch (handleFrontendGamepadInput(
         &ui,
@@ -4401,6 +4737,10 @@ test "guide button toggles pause and resumes overlays" {
         &core_profile_frames_remaining,
         fake_window,
         &frame_counter,
+        &dbg_state,
+        &test_bindings,
+        &test_font,
+        fake_renderer,
         .guide,
         true,
         .{},
@@ -4432,6 +4772,10 @@ test "guide button toggles pause and resumes overlays" {
         &core_profile_frames_remaining,
         fake_window,
         &frame_counter,
+        &dbg_state,
+        &test_bindings,
+        &test_font,
+        fake_renderer,
         .guide,
         true,
         .{},
@@ -4452,9 +4796,9 @@ test "save manager gamepad controls save load delete and close" {
     const rom = [_]u8{0} ** 0x400;
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
-    const state_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.state" });
-    defer allocator.free(state_path);
-    const slot1_state_path = try StateFile.pathForSlot(allocator, state_path, 1);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
+    const slot1_state_path = try rom_paths.statePath(allocator, rom_path, 1);
     defer allocator.free(slot1_state_path);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
@@ -4473,7 +4817,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4496,7 +4840,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4517,7 +4861,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4537,7 +4881,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4558,7 +4902,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4580,7 +4924,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4602,7 +4946,7 @@ test "save manager gamepad controls save load delete and close" {
         &save_manager,
         allocator,
         &machine,
-        state_path,
+        rom_path,
         &persistent_state_slot,
         &gif_recorder,
         &wav_recorder,
@@ -4696,113 +5040,79 @@ test "audio-enabled runs do not use uncapped boot frames" {
     try std.testing.expectEqual(@as(u32, 240), uncappedBootFrames(false));
 }
 
-test "cli parser accepts audio mode before rom path" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "--audio-mode=psg-only",
-        "roms/test.bin",
-    };
+const CliTestResult = struct {
+    config: CliConfig,
 
-    const options = try parseCliArgs(&args);
-    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
-    try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, options.audio_mode);
-    try std.testing.expect(!options.show_help);
+    fn deinit(self: CliTestResult) void {
+        if (self.config.rom_path) |p| std.testing.allocator.free(p);
+        if (self.config.renderer_name) |p| std.testing.allocator.free(p);
+    }
+};
+
+fn runCliTest(args: []const []const u8) !CliTestResult {
+    const chilli = @import("chilli");
+    var config = CliConfig{};
+    const cmd = try createCliCommand(std.testing.allocator);
+    defer cmd.deinit();
+    var failed_cmd: ?*const chilli.Command = null;
+    try cmd.execute(args, @ptrCast(&config), &failed_cmd);
+    return .{ .config = config };
+}
+
+test "cli parser accepts audio mode before rom path" {
+    const result = try runCliTest(&.{ "--audio-mode=psg-only", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, result.config.audio_mode);
 }
 
 test "cli parser accepts renderer override before rom path" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "--renderer=software",
-        "roms/test.bin",
-    };
-
-    const options = try parseCliArgs(&args);
-    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
-    try std.testing.expectEqualStrings("software", options.renderer_name.?);
-    try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
+    const result = try runCliTest(&.{ "--renderer=software", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqualStrings("software", result.config.renderer_name.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.normal, result.config.audio_mode);
 }
 
 test "cli parser accepts pal timing override" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "--pal",
-        "roms/test.bin",
-    };
-
-    const options = try parseCliArgs(&args);
-    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
-    try std.testing.expectEqual(TimingModeOption.pal, options.timing_mode);
+    const result = try runCliTest(&.{ "--pal", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(TimingModeOption.pal, result.config.timing_mode);
 }
 
 test "cli parser accepts ntsc timing override" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "--ntsc",
-        "roms/test.bin",
-    };
-
-    const options = try parseCliArgs(&args);
-    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
-    try std.testing.expectEqual(TimingModeOption.ntsc, options.timing_mode);
+    const result = try runCliTest(&.{ "--ntsc", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(TimingModeOption.ntsc, result.config.timing_mode);
 }
 
 test "cli parser accepts spaced audio mode after rom path" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "roms/test.bin",
-        "--audio-mode",
-        "unfiltered-mix",
-    };
-
-    const options = try parseCliArgs(&args);
-    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
-    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, options.audio_mode);
+    const result = try runCliTest(&.{ "roms/test.bin", "--audio-mode", "unfiltered-mix" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, result.config.audio_mode);
 }
 
 test "cli parser accepts spaced renderer override after rom path" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "roms/test.bin",
-        "--renderer",
-        "opengl",
-    };
-
-    const options = try parseCliArgs(&args);
-    try std.testing.expectEqualStrings("roms/test.bin", options.rom_path.?);
-    try std.testing.expectEqualStrings("opengl", options.renderer_name.?);
-}
-
-test "cli parser handles help without a rom path" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "--help",
-    };
-
-    const options = try parseCliArgs(&args);
-    try std.testing.expect(options.show_help);
-    try std.testing.expect(options.rom_path == null);
-    try std.testing.expectEqual(AudioOutput.RenderMode.normal, options.audio_mode);
-    try std.testing.expect(options.renderer_name == null);
-    try std.testing.expectEqual(TimingModeOption.auto, options.timing_mode);
+    const result = try runCliTest(&.{ "roms/test.bin", "--renderer", "opengl" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqualStrings("opengl", result.config.renderer_name.?);
 }
 
 test "cli parser rejects invalid audio mode values" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "--audio-mode",
-        "broken",
-    };
-
-    try std.testing.expectError(error.InvalidAudioMode, parseCliArgs(&args));
+    try std.testing.expectError(error.InvalidAudioMode, runCliTest(&.{ "--audio-mode", "broken" }));
 }
 
 test "cli parser rejects missing renderer value" {
-    const args = [_][]const u8{
-        "sandopolis",
-        "--renderer",
-    };
-
-    try std.testing.expectError(error.MissingRendererValue, parseCliArgs(&args));
+    const chilli = @import("chilli");
+    var config = CliConfig{};
+    const cmd = try createCliCommand(std.testing.allocator);
+    defer cmd.deinit();
+    var failed_cmd: ?*const chilli.Command = null;
+    try std.testing.expectError(error.MissingFlagValue, cmd.execute(&.{"--renderer"}, @ptrCast(&config), &failed_cmd));
 }
 
 test "timing auto-detection chooses pal for europe-only country code" {
@@ -4861,41 +5171,76 @@ test "console region auto-detection defaults to overseas for multi-region countr
     try std.testing.expectEqualStrings("Overseas/export (auto default)", resolved.description);
 }
 
-fn gifOutputPath() ?[48]u8 {
-    var buf: [48]u8 = [_]u8{0} ** 48;
+fn gifOutputPath(current_rom: []const u8) ?[256]u8 {
+    if (current_rom.len > 0) {
+        if (rom_paths.nextOutputPath(current_rom, "gif")) |path| {
+            // Ensure directory exists
+            const stem = std.fs.path.stem(current_rom);
+            const parent = std.fs.path.dirname(current_rom);
+            var dir_buf: [256]u8 = undefined;
+            const dir = (if (parent) |p|
+                std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
+            else
+                std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
+            std.fs.cwd().makePath(dir) catch {};
+            return path;
+        }
+    }
+    // Fallback to CWD
+    var buf: [256]u8 = [_]u8{0} ** 256;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch {
-            return buf;
-        };
+        std.fs.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
 
-fn wavOutputPath() ?[48]u8 {
-    var buf: [48]u8 = [_]u8{0} ** 48;
+fn wavOutputPath(current_rom: []const u8) ?[256]u8 {
+    if (current_rom.len > 0) {
+        if (rom_paths.nextOutputPath(current_rom, "wav")) |path| {
+            const stem = std.fs.path.stem(current_rom);
+            const parent = std.fs.path.dirname(current_rom);
+            var dir_buf: [256]u8 = undefined;
+            const dir = (if (parent) |p|
+                std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
+            else
+                std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
+            std.fs.cwd().makePath(dir) catch {};
+            return path;
+        }
+    }
+    var buf: [256]u8 = [_]u8{0} ** 256;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch {
-            return buf;
-        };
+        std.fs.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
 
-fn screenshotOutputPath() ?[48]u8 {
-    var buf: [48]u8 = [_]u8{0} ** 48;
+fn screenshotOutputPath(current_rom: []const u8) ?[256]u8 {
+    if (current_rom.len > 0) {
+        if (rom_paths.nextOutputPath(current_rom, "bmp")) |path| {
+            const stem = std.fs.path.stem(current_rom);
+            const parent = std.fs.path.dirname(current_rom);
+            var dir_buf: [256]u8 = undefined;
+            const dir = (if (parent) |p|
+                std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
+            else
+                std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
+            std.fs.cwd().makePath(dir) catch {};
+            return path;
+        }
+    }
+    var buf: [256]u8 = [_]u8{0} ** 256;
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.bmp", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch {
-            return buf;
-        };
+        std.fs.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
@@ -4903,7 +5248,7 @@ fn screenshotOutputPath() ?[48]u8 {
 test "gif output path returns optional type" {
     // Verify the function returns an optional - this tests the fix for the
     // bug where returning non-null on exhausted slots would overwrite files
-    const ResultType = @TypeOf(gifOutputPath());
+    const ResultType = @TypeOf(gifOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
@@ -4911,7 +5256,7 @@ test "gif output path returns optional type" {
 test "wav output path returns optional type" {
     // Verify the function returns an optional - this tests the fix for the
     // bug where returning non-null on exhausted slots would overwrite files
-    const ResultType = @TypeOf(wavOutputPath());
+    const ResultType = @TypeOf(wavOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
@@ -4919,7 +5264,7 @@ test "wav output path returns optional type" {
 test "screenshot output path returns optional type" {
     // Verify the function returns an optional - this tests the fix for the
     // bug where returning non-null on exhausted slots would overwrite files
-    const ResultType = @TypeOf(screenshotOutputPath());
+    const ResultType = @TypeOf(screenshotOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }

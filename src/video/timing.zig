@@ -59,6 +59,12 @@ pub fn hblankStartMasterCycles(self: *const Vdp) u16 {
     return if (self.isH40()) 0x015A * 8 else 0x0108 * 10;
 }
 
+/// Delay between VBLANK flag set and VInt firing, matching Genesis Plus GX.
+/// Games like Dracula, OutRunners, and VR Troopers depend on this gap.
+pub fn vIntMasterCycles(self: *const Vdp) u16 {
+    return if (self.isH40()) 788 else 770;
+}
+
 fn effectiveScanlineForVCounter(self: *const Vdp, scanline: u16, line_master_cycle: u16) u16 {
     if (line_master_cycle < hInterruptMasterCycles(self)) return scanline;
 
@@ -327,7 +333,6 @@ fn computeHCounterShaped(self: *const Vdp) u8 {
 }
 
 pub fn readHVCounter(self: *Vdp) u16 {
-    self.pending_command = false;
     if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
         return self.hv_latched;
     }
@@ -335,7 +340,6 @@ pub fn readHVCounter(self: *Vdp) u16 {
 }
 
 pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
-    self.pending_command = false;
     if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
         return self.hv_latched;
     }
@@ -344,8 +348,9 @@ pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
 }
 
 pub fn step(self: *Vdp, cycles: u32) void {
-    const total = @as(u32, self.line_master_cycle) + cycles;
-    self.line_master_cycle = @intCast(total % clock.ntsc_master_cycles_per_line);
+    var total = @as(u32, self.line_master_cycle) + cycles;
+    if (total >= clock.ntsc_master_cycles_per_line) total -= clock.ntsc_master_cycles_per_line;
+    self.line_master_cycle = @intCast(total);
 }
 
 pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: u16) bool {
@@ -394,7 +399,7 @@ pub fn applyPowerOnResetTiming(self: *Vdp) void {
 }
 
 pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
-    if (line >= visible_lines) return false;
+    if (line > visible_lines) return false;
     self.hint_counter -= 1;
     if (self.hint_counter < 0) {
         self.hint_counter = @intCast(self.regs[10]);

@@ -8,6 +8,7 @@ pub const WaitAccounting = struct {
 
 pub const InstructionStep = struct {
     m68k_cycles: u32,
+    ppc: u32,
     wait: WaitAccounting,
 };
 
@@ -19,6 +20,8 @@ pub const SchedulerBus = struct {
     step_master_fn: *const fn (?*anyopaque, u32) void,
     cpu_memory_fn: *const fn (?*anyopaque) MemoryInterface,
     dma_halt_quantum_fn: *const fn (?*anyopaque) u32,
+    record_refresh_cycles_fn: *const fn (?*anyopaque, u32, u32) void,
+    reset_refresh_counter_fn: *const fn (?*anyopaque) void,
 
     pub fn bind(comptime Context: type, ctx: *Context) SchedulerBus {
         return .{
@@ -59,6 +62,18 @@ pub const SchedulerBus = struct {
                     return self.dmaHaltQuantum();
                 }
             }.call,
+            .record_refresh_cycles_fn = struct {
+                fn call(raw_ctx: ?*anyopaque, m68k_cycles: u32, ppc: u32) void {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    self.recordRefreshCycles(m68k_cycles, ppc);
+                }
+            }.call,
+            .reset_refresh_counter_fn = struct {
+                fn call(raw_ctx: ?*anyopaque) void {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    self.resetRefreshCounter();
+                }
+            }.call,
         };
     }
 
@@ -85,6 +100,14 @@ pub const SchedulerBus = struct {
     pub fn dmaHaltQuantum(self: SchedulerBus) u32 {
         return self.dma_halt_quantum_fn(self.ctx);
     }
+
+    pub fn recordRefreshCycles(self: SchedulerBus, m68k_cycles: u32, ppc: u32) void {
+        self.record_refresh_cycles_fn(self.ctx, m68k_cycles, ppc);
+    }
+
+    pub fn resetRefreshCounter(self: SchedulerBus) void {
+        self.reset_refresh_counter_fn(self.ctx);
+    }
 };
 
 pub const SchedulerCpu = struct {
@@ -100,6 +123,7 @@ pub const SchedulerCpu = struct {
                     const instruction = self.stepInstruction(memory);
                     return .{
                         .m68k_cycles = instruction.m68k_cycles,
+                        .ppc = instruction.ppc,
                         .wait = .{
                             .m68k_cycles = instruction.wait.m68k_cycles,
                             .master_cycles = instruction.wait.master_cycles,
@@ -183,6 +207,9 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
         fn dmaHaltQuantum(_: *@This()) u32 {
             return 17;
         }
+
+        fn recordRefreshCycles(_: *@This(), _: u32, _: u32) void {}
+        fn resetRefreshCounter(_: *@This()) void {}
     };
 
     var probe = BusProbe{};
@@ -244,6 +271,7 @@ test "scheduler cpu bind forwards instruction stepping through memory" {
             self.steps += 1;
             return .{
                 .m68k_cycles = memory.read8(0x10),
+                .ppc = 0,
                 .wait = .{
                     .m68k_cycles = 2,
                     .master_cycles = 6,

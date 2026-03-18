@@ -80,6 +80,10 @@ struct Jgz80Handle {
     bool bus_ack;
     bool reset_line;
     uint32_t m68k_bus_access_count;
+    uint32_t ym_write_overflow_count;
+    uint32_t ym_dac_overflow_count;
+    uint32_t ym_reset_overflow_count;
+    uint32_t psg_command_overflow_count;
     uint16_t instruction_pc;
     uint8_t instruction_fetch_index;
     uint8_t instruction_data_access_index;
@@ -670,18 +674,22 @@ static void clear_ym2612_event_queues(Jgz80Handle *h) {
     h->ym_write_write_index = 0;
     h->ym_write_read_index = 0;
     h->ym_write_count = 0;
+    h->ym_write_overflow_count = 0;
     h->ym_dac_write_index = 0;
     h->ym_dac_read_index = 0;
     h->ym_dac_count = 0;
+    h->ym_dac_overflow_count = 0;
     h->ym_reset_write_index = 0;
     h->ym_reset_read_index = 0;
     h->ym_reset_count = 0;
+    h->ym_reset_overflow_count = 0;
 }
 
 static void clear_psg_command_queue(Jgz80Handle *h) {
     h->psg_command_write_index = 0;
     h->psg_command_read_index = 0;
     h->psg_command_count = 0;
+    h->psg_command_overflow_count = 0;
 }
 
 static void reset_ym2612_state(Jgz80Handle *h) {
@@ -700,6 +708,7 @@ static void push_ym_write_event(Jgz80Handle *h, uint8_t port, uint8_t reg, uint8
     if (h->ym_write_count == YM_WRITE_BUFFER_CAPACITY) {
         h->ym_write_read_index = (uint16_t)((h->ym_write_read_index + 1u) % YM_WRITE_BUFFER_CAPACITY);
         --h->ym_write_count;
+        ++h->ym_write_overflow_count;
     }
 
     h->ym_write_events[h->ym_write_write_index].master_offset = h->audio_master_offset;
@@ -715,6 +724,7 @@ static void push_ym_write_event_at(Jgz80Handle *h, uint32_t master_offset, uint8
     if (h->ym_write_count == YM_WRITE_BUFFER_CAPACITY) {
         h->ym_write_read_index = (uint16_t)((h->ym_write_read_index + 1u) % YM_WRITE_BUFFER_CAPACITY);
         --h->ym_write_count;
+        ++h->ym_write_overflow_count;
     }
 
     h->ym_write_events[h->ym_write_write_index].master_offset = master_offset;
@@ -730,6 +740,7 @@ static void push_psg_command(Jgz80Handle *h, uint8_t value) {
     if (h->psg_command_count == PSG_COMMAND_BUFFER_CAPACITY) {
         h->psg_command_read_index = (uint16_t)((h->psg_command_read_index + 1u) % PSG_COMMAND_BUFFER_CAPACITY);
         --h->psg_command_count;
+        ++h->psg_command_overflow_count;
     }
 
     h->psg_commands[h->psg_command_write_index].master_offset = h->audio_master_offset;
@@ -742,6 +753,7 @@ static void push_psg_command_at(Jgz80Handle *h, uint32_t master_offset, uint8_t 
     if (h->psg_command_count == PSG_COMMAND_BUFFER_CAPACITY) {
         h->psg_command_read_index = (uint16_t)((h->psg_command_read_index + 1u) % PSG_COMMAND_BUFFER_CAPACITY);
         --h->psg_command_count;
+        ++h->psg_command_overflow_count;
     }
 
     h->psg_commands[h->psg_command_write_index].master_offset = master_offset;
@@ -754,6 +766,7 @@ static void push_ym_dac_sample(Jgz80Handle *h, uint8_t value) {
     if (h->ym_dac_count == YM_DAC_BUFFER_CAPACITY) {
         h->ym_dac_read_index = (uint16_t)((h->ym_dac_read_index + 1u) % YM_DAC_BUFFER_CAPACITY);
         --h->ym_dac_count;
+        ++h->ym_dac_overflow_count;
     }
 
     h->ym_dac_samples[h->ym_dac_write_index].master_offset = h->audio_master_offset;
@@ -767,6 +780,7 @@ static void push_ym_dac_sample_at(Jgz80Handle *h, uint32_t master_offset, uint8_
     if (h->ym_dac_count == YM_DAC_BUFFER_CAPACITY) {
         h->ym_dac_read_index = (uint16_t)((h->ym_dac_read_index + 1u) % YM_DAC_BUFFER_CAPACITY);
         --h->ym_dac_count;
+        ++h->ym_dac_overflow_count;
     }
 
     h->ym_dac_samples[h->ym_dac_write_index].master_offset = master_offset;
@@ -780,6 +794,7 @@ static void push_ym_reset_event(Jgz80Handle *h) {
     if (h->ym_reset_count == YM_RESET_BUFFER_CAPACITY) {
         h->ym_reset_read_index = (uint16_t)((h->ym_reset_read_index + 1u) % YM_RESET_BUFFER_CAPACITY);
         --h->ym_reset_count;
+        ++h->ym_reset_overflow_count;
     }
 
     h->ym_reset_events[h->ym_reset_write_index].master_offset = h->audio_master_offset;
@@ -1441,6 +1456,21 @@ uint16_t jgz80_peek_ym_dac_count(const Jgz80Handle *handle) {
 uint16_t jgz80_peek_psg_command_count(const Jgz80Handle *handle) {
     if (!handle) return 0u;
     return handle->psg_command_count;
+}
+
+uint32_t jgz80_take_overflow_counts(Jgz80Handle *handle, uint32_t *ym_write, uint32_t *ym_dac, uint32_t *ym_reset, uint32_t *psg_command) {
+    if (!handle) return 0u;
+    uint32_t total = handle->ym_write_overflow_count + handle->ym_dac_overflow_count
+                   + handle->ym_reset_overflow_count + handle->psg_command_overflow_count;
+    if (ym_write) *ym_write = handle->ym_write_overflow_count;
+    if (ym_dac) *ym_dac = handle->ym_dac_overflow_count;
+    if (ym_reset) *ym_reset = handle->ym_reset_overflow_count;
+    if (psg_command) *psg_command = handle->psg_command_overflow_count;
+    handle->ym_write_overflow_count = 0;
+    handle->ym_dac_overflow_count = 0;
+    handle->ym_reset_overflow_count = 0;
+    handle->psg_command_overflow_count = 0;
+    return total;
 }
 
 uint16_t jgz80_take_ym_writes(Jgz80Handle *handle, Jgz80YmWriteEvent *dest, uint16_t max_events) {

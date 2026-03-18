@@ -87,6 +87,15 @@ fn pathExists(relative_path: []const u8) bool {
     return true;
 }
 
+fn addStbTruetype(step: *std.Build.Step.Compile, b: *std.Build) void {
+    step.addCSourceFiles(.{
+        .files = &.{"src/frontend/fonts/stb_impl.c"},
+        .flags = &.{"-std=c99"},
+    });
+    step.addIncludePath(b.path("src/frontend/fonts"));
+    step.root_module.addIncludePath(b.path("src/frontend/fonts"));
+}
+
 fn linkSdl3(step: *std.Build.Step.Compile, sdl3_lib: *std.Build.Step.Compile) void {
     step.linkLibrary(sdl3_lib);
     step.linkLibC();
@@ -100,6 +109,7 @@ pub fn build(b: *std.Build) void {
     const version = @import("build.zig.zon").version;
 
     const zsdl = b.dependency("zsdl", .{});
+    const chilli = b.dependency("chilli", .{});
     const minish = b.dependency("minish", .{});
     const sdl3_dep = b.dependency("sdl3", .{
         .target = target,
@@ -127,12 +137,15 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
     addExternalCpuCores(exe, b, cpu_deps);
     linkSdl3(exe, sdl3_lib);
+
+    addStbTruetype(exe, b);
 
     b.installArtifact(exe);
 
@@ -155,12 +168,14 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
     addExternalCpuCores(exe_check, b, cpu_deps);
     linkSdl3(exe_check, sdl3_lib);
+    addStbTruetype(exe_check, b);
 
     const check = b.step("check", "Check if sandopolis compiles");
     check.dependOn(&exe_check.step);
@@ -189,6 +204,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),

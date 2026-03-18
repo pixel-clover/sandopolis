@@ -79,6 +79,9 @@ pub const State = struct {
         self.writeFailureLocked(message);
     }
 
+    // Must be polled every frame after begin() returns true. The dialog
+    // cannot be reopened until take() has consumed the terminal outcome
+    // (selected/canceled/failed), since in_flight stays true until then.
     pub fn take(self: *State) Outcome {
         self.mutex.lock();
         defer self.mutex.unlock();

@@ -11,5 +11,7 @@ pub const State = struct {
     audio_timing: AudioTiming,
     timing_state: z80_timing.State,
     open_bus: u16,
+    tmss_register: [4]u8,
+    tmss_locked: bool,
     cartridge_ram: Cartridge.RamState,
 };

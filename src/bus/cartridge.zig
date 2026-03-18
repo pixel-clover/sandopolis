@@ -1,4 +1,6 @@
 const std = @import("std");
+const eeprom_i2c = @import("eeprom_i2c.zig");
+const rom_paths = @import("../rom_paths.zig");
 
 fn looksLikeGenesis(rom: []const u8) bool {
     if (rom.len < 0x104) return false;
@@ -73,16 +75,54 @@ const SsfMapper = struct {
     }
 };
 
+const EepromI2cMapper = struct {
+    eeprom: eeprom_i2c.EepromI2c,
+
+    fn readByte(self: *const EepromI2cMapper, address: u32) ?u8 {
+        return self.eeprom.readByte(address);
+    }
+
+    fn readWord(self: *const EepromI2cMapper, address: u32) ?u16 {
+        return self.eeprom.readWord(address);
+    }
+
+    fn writeByte(self: *EepromI2cMapper, address: u32, value: u8) bool {
+        return self.eeprom.writeByte(address, value);
+    }
+
+    fn writeWord(self: *EepromI2cMapper, address: u32, value: u16) bool {
+        return self.eeprom.writeWord(address, value);
+    }
+};
+
 const Mapper = union(enum) {
     none,
     ssf: SsfMapper,
+    eeprom_i2c: EepromI2cMapper,
 };
 
-fn detectMapper(rom: []const u8) Mapper {
+fn detectMapper(allocator: ?std.mem.Allocator, rom: []const u8) !Mapper {
     if (rom.len >= 0x100 + ssf_console_prefix.len and
         std.mem.startsWith(u8, rom[0x100..@min(rom.len, 0x110)], ssf_console_prefix))
     {
         return .{ .ssf = .{} };
+    }
+
+    if (allocator) |alloc| {
+        if (eeprom_i2c.detect(rom)) |result| {
+            const size = eeprom_i2c.storageSize(result.eeprom_type);
+            const data = try alloc.alloc(u8, size);
+            @memset(data, 0xFF);
+            return .{ .eeprom_i2c = .{
+                .eeprom = eeprom_i2c.EepromI2c.init(
+                    result.eeprom_type,
+                    result.wiring,
+                    data,
+                    0x200000,
+                    0x3FFFFF,
+                ),
+            } };
+        }
     }
 
     return .none;
@@ -94,6 +134,7 @@ const Ram = struct {
     persistent: bool,
     dirty: bool,
     mapped: bool,
+    write_protected: bool,
     start_address: u32,
     end_address: u32,
 
@@ -104,6 +145,7 @@ const Ram = struct {
             .persistent = false,
             .dirty = false,
             .mapped = false,
+            .write_protected = false,
             .start_address = 0,
             .end_address = 0,
         };
@@ -119,6 +161,7 @@ const Ram = struct {
             .persistent = true,
             .dirty = false,
             .mapped = forced_sram_start_address >= rom_len,
+            .write_protected = false,
             .start_address = forced_sram_start_address,
             .end_address = forced_sram_start_address + @as(u32, @intCast((ram_len - 1) * 2)),
         };
@@ -179,6 +222,7 @@ const Ram = struct {
             .persistent = persistent,
             .dirty = false,
             .mapped = start_address >= rom.len,
+            .write_protected = false,
             .start_address = start_address,
             .end_address = end_address,
         };
@@ -202,6 +246,7 @@ const Ram = struct {
             .persistent = self.persistent,
             .dirty = self.dirty,
             .mapped = self.mapped,
+            .write_protected = self.write_protected,
             .start_address = self.start_address,
             .end_address = self.end_address,
         };
@@ -246,6 +291,7 @@ const Ram = struct {
     }
 
     fn writeByte(self: *Ram, address: u32, value: u8) bool {
+        if (self.write_protected) return false;
         const data = self.data orelse return false;
         const index = self.mapIndex(address) orelse return false;
         data[index] = value;
@@ -283,6 +329,7 @@ pub const Cartridge = struct {
         persistent: bool,
         dirty: bool,
         mapped: bool,
+        write_protected: bool,
         start_address: u32,
         end_address: u32,
     };
@@ -364,12 +411,14 @@ pub const Cartridge = struct {
         var cartridge = Cartridge{
             .rom = rom_data,
             .ram = try Ram.initFromRomHeader(allocator, rom_data, checksum),
-            .mapper = detectMapper(rom_data),
+            .mapper = try detectMapper(allocator, rom_data),
             .save_path = null,
             .source_path = source_path,
         };
 
-        if (cartridge.ram.persistent and cartridge.ram.hasStorage() and rom_path != null) {
+        const needs_save = (cartridge.ram.persistent and cartridge.ram.hasStorage()) or
+            (cartridge.mapper == .eeprom_i2c);
+        if (needs_save and rom_path != null) {
             cartridge.save_path = try savePathForRom(allocator, rom_path.?);
             try cartridge.loadPersistentStorage();
         }
@@ -379,6 +428,9 @@ pub const Cartridge = struct {
 
     pub fn deinit(self: *Cartridge, allocator: std.mem.Allocator) void {
         self.ram.deinit(allocator);
+        if (self.mapper == .eeprom_i2c) {
+            allocator.free(self.mapper.eeprom_i2c.eeprom.data);
+        }
         if (self.save_path) |save_path| allocator.free(save_path);
         if (self.source_path) |source_path| allocator.free(source_path);
         allocator.free(self.rom);
@@ -404,41 +456,63 @@ pub const Cartridge = struct {
             null;
         errdefer if (source_path) |path| allocator.free(path);
 
+        var mapper = self.mapper;
+        if (mapper == .eeprom_i2c) {
+            const eeprom_data = try allocator.alloc(u8, mapper.eeprom_i2c.eeprom.data.len);
+            std.mem.copyForwards(u8, eeprom_data, mapper.eeprom_i2c.eeprom.data);
+            mapper.eeprom_i2c.eeprom.data = eeprom_data;
+        }
+
         return .{
             .rom = rom,
             .ram = ram,
-            .mapper = self.mapper,
+            .mapper = mapper,
             .save_path = save_path,
             .source_path = source_path,
         };
     }
 
     pub fn resetHardwareState(self: *Cartridge) void {
-        self.mapper = detectMapper(self.rom);
+        switch (self.mapper) {
+            .eeprom_i2c => |*m| m.eeprom.resetState(),
+            .ssf => self.mapper = .{ .ssf = .{} },
+            .none => {},
+        }
+        // Re-detect SSF mapper from ROM (but don't reallocate EEPROM)
+        if (self.mapper != .eeprom_i2c) {
+            self.mapper = detectMapper(null, self.rom) catch .none;
+        }
         if (self.ram.hasStorage()) {
             self.ram.setMapped(self.ram.start_address >= self.rom.len);
+            self.ram.write_protected = false;
         }
     }
 
     fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
-        const extension = std.fs.path.extension(rom_path);
-        if (extension.len == 0) {
-            return std.fmt.allocPrint(allocator, "{s}.sav", .{rom_path});
-        }
-
-        return std.fmt.allocPrint(allocator, "{s}.sav", .{rom_path[0 .. rom_path.len - extension.len]});
+        return rom_paths.sramPath(allocator, rom_path);
     }
 
     fn loadPersistentStorage(self: *Cartridge) !void {
         const save_path = self.save_path orelse return;
-        if (!self.ram.persistent) return;
-        if (!self.ram.hasStorage()) return;
 
         const file = std.fs.cwd().openFile(save_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return,
             else => return err,
         };
         defer file.close();
+
+        if (self.mapper == .eeprom_i2c) {
+            const data = self.mapper.eeprom_i2c.eeprom.data;
+            const bytes_read = try file.readAll(data);
+            if (bytes_read < data.len) {
+                @memset(data[bytes_read..], 0xFF);
+            }
+            self.mapper.eeprom_i2c.eeprom.dirty = false;
+            return;
+        }
+
+        if (!self.ram.persistent) return;
+        if (!self.ram.hasStorage()) return;
 
         const data = self.ram.data.?;
         const bytes_read = try file.readAll(data);
@@ -450,6 +524,17 @@ pub const Cartridge = struct {
 
     pub fn flushPersistentStorage(self: *Cartridge) !void {
         const save_path = self.save_path orelse return;
+
+        if (self.mapper == .eeprom_i2c) {
+            if (!self.mapper.eeprom_i2c.eeprom.dirty) return;
+            const data = self.mapper.eeprom_i2c.eeprom.data;
+            const file = try std.fs.cwd().createFile(save_path, .{ .truncate = true });
+            defer file.close();
+            try file.writeAll(data);
+            self.mapper.eeprom_i2c.eeprom.dirty = false;
+            return;
+        }
+
         if (!self.ram.persistent or !self.ram.dirty) return;
 
         const data = self.ram.data orelse return;
@@ -463,7 +548,7 @@ pub const Cartridge = struct {
         if (self.rom.len == 0) return 0;
 
         const mapped_address = switch (self.mapper) {
-            .none => address,
+            .none, .eeprom_i2c => address,
             .ssf => |mapper| mapper.translateRomAddress(address),
         };
 
@@ -475,11 +560,12 @@ pub const Cartridge = struct {
     pub fn writeRegisterByte(self: *Cartridge, address: u32, value: u8) bool {
         if (address == 0xA130F1) {
             self.ram.setMapped((value & 1) != 0);
+            self.ram.write_protected = (value & 2) != 0;
             return true;
         }
 
         switch (self.mapper) {
-            .none => {},
+            .none, .eeprom_i2c => {},
             .ssf => |*mapper| {
                 if (mapper.writeRegisterByte(address, value)) return true;
             },
@@ -501,6 +587,7 @@ pub const Cartridge = struct {
     }
 
     pub fn isRamPersistent(self: *const Cartridge) bool {
+        if (self.mapper == .eeprom_i2c) return true;
         return self.ram.persistent;
     }
 
@@ -526,6 +613,7 @@ pub const Cartridge = struct {
             .persistent = self.ram.persistent,
             .dirty = self.ram.dirty,
             .mapped = self.ram.mapped,
+            .write_protected = self.ram.write_protected,
             .start_address = self.ram.start_address,
             .end_address = self.ram.end_address,
         };
@@ -545,23 +633,36 @@ pub const Cartridge = struct {
         self.ram.persistent = state.persistent;
         self.ram.dirty = state.dirty;
         self.ram.mapped = state.mapped;
+        self.ram.write_protected = state.write_protected;
         self.ram.start_address = state.start_address;
         self.ram.end_address = state.end_address;
     }
 
     pub fn readByte(self: *const Cartridge, address: u32) ?u8 {
+        if (self.mapper == .eeprom_i2c) {
+            if (self.mapper.eeprom_i2c.readByte(address)) |v| return v;
+        }
         return self.ram.readByte(address);
     }
 
     pub fn readWord(self: *const Cartridge, address: u32) ?u16 {
+        if (self.mapper == .eeprom_i2c) {
+            if (self.mapper.eeprom_i2c.readWord(address)) |v| return v;
+        }
         return self.ram.readWord(address);
     }
 
     pub fn writeByte(self: *Cartridge, address: u32, value: u8) bool {
+        if (self.mapper == .eeprom_i2c) {
+            if (self.mapper.eeprom_i2c.writeByte(address, value)) return true;
+        }
         return self.ram.writeByte(address, value);
     }
 
     pub fn writeWord(self: *Cartridge, address: u32, value: u16) bool {
+        if (self.mapper == .eeprom_i2c) {
+            if (self.mapper.eeprom_i2c.writeWord(address, value)) return true;
+        }
         return self.ram.writeWord(address, value);
     }
 };
@@ -798,4 +899,64 @@ test "cartridge reset restores default sram mapping state" {
 
     cartridge.resetHardwareState();
     try std.testing.expect(cartridge.isRamMapped());
+}
+
+test "sram write-protect blocks writes and clearing allows writes again" {
+    const rom = try makeRomWithSramHeader(std.testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.isRamMapped());
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0xAA));
+    try std.testing.expectEqual(@as(u8, 0xAA), cartridge.readByte(0x0020_0001).?);
+
+    // Enable write-protect (bit 1) while keeping mapped (bit 0)
+    try std.testing.expect(cartridge.writeRegisterByte(0xA130F1, 0x03));
+
+    // Writes should be blocked
+    try std.testing.expect(!cartridge.writeByte(0x0020_0001, 0x55));
+    try std.testing.expectEqual(@as(u8, 0xAA), cartridge.readByte(0x0020_0001).?);
+
+    // Clear write-protect, keep mapped
+    try std.testing.expect(cartridge.writeRegisterByte(0xA130F1, 0x01));
+
+    // Writes should work again
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0x55));
+    try std.testing.expectEqual(@as(u8, 0x55), cartridge.readByte(0x0020_0001).?);
+}
+
+test "sram write-protect is cleared on hardware reset" {
+    const rom = try makeRomWithSramHeader(std.testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
+    defer std.testing.allocator.free(rom);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expect(cartridge.writeRegisterByte(0xA130F1, 0x03));
+    try std.testing.expect(!cartridge.writeByte(0x0020_0001, 0x55));
+
+    cartridge.resetHardwareState();
+
+    try std.testing.expect(cartridge.writeByte(0x0020_0001, 0x55));
+    try std.testing.expectEqual(@as(u8, 0x55), cartridge.readByte(0x0020_0001).?);
+}
+
+test "sram write-protect is preserved in ram state snapshot" {
+    const rom = try makeRomWithSramHeader(std.testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
+    defer std.testing.allocator.free(rom);
+
+    var source = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer source.deinit(std.testing.allocator);
+
+    try std.testing.expect(source.writeRegisterByte(0xA130F1, 0x03));
+    const ram_state = source.captureRamState();
+    try std.testing.expect(ram_state.write_protected);
+
+    var restored = try Cartridge.initFromRomBytes(std.testing.allocator, rom);
+    defer restored.deinit(std.testing.allocator);
+
+    try restored.restoreRamState(ram_state, source.ramBytes());
+    try std.testing.expect(!restored.writeByte(0x0020_0001, 0x55));
 }

@@ -133,8 +133,9 @@ fn normalizeTransferLineMasterCycle(total_master_cycles: u32) u16 {
 }
 
 fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
-    const total = @as(u32, self.transfer_line_master_cycle) + master_cycles;
-    self.transfer_line_master_cycle = normalizeTransferLineMasterCycle(total);
+    var total = @as(u32, self.transfer_line_master_cycle) + master_cycles;
+    if (total >= clock.ntsc_master_cycles_per_line) total -= clock.ntsc_master_cycles_per_line;
+    self.transfer_line_master_cycle = @intCast(total);
 }
 
 fn slotIndexInSet(slot_idx: u16, comptime slot_set: []const u8) bool {
@@ -1212,8 +1213,12 @@ fn writeTargetWord(self: *Vdp, code: u8, addr: u16, value: u16) void {
         0x3 => {
             self.dbg_cram_writes += 1;
             const idx = addr & 0x7E;
-            self.cram[idx] = @intCast((value >> 8) & 0xFF);
-            self.cram[idx + 1] = @intCast(value & 0xFF);
+            self.recordCramDot(self.transfer_line_master_cycle, value);
+            // CRAM stores 9-bit color in format ----BBB0GGG0RRR0.
+            // Mask out unused bits so readback returns canonical values.
+            const masked = value & 0x0EEE;
+            self.cram[idx] = @intCast((masked >> 8) & 0xFF);
+            self.cram[idx + 1] = @intCast(masked & 0xFF);
         },
         0x5 => {
             self.dbg_vsram_writes += 1;
@@ -1336,8 +1341,10 @@ fn progressDmaFill(self: *Vdp, access_slots: u32) void {
             0x3 => {
                 self.dbg_cram_writes += 1;
                 const idx = self.addr & 0x7E;
-                self.cram[idx] = @intCast((fill_word >> 8) & 0xFF);
-                self.cram[idx + 1] = @intCast(fill_word & 0xFF);
+                self.recordCramDot(self.transfer_line_master_cycle, fill_word);
+                const masked = fill_word & 0x0EEE;
+                self.cram[idx] = @intCast((masked >> 8) & 0xFF);
+                self.cram[idx + 1] = @intCast(masked & 0xFF);
             },
             0x5 => {
                 self.dbg_vsram_writes += 1;
@@ -1452,6 +1459,7 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
 
                 if (transferSlotIsAccess(self, slot_event.slot_idx, phaseIsBlanking(self, phase))) {
                     if (self.active_execution_counters) |counters| counters.access_slots += 1;
+                    self.transfer_line_master_cycle = phase.line_master_cycle;
                     serviceAccessSlot(self);
                 }
 
@@ -1514,6 +1522,7 @@ pub fn writeControl(self: *Vdp, value: u16) void {
             if (reg == 0 and ((self.regs[0] & 0x02) != 0) and ((data & 0x02) == 0)) {
                 self.hv_latched_valid = false;
             }
+            self.recordRegChange(@intCast(reg), data);
             self.regs[reg] = data;
         }
         self.pending_command = false;
@@ -1773,8 +1782,9 @@ test "CRAM fifo entries still drain in a single service slot" {
 
     vdp.progressTransfers(drain_wait, null, null);
     try testing.expectEqual(@as(u8, 0), vdp.fifo_len);
-    try testing.expectEqual(@as(u8, 0x13), vdp.cram[0x0004]);
-    try testing.expectEqual(@as(u8, 0x57), vdp.cram[0x0005]);
+    // CRAM masks to 9-bit color format ----BBB0GGG0RRR0: 0x1357 & 0x0EEE = 0x0246
+    try testing.expectEqual(@as(u8, 0x02), vdp.cram[0x0004]);
+    try testing.expectEqual(@as(u8, 0x46), vdp.cram[0x0005]);
 }
 
 test "CRAM data reads inherit undriven bits from the fifo front word" {

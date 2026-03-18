@@ -148,6 +148,7 @@ pub const Cpu = struct {
 
     pub const InstructionStep = struct {
         m68k_cycles: u32,
+        ppc: u32,
         wait: WaitAccounting,
     };
 
@@ -345,6 +346,13 @@ pub const Cpu = struct {
     }
 
     pub fn noteBusAccessWait(self: *Cpu, memory: *MemoryInterface, address: u32, size_bytes: u8, is_write: bool) void {
+
+        // Fast path: ROM (< 0x400000), RAM (>= 0xE00000), and most other
+        // non-VDP/non-Z80 addresses have zero wait cycles and no port side
+        // effects. Skip the vtable call and VDP address checks entirely.
+        const addr = address & 0xFFFFFF;
+        if (addr < 0xA00000 or addr >= 0xE00000) return;
+
         self.addBusWaitMaster(memory.m68kAccessWaitMasterCycles(address, size_bytes));
 
         if (!isVdpDataPortAddress(address)) {
@@ -400,6 +408,7 @@ pub const Cpu = struct {
 
         return .{
             .m68k_cycles = ran_cycles,
+            .ppc = self.core.ppc,
             .wait = self.takeWaitAccounting(),
         };
     }

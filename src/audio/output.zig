@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.audio);
 const clock = @import("../clock.zig");
 const PendingAudioFrames = @import("timing.zig").PendingAudioFrames;
 const Z80 = @import("../cpu/z80.zig").Z80;
@@ -41,13 +42,23 @@ const PendingAudioEvents = struct {
 const DcBlocker = struct {
     x_prev: f32 = 0.0,
     y_prev: f32 = 0.0,
+    alpha: f32,
     warmup_samples: u8 = 0,
 
-    const alpha: f32 = 0.9974;
+    // Target DC cutoff frequency (~20 Hz). The alpha coefficient is derived
+    // from this and the actual output sample rate so the filter behaves
+    // consistently regardless of playback rate.
+    const dc_cutoff_hz: f64 = 20.0;
     const warmup_count: u8 = 8;
 
+    fn init(sample_rate: f64) DcBlocker {
+        return .{
+            .alpha = @floatCast(1.0 - (std.math.tau * dc_cutoff_hz) / sample_rate),
+        };
+    }
+
     fn process(self: *DcBlocker, x: f32) f32 {
-        const y = alpha * (self.y_prev + x - self.x_prev);
+        const y = self.alpha * (self.y_prev + x - self.x_prev);
         self.x_prev = x;
         self.y_prev = y;
 
@@ -101,7 +112,7 @@ const BoardOutputLpf = struct {
         self.prev_r = self.prev_r * self.history_factor + x * self.input_factor;
 
         // Warmup already counted in processL (called first in stereo pair)
-        if (self.warmup_samples <= warmup_count) {
+        if (self.warmup_samples < warmup_count) {
             const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
             return self.prev_r * blend;
         }
@@ -420,8 +431,8 @@ pub const AudioOutput = struct {
     psg_resampler: StereoResampler = StereoResampler.init(ntscPsgNativeSampleRate(), output_rate),
     psg_native_lpf_l: FirstOrderLpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntscPsgNativeSampleRate()),
     psg_native_lpf_r: FirstOrderLpf = FirstOrderLpf.init(psg_native_cutoff_hz, ntscPsgNativeSampleRate()),
-    dc_left: DcBlocker = .{},
-    dc_right: DcBlocker = .{},
+    dc_left: DcBlocker = DcBlocker.init(output_rate),
+    dc_right: DcBlocker = DcBlocker.init(output_rate),
     board_lpf: BoardOutputLpf = BoardOutputLpf.init(),
     render_mode: RenderMode = .normal,
     ym_internal_master_remainder: u16 = 0,
@@ -501,8 +512,8 @@ pub const AudioOutput = struct {
         const psg_rate = psgNativeSampleRate(is_pal);
         self.psg_native_lpf_l = FirstOrderLpf.init(psg_native_cutoff_hz, psg_rate);
         self.psg_native_lpf_r = FirstOrderLpf.init(psg_native_cutoff_hz, psg_rate);
-        self.dc_left = .{};
-        self.dc_right = .{};
+        self.dc_left = DcBlocker.init(output_rate);
+        self.dc_right = DcBlocker.init(output_rate);
         self.board_lpf = BoardOutputLpf.init();
         self.last_ym_resampled_left = 0.0;
         self.last_ym_resampled_right = 0.0;
@@ -1331,6 +1342,10 @@ pub const AudioOutput = struct {
     }
 
     fn takePendingEvents(self: *AudioOutput, z80: *Z80) PendingAudioEvents {
+        const overflow = z80.takeOverflowCounts();
+        if (overflow > 0) {
+            log.warn("audio event buffer overflow: {d} events dropped", .{overflow});
+        }
         const ym_write_count = z80.takeYmWrites(self.ym_write_buffer[0..]);
         const ym_dac_count = z80.takeYmDacSamples(self.ym_dac_buffer[0..]);
         const ym_reset_count = z80.takeYmResets(self.ym_reset_buffer[0..]);

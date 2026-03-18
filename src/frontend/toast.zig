@@ -28,24 +28,71 @@ pub const Style = enum {
     failure,
 };
 
-// Toast notification state
-pub const Toast = struct {
+// Single queued toast entry
+const Entry = struct {
     style: Style = .info,
     message: MessageCopy = .{},
     hide_after_frame: u64 = 0,
+};
+
+// Toast notification state with a small queue so rapid notifications
+// don't silently overwrite each other.
+pub const Toast = struct {
+    const queue_capacity = 3;
+
+    queue: [queue_capacity]Entry = [_]Entry{.{}} ** queue_capacity,
+    head: usize = 0,
+    count: usize = 0,
 
     pub fn visible(self: *const Toast, frame_number: u64) bool {
-        return self.message.len != 0 and frame_number < self.hide_after_frame;
+        if (self.count == 0) return false;
+        const front = self.queue[self.head];
+        return front.message.len != 0 and frame_number < front.hide_after_frame;
+    }
+
+    // Promote the next queued toast if the current one has expired.
+    // Call once per frame before rendering.
+    pub fn advance(self: *Toast, frame_number: u64) void {
+        while (self.count > 0) {
+            const front = self.queue[self.head];
+            if (front.message.len != 0 and frame_number < front.hide_after_frame) break;
+            // Current toast expired — discard and advance.
+            self.queue[self.head] = .{};
+            self.head = (self.head + 1) % queue_capacity;
+            self.count -= 1;
+        }
     }
 
     pub fn show(self: *Toast, style: Style, message: []const u8, frame_number: u64) void {
-        self.style = style;
-        self.message.set(message);
-        self.hide_after_frame = frame_number + duration_frames;
+        if (self.count < queue_capacity) {
+            // Space in queue — append.
+            const slot = (self.head + self.count) % queue_capacity;
+            self.queue[slot] = .{
+                .style = style,
+                .hide_after_frame = frame_number + duration_frames,
+            };
+            self.queue[slot].message.set(message);
+            self.count += 1;
+        } else {
+            // Queue full — overwrite the newest entry so the user at least
+            // sees the most recent notification.
+            const newest = (self.head + self.count - 1) % queue_capacity;
+            self.queue[newest] = .{
+                .style = style,
+                .hide_after_frame = frame_number + duration_frames,
+            };
+            self.queue[newest].message.set(message);
+        }
     }
 
     pub fn slice(self: *const Toast) []const u8 {
-        return self.message.slice();
+        if (self.count == 0) return "";
+        return self.queue[self.head].message.slice();
+    }
+
+    pub fn currentStyle(self: *const Toast) Style {
+        if (self.count == 0) return .info;
+        return self.queue[self.head].style;
     }
 };
 
@@ -56,10 +103,10 @@ pub const Notifications = struct {
 };
 
 // Send a formatted notification to the frontend
-pub fn notify(notifications: Notifications, style: Style, comptime fmt: []const u8, args: anytype) void {
+pub fn notify(notifications: Notifications, comptime_style: Style, comptime fmt: []const u8, args: anytype) void {
     if (notifications.toast) |toast| {
         var buffer: [max_message_bytes]u8 = undefined;
         const message = std.fmt.bufPrint(buffer[0..], fmt, args) catch "MESSAGE TOO LONG";
-        toast.show(style, message, notifications.frame_number);
+        toast.show(comptime_style, message, notifications.frame_number);
     }
 }

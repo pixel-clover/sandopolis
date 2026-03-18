@@ -51,8 +51,6 @@ pub fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
         .save_state_file => "SAVE STATE FILE",
         .load_state_file => "LOAD STATE FILE",
         .next_state_slot => "NEXT STATE SLOT",
-        .step => "STEP CPU",
-        .registers => "REGISTER DUMP",
         .record_gif => "RECORD GIF",
         .record_wav => "RECORD WAV",
         .screenshot => "SCREENSHOT",
