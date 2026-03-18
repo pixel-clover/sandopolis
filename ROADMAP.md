@@ -43,7 +43,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Audio timing with master-clock accumulation and rate conversion
 - [x] Output pipeline with timestamped event application, cubic hermite resampling, stereo mixing, and SDL3 playback
 - [x] SN76489 PSG with chip-accurate emulation, stereo panning, reachable from both Z80 and M68K paths
-- [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM tables
+- [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM
+  tables
 - [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
 - [x] Audio filtering with YM2612 low-pass (5 kHz analog path model), board output LPF, and DC-blocking on the final mix
 - [x] Debug render modes (YM-only, PSG-only, unfiltered mix)

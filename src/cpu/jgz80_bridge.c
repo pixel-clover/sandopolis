@@ -599,8 +599,8 @@ static uint32_t current_instruction_pre_access_master_cycles(Jgz80Handle *h) {
     if (access_start == 0u) return 0u;
 
     const uint32_t previous_start = access_index == 0u
-        ? 0u
-        : instruction_bank_access_start_z80_cycles(h, (uint8_t)(access_index - 1u));
+                                        ? 0u
+                                        : instruction_bank_access_start_z80_cycles(h, (uint8_t)(access_index - 1u));
     if (access_start <= previous_start) return 0u;
     return (access_start - previous_start) * 15u;
 }
@@ -615,7 +615,7 @@ static uint32_t instruction_access_master_offset(Jgz80Handle *h, uint16_t addr, 
             const uint16_t fetch_delta = (uint16_t)(addr - h->instruction_pc);
             if (fetch_delta < length) {
                 const uint32_t access_start =
-                    instruction_fetch_start_z80_cycles(h, h->instruction_fetch_index);
+                        instruction_fetch_start_z80_cycles(h, h->instruction_fetch_index);
                 ++h->instruction_fetch_index;
                 return h->audio_master_offset + access_start * 15u;
             }
@@ -623,7 +623,7 @@ static uint32_t instruction_access_master_offset(Jgz80Handle *h, uint16_t addr, 
     }
 
     const uint32_t access_start =
-        instruction_data_access_start_z80_cycles(h, h->instruction_data_access_index);
+            instruction_data_access_start_z80_cycles(h, h->instruction_data_access_index);
     ++h->instruction_data_access_index;
     return h->audio_master_offset + access_start * 15u;
 }
@@ -1458,10 +1458,11 @@ uint16_t jgz80_peek_psg_command_count(const Jgz80Handle *handle) {
     return handle->psg_command_count;
 }
 
-uint32_t jgz80_take_overflow_counts(Jgz80Handle *handle, uint32_t *ym_write, uint32_t *ym_dac, uint32_t *ym_reset, uint32_t *psg_command) {
+uint32_t jgz80_take_overflow_counts(Jgz80Handle *handle, uint32_t *ym_write, uint32_t *ym_dac, uint32_t *ym_reset,
+                                    uint32_t *psg_command) {
     if (!handle) return 0u;
     uint32_t total = handle->ym_write_overflow_count + handle->ym_dac_overflow_count
-                   + handle->ym_reset_overflow_count + handle->psg_command_overflow_count;
+                     + handle->ym_reset_overflow_count + handle->psg_command_overflow_count;
     if (ym_write) *ym_write = handle->ym_write_overflow_count;
     if (ym_dac) *ym_dac = handle->ym_dac_overflow_count;
     if (ym_reset) *ym_reset = handle->ym_reset_overflow_count;

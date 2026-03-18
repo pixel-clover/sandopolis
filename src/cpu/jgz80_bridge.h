@@ -212,7 +212,8 @@ uint8_t jgz80_get_psg_noise(Jgz80Handle *handle);
 
 uint32_t jgz80_take_68k_bus_access_count(Jgz80Handle *handle);
 
-uint32_t jgz80_take_overflow_counts(Jgz80Handle *handle, uint32_t *ym_write, uint32_t *ym_dac, uint32_t *ym_reset, uint32_t *psg_command);
+uint32_t jgz80_take_overflow_counts(Jgz80Handle * handle, uint32_t * ym_write, uint32_t * ym_dac, uint32_t * ym_reset,
+                                    uint32_t * psg_command);
 
 void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset);
 

@@ -8,7 +8,7 @@ const Cpu = @import("cpu/cpu.zig").Cpu;
 const Z80 = @import("cpu/z80.zig").Z80;
 
 const save_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
-const save_state_version: u16 = 3;
+const save_state_version: u16 = 1;
 const default_state_name = "sandopolis.state";
 pub const default_persistent_state_slot: u8 = 1;
 pub const persistent_state_slot_count: u8 = 3;
