@@ -38,8 +38,6 @@ pub const HotkeyAction = enum(u8) {
     save_state_file,
     load_state_file,
     next_state_slot,
-    step,
-    registers,
     record_gif,
     record_wav,
     screenshot,
@@ -164,8 +162,6 @@ pub const all_hotkey_actions = [_]HotkeyAction{
     .save_state_file,
     .load_state_file,
     .next_state_slot,
-    .step,
-    .registers,
     .record_gif,
     .record_wav,
     .screenshot,
@@ -824,7 +820,6 @@ test "input bindings parse overrides and unbinds" {
         \\analog.gamepad_axis = 12000
         \\analog.trigger = 20000
         \\hotkey.reload_rom = ctrl+shift+f3
-        \\hotkey.registers = none
         \\hotkey.quit = backspace
         \\controller.p2 = three_button
     );
@@ -837,7 +832,6 @@ test "input bindings parse overrides and unbinds" {
     try testing.expectEqual(@as(i16, 12_000), bindings.gamepad_axis_threshold);
     try testing.expectEqual(@as(i16, default_joystick_axis_threshold), bindings.joystick_axis_threshold);
     try testing.expectEqual(@as(i16, 20_000), bindings.trigger_threshold);
-    try testing.expectEqual(HotkeyBinding{}, bindings.hotkeys[@intFromEnum(HotkeyAction.registers)]);
     try testing.expectEqual(HotkeyBinding{ .input = .backspace }, bindings.hotkeys[@intFromEnum(HotkeyAction.quit)]);
     try testing.expectEqual(
         HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true, .ctrl = true } },
@@ -880,8 +874,6 @@ test "input bindings apply remapped inputs" {
     bindings.setGamepad(.a, .left_trigger);
     bindings.setGamepad(.mode, .guide);
     bindings.setGamepadForPort(1, .c, .left_stick);
-    bindings.setHotkey(.step, .backspace);
-    bindings.setHotkeyWithModifiers(.registers, .space, .{ .shift = true });
 
     try testing.expect(bindings.applyKeyboard(&io, .q, true));
     try testing.expectEqual(@as(u16, 0), io.pad[1] & Io.Button.X);
@@ -895,12 +887,6 @@ test "input bindings apply remapped inputs" {
     io.setButton(0, Io.Button.A, false);
     try testing.expect(bindings.applyGamepad(&io, 0, .guide, true));
     try testing.expectEqual(@as(u16, 0), io.pad[0] & Io.Button.Mode);
-    try testing.expectEqual(HotkeyAction.step, bindings.hotkeyForKeyboard(.backspace).?);
-    try testing.expectEqual(
-        HotkeyAction.registers,
-        bindings.hotkeyForBinding(.{ .input = .space, .modifiers = .{ .shift = true } }).?,
-    );
-    try testing.expect(bindings.hotkeyForKeyboard(.space) == null);
 }
 
 test "input bindings release mapped keyboard inputs for both ports" {

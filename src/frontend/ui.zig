@@ -198,8 +198,7 @@ pub const help_right_sections = [_]MenuSection{
     .{
         .header = "DEBUG AND CAPTURE",
         .items = &[_]OverlayLine{
-            .{ .text = "[F10]        DEBUGGER" },
-            .{ .text = "[SPACE]      STEP IN DEBUGGER" },
+            .{ .text = "[F10] OPEN DEBUGGER" },
             .{ .hotkey = .{ .action = .record_gif, .label = "RECORD GIF" } },
             .{ .hotkey = .{ .action = .record_wav, .label = "RECORD WAV" } },
             .{ .hotkey = .{ .action = .screenshot, .label = "SCREENSHOT" } },

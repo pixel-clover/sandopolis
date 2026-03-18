@@ -2536,6 +2536,16 @@ pub fn main() !void {
     var frontend_config = loaded_config.frontend;
     std.debug.print("Config: {s}\n", .{config_file_path});
 
+    // Write default config on first run if file doesn't exist
+    std.fs.cwd().access(config_file_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            unified_config.save(&frontend_config, &input_bindings, config_file_path) catch |save_err| {
+                std.debug.print("Failed to create default config file: {s}\n", .{@errorName(save_err)});
+            };
+        },
+        else => {},
+    };
+
     // Unified config path is used for all saves
     const frontend_config_path = config_file_path;
 
@@ -3185,15 +3195,6 @@ pub fn main() !void {
                                     performance_hud.reset();
                                     performance_spike_log.reset();
                                     core_profile_frames_remaining = 0;
-                                },
-                                .step => {
-                                    if (frontend_ui.show_help) continue;
-                                    machine.runMasterSlice(clock.m68k_divider);
-                                    machine.debugDump();
-                                },
-                                .registers => {
-                                    if (frontend_ui.show_help) continue;
-                                    machine.debugDump();
                                 },
                                 .record_gif => {
                                     if (frontend_ui.show_help) continue;
