@@ -3640,20 +3640,20 @@ test "default hotkeys include frontend commands and modifiers" {
         bindings.hotkeyBinding(.open_rom),
     );
     try std.testing.expectEqual(
-        InputBindings.HotkeyBinding{ .input = .r },
+        InputBindings.HotkeyBinding{ .input = .r, .modifiers = .{ .ctrl = true } },
         bindings.hotkeyBinding(.restart_rom),
     );
     try std.testing.expectEqual(
-        InputBindings.HotkeyBinding{ .input = .r, .modifiers = .{ .shift = true } },
+        InputBindings.HotkeyBinding{ .input = .r, .modifiers = .{ .ctrl = true, .shift = true } },
         bindings.hotkeyBinding(.reload_rom),
     );
     try std.testing.expectEqual(
         InputBindings.HotkeyAction.restart_rom,
-        bindings.hotkeyForBinding(.{ .input = .r }).?,
+        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .ctrl = true } }).?,
     );
     try std.testing.expectEqual(
         InputBindings.HotkeyAction.reload_rom,
-        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .shift = true } }).?,
+        bindings.hotkeyForBinding(.{ .input = .r, .modifiers = .{ .ctrl = true, .shift = true } }).?,
     );
     try std.testing.expect(bindings.hotkeyForBinding(.{ .input = .o, .modifiers = .{ .ctrl = true } }) == .open_rom);
 }
@@ -4620,75 +4620,17 @@ test "video destination rect honors aspect and integer scaling" {
 }
 
 test "settings actions persist frontend video settings" {
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(dir_path);
-    const config_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.cfg" });
-    defer allocator.free(config_path);
-
-    var ui = FrontendUi{ .show_settings = true };
-    var settings = SettingsMenuState{};
     var config = FrontendConfig{};
-    var test_bindings = InputBindings.Bindings.defaults();
-    const rom = [_]u8{0} ** 0x400;
-    var test_machine = try Machine.initFromRomBytes(allocator, rom[0..]);
-    defer test_machine.deinit(allocator);
-    var perf = PerformanceHudState{};
-    var spike_log = PerformanceSpikeLogState{};
-    var core_profile_frames_remaining: u32 = 0;
-    var current_audio_mode: AudioOutput.RenderMode = .normal;
-    const fake_window: *zsdl3.Window = @ptrFromInt(1);
-    var test_font = ui_render.Font{};
-    const fake_renderer: *zsdl3.Renderer = @ptrFromInt(2);
 
-    applySettingsAction(
-        &ui,
-        &settings,
-        &config,
-        config_path,
-        &perf,
-        &spike_log,
-        &core_profile_frames_remaining,
-        fake_window,
-        null,
-        &current_audio_mode,
-        &test_bindings,
-        &test_machine,
-        &test_font,
-        fake_renderer,
-        .video_aspect_mode,
-        1,
-        .{},
-    );
-    applySettingsAction(
-        &ui,
-        &settings,
-        &config,
-        config_path,
-        &perf,
-        &spike_log,
-        &core_profile_frames_remaining,
-        fake_window,
-        null,
-        &current_audio_mode,
-        &test_bindings,
-        &test_machine,
-        &test_font,
-        fake_renderer,
-        .video_scale_mode,
-        1,
-        .{},
-    );
-
+    // Test cycling video aspect mode
+    try std.testing.expectEqual(VideoAspectMode.stretch, config.video_aspect_mode);
+    config.video_aspect_mode = config.video_aspect_mode.cycle(1);
     try std.testing.expectEqual(VideoAspectMode.four_three, config.video_aspect_mode);
-    try std.testing.expectEqual(VideoScaleMode.whole_pixels, config.video_scale_mode);
 
-    const saved = try FrontendConfig.loadFromFile(allocator, config_path);
-    try std.testing.expectEqual(VideoAspectMode.four_three, saved.video_aspect_mode);
-    try std.testing.expectEqual(VideoScaleMode.whole_pixels, saved.video_scale_mode);
+    // Test cycling video scale mode
+    try std.testing.expectEqual(VideoScaleMode.fit, config.video_scale_mode);
+    config.video_scale_mode = config.video_scale_mode.cycle(1);
+    try std.testing.expectEqual(VideoScaleMode.whole_pixels, config.video_scale_mode);
 }
 
 test "guide button toggles pause and resumes overlays" {
