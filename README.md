@@ -145,7 +145,7 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
       and [SDL](https://github.com/castholm/SDL))
     * [stb](https://github.com/nothings/stb/blob/master/stb_truetype.h) for the TrueType font rendering
     * [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) for the monospace font used in the frontend
-    * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)
+    * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms) for testing
 
 #### Reference Implementations
 
