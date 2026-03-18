@@ -3,12 +3,20 @@ const InputBindings = @import("mapping.zig");
 const keyboard = @import("keyboard.zig");
 const toast = @import("../frontend/toast.zig");
 
-pub fn bindingName(input: ?InputBindings.KeyboardInput) []const u8 {
-    return if (input) |value| InputBindings.keyboardInputName(value) else "NONE";
+fn bindingName(buffer: []u8, input: ?InputBindings.KeyboardInput) ![]const u8 {
+    if (input) |value| {
+        return try InputBindings.keyboardInputDisplayName(buffer, value);
+    } else {
+        return "NONE";
+    }
 }
 
-fn gamepadBindingName(input: ?InputBindings.GamepadInput) []const u8 {
-    return if (input) |value| InputBindings.gamepadInputName(value) else "NONE";
+fn gamepadBindingName(buffer: []u8, input: ?InputBindings.GamepadInput) ![]const u8 {
+    if (input) |value| {
+        return try InputBindings.gamepadInputDisplayName(buffer, value);
+    } else {
+        return "NONE";
+    }
 }
 
 pub fn rowText(
@@ -18,16 +26,24 @@ pub fn rowText(
 ) ![]const u8 {
     return switch (target) {
         .section_header => |label| std.fmt.bufPrint(buffer, "--- {s} ---", .{label}),
-        .keyboard_action => |item| std.fmt.bufPrint(buffer, "  KEY P{d} {s: <6} {s}", .{
-            item.port + 1,
-            InputBindings.actionName(item.action),
-            bindingName(bindings.keyboardBinding(item.port, item.action)),
-        }),
-        .gamepad_action => |item| std.fmt.bufPrint(buffer, "  PAD P{d} {s: <6} {s}", .{
-            item.port + 1,
-            InputBindings.actionName(item.action),
-            gamepadBindingName(bindings.gamepad[item.port][InputBindings.actionIndex(item.action)]),
-        }),
+        .keyboard_action => |item| blk: {
+            var key_buffer: [32]u8 = undefined;
+            const key_display = try bindingName(key_buffer[0..], bindings.keyboardBinding(item.port, item.action));
+            break :blk std.fmt.bufPrint(buffer, "  KEY P{d} {s: <6} {s}", .{
+                item.port + 1,
+                InputBindings.actionName(item.action),
+                key_display,
+            });
+        },
+        .gamepad_action => |item| blk: {
+            var gamepad_buffer: [32]u8 = undefined;
+            const gamepad_display = try gamepadBindingName(gamepad_buffer[0..], bindings.gamepad[item.port][InputBindings.actionIndex(item.action)]);
+            break :blk std.fmt.bufPrint(buffer, "  PAD P{d} {s: <6} {s}", .{
+                item.port + 1,
+                InputBindings.actionName(item.action),
+                gamepad_display,
+            });
+        },
         .hotkey => |action| blk: {
             var binding_buffer: [48]u8 = undefined;
             const binding = try InputBindings.hotkeyBindingDisplayName(binding_buffer[0..], bindings.hotkeyBinding(action));
@@ -117,9 +133,9 @@ pub const State = struct {
         self.capture_mode = true;
         self.capture_gamepad = (target == .gamepad_action);
         if (self.capture_gamepad) {
-            self.setStatus(.neutral, "PRESS A GAMEPAD BUTTON  ESC CANCEL  DEL CLEAR");
+            self.setStatus(.neutral, "PRESS A GAMEPAD BUTTON  [ESCAPE] CANCEL  [DELETE] CLEAR");
         } else {
-            self.setStatus(.neutral, "PRESS A KEY  ESC CANCEL  DEL CLEAR");
+            self.setStatus(.neutral, "PRESS A KEY  [ESCAPE] CANCEL  [DELETE] CLEAR");
         }
     }
 
@@ -191,7 +207,7 @@ pub const State = struct {
         if (targetForIndex(self.selected_index).isHeader()) {
             self.selected_index = 1;
         }
-        self.setStatus(.neutral, "UP/DN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE");
+        self.setStatus(.neutral, "[UP]/[DOWN] MOVE  [RETURN] REBIND  [F5] SAVE  [ESCAPE] CLOSE");
     }
 
     pub fn setStatus(self: *State, status: Status, message: []const u8) void {

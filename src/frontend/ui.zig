@@ -198,8 +198,8 @@ pub const help_right_sections = [_]MenuSection{
     .{
         .header = "DEBUG AND CAPTURE",
         .items = &[_]OverlayLine{
-            .{ .text = "F10        DEBUGGER" },
-            .{ .text = "SPACE      STEP (IN DEBUGGER)" },
+            .{ .text = "[F10]        DEBUGGER" },
+            .{ .text = "[SPACE]      STEP IN DEBUGGER" },
             .{ .hotkey = .{ .action = .record_gif, .label = "RECORD GIF" } },
             .{ .hotkey = .{ .action = .record_wav, .label = "RECORD WAV" } },
             .{ .hotkey = .{ .action = .screenshot, .label = "SCREENSHOT" } },
@@ -624,7 +624,7 @@ pub fn renderSlotBadge(
     const slot = StateFile.normalizePersistentStateSlot(persistent_state_slot);
 
     var slot_buffer: [16]u8 = undefined;
-    const slot_text = try std.fmt.bufPrint(&slot_buffer, "] SLOT {d}", .{slot});
+    const slot_text = try std.fmt.bufPrint(&slot_buffer, "SAVE SLOT {d}", .{slot});
     const text_w = textWidth(slot_text, scale);
 
     const badge_rect = zsdl3.FRect{
@@ -652,9 +652,9 @@ pub fn renderPauseOverlay(
         renderer,
         viewport,
         bindings,
-        "PAUSED",
-        "ENTER SAVE MANAGER  |  TAB SETTINGS",
-        "PAD: A SAVE MGR  B RESUME  X SETTINGS  Y HELP",
+        "GAME PAUSED",
+        "[ENTER] SAVE MANAGER  |  [TAB] SETTINGS",
+        "(A) SAVE MGR  (B) RESUME  (X) SETTINGS  (Y) HELP",
         &pause_left_sections,
         &pause_right_sections,
         Colors.orange,
@@ -670,7 +670,7 @@ pub fn renderHelpOverlay(
     persistent_state_slot: u8,
 ) !void {
     var slot_buffer: [64]u8 = undefined;
-    const slot_text = try std.fmt.bufPrint(&slot_buffer, "CURRENT SLOT: {d}  |  MENUS FREEZE EMULATION", .{
+    const slot_text = try std.fmt.bufPrint(&slot_buffer, "ACTIVE SAVE SLOT: {d}  |  MENUS FREEZE EMULATION", .{
         StateFile.normalizePersistentStateSlot(persistent_state_slot),
     });
 
@@ -678,7 +678,7 @@ pub fn renderHelpOverlay(
         renderer,
         viewport,
         bindings,
-        "( SANDOPOLIS HELP",
+        "SANDOPOLIS HELP",
         null,
         slot_text,
         &help_left_sections,
@@ -812,8 +812,8 @@ pub fn renderHomeOverlay(
     const title = "SANDOPOLIS";
     const subtitle = "OPEN A ROM TO START";
     const empty_recent_note = "NO RECENT ROMS YET";
-    const footer_a = "DPAD MOVE  A OR START SELECT";
-    const footer_b = "CTRL+O OPEN ROM  F1 HELP  ESC QUIT";
+    const footer_a = "(DPAD) MOVE  (A) OR (START) SELECT";
+    const footer_b = "[CTRL+O] OPEN ROM  [F1] HELP  [ESC] QUIT";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
     const line_height = 10.0 * scale;
@@ -1052,7 +1052,7 @@ pub fn renderStatusBar(
     // Slot and region info on the right
     var info_buffer: [32]u8 = undefined;
     const region_label = if (is_pal) "PAL" else "NTSC";
-    const info_text = std.fmt.bufPrint(&info_buffer, "SLOT {d} | {s}", .{ slot, region_label }) catch "SLOT ?";
+    const info_text = std.fmt.bufPrint(&info_buffer, "SAVE SLOT {d} | {s}", .{ slot, region_label }) catch "SLOT ?";
     const info_width = textWidth(info_text, scale);
     try drawText(
         renderer,

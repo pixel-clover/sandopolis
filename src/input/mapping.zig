@@ -543,23 +543,62 @@ pub fn keyboardInputName(input: KeyboardInput) []const u8 {
     return @tagName(input);
 }
 
+pub fn keyboardInputDisplayName(buffer: []u8, input: KeyboardInput) ![]const u8 {
+    var stream = std.io.fixedBufferStream(buffer);
+    const writer = stream.writer();
+    try writer.writeByte('[');
+    try writeKeyboardInputDisplay(writer, input);
+    try writer.writeByte(']');
+    return stream.getWritten();
+}
+
 pub fn hotkeyBindingDisplayName(buffer: []u8, binding: HotkeyBinding) ![]const u8 {
     const input = binding.input orelse return std.fmt.bufPrint(buffer, "NONE", .{});
 
     var stream = std.io.fixedBufferStream(buffer);
     const writer = stream.writer();
 
-    if (binding.modifiers.ctrl) try writer.writeAll("CTRL+");
-    if (binding.modifiers.alt) try writer.writeAll("ALT+");
-    if (binding.modifiers.shift) try writer.writeAll("SHIFT+");
-    if (binding.modifiers.gui) try writer.writeAll("GUI+");
+    if (binding.modifiers.ctrl) try writer.writeAll("[CTRL]+");
+    if (binding.modifiers.alt) try writer.writeAll("[ALT]+");
+    if (binding.modifiers.shift) try writer.writeAll("[SHIFT]+");
+    if (binding.modifiers.gui) try writer.writeAll("[GUI]+");
+    try writer.writeByte('[');
     try writeKeyboardInputDisplay(writer, input);
+    try writer.writeByte(']');
 
     return stream.getWritten();
 }
 
 pub fn gamepadInputName(input: GamepadInput) []const u8 {
     return @tagName(input);
+}
+
+pub fn gamepadInputDisplayName(buffer: []u8, input: GamepadInput) ![]const u8 {
+    var stream = std.io.fixedBufferStream(buffer);
+    const writer = stream.writer();
+    try writer.writeByte('(');
+    switch (input) {
+        .dpad_up => try writer.writeAll("D-PAD UP"),
+        .dpad_down => try writer.writeAll("D-PAD DOWN"),
+        .dpad_left => try writer.writeAll("D-PAD LEFT"),
+        .dpad_right => try writer.writeAll("D-PAD RIGHT"),
+        .south => try writer.writeAll("A"),
+        .east => try writer.writeAll("B"),
+        .west => try writer.writeAll("X"),
+        .north => try writer.writeAll("Y"),
+        .left_shoulder => try writer.writeAll("LB"),
+        .right_shoulder => try writer.writeAll("RB"),
+        .back => try writer.writeAll("BACK"),
+        .start => try writer.writeAll("START"),
+        .guide => try writer.writeAll("GUIDE"),
+        .left_stick => try writer.writeAll("L-STICK"),
+        .right_stick => try writer.writeAll("R-STICK"),
+        .misc1 => try writer.writeAll("MISC1"),
+        .left_trigger => try writer.writeAll("LT"),
+        .right_trigger => try writer.writeAll("RT"),
+    }
+    try writer.writeByte(')');
+    return stream.getWritten();
 }
 
 fn trimLine(raw_line: []const u8) []const u8 {
@@ -913,7 +952,7 @@ test "input bindings write contents round trip" {
 test "hotkey bindings format display names with modifiers" {
     var buffer: [32]u8 = undefined;
 
-    try testing.expectEqualStrings("SHIFT+F3", try hotkeyBindingDisplayName(
+    try testing.expectEqualStrings("[SHIFT]+[F3]", try hotkeyBindingDisplayName(
         buffer[0..],
         .{ .input = .f3, .modifiers = .{ .shift = true } },
     ));
