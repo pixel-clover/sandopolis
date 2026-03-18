@@ -133,7 +133,7 @@ pub const pause_left_sections = [_]MenuSection{
     .{
         .header = "ACTIONS",
         .items = &[_]OverlayLine{
-            .{ .hotkey = .{ .action = .toggle_pause, .label = "RESUME" } },
+            .{ .hotkey = .{ .action = .toggle_pause, .label = "RESUME GAME" } },
             .{ .hotkey = .{ .action = .open_rom, .label = "OPEN ROM" } },
             .{ .hotkey = .{ .action = .restart_rom, .label = "SOFT RESET" } },
             .{ .hotkey = .{ .action = .reload_rom, .label = "HARD RESET" } },
@@ -142,8 +142,8 @@ pub const pause_left_sections = [_]MenuSection{
     .{
         .header = "SYSTEM",
         .items = &[_]OverlayLine{
-            .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "KEYBOARD" } },
-            .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERF HUD" } },
+            .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "INPUT EDITOR" } },
+            .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERFORMANCE HUD" } },
             .{ .hotkey = .{ .action = .toggle_help, .label = "HELP" } },
         },
     },
@@ -178,7 +178,7 @@ pub const help_left_sections = [_]MenuSection{
         .header = "DISPLAY",
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .toggle_fullscreen, .label = "FULLSCREEN" } },
-            .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERF HUD" } },
+            .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERFORMANCE HUD" } },
             .{ .hotkey = .{ .action = .quit, .label = "QUIT" } },
         },
     },
@@ -613,31 +613,6 @@ pub fn renderTwoColumnOverlay(
     }
 }
 
-/// Render a slot indicator badge in the top-left corner
-pub fn renderSlotBadge(
-    renderer: *zsdl3.Renderer,
-    viewport: zsdl3.Rect,
-    persistent_state_slot: u8,
-) !void {
-    const scale = overlayScale(viewport);
-    const padding = 6.0 * scale;
-    const slot = StateFile.normalizePersistentStateSlot(persistent_state_slot);
-
-    var slot_buffer: [16]u8 = undefined;
-    const slot_text = try std.fmt.bufPrint(&slot_buffer, "SAVE SLOT {d}", .{slot});
-    const text_w = textWidth(slot_text, scale);
-
-    const badge_rect = zsdl3.FRect{
-        .x = 12.0 * scale,
-        .y = 12.0 * scale,
-        .w = text_w + padding * 2.0,
-        .h = 7.0 * scale + padding * 2.0,
-    };
-
-    try renderPanel(renderer, badge_rect, Colors.panel_primary, Colors.orange, scale);
-    try drawText(renderer, badge_rect.x + padding, badge_rect.y + padding, scale, Colors.orange, slot_text);
-}
-
 /// Render the pause overlay
 pub fn renderPauseOverlay(
     renderer: *zsdl3.Renderer,
@@ -645,16 +620,13 @@ pub fn renderPauseOverlay(
     bindings: *const InputBindings.Bindings,
     persistent_state_slot: u8,
 ) !void {
-    // Render slot badge in corner
-    try renderSlotBadge(renderer, viewport, persistent_state_slot);
-
     try renderTwoColumnOverlay(
         renderer,
         viewport,
         bindings,
         "GAME PAUSED",
-        "[ENTER] SAVE MANAGER  |  [TAB] SETTINGS",
-        "(A) SAVE MGR  (B) RESUME  (X) SETTINGS  (Y) HELP",
+        "[ENTER] SAVE MANAGER    [TAB] SETTINGS",
+        "(A) SAVE MANAGER  (B) RESUME GAME  (X) SETTINGS  (Y) HELP",
         &pause_left_sections,
         &pause_right_sections,
         Colors.orange,
@@ -670,7 +642,7 @@ pub fn renderHelpOverlay(
     persistent_state_slot: u8,
 ) !void {
     var slot_buffer: [64]u8 = undefined;
-    const slot_text = try std.fmt.bufPrint(&slot_buffer, "ACTIVE SAVE SLOT: {d}  |  MENUS FREEZE EMULATION", .{
+    const slot_text = try std.fmt.bufPrint(&slot_buffer, "ACTIVE SAVE SLOT: {d}", .{
         StateFile.normalizePersistentStateSlot(persistent_state_slot),
     });
 
@@ -904,11 +876,11 @@ pub fn renderKeyboardEditorOverlay(
 ) !void {
     const title = "INPUT EDITOR";
     const controls = if (editor.capture_mode and editor.capture_gamepad)
-        "PRESS A GAMEPAD BUTTON  ESC CANCEL  DEL CLEAR"
+        "PRESS (A) GAMEPAD BUTTON  [ESC] CANCEL  [DEL] CLEAR"
     else if (editor.capture_mode)
-        "PRESS A KEY  ESC CANCEL  DEL CLEAR"
+        "PRESS (A) KEY  [ESC] CANCEL  [DEL] CLEAR"
     else
-        "UP/DN MOVE  ENTER REBIND  F5 SAVE  ESC CLOSE";
+        "[UP/DOWN] MOVE  [ENTER] REBIND  [F5] SAVE  [ESC] CLOSE";
     const scale = overlayScale(viewport);
     const padding = 10.0 * scale;
     const line_height = 10.0 * scale;

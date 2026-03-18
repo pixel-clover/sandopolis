@@ -705,7 +705,7 @@ fn parseHotkeyBinding(name: []const u8) !HotkeyBinding {
             binding.modifiers.shift = true;
             continue;
         }
-        if (std.ascii.eqlIgnoreCase(token, "ctrl") or std.ascii.eqlIgnoreCase(token, "control")) {
+        if (std.ascii.eqlIgnoreCase(token, "ctrl")) {
             binding.modifiers.ctrl = true;
             continue;
         }
@@ -713,10 +713,7 @@ fn parseHotkeyBinding(name: []const u8) !HotkeyBinding {
             binding.modifiers.alt = true;
             continue;
         }
-        if (std.ascii.eqlIgnoreCase(token, "gui") or
-            std.ascii.eqlIgnoreCase(token, "meta") or
-            std.ascii.eqlIgnoreCase(token, "super"))
-        {
+        if (std.ascii.eqlIgnoreCase(token, "gui")) {
             binding.modifiers.gui = true;
             continue;
         }
@@ -770,19 +767,14 @@ fn parseGamepadInput(name: []const u8) ?GamepadInput {
 }
 
 fn parseControllerType(name: []const u8) ?ControllerType {
-    if (std.ascii.eqlIgnoreCase(name, "three_button") or
-        std.ascii.eqlIgnoreCase(name, "three") or
-        std.ascii.eqlIgnoreCase(name, "3button") or
-        std.ascii.eqlIgnoreCase(name, "3-button"))
-    {
+    if (std.ascii.eqlIgnoreCase(name, "three_button")) {
         return .three_button;
     }
-    if (std.ascii.eqlIgnoreCase(name, "six_button") or
-        std.ascii.eqlIgnoreCase(name, "six") or
-        std.ascii.eqlIgnoreCase(name, "6button") or
-        std.ascii.eqlIgnoreCase(name, "6-button"))
-    {
+    if (std.ascii.eqlIgnoreCase(name, "six_button")) {
         return .six_button;
+    }
+    if (std.ascii.eqlIgnoreCase(name, "ea_4way_play")) {
+        return .ea_4way_play;
     }
     return null;
 }

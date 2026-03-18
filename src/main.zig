@@ -2378,7 +2378,6 @@ fn renderFrontendOverlay(
     audio_enabled: bool,
     current_audio_mode: AudioOutput.RenderMode,
     persistent_state_slot: u8,
-    perf: *const PerformanceHudState,
     current_rom_path: ?[]const u8,
     config_path: []const u8,
 ) !void {
@@ -2387,14 +2386,11 @@ fn renderFrontendOverlay(
     const has_rom = current_rom_path != null and current_rom_path.?.len > 0;
     // Show status bar when paused or help is open (not during gameplay or when other panels are open)
     const show_blocking_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.dialog_active or ui.show_keyboard_editor;
-    const show_status_bar = has_rom and (ui.paused or ui.show_help) and !show_blocking_panel and !ui.show_performance_hud;
-    if (!ui.show_performance_hud and !ui.show_debugger and !show_panel and !show_toast) return;
+    const show_status_bar = has_rom and (ui.paused or ui.show_help) and !show_blocking_panel;
+    if (!show_panel and !show_toast) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
-    if (ui.show_performance_hud) {
-        try renderPerformanceHud(renderer, viewport, perf);
-    }
     if (show_status_bar) {
         const rom_name = std.fs.path.basename(current_rom_path.?);
         try renderStatusBar(renderer, viewport, rom_name, persistent_state_slot, machine.palMode());
@@ -3457,10 +3453,14 @@ pub fn main() !void {
             audio != null,
             current_audio_mode,
             persistent_state_slot,
-            &performance_hud,
             if (current_rom_path.len != 0) current_rom_path.slice() else null,
             config_file_path,
         );
+        if (frontend_ui.show_performance_hud) {
+            const perf_viewport = try zsdl3.getRenderViewport(renderer);
+            try zsdl3.setRenderDrawBlendMode(renderer, .blend);
+            try renderPerformanceHud(renderer, perf_viewport, &performance_hud);
+        }
         if (frontend_ui.show_debugger and debugger_state.active) {
             const dbg_viewport = try zsdl3.getRenderViewport(renderer);
             try zsdl3.setRenderDrawBlendMode(renderer, .blend);

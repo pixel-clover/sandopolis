@@ -185,9 +185,9 @@ pub fn render(
     // Footer
     const footer_y = panel_y + panel_h - padding - line_h;
     const footer_text = switch (state.tab) {
-        .cpu => "F10 CLOSE  TAB TABS  SPACE STEP",
-        .memory => "F10 CLOSE  TAB TABS  PGUP/DN SCROLL",
-        .vdp => "F10 CLOSE  TAB TABS  SPACE STEP",
+        .cpu => "[F10] CLOSE  [TAB] TABS  [SPACE] STEP",
+        .memory => "[F10] CLOSE  [TAB] TABS  [PGUP/DN] SCROLL",
+        .vdp => "[F10] CLOSE  [TAB] TABS  [SPACE] STEP",
     };
     try ui.drawText(renderer, content_x, footer_y, scale, ui.Colors.text_muted, footer_text);
 }

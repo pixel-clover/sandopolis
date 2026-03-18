@@ -207,7 +207,7 @@ pub const State = struct {
         if (targetForIndex(self.selected_index).isHeader()) {
             self.selected_index = 1;
         }
-        self.setStatus(.neutral, "[UP]/[DOWN] MOVE  [RETURN] REBIND  [F5] SAVE  [ESCAPE] CLOSE");
+        self.setStatus(.neutral, "KEYBOARD P1  •  KEYBOARD P2  •  GAMEPAD P1  •  GAMEPAD P2  •  HOTKEYS");
     }
 
     pub fn setStatus(self: *State, status: Status, message: []const u8) void {
