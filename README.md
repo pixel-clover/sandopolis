@@ -7,7 +7,6 @@
 <h2>Sandopolis</h2>
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/pixel-clover/sandopolis/tests.yml?label=tests&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/actions/workflows/tests.yml)
-[![Docs](https://img.shields.io/badge/docs-read-blue?style=flat&labelColor=282c34&logo=read-the-docs)](https://pixel-clover.github.io/sandopolis/)
 [![License](https://img.shields.io/badge/license-MIT-007ec6?label=license&style=flat&labelColor=282c34&logo=open-source-initiative)](https://github.com/pixel-clover/sandopolis/blob/main/LICENSE)
 [![Zig Version](https://img.shields.io/badge/Zig-0.15.2-orange?logo=zig&labelColor=282c34)](https://ziglang.org/download/)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
@@ -17,6 +16,8 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 </div>
 
 ---
+
+**Download the latest release from [here](https://github.com/pixel-clover/sandopolis/releases).**
 
 Footage of Sandopolis running a few games:
 
@@ -121,77 +122,6 @@ Flags:
       --ntsc        Force NTSC/60Hz timing and version bits [Bool] (default: false)
       --version     Print version information and exit [Bool] (default: false)
 ```
-
----
-
-### Documentation
-
-Project documentation is available [here](https://pixel-clover.github.io/sandopolis/).
-
-#### Default Controls
-
-All controls can be remapped in the keyboard editor (F8).
-
-##### Keyboard (Player 1)
-
-The Genesis 6-button controller has two rows of face buttons:
-
-```
-  X  Y  Z          Q  W  E
-  A  B  C    →     A  S  D
-  Start            Enter
-  Mode             V
-  D-Pad            Arrow Keys
-```
-
-##### Keyboard (Player 2)
-
-```
-  X  Y  Z          ;  '  /
-  A  B  C    →     U  O  P
-  Start            Right Shift
-  Mode             .
-  D-Pad            I/K/J/L
-```
-
-##### Gamepad (Xbox and PlayStation Layouts)
-
-Both player 1 and player 2 use the same mapping on their respective controllers:
-
-| Gamepad Button           | Genesis Button |
-|--------------------------|----------------|
-| South (A / Cross)        | B              |
-| East (B / Circle)        | C              |
-| West (X / Square)        | A              |
-| North (Y / Triangle)     | Y              |
-| Left Shoulder (LB / L1)  | X              |
-| Right Shoulder (RB / R1) | Z              |
-| Back (Select)            | Mode           |
-| Start                    | Start          |
-| D-Pad                    | D-Pad          |
-
-#### Hotkeys
-
-| Key          | Action               |
-|--------------|----------------------|
-| Escape       | Pause / Menu         |
-| F1           | Help                 |
-| Ctrl+O       | Open ROM             |
-| Ctrl+R       | Soft Reset           |
-| Ctrl+Shift+R | Hard Reset / Reload  |
-| F5           | Quick Save State     |
-| F7           | Quick Load State     |
-| F2           | Save State to File   |
-| F4           | Load State from File |
-| F3           | Next State Slot      |
-| F6           | Performance HUD      |
-| F8           | Keyboard Editor      |
-| F9           | Reset Perf Stats     |
-| F11          | Fullscreen           |
-| F12          | Record GIF           |
-| Shift+F12    | Record WAV           |
-| Ctrl+F12     | Screenshot           |
-| Ctrl+Q       | Quit                 |
 
 ---
 
