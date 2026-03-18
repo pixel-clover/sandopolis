@@ -279,17 +279,9 @@ const UiAnimation = ui_render.Animation;
 const OverlayLine = ui_render.OverlayLine;
 const renderStatusBar = ui_render.renderStatusBar;
 
-fn persistFrontendConfig(frontend_config: *const FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
-    // Save via unified config when possible (preserves input bindings alongside frontend settings)
-    frontend_config.saveToFile(frontend_config_path) catch |err| {
+fn persistFrontendConfig(frontend_config: *const FrontendConfig, bindings: *const InputBindings.Bindings, frontend_config_path: []const u8, notifications: FrontendNotifications) void {
+    unified_config.save(frontend_config, bindings, frontend_config_path) catch |err| {
         std.debug.print("Failed to save config {s}: {s}\n", .{ frontend_config_path, @errorName(err) });
-        notifyFrontend(notifications, .failure, "FAILED TO SAVE CONFIG", .{});
-    };
-}
-
-fn persistUnifiedConfig(frontend_config: *const FrontendConfig, bindings: *const InputBindings.Bindings, path: []const u8, notifications: FrontendNotifications) void {
-    unified_config.save(frontend_config, bindings, path) catch |err| {
-        std.debug.print("Failed to save config {s}: {s}\n", .{ path, @errorName(err) });
         notifyFrontend(notifications, .failure, "FAILED TO SAVE CONFIG", .{});
     };
 }
@@ -660,9 +652,9 @@ fn preferredOpenRomLocation(frontend_config: *const FrontendConfig, current_rom_
     return null;
 }
 
-fn rememberLoadedRom(frontend_config: *FrontendConfig, frontend_config_path: []const u8, notifications: FrontendNotifications, rom_path: []const u8) void {
+fn rememberLoadedRom(frontend_config: *FrontendConfig, bindings: *const InputBindings.Bindings, frontend_config_path: []const u8, notifications: FrontendNotifications, rom_path: []const u8) void {
     frontend_config.noteLoadedRom(rom_path);
-    persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+    persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
 }
 
 const SDL_WINDOW_FULLSCREEN: u64 = 0x00000001;
@@ -745,13 +737,13 @@ fn applySettingsAction(
         .video_aspect_mode => {
             const next_mode = frontend_config.video_aspect_mode.cycle(if (delta == 0) 1 else delta);
             frontend_config.video_aspect_mode = next_mode;
-            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
             notifyFrontend(notifications, .info, "ASPECT {s}", .{next_mode.label()});
         },
         .video_scale_mode => {
             const next_mode = frontend_config.video_scale_mode.cycle(if (delta == 0) 1 else delta);
             frontend_config.video_scale_mode = next_mode;
-            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
             notifyFrontend(notifications, .info, "SCALING {s}", .{next_mode.label()});
         },
         .fullscreen => {
@@ -797,7 +789,7 @@ fn applySettingsAction(
             ui_font.* = ui_render.Font.init(fontDataForFace(next));
             ui_render.initFont(ui_font);
             _ = renderer;
-            persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
             notifyFrontend(notifications, .info, "FONT {s}", .{next.label()});
         },
         .close => {
@@ -1346,13 +1338,13 @@ fn dispatchHomeScreenCommand(
                 notifyFrontend(notifications, .failure, "FAILED TO LOAD {s}", .{std.fs.path.basename(selected_path.slice())});
                 if (err == error.FileNotFound) {
                     frontend_config.removeRecentRom(index);
-                    persistFrontendConfig(frontend_config, frontend_config_path, notifications);
+                    persistFrontendConfig(frontend_config, input_bindings, frontend_config_path, notifications);
                     home_menu.clamp(frontend_config);
                 }
                 return .handled;
             };
             current_rom_path.* = selected_path;
-            rememberLoadedRom(frontend_config, frontend_config_path, notifications, selected_path.slice());
+            rememberLoadedRom(frontend_config, input_bindings, frontend_config_path, notifications, selected_path.slice());
             home_menu.clamp(frontend_config);
             ui.show_home = false;
             ui.paused = false;
@@ -1649,12 +1641,14 @@ fn handleBindingEditorKey(
     if (scancode == .escape) {
         ui.show_keyboard_editor = false;
         editor.close();
+        unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch {};
         return true;
     }
     if (hotkey_binding) |binding| {
         if (bindings.hotkeyForBinding(binding) == .open_keyboard_editor) {
             ui.show_keyboard_editor = false;
             editor.close();
+            unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch {};
             return true;
         }
     }
@@ -1973,7 +1967,7 @@ fn renderSaveManagerPreview(
         renderer,
         frame,
         .{ .r = 0x08, .g = 0x0E, .b = 0x13, .a = 0xF0 },
-        UiColors.cyan,
+        UiColors.blue,
         scale,
     );
 
@@ -2145,7 +2139,7 @@ fn renderSaveManagerOverlay(
     for (summary_lines, path_lines, 0..) |summary_line, path_line, slot_index| {
         const selected = slot_index + 1 == StateFile.normalizePersistentStateSlot(persistent_state_slot);
         const summary_color = if (selected)
-            UiAnimation.pulseColor(UiColors.gold, frame_number, 0.75, 1.0)
+            UiAnimation.pulseColor(UiColors.orange, frame_number, 0.75, 1.0)
         else
             UiColors.text_primary;
         try drawOverlayText(
@@ -2158,7 +2152,7 @@ fn renderSaveManagerOverlay(
         );
         y += summary_height;
         const path_color = if (selected)
-            UiAnimation.pulseColor(UiColors.orange, frame_number, 0.8, 1.0)
+            UiAnimation.pulseColor(UiColors.gold, frame_number, 0.8, 1.0)
         else
             UiColors.text_muted;
         try drawOverlayText(
@@ -2290,7 +2284,7 @@ fn renderSettingsOverlay(
         renderer,
         panel,
         UiColors.panel_secondary,
-        UiColors.blue,
+        UiColors.orange,
         scale,
     );
 
@@ -2299,7 +2293,7 @@ fn renderSettingsOverlay(
         panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        UiColors.blue,
+        UiColors.orange,
         title,
     );
 
@@ -2603,7 +2597,7 @@ pub fn main() !void {
     var binding_editor = BindingEditorState{};
 
     if (rom_path) |path| {
-        rememberLoadedRom(&frontend_config, frontend_config_path, .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter }, path);
+        rememberLoadedRom(&frontend_config, &input_bindings, frontend_config_path, .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter }, path);
     }
     home_menu.clamp(&frontend_config);
 
@@ -3346,6 +3340,7 @@ pub fn main() !void {
                 current_rom_path = path;
                 rememberLoadedRom(
                     &frontend_config,
+                    &input_bindings,
                     frontend_config_path,
                     .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
                     path.slice(),

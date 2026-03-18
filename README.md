@@ -127,11 +127,11 @@ Flags:
 
 Project documentation is available [here](https://pixel-clover.github.io/sandopolis/).
 
-### Default Controls
+#### Default Controls
 
 All controls can be remapped in the keyboard editor (F8).
 
-#### Keyboard — Player 1
+##### Keyboard (Player 1)
 
 The Genesis 6-button controller has two rows of face buttons:
 
@@ -143,7 +143,7 @@ The Genesis 6-button controller has two rows of face buttons:
   D-Pad            Arrow Keys
 ```
 
-#### Keyboard — Player 2
+##### Keyboard (Player 2)
 
 ```
   X  Y  Z          ;  '  /
@@ -153,49 +153,44 @@ The Genesis 6-button controller has two rows of face buttons:
   D-Pad            I/K/J/L
 ```
 
-#### Gamepad (Xbox / PlayStation layout)
+##### Gamepad (Xbox and PlayStation Layouts)
 
 Both player 1 and player 2 use the same mapping on their respective controllers:
 
-| Gamepad Button          | Genesis Button |
-|-------------------------|----------------|
-| South (A / Cross)       | B              |
-| East (B / Circle)       | C              |
-| West (X / Square)       | A              |
-| North (Y / Triangle)    | Y              |
-| Left Shoulder (LB / L1) | X              |
-| Right Shoulder (RB / R1)| Z              |
-| Back (Select)           | Mode           |
-| Start                   | Start          |
-| D-Pad                   | D-Pad          |
-
-> [!TIP]
-> The bottom face button (A / Cross) is mapped to Genesis **B**, which is the primary
-> action button in most games (e.g. jump in Sonic). This matches the convention used
-> by RetroArch and other Genesis emulators.
+| Gamepad Button           | Genesis Button |
+|--------------------------|----------------|
+| South (A / Cross)        | B              |
+| East (B / Circle)        | C              |
+| West (X / Square)        | A              |
+| North (Y / Triangle)     | Y              |
+| Left Shoulder (LB / L1)  | X              |
+| Right Shoulder (RB / R1) | Z              |
+| Back (Select)            | Mode           |
+| Start                    | Start          |
+| D-Pad                    | D-Pad          |
 
 #### Hotkeys
 
-| Key            | Action              |
-|----------------|----------------------|
-| Escape         | Pause / Menu         |
-| F1             | Help                 |
-| Ctrl+O         | Open ROM             |
-| Ctrl+R         | Soft Reset           |
-| Ctrl+Shift+R   | Hard Reset / Reload  |
-| F5             | Quick Save State     |
-| F7             | Quick Load State     |
-| F2             | Save State to File   |
-| F4             | Load State from File |
-| F3             | Next State Slot      |
-| F6             | Performance HUD      |
-| F8             | Keyboard Editor      |
-| F9             | Reset Perf Stats     |
-| F11            | Fullscreen           |
-| F12            | Record GIF           |
-| Shift+F12      | Record WAV           |
-| Ctrl+F12       | Screenshot           |
-| Ctrl+Q         | Quit                 |
+| Key          | Action               |
+|--------------|----------------------|
+| Escape       | Pause / Menu         |
+| F1           | Help                 |
+| Ctrl+O       | Open ROM             |
+| Ctrl+R       | Soft Reset           |
+| Ctrl+Shift+R | Hard Reset / Reload  |
+| F5           | Quick Save State     |
+| F7           | Quick Load State     |
+| F2           | Save State to File   |
+| F4           | Load State from File |
+| F3           | Next State Slot      |
+| F6           | Performance HUD      |
+| F8           | Keyboard Editor      |
+| F9           | Reset Perf Stats     |
+| F11          | Fullscreen           |
+| F12          | Record GIF           |
+| Shift+F12    | Record WAV           |
+| Ctrl+F12     | Screenshot           |
+| Ctrl+Q       | Quit                 |
 
 ---
 
@@ -215,7 +210,8 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
     * [Chilli](https://github.com/CogitatorTech/chilli) framework for CLI parsing and handling
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU (Motorola 68000) emulation
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
-    * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl) and [SDL](https://github.com/castholm/SDL))
+    * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl)
+      and [SDL](https://github.com/castholm/SDL))
     * [stb](https://github.com/nothings/stb/blob/master/stb_truetype.h) for the TrueType font rendering
     * [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) for the monospace font used in the frontend
     * [Test ROMs](https://techdocs.exodusemulator.com/Console/SegaMegaDrive/Software.html#test-roms)

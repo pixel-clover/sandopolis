@@ -23,33 +23,41 @@ const BindingEditorState = binding_editor.State;
 const bindingEditorRowText = binding_editor.rowText;
 const bindingEditorTargetForIndex = binding_editor.targetForIndex;
 
-// Centralized UI color system for consistent theming across overlays
+// Centralized UI color system — Zig orange + C blue inspired palette.
 pub const Colors = struct {
-    // Panel backgrounds (darker, cleaner)
-    pub const panel_primary: zsdl3.Color = .{ .r = 0x0D, .g = 0x11, .b = 0x17, .a = 0xE8 }; // GitHub-dark inspired
-    pub const panel_secondary: zsdl3.Color = .{ .r = 0x0E, .g = 0x14, .b = 0x19, .a = 0xEE }; // slightly warmer
-    pub const panel_overlay: zsdl3.Color = .{ .r = 0x0F, .g = 0x13, .b = 0x18, .a = 0xD8 }; // for HUD
+    // Panel backgrounds
+    pub const panel_primary: zsdl3.Color = .{ .r = 0x0D, .g = 0x11, .b = 0x17, .a = 0xE8 };
+    pub const panel_secondary: zsdl3.Color = .{ .r = 0x0E, .g = 0x14, .b = 0x19, .a = 0xEE };
+    pub const panel_overlay: zsdl3.Color = .{ .r = 0x0F, .g = 0x13, .b = 0x18, .a = 0xD8 }; // HUD
 
-    // Accent colors (refined)
-    pub const cyan: zsdl3.Color = .{ .r = 0x5A, .g = 0xD4, .b = 0xEC, .a = 0xFF }; // slightly brighter
-    pub const gold: zsdl3.Color = .{ .r = 0xF5, .g = 0xC6, .b = 0x42, .a = 0xFF }; // warmer
-    pub const orange: zsdl3.Color = .{ .r = 0xF9, .g = 0x8B, .b = 0x4D, .a = 0xFF }; // softer
-    pub const green: zsdl3.Color = .{ .r = 0x7C, .g = 0xDB, .b = 0xB8, .a = 0xFF }; // mint
-    pub const blue: zsdl3.Color = .{ .r = 0x58, .g = 0xA6, .b = 0xFF, .a = 0xFF }; // selection
+    // Primary accent — Zig orange (#F7A41D family)
+    pub const orange: zsdl3.Color = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D, .a = 0xFF }; // Zig logo orange
+    pub const gold: zsdl3.Color = .{ .r = 0xF5, .g = 0xC6, .b = 0x42, .a = 0xFF }; // lighter warm accent
+
+    // Secondary accent — C blue (#5B8DBE family)
+    pub const blue: zsdl3.Color = .{ .r = 0x5B, .g = 0x8D, .b = 0xBE, .a = 0xFF }; // C logo blue
+    pub const cyan: zsdl3.Color = .{ .r = 0x6E, .g = 0xB8, .b = 0xD4, .a = 0xFF }; // lighter complement
+
+    // Semantic accents
+    pub const green: zsdl3.Color = .{ .r = 0x7C, .g = 0xDB, .b = 0xB8, .a = 0xFF }; // success/mint
     pub const red: zsdl3.Color = .{ .r = 0xE8, .g = 0x5D, .b = 0x5D, .a = 0xFF }; // errors
 
-    // Text colors (better hierarchy)
-    pub const text_primary: zsdl3.Color = .{ .r = 0xE6, .g = 0xED, .b = 0xF3, .a = 0xFF }; // softer white
-    pub const text_secondary: zsdl3.Color = .{ .r = 0x8B, .g = 0x94, .b = 0x9E, .a = 0xFF }; // more muted gray
-    pub const text_selected: zsdl3.Color = .{ .r = 0xFF, .g = 0xF0, .b = 0xC0, .a = 0xFF }; // warmer highlight
-    pub const text_muted: zsdl3.Color = .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF }; // info text
+    // Text hierarchy
+    pub const text_primary: zsdl3.Color = .{ .r = 0xE6, .g = 0xED, .b = 0xF3, .a = 0xFF };
+    pub const text_secondary: zsdl3.Color = .{ .r = 0x8B, .g = 0x94, .b = 0x9E, .a = 0xFF };
+    pub const text_selected: zsdl3.Color = .{ .r = 0xFF, .g = 0xE0, .b = 0x99, .a = 0xFF }; // warm highlight (orange-tinted)
+    pub const text_muted: zsdl3.Color = .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF };
 
-    // Shadow (softer than current 80-90%)
-    pub const shadow: zsdl3.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x99 }; // 60% opacity
+    // Shadow
+    pub const shadow: zsdl3.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x99 };
 
     // Status colors
     pub const success: zsdl3.Color = .{ .r = 0x89, .g = 0xDA, .b = 0xA2, .a = 0xFF };
     pub const failure: zsdl3.Color = .{ .r = 0xFF, .g = 0x9B, .b = 0x8E, .a = 0xFF };
+
+    // Toast tinted backgrounds
+    pub const toast_success_fill: zsdl3.Color = .{ .r = 0x0D, .g = 0x18, .b = 0x12, .a = 0xE8 };
+    pub const toast_failure_fill: zsdl3.Color = .{ .r = 0x1B, .g = 0x0F, .b = 0x11, .a = 0xEC };
 };
 
 // Spacing system for consistent layout
@@ -562,7 +570,7 @@ pub fn renderTwoColumnOverlay(
         // Section items
         for (section.items) |item| {
             const line = try formatOverlayLine(&line_buffer, bindings, item, persistent_state_slot);
-            try drawText(renderer, left_x, y, scale, Colors.gold, line);
+            try drawText(renderer, left_x, y, scale, Colors.text_primary, line);
             y += line_height;
         }
 
@@ -582,7 +590,7 @@ pub fn renderTwoColumnOverlay(
         // Section items
         for (section.items) |item| {
             const line = try formatOverlayLine(&line_buffer, bindings, item, persistent_state_slot);
-            try drawText(renderer, right_x, y, scale, Colors.gold, line);
+            try drawText(renderer, right_x, y, scale, Colors.text_primary, line);
             y += line_height;
         }
 
@@ -626,8 +634,8 @@ pub fn renderSlotBadge(
         .h = 7.0 * scale + padding * 2.0,
     };
 
-    try renderPanel(renderer, badge_rect, Colors.panel_primary, Colors.cyan, scale);
-    try drawText(renderer, badge_rect.x + padding, badge_rect.y + padding, scale, Colors.cyan, slot_text);
+    try renderPanel(renderer, badge_rect, Colors.panel_primary, Colors.orange, scale);
+    try drawText(renderer, badge_rect.x + padding, badge_rect.y + padding, scale, Colors.orange, slot_text);
 }
 
 /// Render the pause overlay
@@ -649,7 +657,7 @@ pub fn renderPauseOverlay(
         "PAD: A SAVE MGR  B RESUME  X SETTINGS  Y HELP",
         &pause_left_sections,
         &pause_right_sections,
-        Colors.gold,
+        Colors.orange,
         persistent_state_slot,
     );
 }
@@ -675,7 +683,7 @@ pub fn renderHelpOverlay(
         slot_text,
         &help_left_sections,
         &help_right_sections,
-        Colors.green,
+        Colors.orange,
         persistent_state_slot,
     );
 }
@@ -712,7 +720,7 @@ pub fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !voi
         renderer,
         panel,
         Colors.panel_primary,
-        Colors.orange,
+        Colors.blue,
         scale,
     );
 
@@ -721,7 +729,7 @@ pub fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !voi
         panel.x + (panel.w - textWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        Colors.orange,
+        Colors.blue,
         title,
     );
 
@@ -764,14 +772,14 @@ pub fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast
     const toast_colors: ToastPalette = switch (toast.currentStyle()) {
         .info => .{
             .fill = Colors.panel_primary,
-            .border = Colors.gold,
+            .border = Colors.orange,
         },
         .success => .{
-            .fill = .{ .r = 0x0D, .g = 0x18, .b = 0x12, .a = 0xE8 },
+            .fill = Colors.toast_success_fill,
             .border = Colors.green,
         },
         .failure => .{
-            .fill = .{ .r = 0x1B, .g = 0x0F, .b = 0x11, .a = 0xEC },
+            .fill = Colors.toast_failure_fill,
             .border = Colors.orange,
         },
     };
@@ -849,7 +857,7 @@ pub fn renderHomeOverlay(
         renderer,
         panel,
         Colors.panel_secondary,
-        Colors.cyan,
+        Colors.orange,
         scale,
     );
 
@@ -858,7 +866,7 @@ pub fn renderHomeOverlay(
         panel.x + (panel.w - textWidth(title, scale)) * 0.5,
         panel.y + padding,
         scale,
-        Colors.cyan,
+        Colors.orange,
         title,
     );
 
@@ -874,7 +882,7 @@ pub fn renderHomeOverlay(
 
     for (menu_lines[0..item_count], 0..) |line, index| {
         const is_selected = index == home_menu.selected_index;
-        const base_color: zsdl3.Color = if (is_selected) Colors.gold else Colors.text_primary;
+        const base_color: zsdl3.Color = if (is_selected) Colors.orange else Colors.text_primary;
         const color = if (is_selected) Animation.pulseColor(base_color, frame_number, 0.75, 1.0) else base_color;
         try drawText(renderer, text_x, y, scale, color, line);
         y += line_height;
@@ -919,7 +927,7 @@ pub fn renderKeyboardEditorOverlay(
         renderer,
         panel,
         Colors.panel_secondary,
-        Colors.blue,
+        Colors.orange,
         scale,
     );
 
@@ -928,7 +936,7 @@ pub fn renderKeyboardEditorOverlay(
         panel.x + padding,
         panel.y + padding,
         scale,
-        Colors.blue,
+        Colors.orange,
         title,
     );
     try drawText(
@@ -966,10 +974,10 @@ pub fn renderKeyboardEditorOverlay(
             .h = line_height,
         };
         if (selected and !bindingEditorTargetForIndex(index).isHeader()) {
-            const pulse_alpha = Animation.pulseAlpha(.{ .r = 0x17, .g = 0x2C, .b = 0x44, .a = 0xF2 }, frame_number, 0xE0, 0xF2);
+            const pulse_alpha = Animation.pulseAlpha(.{ .r = 0x2C, .g = 0x1A, .b = 0x08, .a = 0xF2 }, frame_number, 0xE0, 0xF2);
             try zsdl3.setRenderDrawColor(renderer, pulse_alpha);
             try zsdl3.renderFillRect(renderer, row_rect);
-            try zsdl3.setRenderDrawColor(renderer, Animation.pulseColor(Colors.blue, frame_number, 0.8, 1.0));
+            try zsdl3.setRenderDrawColor(renderer, Animation.pulseColor(Colors.orange, frame_number, 0.8, 1.0));
             try zsdl3.renderRect(renderer, row_rect);
         }
 

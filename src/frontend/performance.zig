@@ -447,7 +447,7 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
         renderer,
         panel,
         ui.Colors.panel_overlay,
-        ui.Colors.orange,
+        ui.Colors.blue,
         scale,
     );
 
@@ -456,7 +456,7 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
         panel.x + padding,
         panel.y + padding,
         scale,
-        ui.Colors.orange,
+        ui.Colors.blue,
         title,
     );
 
