@@ -2,7 +2,7 @@ const std = @import("std");
 const zsdl3 = @import("zsdl3");
 
 const stbtt = @cImport({
-    @cInclude("./fonts/stb_truetype.h");
+    @cInclude("stb_truetype.h");
 });
 
 pub const font_jbm_regular = @embedFile("fonts/ttf/JetBrainsMono-Regular.ttf");

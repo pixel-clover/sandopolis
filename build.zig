@@ -211,6 +211,7 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(frontend_tests, b, cpu_deps);
     linkSdl3(frontend_tests, sdl3_lib);
+    addStbTruetype(frontend_tests, b);
     const frontend_run = b.addRunArtifact(frontend_tests);
     const frontend_step = b.step("test-frontend", "Run frontend helper tests");
     frontend_step.dependOn(&frontend_run.step);
