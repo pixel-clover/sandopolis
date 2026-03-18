@@ -11,6 +11,7 @@ pub const Config = struct {
     audio_mode: AudioOutput.RenderMode = .normal,
     renderer_name: ?[]const u8 = null,
     timing_mode: TimingModeOption = .auto,
+    config_path: ?[]const u8 = null,
     should_run: bool = false,
 };
 
@@ -32,6 +33,10 @@ fn exec(ctx: chilli.CommandContext) !void {
     // --renderer — dupe for same reason as rom_path
     const renderer_str = try ctx.getFlag("renderer", []const u8);
     config.renderer_name = if (renderer_str.len > 0) try ctx.app_allocator.dupe(u8, renderer_str) else null;
+
+    // --config
+    const config_str = try ctx.getFlag("config", []const u8);
+    config.config_path = if (config_str.len > 0) try ctx.app_allocator.dupe(u8, config_str) else null;
 
     // --pal / --ntsc (mutually exclusive)
     const pal = try ctx.getFlag("pal", bool);
@@ -60,6 +65,12 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     try cmd.addFlag(.{
         .name = "renderer",
         .description = "SDL render driver override (e.g. software, opengl)",
+        .type = .String,
+        .default_value = .{ .String = "" },
+    });
+    try cmd.addFlag(.{
+        .name = "config",
+        .description = "Path to config file (default: sandopolis.cfg in current directory)",
         .type = .String,
         .default_value = .{ .String = "" },
     });

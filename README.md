@@ -116,6 +116,7 @@ Flags:
   -h, --help        Shows help information for this command [Bool] (default: false)
       --audio-mode  Audio render mode: normal, ym-only, psg-only, unfiltered-mix [String] (default: "normal")
       --renderer    SDL render driver override (e.g. software, opengl) [String] (default: "")
+      --config      Path to config file (default: sandopolis.cfg in current directory) [String] (default: "")
       --pal         Force PAL/50Hz timing and version bits [Bool] (default: false)
       --ntsc        Force NTSC/60Hz timing and version bits [Bool] (default: false)
       --version     Print version information and exit [Bool] (default: false)

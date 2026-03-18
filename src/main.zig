@@ -2430,6 +2430,7 @@ pub fn main() !void {
     const cli = cli_config;
     defer if (cli.rom_path) |p| allocator.free(p);
     defer if (cli.renderer_name) |p| allocator.free(p);
+    defer if (cli.config_path) |p| allocator.free(p);
     const rom_path = cli.rom_path;
 
     std.debug.print("=== Sandopolis Emulator Started ===\n", .{});
@@ -2529,7 +2530,10 @@ pub fn main() !void {
     }
 
     // Load unified config (frontend settings + input bindings in one file)
-    const config_file_path = try config_path_mod.resolveConfigPath(allocator);
+    const config_file_path = if (cli.config_path) |custom_path|
+        try allocator.dupe(u8, custom_path)
+    else
+        try config_path_mod.resolveConfigPath(allocator);
     defer allocator.free(config_file_path);
     const loaded_config = try unified_config.load(allocator, config_file_path);
     var input_bindings = loaded_config.bindings;
