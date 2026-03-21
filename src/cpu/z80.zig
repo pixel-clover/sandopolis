@@ -608,6 +608,27 @@ test "z80 ym status read reports and clears timer a overflow" {
 
     z80.writeByte(0x4000, 0x27);
     z80.writeByte(0x4001, 0x10);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
     z80.setAudioMasterOffset(49 * ym_internal_master_cycles);
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
+}
+
+test "z80 ym status read clears timer b overflow immediately on reset write" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.setAudioMasterOffset(0);
+    z80.writeByte(0x4000, 0x26);
+    z80.writeByte(0x4001, 0xFF);
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x0A);
+
+    z80.setAudioMasterOffset(363 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x02), z80.readByte(0x4000) & 0x02);
+
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x20);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x02);
 }

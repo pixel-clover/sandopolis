@@ -1618,6 +1618,24 @@ fn sampleEnergy(samples: []const i16) u64 {
     return total;
 }
 
+fn channelEnergy(samples: []const i16, channel: usize) u64 {
+    var total: u64 = 0;
+    var index = channel;
+    while (index < samples.len) : (index += AudioOutput.channels) {
+        total += @intCast(@abs(samples[index]));
+    }
+    return total;
+}
+
+fn stereoDifferenceEnergy(samples: []const i16) u64 {
+    var total: u64 = 0;
+    var index: usize = 0;
+    while (index + 1 < samples.len) : (index += AudioOutput.channels) {
+        total += @intCast(@abs(@as(i32, samples[index]) - @as(i32, samples[index + 1])));
+    }
+    return total;
+}
+
 test "rate converter keeps FM/PSG aligned over one NTSC frame" {
     var output = AudioOutput{};
     const pending = PendingAudioFrames{
@@ -2580,6 +2598,44 @@ test "runtime pending render matches prepared resampler output for mixed audio" 
         prepared_sink.samples[0..prepared_sink.len],
         runtime_sink.samples[0..runtime_sink.len],
     );
+}
+
+test "runtime pending render preserves ym stereo separation from pan registers" {
+    const pending = pendingWindow(@as(u32, 96) * clock.fm_master_cycles_per_sample);
+
+    var runtime = AudioOutput{};
+    var runtime_z80 = Z80.init();
+    defer runtime_z80.deinit();
+    runtime_z80.setAudioMasterOffset(0);
+    runtime_z80.writeByte(0x4000, 0x2B);
+    runtime_z80.writeByte(0x4001, 0x80);
+    runtime_z80.writeByte(0x4002, 0xB6);
+    runtime_z80.writeByte(0x4003, 0x80);
+    runtime_z80.writeByte(0x4000, 0x2A);
+    runtime_z80.writeByte(0x4001, 0x20);
+    runtime_z80.setAudioMasterOffset(24 * clock.fm_master_cycles_per_sample);
+    runtime_z80.writeByte(0x4001, 0xF0);
+    runtime_z80.setAudioMasterOffset(56 * clock.fm_master_cycles_per_sample);
+    runtime_z80.writeByte(0x4001, 0x60);
+
+    const CollectSink = struct {
+        samples: [1024]i16 = undefined,
+        len: usize = 0,
+
+        fn consumeSamples(self: *@This(), input: []const i16) !void {
+            std.debug.assert(self.len + input.len <= self.samples.len);
+            @memcpy(self.samples[self.len .. self.len + input.len], input);
+            self.len += input.len;
+        }
+    };
+
+    var runtime_sink = CollectSink{};
+    try runtime.renderPending(pending, &runtime_z80, false, &runtime_sink);
+
+    const samples = runtime_sink.samples[0..runtime_sink.len];
+    try std.testing.expect(samples.len != 0);
+    try std.testing.expect(stereoDifferenceEnergy(samples) > 0);
+    try std.testing.expect(channelEnergy(samples, 0) > channelEnergy(samples, 1));
 }
 
 test "psg post-resample path does not apply an extra low-pass stage" {

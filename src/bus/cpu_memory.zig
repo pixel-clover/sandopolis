@@ -171,7 +171,7 @@ pub const View = struct {
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
             if (!self.hasZ80BusFor68k()) return @truncate((self.open_bus.* >> 8) & 0xFF);
             self.ensureZ80HostWindow();
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+            self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
@@ -263,7 +263,7 @@ pub const View = struct {
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
             if (!self.hasZ80BusFor68k()) return;
             self.ensureZ80HostWindow();
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+            self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             const zaddr: u16 = @truncate(addr & 0x7FFF);
             self.z80.writeByte(zaddr, value);
             return;
@@ -275,7 +275,7 @@ pub const View = struct {
             if (self.tmss_locked.*) return;
             const port = addr & 0x1F;
             if (port >= 0x11 and port < 0x18 and (port & 1) == 1) {
-                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+                self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeByte(0x7F11, value);
             } else {
                 vdp_ports.writeByte(self.vdp, addr, value);
@@ -301,7 +301,7 @@ pub const View = struct {
             if (self.tmss_locked.*) return;
             const port = addr & 0x1F;
             if (port >= 0x10 and port < 0x18 and (port & 1) == 0) {
-                self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+                self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeByte(0x7F11, @intCast(value & 0xFF));
             } else {
                 vdp_ports.writeWord(self.vdp, addr, value);
@@ -330,6 +330,21 @@ pub const View = struct {
 
 const TestHooks = struct {
     fn ensureZ80HostWindow(_: ?*anyopaque) void {}
+};
+
+const AudioOffsetRuntimeCtx = struct {
+    elapsed_master_cycles: u32 = 0,
+
+    fn currentOpcode(_: ?*anyopaque) u16 {
+        return 0;
+    }
+
+    fn clearInterrupt(_: ?*anyopaque) void {}
+
+    fn currentAccessElapsedMasterCycles(ctx: ?*anyopaque) u32 {
+        const self: *const @This() = @ptrCast(@alignCast(ctx orelse unreachable));
+        return self.elapsed_master_cycles;
+    }
 };
 
 fn grantM68kZ80Bus(view: *View) void {
@@ -746,12 +761,20 @@ test "cpu memory io window decode stops at a1001f and higher addresses fall back
     try testing.expectEqual(@as(u8, 0xF8), fixture.io.serial_ctrl[2]);
 }
 
-test "cpu memory z80 window writes use current audio master offset" {
+test "cpu memory z80 window writes include the current access audio skew" {
     const testing = std.testing;
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
+    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 321 };
+
+    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
+        &runtime_ctx,
+        AudioOffsetRuntimeCtx.currentOpcode,
+        AudioOffsetRuntimeCtx.clearInterrupt,
+        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+    ));
 
     grantM68kZ80Bus(&view);
     fixture.audio_timing.consumeMaster(5000);
@@ -762,7 +785,68 @@ test "cpu memory z80 window writes use current audio master offset" {
     var writes: [4]Z80.YmWriteEvent = undefined;
     const count = fixture.z80.takeYmWrites(writes[0..]);
     try testing.expectEqual(@as(usize, 1), count);
-    try testing.expectEqual(@as(u32, 5000), writes[0].master_offset);
+    try testing.expectEqual(@as(u32, 5321), writes[0].master_offset);
+}
+
+test "cpu memory vdp psg writes include the current access audio skew" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    var view = fixture.view();
+    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 111 };
+
+    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
+        &runtime_ctx,
+        AudioOffsetRuntimeCtx.currentOpcode,
+        AudioOffsetRuntimeCtx.clearInterrupt,
+        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+    ));
+
+    fixture.audio_timing.consumeMaster(6000);
+    view.write8(0x00C0_0011, 0x95);
+
+    runtime_ctx.elapsed_master_cycles = 222;
+    fixture.audio_timing.consumeMaster(25);
+    view.write16(0x00C0_0010, 0x00D7);
+
+    var commands: [4]Z80.PsgCommandEvent = undefined;
+    const count = fixture.z80.takePsgCommands(commands[0..]);
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(@as(u32, 6111), commands[0].master_offset);
+    try testing.expectEqual(@as(u8, 0x95), commands[0].value);
+    try testing.expectEqual(@as(u32, 6247), commands[1].master_offset);
+    try testing.expectEqual(@as(u8, 0xD7), commands[1].value);
+}
+
+test "cpu memory z80 window reads include the current access audio skew" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    var view = fixture.view();
+    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 0 };
+
+    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
+        &runtime_ctx,
+        AudioOffsetRuntimeCtx.currentOpcode,
+        AudioOffsetRuntimeCtx.clearInterrupt,
+        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+    ));
+
+    grantM68kZ80Bus(&view);
+
+    view.write8(0x00A0_4000, 0x22);
+    view.write8(0x00A0_4001, 0x0F);
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+    fixture.audio_timing.consumeMaster(ym_internal_master_cycles - 1);
+
+    runtime_ctx.elapsed_master_cycles = 0;
+    try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A0_4000) & 0x80);
+
+    runtime_ctx.elapsed_master_cycles = 1;
+    try testing.expectEqual(@as(u8, 0x80), view.read8(0x00A0_4000) & 0x80);
 }
 
 test "cpu memory z80 audio window latches ym2612 and psg writes" {
@@ -922,17 +1006,26 @@ test "cpu memory z80 reset line edges carry the current audio master offset into
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
+    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 123 };
+
+    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
+        &runtime_ctx,
+        AudioOffsetRuntimeCtx.currentOpcode,
+        AudioOffsetRuntimeCtx.clearInterrupt,
+        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+    ));
 
     fixture.audio_timing.consumeMaster(4321);
     view.write16(0x00A1_1200, 0x0000);
 
+    runtime_ctx.elapsed_master_cycles = 321;
     fixture.audio_timing.consumeMaster(321);
     view.write16(0x00A1_1200, 0x0100);
 
     var ym_reset_events: [2]Z80.YmResetEvent = undefined;
     try testing.expectEqual(@as(usize, 2), fixture.z80.takeYmResets(ym_reset_events[0..]));
-    try testing.expectEqual(@as(u32, 4321), ym_reset_events[0].master_offset);
-    try testing.expectEqual(@as(u32, 4642), ym_reset_events[1].master_offset);
+    try testing.expectEqual(@as(u32, 4444), ym_reset_events[0].master_offset);
+    try testing.expectEqual(@as(u32, 4963), ym_reset_events[1].master_offset);
 }
 
 test "cpu memory z80 reset preserves uploaded z80 ram" {

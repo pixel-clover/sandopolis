@@ -933,12 +933,28 @@ static void apply_ym_data_write_runtime_state(Jgz80Handle *h, uint8_t port, uint
             h->ym_timer_b_reg = value;
             break;
         case 0x27:
+            {
+            const uint8_t prev_timer_a_load = h->ym_timer_a_load;
+            const uint8_t prev_timer_b_load = h->ym_timer_b_load;
             h->ym_timer_a_load = value & 0x01u;
             h->ym_timer_a_enable = (value >> 2) & 0x01u;
             h->ym_timer_a_reset = (value >> 4) & 0x01u;
             h->ym_timer_b_load = (value >> 1) & 0x01u;
             h->ym_timer_b_enable = (value >> 3) & 0x01u;
             h->ym_timer_b_reset = (value >> 5) & 0x01u;
+            if (h->ym_timer_a_load != 0u && prev_timer_a_load == 0u) {
+                h->ym_timer_a_load_latch = 1u;
+            }
+            if (h->ym_timer_b_load != 0u && prev_timer_b_load == 0u) {
+                h->ym_timer_b_load_latch = 1u;
+            }
+            if (h->ym_timer_a_reset != 0u) {
+                h->ym_timer_a_overflow_flag = 0u;
+            }
+            if (h->ym_timer_b_reset != 0u) {
+                h->ym_timer_b_overflow_flag = 0u;
+            }
+            }
             break;
         default:
             break;

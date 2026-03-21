@@ -433,6 +433,8 @@ const Opn2Core = struct {
                     },
                     0x26 => self.timer_b_reg = write.value,
                     0x27 => {
+                        const prev_timer_a_load = self.timer_a_load;
+                        const prev_timer_b_load = self.timer_b_load;
                         self.mode_ch3 = (write.value & 0xC0) >> 6;
                         self.mode_csm = @intFromBool(self.mode_ch3 == 0x02);
                         self.timer_a_load = write.value & 0x01;
@@ -441,6 +443,18 @@ const Opn2Core = struct {
                         self.timer_b_load = (write.value >> 1) & 0x01;
                         self.timer_b_enable = (write.value >> 3) & 0x01;
                         self.timer_b_reset = (write.value >> 5) & 0x01;
+                        if (self.timer_a_load != 0 and prev_timer_a_load == 0) {
+                            self.timer_a_load_latch = 1;
+                        }
+                        if (self.timer_b_load != 0 and prev_timer_b_load == 0) {
+                            self.timer_b_load_latch = 1;
+                        }
+                        if (self.timer_a_reset != 0) {
+                            self.timer_a_overflow_flag = 0;
+                        }
+                        if (self.timer_b_reset != 0) {
+                            self.timer_b_overflow_flag = 0;
+                        }
                     },
                     0x28 => {
                         inline for (0..4) |i| {
@@ -1648,6 +1662,17 @@ test "ym timer b overflow sets irq and status" {
     core.doTimerB();
     try std.testing.expectEqual(@as(u1, 1), core.readIrqPin());
     try std.testing.expectEqual(@as(u8, 0x02), core.readStatus(0) & 0x02);
+}
+
+test "ym timer reset bits clear status immediately on mode write" {
+    var synth = Ym2612Synth{};
+    synth.core.timer_a_overflow_flag = 1;
+    synth.core.timer_b_overflow_flag = 1;
+
+    synth.applyWrite(writeEvent(0, 0x27, 0x30));
+    _ = synth.clockOneInternal();
+
+    try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(0) & 0x03);
 }
 
 test "ym test pin and test-data status reads follow mode bits" {
