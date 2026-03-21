@@ -98,13 +98,13 @@ pub const VideoScaleMode = enum {
     pub fn configValue(self: VideoScaleMode) []const u8 {
         return switch (self) {
             .fit => "fit",
-            .whole_pixels => "whole",
+            .whole_pixels => "whole_pixels",
         };
     }
 
     pub fn parse(value: []const u8) error{InvalidVideoScale}!VideoScaleMode {
         if (std.mem.eql(u8, value, "fit")) return .fit;
-        if (std.mem.eql(u8, value, "whole_pixels")) return .whole_pixels;
+        if (std.mem.eql(u8, value, "whole_pixels") or std.mem.eql(u8, value, "whole")) return .whole_pixels;
         return error.InvalidVideoScale;
     }
 

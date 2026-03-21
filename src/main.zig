@@ -1722,6 +1722,25 @@ fn handleQuickStateAction(
     }
 }
 
+const PersistentStateActionResult = enum {
+    ignored,
+    handled,
+    loaded_machine,
+};
+
+fn syncFrontendAfterPersistentStateLoad(
+    ui: *FrontendUi,
+    current_rom_path: *DialogPathCopy,
+    machine: *const Machine,
+) void {
+    if (machine.bus.sourcePath()) |source_path| {
+        current_rom_path.set(source_path);
+    } else {
+        current_rom_path.* = .{};
+    }
+    ui.show_home = false;
+}
+
 fn handlePersistentStateAction(
     allocator: std.mem.Allocator,
     action: InputBindings.HotkeyAction,
@@ -1733,7 +1752,7 @@ fn handlePersistentStateAction(
     wav_recorder: *?WavRecorder,
     frame_counter: *u32,
     notifications: FrontendNotifications,
-) bool {
+) PersistentStateActionResult {
     persistent_state_slot.* = StateFile.normalizePersistentStateSlot(persistent_state_slot.*);
     if (action == .next_state_slot) {
         persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
@@ -1741,7 +1760,7 @@ fn handlePersistentStateAction(
         const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
             std.debug.print("Failed to resolve state-file slot path: {s}\n", .{@errorName(err)});
             notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE SLOT", .{});
-            return true;
+            return .handled;
         };
         defer allocator.free(state_path);
 
@@ -1754,7 +1773,7 @@ fn handlePersistentStateAction(
             persistent_state_slot.*,
             StateFile.persistent_state_slot_count,
         });
-        return true;
+        return .handled;
     }
 
     var owned_state_path: ?[]u8 = null;
@@ -1763,7 +1782,7 @@ fn handlePersistentStateAction(
     owned_state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
         std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
         notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
-        return true;
+        return .handled;
     };
     const state_path = owned_state_path.?;
 
@@ -1772,14 +1791,14 @@ fn handlePersistentStateAction(
             StateFile.saveToFile(machine, state_path) catch |err| {
                 std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
                 notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
-                return true;
+                return .handled;
             };
             saveStatePreviewFile(allocator, machine, state_path) catch |err| {
                 std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
             };
             std.debug.print("Saved state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE SAVED", .{});
-            return true;
+            return .handled;
         },
         .load_state_file => {
             var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
@@ -1789,7 +1808,7 @@ fn handlePersistentStateAction(
                     std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
                     notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
                 }
-                return true;
+                return .handled;
             };
             errdefer next_machine.deinit(allocator);
 
@@ -1806,9 +1825,9 @@ fn handlePersistentStateAction(
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE LOADED", .{});
-            return true;
+            return .loaded_machine;
         },
-        else => return false,
+        else => return .ignored,
     }
 }
 
@@ -3136,7 +3155,7 @@ pub fn main() !void {
                             )) {
                                 continue;
                             }
-                            if (handlePersistentStateAction(
+                            const persistent_state_result = handlePersistentStateAction(
                                 allocator,
                                 action,
                                 &machine,
@@ -3147,7 +3166,12 @@ pub fn main() !void {
                                 &wav_recorder,
                                 &frame_counter,
                                 notifications,
-                            )) {
+                            );
+                            if (persistent_state_result == .loaded_machine) {
+                                syncFrontendAfterPersistentStateLoad(&frontend_ui, &current_rom_path, &machine);
+                                continue;
+                            }
+                            if (persistent_state_result != .ignored) {
                                 continue;
                             }
 
@@ -4309,12 +4333,12 @@ test "persistent state helper saves and restores machine state" {
     defer allocator.free(slot1_state_path);
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -4340,30 +4364,82 @@ test "persistent state helper cycles slots and keeps files separate" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
+}
+
+test "persistent state load sync exits home screen and updates current rom path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = [_]u8{0} ** 0x400;
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
+
+    var saved_machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer saved_machine.deinit(allocator);
+    saved_machine.bus.replaceStoragePaths(allocator, null, try allocator.dupe(u8, rom_path));
+    saved_machine.writeWorkRamByte(0x20, 0x5A);
+
+    const state_path = try rom_paths.statePath(allocator, rom_path, StateFile.default_persistent_state_slot);
+    defer allocator.free(state_path);
+    try StateFile.saveToFile(&saved_machine, state_path);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
+    var frame_counter: u32 = 0;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+    var ui = FrontendUi{ .show_home = true };
+    var current_rom_path = DialogPathCopy{};
+
+    try std.testing.expectEqual(
+        PersistentStateActionResult.loaded_machine,
+        handlePersistentStateAction(
+            allocator,
+            .load_state_file,
+            &machine,
+            rom_path,
+            &persistent_state_slot,
+            null,
+            &gif_recorder,
+            &wav_recorder,
+            &frame_counter,
+            .{},
+        ),
+    );
+    syncFrontendAfterPersistentStateLoad(&ui, &current_rom_path, &machine);
+
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
+    try std.testing.expect(!ui.show_home);
+    try std.testing.expectEqualStrings(rom_path, current_rom_path.slice());
 }
 
 test "save manager metadata tracks slot files and deletions" {
@@ -4390,7 +4466,7 @@ test "save manager metadata tracks slot files and deletions" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(
         allocator,
         .save_state_file,
         &machine,
@@ -4405,7 +4481,7 @@ test "save manager metadata tracks slot files and deletions" {
 
     persistent_state_slot = 2;
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(
         allocator,
         .save_state_file,
         &machine,
