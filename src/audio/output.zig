@@ -400,8 +400,11 @@ pub const AudioOutput = struct {
 
     pub const output_rate: u32 = 48_000;
     pub const channels: usize = 2;
-    pub const max_queued_ms: u32 = 150;
-    pub const max_queued_bytes: usize = (output_rate * max_queued_ms / 1000) * channels * @sizeOf(i16);
+    pub const min_queue_budget_ms: u16 = 40;
+    pub const default_queue_budget_ms: u16 = 60;
+    pub const max_queue_budget_ms: u16 = 150;
+    pub const max_queued_ms: u32 = max_queue_budget_ms;
+    pub const max_queued_bytes: usize = queueBudgetBytes(max_queue_budget_ms);
     const max_ym_writes_per_push: usize = 32768;
     const max_ym_dac_samples_per_push: usize = 4096;
     const max_ym_reset_events_per_push: usize = 64;
@@ -435,6 +438,8 @@ pub const AudioOutput = struct {
     dc_right: DcBlocker = DcBlocker.init(output_rate),
     board_lpf: BoardOutputLpf = BoardOutputLpf.init(),
     render_mode: RenderMode = .normal,
+    total_overflow_events: u64 = 0,
+    last_overflow_events: u32 = 0,
     ym_internal_master_remainder: u16 = 0,
     ym_partial_sum_left: i32 = 0,
     ym_partial_sum_right: i32 = 0,
@@ -457,6 +462,26 @@ pub const AudioOutput = struct {
         var output: AudioOutput = .{};
         output.reset();
         return output;
+    }
+
+    pub fn isValidQueueBudgetMs(ms: u16) bool {
+        return ms >= min_queue_budget_ms and ms <= max_queue_budget_ms;
+    }
+
+    pub fn clampQueueBudgetMs(ms: u16) u16 {
+        return std.math.clamp(ms, min_queue_budget_ms, max_queue_budget_ms);
+    }
+
+    pub fn queueBudgetBytes(ms: u16) usize {
+        return (@as(usize, output_rate) * @as(usize, ms) / 1000) * channels * @sizeOf(i16);
+    }
+
+    pub fn totalOverflowEvents(self: *const AudioOutput) u64 {
+        return self.total_overflow_events;
+    }
+
+    pub fn lastOverflowEvents(self: *const AudioOutput) u32 {
+        return self.last_overflow_events;
     }
 
     fn ymPortAndChannelBase(channel: u3) struct { port: u1, base: u8 } {
@@ -1343,7 +1368,9 @@ pub const AudioOutput = struct {
 
     fn takePendingEvents(self: *AudioOutput, z80: *Z80) PendingAudioEvents {
         const overflow = z80.takeOverflowCounts();
+        self.last_overflow_events = overflow;
         if (overflow > 0) {
+            self.total_overflow_events += overflow;
             log.warn("audio event buffer overflow: {d} events dropped", .{overflow});
         }
         const ym_write_count = z80.takeYmWrites(self.ym_write_buffer[0..]);
@@ -2733,4 +2760,12 @@ test "prepare pending repairs corrupt resampler state before counting output fra
     try std.testing.expect(out_frames > 0);
     try std.testing.expect(output.ym_resampler.hasValidState());
     try std.testing.expect(output.psg_resampler.hasValidState());
+}
+
+test "queue budget helpers clamp and size supported audio latency budgets" {
+    try std.testing.expect(AudioOutput.isValidQueueBudgetMs(AudioOutput.default_queue_budget_ms));
+    try std.testing.expect(!AudioOutput.isValidQueueBudgetMs(AudioOutput.min_queue_budget_ms - 1));
+    try std.testing.expectEqual(AudioOutput.min_queue_budget_ms, AudioOutput.clampQueueBudgetMs(1));
+    try std.testing.expectEqual(AudioOutput.max_queue_budget_ms, AudioOutput.clampQueueBudgetMs(255));
+    try std.testing.expect(AudioOutput.queueBudgetBytes(AudioOutput.max_queue_budget_ms) >= AudioOutput.queueBudgetBytes(AudioOutput.default_queue_budget_ms));
 }

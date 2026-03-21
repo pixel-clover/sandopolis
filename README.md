@@ -105,7 +105,7 @@ Example output:
 
 ```
 A Sega Genesis/Mega Drive emulator written in Zig and C
-Version: 0.1.0-alpha.3
+Version: 0.1.0-alpha.4
 
 Usage:
   sandopolis [flags] [rom_file]
@@ -115,7 +115,8 @@ Arguments:
 
 Flags:
   -h, --help        Shows help information for this command [Bool] (default: false)
-      --audio-mode  Audio render mode: normal, ym-only, psg-only, unfiltered-mix [String] (default: "normal")
+      --audio-mode  Audio render mode override: normal, ym-only, psg-only, unfiltered-mix [String] (default: "")
+      --audio-queue-ms  Audio queue budget override in milliseconds (40-150) [String] (default: "")
       --renderer    SDL render driver override (e.g. software, opengl) [String] (default: "")
       --config      Path to config file (default: sandopolis.cfg in current directory) [String] (default: "")
       --pal         Force PAL/50Hz timing and version bits [Bool] (default: false)
