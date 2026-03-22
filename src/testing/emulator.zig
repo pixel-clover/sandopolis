@@ -100,6 +100,16 @@ pub const Emulator = struct {
         }
     }
 
+    pub fn renderPendingAudio(self: *Emulator, output: *AudioOutput, sink: anytype) !void {
+        const pending = self.handle.machine.takePendingAudio();
+        try output.renderPending(pending, &self.handle.machine.bus.z80, self.handle.machine.palMode(), sink);
+    }
+
+    pub fn discardPendingAudioWithOutput(self: *Emulator, output: *AudioOutput) !void {
+        const pending = self.handle.machine.takePendingAudio();
+        try output.discardPending(pending, &self.handle.machine.bus.z80, self.handle.machine.palMode());
+    }
+
     pub fn cpuState(self: *const Emulator) CpuState {
         return .{
             .program_counter = self.handle.machine.programCounter(),
@@ -267,6 +277,22 @@ pub const Emulator = struct {
     pub fn ymRegister(self: *const Emulator, port: u1, reg: u8) u8 {
         const machine = self.handle.machine.testingConst();
         return machine.ymRegister(port, reg);
+    }
+
+    pub fn pendingYmWriteCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingYmWriteCount();
+    }
+
+    pub fn pendingYmDacCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingYmDacCount();
+    }
+
+    pub fn pendingPsgCommandCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingPsgCommandCount();
+    }
+
+    pub fn takeAudioOverflowCounts(self: *Emulator) u32 {
+        return self.handle.machine.bus.z80.takeOverflowCounts();
     }
 
     pub fn z80Reset(self: *Emulator) void {

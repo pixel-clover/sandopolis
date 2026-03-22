@@ -5,6 +5,8 @@ pub const ControllerType = @import("controller_io.zig").ControllerType;
 pub const Button = @import("controller_io.zig").Button;
 pub const Emulator = @import("emulator.zig").Emulator;
 pub const Vdp = @import("vdp.zig").Vdp;
+pub const AudioOutput = @import("../audio/output.zig").AudioOutput;
+pub const WavRecorder = @import("../recording/wav.zig").WavRecorder;
 
 pub const Ym2612Synth = @import("../audio/ym2612.zig").Ym2612Synth;
 pub const YmWriteEvent = @import("../audio/ym2612.zig").YmWriteEvent;

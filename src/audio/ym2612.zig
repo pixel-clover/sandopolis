@@ -212,7 +212,7 @@ const Opn2Core = struct {
     lfo_enabled_mask: u8 = 0,
     lfo_freq: u8 = 0,
     lfo_pm: u8 = 0,
-    lfo_am: u8 = 0,
+    lfo_am: u8 = 126,
     lfo_cnt: u8 = 0,
     lfo_inc: u8 = 0,
     lfo_quotient: u32 = 0,
@@ -422,6 +422,12 @@ const Opn2Core = struct {
                     0x22 => {
                         self.lfo_enabled_mask = if (((write.value >> 3) & 0x01) != 0) 0x7F else 0;
                         self.lfo_freq = write.value & 0x07;
+                        if (self.lfo_enabled_mask == 0) {
+                            self.lfo_cnt = 0;
+                            self.lfo_pm = 0;
+                            self.lfo_am = 126;
+                            self.lfo_quotient = 0;
+                        }
                     },
                     0x24 => {
                         self.timer_a_reg &= 0x03;
@@ -950,10 +956,17 @@ const Opn2Core = struct {
         var inc: i16 = 0;
 
         if (kon_event) {
-            next_state = .attack;
+            const sustain_level_zero = self.sl[slot] == 0;
             if (self.eg_ratemax) {
                 next_level = 0;
-            } else if (current_state == .attack and level != 0 and self.eg_inc != 0 and nkon != 0) {
+                next_state = if (sustain_level_zero) .sustain else .decay;
+            } else if (level == 0) {
+                next_state = if (sustain_level_zero) .sustain else .decay;
+            } else {
+                next_state = .attack;
+            }
+
+            if (next_state == .attack and current_state == .attack and self.eg_inc != 0 and nkon != 0) {
                 inc = (@as(i16, ~level) << @intCast(self.eg_inc)) >> 5;
             }
         } else {
@@ -1522,6 +1535,73 @@ test "ym native sample drains exactly one frame of internal writes" {
     _ = synth.tick();
 
     try std.testing.expectEqual(@as(usize, 1), synth.pending_write_count);
+}
+
+test "ym key on at minimal attenuation enters sustain immediately when sl is zero" {
+    var core = Opn2Core{};
+    const slot: usize = 0;
+    core.cycles = (slot + 2) % 24;
+    core.eg_kon_latch[slot] = 1;
+    core.eg_level[slot] = 0;
+    core.sl[slot] = 0;
+
+    core.envelopeAdsr();
+
+    try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.sustain)), core.eg_state[slot]);
+}
+
+test "ym key on with maximal attack bypasses attack and enters decay" {
+    var core = Opn2Core{};
+    const slot: usize = 0;
+    core.cycles = (slot + 2) % 24;
+    core.eg_kon_latch[slot] = 1;
+    core.eg_level[slot] = 0x01A0;
+    core.sl[slot] = 5;
+    core.eg_ratemax = true;
+
+    core.envelopeAdsr();
+
+    try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.decay)), core.eg_state[slot]);
+}
+
+test "ym lfo reset state matches disabled waveform defaults" {
+    var core = Opn2Core{};
+
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_cnt);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_pm);
+    try std.testing.expectEqual(@as(u8, 126), core.lfo_am);
+
+    core.lfo_cnt = 0x3F;
+    core.lfo_pm = 0x12;
+    core.lfo_am = 0x24;
+    core.lfo_quotient = 9;
+    core.reset();
+
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_cnt);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_pm);
+    try std.testing.expectEqual(@as(u8, 126), core.lfo_am);
+    try std.testing.expectEqual(@as(u32, 0), core.lfo_quotient);
+}
+
+test "ym lfo disable write immediately restores reset waveform" {
+    var core = Opn2Core{};
+    core.lfo_enabled_mask = 0x7F;
+    core.lfo_freq = 7;
+    core.lfo_cnt = 0x35;
+    core.lfo_pm = 0x11;
+    core.lfo_am = 0x22;
+    core.lfo_quotient = 5;
+
+    try std.testing.expect(core.doRegWrite(writeEvent(0, 0x22, 0x00)));
+
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_enabled_mask);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_freq);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_cnt);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_pm);
+    try std.testing.expectEqual(@as(u8, 126), core.lfo_am);
+    try std.testing.expectEqual(@as(u32, 0), core.lfo_quotient);
 }
 
 test "ym immediate mode writes bypass blocked deferred writes" {

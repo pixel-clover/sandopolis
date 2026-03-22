@@ -1,3 +1,4 @@
+const std = @import("std");
 const Io = @import("../input/io.zig").Io;
 
 pub fn readVersionRegister(io: *const Io, pal_mode: bool) u8 {
@@ -40,6 +41,30 @@ pub fn writeRegisterByte(io: *Io, address: u32, value: u8) void {
         0x18, 0x19 => io.writeSerialControl(1, value),
         0x1A, 0x1B => io.writeTxData(2, value),
         0x1E, 0x1F => io.writeSerialControl(2, value),
-        else => unreachable,
+        else => {},
     }
+}
+
+test "io window ignores writes to unsupported io bytes" {
+    var io = Io.init();
+
+    const before_data_2 = io.read(0x07);
+    const before_tx_0 = io.readTxData(0);
+    const before_tx_1 = io.readTxData(1);
+    const before_tx_2 = io.readTxData(2);
+    const before_serial_0 = io.readSerialControl(0);
+    const before_serial_1 = io.readSerialControl(1);
+    const before_serial_2 = io.readSerialControl(2);
+
+    for ([_]u32{ 0x00, 0x01, 0x10, 0x11, 0x16, 0x17, 0x1C, 0x1D }) |address| {
+        writeRegisterByte(&io, address, 0xA5);
+    }
+
+    try std.testing.expectEqual(before_data_2, io.read(0x07));
+    try std.testing.expectEqual(before_tx_0, io.readTxData(0));
+    try std.testing.expectEqual(before_tx_1, io.readTxData(1));
+    try std.testing.expectEqual(before_tx_2, io.readTxData(2));
+    try std.testing.expectEqual(before_serial_0, io.readSerialControl(0));
+    try std.testing.expectEqual(before_serial_1, io.readSerialControl(1));
+    try std.testing.expectEqual(before_serial_2, io.readSerialControl(2));
 }

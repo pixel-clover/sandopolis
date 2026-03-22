@@ -296,6 +296,28 @@ pub fn build(b: *std.Build) void {
     const compare_ym_step = b.step("compare-ym", "Compare raw YM output against external/Nuked-OPN2");
     compare_ym_step.dependOn(&compare_ym_run.step);
 
+    const dump_audio = b.addExecutable(.{
+        .name = "dump-audio",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dump_audio.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(dump_audio, b, cpu_deps);
+    dump_audio.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    dump_audio.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    dump_audio.linkLibC();
+    const dump_audio_run = b.addRunArtifact(dump_audio);
+    if (b.args) |args| {
+        dump_audio_run.addArgs(args);
+    }
+    const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or Genesis Plus GX");
+    dump_audio_step.dependOn(&dump_audio_run.step);
+
     const docs_module = b.createModule(.{
         .root_source_file = b.path("src/api.zig"),
         .target = target,
