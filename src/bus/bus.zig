@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const Cartridge = @import("cartridge.zig").Cartridge;
 const cpu_memory = @import("cpu_memory.zig");
+const m68k_sound_write_trace = @import("m68k_sound_write_trace.zig");
 const bus_save_state = @import("save_state.zig");
 const z80_timing = @import("z80_timing.zig");
 const z80_host_bridge = @import("z80_host_bridge.zig");
@@ -17,6 +18,10 @@ const cpu_runtime = @import("../cpu/runtime_state.zig");
 const SchedulerBus = @import("../scheduler/runtime.zig").SchedulerBus;
 
 pub const Bus = struct {
+    pub const M68kSoundWriteTraceEntry = m68k_sound_write_trace.Entry;
+    pub const M68kSoundWriteTraceKind = m68k_sound_write_trace.Kind;
+    pub const M68kSoundWriteTraceOutcome = m68k_sound_write_trace.Outcome;
+
     rom: []u8,
     cartridge: Cartridge,
     ram: [64 * 1024]u8,
@@ -30,6 +35,7 @@ pub const Bus = struct {
     tmss_register: [4]u8,
     tmss_locked: bool,
     cpu_runtime_state: cpu_runtime.RuntimeState,
+    m68k_sound_write_trace: m68k_sound_write_trace.Trace,
     active_execution_counters: ?*CoreFrameCounters,
 
     const Z80ControlLines = struct {
@@ -56,6 +62,7 @@ pub const Bus = struct {
             .tmss_register = .{ 0, 0, 0, 0 },
             .tmss_locked = false,
             .cpu_runtime_state = .{},
+            .m68k_sound_write_trace = .{},
             .active_execution_counters = null,
         };
         return bus;
@@ -145,6 +152,7 @@ pub const Bus = struct {
             &self.cpu_runtime_state,
             &self.tmss_register,
             &self.tmss_locked,
+            &self.m68k_sound_write_trace,
             self,
             ensureZ80HostWindowCallback,
         );
@@ -322,6 +330,7 @@ pub const Bus = struct {
             .tmss_register = self.tmss_register,
             .tmss_locked = self.tmss_locked,
             .cpu_runtime_state = .{},
+            .m68k_sound_write_trace = self.m68k_sound_write_trace,
             .active_execution_counters = null,
         };
     }
@@ -363,6 +372,7 @@ pub const Bus = struct {
         self.tmss_register = .{ 'S', 'E', 'G', 'A' };
         self.tmss_locked = false;
         self.cpu_runtime_state = .{};
+        self.m68k_sound_write_trace.clear();
         self.ensureZ80HostWindow();
     }
 
@@ -376,6 +386,7 @@ pub const Bus = struct {
         self.tmss_register = .{ 'S', 'E', 'G', 'A' };
         self.tmss_locked = false;
         self.cpu_runtime_state = .{};
+        self.m68k_sound_write_trace.clear();
         self.ensureZ80HostWindow();
     }
 
@@ -445,6 +456,22 @@ pub const Bus = struct {
     pub fn clearCpuRuntimeState(self: *Bus) void {
         var memory = self.cpuMemoryView();
         memory.clearCpuRuntimeState();
+    }
+
+    pub fn setM68kSoundWriteTraceEnabled(self: *Bus, enabled: bool) void {
+        self.m68k_sound_write_trace.setEnabled(enabled);
+    }
+
+    pub fn clearM68kSoundWriteTrace(self: *Bus) void {
+        self.m68k_sound_write_trace.clear();
+    }
+
+    pub fn m68kSoundWriteTraceEntries(self: *const Bus) []const M68kSoundWriteTraceEntry {
+        return self.m68k_sound_write_trace.entriesSlice();
+    }
+
+    pub fn m68kSoundWriteTraceDroppedCount(self: *const Bus) u32 {
+        return self.m68k_sound_write_trace.dropped;
     }
 
     pub fn pendingM68kWaitMasterCycles(self: *const Bus) u32 {

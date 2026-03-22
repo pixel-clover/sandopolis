@@ -141,6 +141,26 @@ pub const Machine = struct {
         pub fn setPendingM68kWaitMasterCycles(self: *TestingView, master_cycles: u32) void {
             self.machine.bus.setPendingM68kWaitMasterCycles(master_cycles);
         }
+
+        pub fn setM68kInstructionTraceEnabled(self: *TestingView, enabled: bool) void {
+            self.machine.cpu.setInstructionTraceEnabled(enabled);
+        }
+
+        pub fn setM68kInstructionTraceStopOnFault(self: *TestingView, stop_on_fault: bool) void {
+            self.machine.cpu.setInstructionTraceStopOnFault(stop_on_fault);
+        }
+
+        pub fn clearM68kInstructionTrace(self: *TestingView) void {
+            self.machine.cpu.clearInstructionTrace();
+        }
+
+        pub fn setM68kSoundWriteTraceEnabled(self: *TestingView, enabled: bool) void {
+            self.machine.bus.setM68kSoundWriteTraceEnabled(enabled);
+        }
+
+        pub fn clearM68kSoundWriteTrace(self: *TestingView) void {
+            self.machine.bus.clearM68kSoundWriteTrace();
+        }
     };
 
     pub const TestingConstView = struct {
@@ -213,6 +233,22 @@ pub const Machine = struct {
 
         pub fn cpuDebtMasterCycles(self: *const TestingConstView) u32 {
             return self.machine.m68k_sync.debt_master_cycles;
+        }
+
+        pub fn m68kInstructionTraceEntries(self: *const TestingConstView) []const Cpu.M68kInstructionTraceEntry {
+            return self.machine.cpu.instructionTraceEntries();
+        }
+
+        pub fn m68kInstructionTraceDroppedCount(self: *const TestingConstView) u32 {
+            return self.machine.cpu.instructionTraceDroppedCount();
+        }
+
+        pub fn m68kSoundWriteTraceEntries(self: *const TestingConstView) []const Bus.M68kSoundWriteTraceEntry {
+            return self.machine.bus.m68kSoundWriteTraceEntries();
+        }
+
+        pub fn m68kSoundWriteTraceDroppedCount(self: *const TestingConstView) u32 {
+            return self.machine.bus.m68kSoundWriteTraceDroppedCount();
         }
     };
 

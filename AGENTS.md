@@ -116,6 +116,21 @@ Additional validation when relevant:
 - `zig build run -- <path-to-rom>` for frontend/manual runtime checks.
 - `zig build compare-ym -- [scenario]` when touching YM2612 synthesis and the Nuked submodule is available.
 
+Audio investigation workflow:
+
+- Prefer `-Doptimize=ReleaseSafe` for ROM-backed audio investigation unless you specifically need `Debug`.
+- Start cross-emulator FM investigation with `zig build trace-ym-writes -- ...` to compare Sandopolis and Genesis Plus GX YM register streams.
+- If ROM-backed YM output diverges but the raw YM core already matches reference scenarios, use `zig build trace-z80-audio-ops -- ...` to inspect the
+  executed Z80 audio-mapped write order before changing `ym2612.zig`.
+
+Optimize mode guidance:
+
+- Do not use the default `Debug` build for normal game execution or long ROM/audio comparisons unless you specifically need debug assertions or
+  traces.
+- Prefer `-Doptimize=ReleaseSafe` for most emulator investigation work: it is much faster than `Debug` while keeping safety checks enabled.
+- Prefer `-Doptimize=ReleaseFast` for long gameplay runs, performance-sensitive audio capture, and other throughput-heavy manual checks.
+- Keep `Debug` for narrow tracing, stepping, and assertion-heavy debugging where runtime speed is not important.
+
 ## Testing Expectations
 
 - No emulation behavior change is complete without tests.

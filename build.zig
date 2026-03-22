@@ -318,6 +318,85 @@ pub fn build(b: *std.Build) void {
     const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or Genesis Plus GX");
     dump_audio_step.dependOn(&dump_audio_run.step);
 
+    const trace_sound_boot = b.addExecutable(.{
+        .name = "trace-sound-boot",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_sound_boot.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_sound_boot, b, cpu_deps);
+    const trace_sound_boot_run = b.addRunArtifact(trace_sound_boot);
+    if (b.args) |args| {
+        trace_sound_boot_run.addArgs(args);
+    }
+    const trace_sound_boot_step = b.step("trace-sound-boot", "Trace M68K writes to the sound CPU bring-up regions");
+    trace_sound_boot_step.dependOn(&trace_sound_boot_run.step);
+
+    const trace_m68k_failure = b.addExecutable(.{
+        .name = "trace-m68k-failure",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_m68k_failure.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_m68k_failure, b, cpu_deps);
+    const trace_m68k_failure_run = b.addRunArtifact(trace_m68k_failure);
+    if (b.args) |args| {
+        trace_m68k_failure_run.addArgs(args);
+    }
+    const trace_m68k_failure_step = b.step("trace-m68k-failure", "Trace the last M68K instructions before a bad CPU state");
+    trace_m68k_failure_step.dependOn(&trace_m68k_failure_run.step);
+
+    const trace_ym_writes = b.addExecutable(.{
+        .name = "trace-ym-writes",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_ym_writes.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_ym_writes, b, cpu_deps);
+    trace_ym_writes.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    trace_ym_writes.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    trace_ym_writes.linkLibC();
+    const trace_ym_writes_run = b.addRunArtifact(trace_ym_writes);
+    if (b.args) |args| {
+        trace_ym_writes_run.addArgs(args);
+    }
+    const trace_ym_writes_step = b.step("trace-ym-writes", "Dump decoded YM register writes from Sandopolis or Genesis Plus GX");
+    trace_ym_writes_step.dependOn(&trace_ym_writes_run.step);
+
+    const trace_z80_audio_ops = b.addExecutable(.{
+        .name = "trace-z80-audio-ops",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_z80_audio_ops.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_z80_audio_ops, b, cpu_deps);
+    const trace_z80_audio_ops_run = b.addRunArtifact(trace_z80_audio_ops);
+    if (b.args) |args| {
+        trace_z80_audio_ops_run.addArgs(args);
+    }
+    const trace_z80_audio_ops_step = b.step("trace-z80-audio-ops", "Dump raw Z80 audio-mapped writes from Sandopolis");
+    trace_z80_audio_ops_step.dependOn(&trace_z80_audio_ops_run.step);
+
     const docs_module = b.createModule(.{
         .root_source_file = b.path("src/api.zig"),
         .target = target,
@@ -336,7 +415,7 @@ pub fn build(b: *std.Build) void {
     const docs_step = b.step("docs", "Generate API documentation");
     docs_step.dependOn(&install_docs.step);
 
-    const test_step_all = b.step("test", "Run unit, frontend, integration, regression, and property tests");
+    const test_step_all = b.step("test", "Run unit, frontend, integration, regression, and property-based tests");
     test_step_all.dependOn(&unit_run.step);
     test_step_all.dependOn(&frontend_run.step);
     test_step_all.dependOn(&integration_run.step);

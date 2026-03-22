@@ -1,14 +1,15 @@
 const std = @import("std");
 const testing = @import("sandopolis_testing");
 const AudioOutput = testing.AudioOutput;
-const WavRecorder = testing.WavRecorder;
+const YmDacSampleEvent = testing.YmDacSampleEvent;
+const YmWriteEvent = testing.YmWriteEvent;
 
 const c = @cImport({
     @cInclude("libretro.h");
 });
 
 const default_gpgx_core_path = "tmp/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
-const default_frames: usize = 600;
+const default_frames: usize = 120;
 
 const Backend = enum {
     sandopolis,
@@ -21,37 +22,21 @@ const Backend = enum {
     }
 };
 
-const CaptureMode = enum {
-    normal,
-    ym_only,
-    psg_only,
-    unfiltered_mix,
-
-    fn parse(value: []const u8) error{InvalidMode}!CaptureMode {
-        if (std.mem.eql(u8, value, "normal")) return .normal;
-        if (std.mem.eql(u8, value, "ym-only") or std.mem.eql(u8, value, "ym_only")) return .ym_only;
-        if (std.mem.eql(u8, value, "psg-only") or std.mem.eql(u8, value, "psg_only")) return .psg_only;
-        if (std.mem.eql(u8, value, "unfiltered-mix") or std.mem.eql(u8, value, "unfiltered_mix")) return .unfiltered_mix;
-        return error.InvalidMode;
-    }
-};
-
 const Config = struct {
     backend: Backend,
     rom_path: []const u8,
     out_path: []const u8,
     frames: usize = default_frames,
     skip_frames: usize = 0,
-    mode: CaptureMode = .normal,
     gpgx_core_path: []const u8 = default_gpgx_core_path,
 };
 
-const WavSink = struct {
-    recorder: *WavRecorder,
-
-    pub fn consumeSamples(self: *WavSink, samples: []const i16) !void {
-        try self.recorder.addSamples(samples);
-    }
+const GpgxYmTraceEvent = extern struct {
+    cycles: c_uint,
+    sequence: c_uint,
+    port: u8,
+    reg: u8,
+    value: u8,
 };
 
 const GpgxApi = struct {
@@ -64,10 +49,12 @@ const GpgxApi = struct {
     retro_set_input_state: *const fn (c.retro_input_state_t) callconv(.c) void,
     retro_init: *const fn () callconv(.c) void,
     retro_deinit: *const fn () callconv(.c) void,
-    retro_get_system_av_info: *const fn (*c.struct_retro_system_av_info) callconv(.c) void,
     retro_load_game: *const fn (?*const c.struct_retro_game_info) callconv(.c) bool,
     retro_unload_game: *const fn () callconv(.c) void,
     retro_run: *const fn () callconv(.c) void,
+    sandopolis_trace_ym_reset: *const fn () callconv(.c) void,
+    sandopolis_trace_ym_set_enabled: *const fn (c_uint) callconv(.c) void,
+    sandopolis_trace_ym_take: *const fn ([*]GpgxYmTraceEvent, c_uint) callconv(.c) c_uint,
 
     fn open(path: []const u8) !GpgxApi {
         var lib = try std.DynLib.open(path);
@@ -83,10 +70,12 @@ const GpgxApi = struct {
             .retro_set_input_state = try lookup(&lib, *const fn (c.retro_input_state_t) callconv(.c) void, "retro_set_input_state"),
             .retro_init = try lookup(&lib, *const fn () callconv(.c) void, "retro_init"),
             .retro_deinit = try lookup(&lib, *const fn () callconv(.c) void, "retro_deinit"),
-            .retro_get_system_av_info = try lookup(&lib, *const fn (*c.struct_retro_system_av_info) callconv(.c) void, "retro_get_system_av_info"),
             .retro_load_game = try lookup(&lib, *const fn (?*const c.struct_retro_game_info) callconv(.c) bool, "retro_load_game"),
             .retro_unload_game = try lookup(&lib, *const fn () callconv(.c) void, "retro_unload_game"),
             .retro_run = try lookup(&lib, *const fn () callconv(.c) void, "retro_run"),
+            .sandopolis_trace_ym_reset = try lookup(&lib, *const fn () callconv(.c) void, "sandopolis_trace_ym_reset"),
+            .sandopolis_trace_ym_set_enabled = try lookup(&lib, *const fn (c_uint) callconv(.c) void, "sandopolis_trace_ym_set_enabled"),
+            .sandopolis_trace_ym_take = try lookup(&lib, *const fn ([*]GpgxYmTraceEvent, c_uint) callconv(.c) c_uint, "sandopolis_trace_ym_take"),
         };
     }
 
@@ -95,45 +84,28 @@ const GpgxApi = struct {
     }
 };
 
-fn lookup(lib: *std.DynLib, comptime T: type, symbol_name: [:0]const u8) !T {
-    return lib.lookup(T, symbol_name) orelse error.MissingSymbol;
-}
-
 const GpgxFrontend = struct {
-    recorder: ?*WavRecorder = null,
     system_dir_z: [:0]const u8,
     save_dir_z: [:0]const u8,
-    mode: CaptureMode,
-    write_failed: bool = false,
+};
+
+const StreamSummary = struct {
+    events: usize = 0,
+    stream_hash: u64 = 0xcbf29ce484222325,
 };
 
 var active_gpgx_frontend: ?*GpgxFrontend = null;
 
-fn gpgxVariableValue(frontend: *const GpgxFrontend, key: []const u8) ?[*:0]const u8 {
-    if (std.mem.eql(u8, key, "genesis_plus_gx_ym2612")) {
-        return "nuked (ym2612)";
-    }
-    if (std.mem.eql(u8, key, "genesis_plus_gx_sound_output")) {
-        return "stereo";
-    }
-    if (std.mem.eql(u8, key, "genesis_plus_gx_audio_filter")) {
-        return switch (frontend.mode) {
-            .unfiltered_mix => "disabled",
-            .normal, .ym_only, .psg_only => "low-pass",
-        };
-    }
-    if (std.mem.eql(u8, key, "genesis_plus_gx_psg_preamp")) {
-        return switch (frontend.mode) {
-            .normal, .psg_only => "150",
-            .ym_only, .unfiltered_mix => "0",
-        };
-    }
-    if (std.mem.eql(u8, key, "genesis_plus_gx_fm_preamp")) {
-        return switch (frontend.mode) {
-            .normal, .ym_only, .unfiltered_mix => "100",
-            .psg_only => "0",
-        };
-    }
+fn lookup(lib: *std.DynLib, comptime T: type, symbol_name: [:0]const u8) !T {
+    return lib.lookup(T, symbol_name) orelse error.MissingSymbol;
+}
+
+fn gpgxVariableValue(key: []const u8) ?[*:0]const u8 {
+    if (std.mem.eql(u8, key, "genesis_plus_gx_ym2612")) return "nuked (ym2612)";
+    if (std.mem.eql(u8, key, "genesis_plus_gx_sound_output")) return "stereo";
+    if (std.mem.eql(u8, key, "genesis_plus_gx_audio_filter")) return "disabled";
+    if (std.mem.eql(u8, key, "genesis_plus_gx_psg_preamp")) return "0";
+    if (std.mem.eql(u8, key, "genesis_plus_gx_fm_preamp")) return "100";
     return null;
 }
 
@@ -169,7 +141,7 @@ fn gpgxEnvironmentCallback(cmd: c_uint, data: ?*anyopaque) callconv(.c) bool {
             const variable: *c.struct_retro_variable = @ptrCast(@alignCast(data.?));
             if (variable.key == null) return false;
             const key = std.mem.span(variable.key);
-            variable.value = gpgxVariableValue(frontend, key);
+            variable.value = gpgxVariableValue(key);
             return variable.value != null;
         },
         c.RETRO_ENVIRONMENT_GET_GAME_INFO_EXT,
@@ -182,24 +154,11 @@ fn gpgxEnvironmentCallback(cmd: c_uint, data: ?*anyopaque) callconv(.c) bool {
 }
 
 fn gpgxVideoRefreshCallback(_: ?*const anyopaque, _: c_uint, _: c_uint, _: usize) callconv(.c) void {}
-
 fn gpgxAudioSampleCallback(_: i16, _: i16) callconv(.c) void {}
-
-fn gpgxAudioBatchCallback(data: [*c]const i16, frames: usize) callconv(.c) usize {
-    if (active_gpgx_frontend) |frontend| {
-        if (frontend.recorder) |recorder| {
-            const sample_ptr: [*]const i16 = @ptrCast(data);
-            const samples = sample_ptr[0 .. frames * AudioOutput.channels];
-            recorder.addSamples(samples) catch {
-                frontend.write_failed = true;
-            };
-        }
-    }
+fn gpgxAudioBatchCallback(_: [*c]const i16, frames: usize) callconv(.c) usize {
     return frames;
 }
-
 fn gpgxInputPollCallback() callconv(.c) void {}
-
 fn gpgxInputStateCallback(_: c_uint, _: c_uint, _: c_uint, _: c_uint) callconv(.c) i16 {
     return 0;
 }
@@ -214,10 +173,22 @@ pub fn main() !void {
     defer allocator.free(config.out_path);
     defer allocator.free(config.gpgx_core_path);
 
-    switch (config.backend) {
-        .sandopolis => try dumpSandopolis(allocator, config),
-        .gpgx => try dumpGpgx(allocator, config),
-    }
+    const summary = switch (config.backend) {
+        .sandopolis => try traceSandopolis(allocator, config),
+        .gpgx => try traceGpgx(allocator, config),
+    };
+
+    std.debug.print(
+        "{s}: traced {d} YM writes to {s} over {d} frames after skipping {d}; stream_hash=0x{X:0>16}\n",
+        .{
+            @tagName(config.backend),
+            summary.events,
+            config.out_path,
+            config.frames,
+            config.skip_frames,
+            summary.stream_hash,
+        },
+    );
 }
 
 fn parseArgs(allocator: std.mem.Allocator) !Config {
@@ -231,29 +202,32 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
     const maybe_frames_arg = args.next();
     var frames = default_frames;
     var skip_frames: usize = 0;
-    var mode: CaptureMode = .normal;
+    var gpgx_core_path = try allocator.dupe(u8, default_gpgx_core_path);
+    errdefer allocator.free(gpgx_core_path);
 
     if (maybe_frames_arg) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) {
             frames = try std.fmt.parseInt(usize, arg, 10);
-        } else if (std.mem.eql(u8, arg, "--mode")) {
-            const mode_arg = args.next() orelse return usageError();
-            mode = try CaptureMode.parse(mode_arg);
         } else if (std.mem.eql(u8, arg, "--skip")) {
             const skip_arg = args.next() orelse return usageError();
             skip_frames = try std.fmt.parseInt(usize, skip_arg, 10);
+        } else if (std.mem.eql(u8, arg, "--gpgx-core")) {
+            allocator.free(gpgx_core_path);
+            const path_arg = args.next() orelse return usageError();
+            gpgx_core_path = try allocator.dupe(u8, path_arg);
         } else {
             return usageError();
         }
     }
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--mode")) {
-            const mode_arg = args.next() orelse return usageError();
-            mode = try CaptureMode.parse(mode_arg);
-        } else if (std.mem.eql(u8, arg, "--skip")) {
+        if (std.mem.eql(u8, arg, "--skip")) {
             const skip_arg = args.next() orelse return usageError();
             skip_frames = try std.fmt.parseInt(usize, skip_arg, 10);
+        } else if (std.mem.eql(u8, arg, "--gpgx-core")) {
+            allocator.free(gpgx_core_path);
+            const path_arg = args.next() orelse return usageError();
+            gpgx_core_path = try allocator.dupe(u8, path_arg);
         } else {
             return usageError();
         }
@@ -265,83 +239,138 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
         .out_path = try allocator.dupe(u8, out_arg),
         .frames = frames,
         .skip_frames = skip_frames,
-        .mode = mode,
-        .gpgx_core_path = try allocator.dupe(u8, default_gpgx_core_path),
+        .gpgx_core_path = gpgx_core_path,
     };
 }
 
 fn usageError() error{InvalidArgs} {
     std.debug.print(
-        "Usage: zig build dump-audio -- <sandopolis|gpgx> <rom-path> <wav-path> [frames] [--skip frames] [--mode normal|ym-only|psg-only|unfiltered-mix]\n",
+        "Usage: zig build trace-ym-writes -- <sandopolis|gpgx> <rom-path> <out-path> [frames] [--skip frames] [--gpgx-core path]\n",
         .{},
     );
     return error.InvalidArgs;
 }
 
-fn dumpSandopolis(allocator: std.mem.Allocator, config: Config) !void {
+fn updateStreamHash(summary: *StreamSummary, port: u8, reg: u8, value: u8) void {
+    summary.stream_hash ^= port;
+    summary.stream_hash *%= 0x100000001b3;
+    summary.stream_hash ^= reg;
+    summary.stream_hash *%= 0x100000001b3;
+    summary.stream_hash ^= value;
+    summary.stream_hash *%= 0x100000001b3;
+}
+
+fn traceSandopolis(allocator: std.mem.Allocator, config: Config) !StreamSummary {
     var emulator = try testing.Emulator.init(allocator, config.rom_path);
     defer emulator.deinit(allocator);
 
     var output = AudioOutput.init();
-    output.setRenderMode(switch (config.mode) {
-        .normal => .normal,
-        .ym_only => .ym_only,
-        .psg_only => .psg_only,
-        .unfiltered_mix => .unfiltered_mix,
-    });
-    var recorder = try WavRecorder.start(config.out_path, AudioOutput.output_rate, AudioOutput.channels);
-    var sink = WavSink{ .recorder = &recorder };
-    defer recorder.finish();
-    var total_ym_writes: u64 = 0;
-    var total_ym_dac_samples: u64 = 0;
-    var total_psg_commands: u64 = 0;
+    var file = try std.fs.cwd().createFile(config.out_path, .{ .truncate = true });
+    defer file.close();
+    var buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(&buffer);
+    const writer = &file_writer.interface;
+
+    try writer.print("frame\tmaster_offset\tsequence\tport\treg\tvalue\n", .{});
 
     for (0..config.skip_frames) |_| {
         emulator.runFrame();
-        total_ym_writes += emulator.pendingYmWriteCount();
-        total_ym_dac_samples += emulator.pendingYmDacCount();
-        total_psg_commands += emulator.pendingPsgCommandCount();
+        try drainSandopolisYmEvents(allocator, &emulator, null, null, null);
         try emulator.discardPendingAudioWithOutput(&output);
     }
 
-    for (0..config.frames) |_| {
+    var summary = StreamSummary{};
+    for (0..config.frames) |frame_index| {
         emulator.runFrame();
-        total_ym_writes += emulator.pendingYmWriteCount();
-        total_ym_dac_samples += emulator.pendingYmDacCount();
-        total_psg_commands += emulator.pendingPsgCommandCount();
-        try emulator.renderPendingAudio(&output, &sink);
+        try drainSandopolisYmEvents(allocator, &emulator, writer, &summary, frame_index);
+        try emulator.discardPendingAudioWithOutput(&output);
     }
-    const overflow_count = emulator.takeAudioOverflowCounts();
 
-    std.debug.print(
-        "sandopolis: wrote {d} frames to {s} ({d:.2}s) | ym_writes={d} ym_dac={d} psg_cmds={d} overflows={d} z80_pc=0x{X:0>4} busack=0x{X:0>4} reset=0x{X:0>4} ym_key=0x{X:0>2} dac_en=0x{X:0>2} iff1={d} im={d} halt={d}\n",
-        .{
-            recorder.sample_count,
-            config.out_path,
-            recorder.getDurationSeconds(),
-            total_ym_writes,
-            total_ym_dac_samples,
-            total_psg_commands,
-            overflow_count,
-            emulator.z80ProgramCounter(),
-            emulator.z80BusAckWord(),
-            emulator.z80ResetControlWord(),
-            emulator.ymKeyMask(),
-            emulator.ymRegister(0, 0x2B),
-            emulator.z80Iff1(),
-            emulator.z80InterruptMode(),
-            emulator.z80Halted(),
-        },
-    );
-    // Dump Z80 state details
-    std.debug.print("z80 bank=0x{X:0>3} comm[0x1FF0-0x2000]: ", .{emulator.z80Bank()});
-    for (0x1FF0..0x2000) |addr| {
-        std.debug.print("{X:0>2} ", .{emulator.z80ReadByte(@intCast(addr))});
-    }
-    std.debug.print("\n", .{});
+    try writer.flush();
+    return summary;
 }
 
-fn dumpGpgx(allocator: std.mem.Allocator, config: Config) !void {
+fn sandopolisEventOrderLessThan(a_master_offset: u32, a_sequence: u32, b_master_offset: u32, b_sequence: u32) bool {
+    if (a_master_offset != b_master_offset) return a_master_offset < b_master_offset;
+    return a_sequence < b_sequence;
+}
+
+fn drainSandopolisYmEvents(
+    allocator: std.mem.Allocator,
+    emulator: *testing.Emulator,
+    writer: ?*std.Io.Writer,
+    summary: ?*StreamSummary,
+    frame_index: ?usize,
+) !void {
+    const write_count = emulator.pendingYmWriteCount();
+    const dac_count = emulator.pendingYmDacCount();
+
+    const writes = try allocator.alloc(YmWriteEvent, write_count);
+    defer allocator.free(writes);
+    const dac_samples = try allocator.alloc(YmDacSampleEvent, dac_count);
+    defer allocator.free(dac_samples);
+
+    const actual_write_count = emulator.takeYmWrites(writes);
+    const actual_dac_count = emulator.takeYmDacSamples(dac_samples);
+
+    var write_index: usize = 0;
+    var dac_index: usize = 0;
+    while (write_index < actual_write_count or dac_index < actual_dac_count) {
+        const use_write = if (write_index >= actual_write_count)
+            false
+        else if (dac_index >= actual_dac_count)
+            true
+        else
+            sandopolisEventOrderLessThan(
+                writes[write_index].master_offset,
+                writes[write_index].sequence,
+                dac_samples[dac_index].master_offset,
+                dac_samples[dac_index].sequence,
+            );
+
+        if (use_write) {
+            const event = writes[write_index];
+            if (writer) |out| {
+                try out.print(
+                    "{d}\t{d}\t{d}\t{d}\t0x{X:0>2}\t0x{X:0>2}\n",
+                    .{
+                        frame_index.?,
+                        event.master_offset,
+                        event.sequence,
+                        event.port,
+                        event.reg,
+                        event.value,
+                    },
+                );
+            }
+            if (summary) |state| {
+                state.events += 1;
+                updateStreamHash(state, event.port, event.reg, event.value);
+            }
+            write_index += 1;
+        } else {
+            const event = dac_samples[dac_index];
+            if (writer) |out| {
+                try out.print(
+                    "{d}\t{d}\t{d}\t0\t0x2A\t0x{X:0>2}\n",
+                    .{
+                        frame_index.?,
+                        event.master_offset,
+                        event.sequence,
+                        event.value,
+                    },
+                );
+            }
+            if (summary) |state| {
+                state.events += 1;
+                updateStreamHash(state, 0, 0x2A, event.value);
+            }
+            dac_index += 1;
+        }
+    }
+}
+
+fn traceGpgx(allocator: std.mem.Allocator, config: Config) !StreamSummary {
     var api = try GpgxApi.open(config.gpgx_core_path);
     defer api.close();
 
@@ -355,7 +384,6 @@ fn dumpGpgx(allocator: std.mem.Allocator, config: Config) !void {
     var frontend = GpgxFrontend{
         .system_dir_z = cwd_z,
         .save_dir_z = cwd_z,
-        .mode = config.mode,
     };
     active_gpgx_frontend = &frontend;
     defer active_gpgx_frontend = null;
@@ -379,33 +407,48 @@ fn dumpGpgx(allocator: std.mem.Allocator, config: Config) !void {
     if (!api.retro_load_game(&game_info)) return error.RetroLoadGameFailed;
     defer api.retro_unload_game();
 
-    var av_info: c.struct_retro_system_av_info = undefined;
-    api.retro_get_system_av_info(&av_info);
-
-    var recorder = try WavRecorder.start(
-        config.out_path,
-        @intFromFloat(@round(av_info.timing.sample_rate)),
-        AudioOutput.channels,
-    );
-    defer recorder.finish();
+    api.sandopolis_trace_ym_set_enabled(0);
+    api.sandopolis_trace_ym_reset();
 
     for (0..config.skip_frames) |_| {
         api.retro_run();
     }
 
-    frontend.recorder = &recorder;
+    api.sandopolis_trace_ym_reset();
+    api.sandopolis_trace_ym_set_enabled(1);
     for (0..config.frames) |_| {
         api.retro_run();
-        if (frontend.write_failed) return error.WavWriteFailed;
+    }
+    api.sandopolis_trace_ym_set_enabled(0);
+
+    var file = try std.fs.cwd().createFile(config.out_path, .{ .truncate = true });
+    defer file.close();
+    var buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(&buffer);
+    const writer = &file_writer.interface;
+    try writer.print("cycles\tsequence\tport\treg\tvalue\n", .{});
+
+    var summary = StreamSummary{};
+    var events: [512]GpgxYmTraceEvent = undefined;
+    while (true) {
+        const count = api.sandopolis_trace_ym_take(events[0..].ptr, events.len);
+        if (count == 0) break;
+        for (events[0..count]) |event| {
+            try writer.print(
+                "{d}\t{d}\t{d}\t0x{X:0>2}\t0x{X:0>2}\n",
+                .{
+                    event.cycles,
+                    event.sequence,
+                    event.port,
+                    event.reg,
+                    event.value,
+                },
+            );
+            summary.events += 1;
+            updateStreamHash(&summary, event.port, event.reg, event.value);
+        }
     }
 
-    std.debug.print(
-        "gpgx: wrote {d} frames to {s} ({d:.2}s @ {d} Hz)\n",
-        .{
-            recorder.sample_count,
-            config.out_path,
-            recorder.getDurationSeconds(),
-            recorder.sample_rate,
-        },
-    );
+    try writer.flush();
+    return summary;
 }

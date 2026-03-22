@@ -760,6 +760,7 @@ fn z80WindowBlockedWriteProperty(input: Z80WindowWriteCase) !void {
 
     const address = 0x00A0_0000 + @as(u32, input.offset);
 
+    emulator.write16(0x00A1_1200, 0x0100);
     emulator.write16(0x00A1_1100, 0x0100);
     emulator.write8(address, input.granted_value);
     try testing.expectEqual(input.granted_value, emulator.read8(address));

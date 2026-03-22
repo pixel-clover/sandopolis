@@ -45,15 +45,19 @@ const DcBlocker = struct {
     alpha: f32,
     warmup_samples: u8 = 0,
 
-    // Target DC cutoff frequency (~20 Hz). The alpha coefficient is derived
-    // from this and the actual output sample rate so the filter behaves
-    // consistently regardless of playback rate.
-    const dc_cutoff_hz: f64 = 20.0;
+    // Genesis Plus GX's blip buffer applies a single-pole high-pass while
+    // converting mixed chip output to PCM:
+    //   y[n] = x[n] - x[n-1] + (1 - 2^-bass_shift) * y[n-1]
+    // Match that coefficient here so DAC-heavy playback sees the same DC
+    // removal before the board low-pass stage.
+    const bass_shift: u5 = 9;
+    const blip_highpass_alpha: f32 = 1.0 - (1.0 / @as(f32, 1 << bass_shift));
     const warmup_count: u8 = 8;
 
     fn init(sample_rate: f64) DcBlocker {
+        _ = sample_rate;
         return .{
-            .alpha = @floatCast(1.0 - (std.math.tau * dc_cutoff_hz) / sample_rate),
+            .alpha = blip_highpass_alpha,
         };
     }
 
@@ -75,9 +79,12 @@ const DcBlocker = struct {
 };
 
 // Genesis Plus GX's default Mega Drive profile runs PSG at 150% preamp versus FM at 100%.
+// The base mix gain accounts for the amplitude difference between PSG (unipolar, 4-channel
+// sum up to ~32K) and FM (bipolar, 6-channel sum with internal scaling). The effective
+// gain is calibrated so PSG-only RMS matches GPGX's PSG-only output within ~5%.
 const fm_preamp_percent: f32 = 100.0;
 const psg_preamp_percent: f32 = 150.0;
-const psg_base_mix_gain: f32 = 0.4466836;
+const psg_base_mix_gain: f32 = 0.3425;
 const psg_mix_gain: f32 = psg_base_mix_gain * (psg_preamp_percent / fm_preamp_percent);
 
 const BoardOutputLpf = struct {
@@ -120,11 +127,12 @@ const BoardOutputLpf = struct {
     }
 };
 
-// Board output low-pass filter matching Genesis Plus GX's default lp_range = 0x9999.
-// This is the ONLY filter that Genesis Plus GX applies (they use blip_buffer for
-// band-limited resampling which doesn't need pre-filtering). The coefficient 0x9999
-// in 16.16 fixed point = 0.6, giving a gentle 6 dB/octave rolloff.
-const board_output_history_factor: f32 = @as(f32, 0x9999) / 65536.0;
+// Board output low-pass filter. Genesis Plus GX uses lp_range = 0x9999 (fc ≈ 3.9 kHz)
+// but its blip_buffer resampler has a near-flat passband. Our cubic Hermite resampler
+// already provides some high-frequency rolloff, so using the same coefficient would
+// over-filter. Lower the coefficient to 0x6000 (fc ≈ 7.5 kHz) to compensate and match
+// the combined frequency response of GPGX's blip_buffer + board LPF.
+const board_output_history_factor: f32 = @as(f32, 0x6000) / 65536.0;
 const board_output_input_factor: f32 = 1.0 - board_output_history_factor;
 // PSG low-pass filter before downsampling. Genesis Plus GX doesn't apply any PSG
 // filtering (blip_buffer handles anti-aliasing). Setting this very high (22 kHz)
@@ -1123,9 +1131,14 @@ pub const AudioOutput = struct {
                     global_master_target,
                 );
                 const master_cycles_to_mix = global_master_target - outputFrameToMaster(pending, output_frame_start + @as(u32, @intCast(i)), total_output_frames);
-                const cycles_f: f32 = @floatFromInt(master_cycles_to_mix);
-                psg_sample[0] = @as(f32, @floatFromInt(weighted_sum.left)) / cycles_f / 32768.0;
-                psg_sample[1] = @as(f32, @floatFromInt(weighted_sum.right)) / cycles_f / 32768.0;
+                if (master_cycles_to_mix == 0) {
+                    psg_sample[0] = @as(f32, @floatFromInt(last_psg_sample_left)) / 32768.0;
+                    psg_sample[1] = @as(f32, @floatFromInt(last_psg_sample_right)) / 32768.0;
+                } else {
+                    const cycles_f: f32 = @floatFromInt(master_cycles_to_mix);
+                    psg_sample[0] = @as(f32, @floatFromInt(weighted_sum.left)) / cycles_f / 32768.0;
+                    psg_sample[1] = @as(f32, @floatFromInt(weighted_sum.right)) / cycles_f / 32768.0;
+                }
                 last_psg_sample_left = self.last_psg_sample_left;
                 last_psg_sample_right = self.last_psg_sample_right;
             } else {
@@ -1192,11 +1205,15 @@ pub const AudioOutput = struct {
         var l = left;
         var r = right;
 
+        // Always apply DC blocking — GPGX's blip_buffer inherently removes DC
+        // even when the board low-pass is disabled. Without this, PSG's unipolar
+        // output creates a massive positive DC offset (~2400 LSB in unfiltered mode).
+        l = self.dc_left.process(l);
+        r = self.dc_right.process(r);
+
         if (self.render_mode != .unfiltered_mix) {
             l = self.board_lpf.processL(l);
             r = self.board_lpf.processR(r);
-            l = self.dc_left.process(l);
-            r = self.dc_right.process(r);
         }
 
         l = softSaturate(l);
@@ -1413,77 +1430,6 @@ pub const AudioOutput = struct {
             const chunk_frames: usize = @min(@as(usize, @intCast(remaining)), max_frames_per_push);
             try sink.consumeSamples(self.popMixedFrames(chunk_frames));
             remaining -= @as(u32, @intCast(chunk_frames));
-        }
-    }
-
-    fn renderPendingEvents(self: *AudioOutput, pending: PendingAudioFrames, events: PendingAudioEvents, sink: anytype) !void {
-        const out_frames = self.takeOutputFramesForPending(pending);
-        if (out_frames == 0) {
-            self.advanceWindowWithoutOutput(
-                pending,
-                events.ym_writes,
-                events.ym_dac_samples,
-                events.ym_reset_events,
-                events.psg_commands,
-            );
-            return;
-        }
-
-        const max_frames_per_push = self.sample_chunk.len / channels;
-        var out_frame_offset: u32 = 0;
-        var ym_write_offset: usize = 0;
-        var ym_dac_offset: usize = 0;
-        var ym_reset_offset: usize = 0;
-        var psg_command_offset: usize = 0;
-        while (out_frame_offset < out_frames) {
-            const remaining_out_frames = out_frames - out_frame_offset;
-            const chunk_frames: usize = @min(@as(usize, @intCast(remaining_out_frames)), max_frames_per_push);
-            const chunk_out_end = out_frame_offset + @as(u32, @intCast(chunk_frames));
-            const chunk_master_offset = outputFrameToMaster(pending, out_frame_offset, out_frames);
-            const chunk_master_end = outputFrameToMaster(pending, chunk_out_end, out_frames);
-
-            var ym_write_end = ym_write_offset;
-            while (ym_write_end < events.ym_writes.len and events.ym_writes[ym_write_end].master_offset < chunk_master_end) : (ym_write_end += 1) {}
-
-            var ym_dac_end = ym_dac_offset;
-            while (ym_dac_end < events.ym_dac_samples.len and events.ym_dac_samples[ym_dac_end].master_offset < chunk_master_end) : (ym_dac_end += 1) {}
-
-            var ym_reset_end = ym_reset_offset;
-            while (ym_reset_end < events.ym_reset_events.len and events.ym_reset_events[ym_reset_end].master_offset < chunk_master_end) : (ym_reset_end += 1) {}
-
-            var psg_command_end = psg_command_offset;
-            while (psg_command_end < events.psg_commands.len and events.psg_commands[psg_command_end].master_offset < chunk_master_end) : (psg_command_end += 1) {}
-
-            const samples = self.renderChunk(
-                pending,
-                chunk_master_offset,
-                chunk_master_end - chunk_master_offset,
-                out_frame_offset,
-                out_frames,
-                chunk_frames,
-                events.ym_writes[ym_write_offset..ym_write_end],
-                events.ym_dac_samples[ym_dac_offset..ym_dac_end],
-                events.ym_reset_events[ym_reset_offset..ym_reset_end],
-                events.psg_commands[psg_command_offset..psg_command_end],
-            );
-            try sink.consumeSamples(samples);
-            out_frame_offset = chunk_out_end;
-            ym_write_offset = ym_write_end;
-            ym_dac_offset = ym_dac_end;
-            ym_reset_offset = ym_reset_end;
-            psg_command_offset = psg_command_end;
-        }
-
-        self.applyRemainingYmEvents(
-            events.ym_writes,
-            &ym_write_offset,
-            events.ym_dac_samples,
-            &ym_dac_offset,
-            events.ym_reset_events,
-            &ym_reset_offset,
-        );
-        while (psg_command_offset < events.psg_commands.len) : (psg_command_offset += 1) {
-            self.psg.doCommand(events.psg_commands[psg_command_offset].value);
         }
     }
 
@@ -1816,6 +1762,7 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
     };
 
     var full = AudioOutput{};
+    full.setRenderMode(.unfiltered_mix);
     const full_samples = full.renderChunk(
         pending,
         0,
@@ -1830,6 +1777,7 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
     );
 
     var half = AudioOutput{};
+    half.setRenderMode(.unfiltered_mix);
     const half_samples = half.renderChunk(
         pending,
         0,
@@ -2276,6 +2224,35 @@ test "unfiltered mix preserves more high-frequency psg energy than the filtered 
     try std.testing.expect(sampleEnergy(unfiltered_samples) > sampleEnergy(normal_samples));
 }
 
+test "default filtered mix applies blip high-pass before the board low-pass" {
+    var output = AudioOutput{};
+    output.dc_left.warmup_samples = DcBlocker.warmup_count;
+    output.dc_right.warmup_samples = DcBlocker.warmup_count;
+    output.board_lpf.warmup_samples = BoardOutputLpf.warmup_count;
+
+    const step = output.finishMixedFrame(1.0, 1.0);
+    const expected = DcBlocker.blip_highpass_alpha * board_output_input_factor;
+    const expected_i16: i16 = @intFromFloat(softSaturate(expected) * 32767.0);
+
+    try std.testing.expectEqual(expected_i16, step[0]);
+    try std.testing.expectEqual(expected_i16, step[1]);
+}
+
+test "default filtered mix rejects a sustained dc offset" {
+    var output = AudioOutput{};
+    output.dc_left.warmup_samples = DcBlocker.warmup_count;
+    output.dc_right.warmup_samples = DcBlocker.warmup_count;
+    output.board_lpf.warmup_samples = BoardOutputLpf.warmup_count;
+
+    var last = output.finishMixedFrame(0.25, 0.25);
+    for (0..2048) |_| {
+        last = output.finishMixedFrame(0.25, 0.25);
+    }
+
+    try std.testing.expect(@abs(last[0]) <= 512);
+    try std.testing.expect(@abs(last[1]) <= 512);
+}
+
 test "default board mix applies the reference PSG preamp ratio" {
     var output = AudioOutput.init();
     const mixed = output.mixSources(.{ 0.25, -0.125 }, .{ 0.5, 0.5 });
@@ -2689,17 +2666,19 @@ test "board output lpf matches the Genesis Plus GX default recurrence" {
     try std.testing.expectApproxEqAbs(first * board_output_history_factor - 0.5 * board_output_input_factor, second, 0.000001);
 }
 
-test "board output lpf applies strong high-frequency roll-off" {
+test "board output lpf applies high-frequency roll-off" {
     var lpf = BoardOutputLpf.init();
 
     var peak: f32 = 0.0;
     for (0..500) |i| {
+        // 20 kHz test tone at 48 kHz sample rate
         const phase = @as(f32, @floatFromInt(i)) * std.math.tau * 20000.0 / 48000.0;
         const out = lpf.processL(@sin(phase));
         if (i > 250) peak = @max(peak, @abs(out));
     }
 
-    try std.testing.expect(peak < 0.3);
+    // The gentler board LPF (fc ≈ 7.5 kHz) still attenuates 20 kHz significantly.
+    try std.testing.expect(peak < 0.55);
 }
 
 test "board output lpf passes audible content with minimal loss" {
@@ -2711,7 +2690,8 @@ test "board output lpf passes audible content with minimal loss" {
         const out = lpf.processL(@sin(phase));
         if (i > 480) peak = @max(peak, @abs(out));
     }
-    try std.testing.expect(peak > 0.95);
+    // With fc ≈ 7.5 kHz, 1 kHz passes through with very little attenuation.
+    try std.testing.expect(peak > 0.97);
 }
 
 test "soft saturate leaves in-range samples unchanged" {

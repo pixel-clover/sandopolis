@@ -1,6 +1,7 @@
 const std = @import("std");
 const Cartridge = @import("cartridge.zig").Cartridge;
 const io_window = @import("io_window.zig");
+const sound_write_trace = @import("m68k_sound_write_trace.zig");
 const vdp_ports = @import("vdp_ports.zig");
 const clock = @import("../clock.zig");
 const AudioTiming = @import("../audio/timing.zig").AudioTiming;
@@ -20,6 +21,7 @@ pub const View = struct {
     runtime_state: *cpu_runtime.RuntimeState,
     tmss_register: *[4]u8,
     tmss_locked: *bool,
+    m68k_sound_write_trace: *sound_write_trace.Trace,
     ensure_z80_host_window_ctx: ?*anyopaque,
     ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
 
@@ -34,6 +36,7 @@ pub const View = struct {
         runtime_state: *cpu_runtime.RuntimeState,
         tmss_register: *[4]u8,
         tmss_locked: *bool,
+        m68k_sound_write_trace: *sound_write_trace.Trace,
         ensure_z80_host_window_ctx: ?*anyopaque,
         ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
     ) View {
@@ -48,6 +51,7 @@ pub const View = struct {
             .runtime_state = runtime_state,
             .tmss_register = tmss_register,
             .tmss_locked = tmss_locked,
+            .m68k_sound_write_trace = m68k_sound_write_trace,
             .ensure_z80_host_window_ctx = ensure_z80_host_window_ctx,
             .ensure_z80_host_window_fn = ensure_z80_host_window_fn,
         };
@@ -61,9 +65,34 @@ pub const View = struct {
         return self.audio_timing.pending_master_cycles + self.runtime_state.currentAccessElapsedMasterCycles();
     }
 
+    fn recordSoundWrite(
+        self: *View,
+        address: u32,
+        value: u32,
+        size_bytes: u8,
+        kind: sound_write_trace.Kind,
+        outcome: sound_write_trace.Outcome,
+    ) void {
+        self.m68k_sound_write_trace.record(
+            address,
+            value,
+            self.currentCpuAccessAudioMasterOffset(),
+            self.runtime_state.currentOpcode(),
+            self.z80.readBusReq(),
+            self.z80.readReset(),
+            size_bytes,
+            kind,
+            outcome,
+        );
+    }
+
     fn isZ80WindowAddress(address: u32) bool {
         const addr = address & 0xFFFFFF;
         return addr >= 0xA00000 and addr < 0xA10000;
+    }
+
+    fn isZ80HostMiscAddress(zaddr: u16) bool {
+        return zaddr >= 0x7F00 and zaddr <= 0x7FFF;
     }
 
     fn isTmssAddress(address: u32) bool {
@@ -171,8 +200,9 @@ pub const View = struct {
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
             if (!self.hasZ80BusFor68k()) return @truncate((self.open_bus.* >> 8) & 0xFF);
             self.ensureZ80HostWindow();
-            self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             const zaddr: u16 = @truncate(addr & 0x7FFF);
+            if (isZ80HostMiscAddress(zaddr)) return @truncate((self.open_bus.* >> 8) & 0xFF);
+            self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             if (self.tmss_locked.*) return self.openBusByte(addr);
@@ -212,6 +242,9 @@ pub const View = struct {
             return self.latchOpenBus(self.open_bus.*);
         } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
             return self.latchOpenBus(self.open_bus.* & 0xFF00);
+        } else if (addr >= 0xA00000 and addr < 0xA10000) {
+            const value = self.read8(address);
+            return self.latchOpenBus((@as(u16, value) << 8) | value);
         } else if (addr >= 0xA10000 and addr < 0xA10020) {
             const value = io_window.readRegisterByte(self.io, self.vdp.pal_mode, addr);
             return self.latchOpenBus((@as(u16, value) << 8) | value);
@@ -239,15 +272,21 @@ pub const View = struct {
         if (self.cartridge.writeByte(addr, value)) return;
 
         if (isZ80BusAckPage(addr)) {
+            var outcome: sound_write_trace.Outcome = .ignored_odd_control_byte;
             if ((addr & 1) == 0) {
                 self.z80.writeBusReq(@as(u16, value) << 8);
+                outcome = .applied;
             }
+            self.recordSoundWrite(addr, value, 1, .bus_request, outcome);
             return;
         } else if (isZ80ResetPage(addr)) {
+            var outcome: sound_write_trace.Outcome = .ignored_odd_control_byte;
             if ((addr & 1) == 0) {
                 self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeReset(@as(u16, value) << 8);
+                outcome = .applied;
             }
+            self.recordSoundWrite(addr, value, 1, .reset, outcome);
             return;
         }
 
@@ -261,11 +300,19 @@ pub const View = struct {
         } else if (addr >= 0xE00000 and addr < 0x1000000) {
             self.ram[addr & 0xFFFF] = value;
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            if (!self.hasZ80BusFor68k()) return;
+            if (!self.hasZ80BusFor68k()) {
+                self.recordSoundWrite(addr, value, 1, .z80_window, .blocked_no_bus);
+                return;
+            }
             self.ensureZ80HostWindow();
-            self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             const zaddr: u16 = @truncate(addr & 0x7FFF);
+            if (isZ80HostMiscAddress(zaddr)) {
+                self.recordSoundWrite(addr, value, 1, .z80_window, .ignored_host_misc);
+                return;
+            }
+            self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             self.z80.writeByte(zaddr, value);
+            self.recordSoundWrite(addr, value, 1, .z80_window, .applied);
             return;
         } else if (addr >= 0xA10000 and addr < 0xA10020) {
             if ((addr & 1) != 0) {
@@ -274,7 +321,7 @@ pub const View = struct {
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             if (self.tmss_locked.*) return;
             const port = addr & 0x1F;
-            if (port >= 0x11 and port < 0x18 and (port & 1) == 1) {
+            if (port == 0x11 or port == 0x15) {
                 self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeByte(0x7F11, value);
             } else {
@@ -311,10 +358,15 @@ pub const View = struct {
 
         if (isZ80BusAckPage(addr)) {
             self.z80.writeBusReq(value);
+            self.recordSoundWrite(addr, value, 2, .bus_request, .applied);
             return;
         } else if (isZ80ResetPage(addr)) {
             self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             self.z80.writeReset(value);
+            self.recordSoundWrite(addr, value, 2, .reset, .applied);
+            return;
+        } else if (addr >= 0xA00000 and addr < 0xA10000) {
+            self.write8(address, @intCast((value >> 8) & 0xFF));
             return;
         }
 
@@ -362,6 +414,7 @@ const TestFixture = struct {
     runtime: cpu_runtime.RuntimeState,
     tmss_register: [4]u8,
     tmss_locked: bool,
+    trace: sound_write_trace.Trace,
 
     fn init(allocator: std.mem.Allocator) !TestFixture {
         var rom = [_]u8{0} ** 0x4000;
@@ -378,6 +431,7 @@ const TestFixture = struct {
             .runtime = .{},
             .tmss_register = .{ 'S', 'E', 'G', 'A' },
             .tmss_locked = false,
+            .trace = .{},
         };
     }
 
@@ -398,6 +452,7 @@ const TestFixture = struct {
             &self.runtime,
             &self.tmss_register,
             &self.tmss_locked,
+            &self.trace,
             null,
             TestHooks.ensureZ80HostWindow,
         );
@@ -865,9 +920,6 @@ test "cpu memory z80 audio window latches ym2612 and psg writes" {
     view.write8(0x00A0_4002, 0x2B);
     view.write8(0x00A0_4003, 0x80);
     try testing.expectEqual(@as(u8, 0x80), fixture.z80.getYmRegister(1, 0x2B));
-
-    view.write8(0x00A0_7F11, 0x90);
-    try testing.expectEqual(@as(u8, 0x90), fixture.z80.getPsgLast());
 }
 
 test "cpu memory ym status reads advance busy timing through the z80 window" {
@@ -892,7 +944,7 @@ test "cpu memory ym status reads advance busy timing through the z80 window" {
     try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A0_4000) & 0x80);
 }
 
-test "cpu memory psg latch and data writes through the z80 window decode shadow state" {
+test "cpu memory z80 host misc window does not route writes to the psg" {
     const testing = std.testing;
 
     var fixture = try TestFixture.init(testing.allocator);
@@ -903,13 +955,81 @@ test "cpu memory psg latch and data writes through the z80 window decode shadow 
 
     view.write8(0x00A0_7F11, 0x80 | 0x0A);
     view.write8(0x00A0_7F11, 0x15);
-    try testing.expectEqual(@as(u16, 0x15A), fixture.z80.getPsgTone(0));
-
     view.write8(0x00A0_7F11, 0xC0 | 0x10 | 0x07);
-    try testing.expectEqual(@as(u8, 0x07), fixture.z80.getPsgVolume(2));
-
     view.write8(0x00A0_7F11, 0xE0 | 0x03);
-    try testing.expectEqual(@as(u8, 0x03), fixture.z80.getPsgNoise());
+
+    try testing.expectEqual(@as(u8, 0), fixture.z80.getPsgLast());
+    try testing.expectEqual(@as(u16, 0), fixture.z80.getPsgTone(0));
+    try testing.expectEqual(@as(u8, 0), fixture.z80.getPsgVolume(2));
+    try testing.expectEqual(@as(u8, 0), fixture.z80.getPsgNoise());
+
+    var cmds: [4]Z80.PsgCommandEvent = undefined;
+    try testing.expectEqual(@as(usize, 0), fixture.z80.takePsgCommands(cmds[0..]));
+}
+
+test "cpu memory z80 word accesses use the high byte only" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    var view = fixture.view();
+
+    grantM68kZ80Bus(&view);
+
+    view.write16(0x00A0_0010, 0xABCD);
+    try testing.expectEqual(@as(u8, 0xAB), fixture.z80.readByte(0x0010));
+    try testing.expectEqual(@as(u8, 0x00), fixture.z80.readByte(0x0011));
+
+    fixture.z80.writeByte(0x0010, 0x34);
+    fixture.z80.writeByte(0x0011, 0x12);
+    try testing.expectEqual(@as(u16, 0x3434), view.read16(0x00A0_0010));
+}
+
+test "cpu memory sound write trace records bring-up writes and blocked outcomes" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    fixture.trace.setEnabled(true);
+
+    var view = fixture.view();
+    view.write16(0x00A1_1100, 0x0000);
+    view.write8(0x00A0_0020, 0x12);
+    view.write16(0x00A1_1100, 0x0100);
+    view.write16(0x00A1_1200, 0x0100);
+    view.write8(0x00A0_0020, 0x34);
+    view.write8(0x00A0_7F11, 0x56);
+    view.write8(0x00A1_1101, 0x78);
+
+    const entries = fixture.trace.entriesSlice();
+    try testing.expectEqual(@as(usize, 7), entries.len);
+
+    try testing.expectEqual(sound_write_trace.Kind.bus_request, entries[0].kind);
+    try testing.expectEqual(sound_write_trace.Outcome.applied, entries[0].outcome);
+    try testing.expectEqual(@as(u32, 0x00A1_1100), entries[0].address);
+    try testing.expectEqual(@as(u32, 0x0000), entries[0].value);
+
+    try testing.expectEqual(sound_write_trace.Kind.z80_window, entries[1].kind);
+    try testing.expectEqual(sound_write_trace.Outcome.blocked_no_bus, entries[1].outcome);
+    try testing.expectEqual(@as(u32, 0x00A0_0020), entries[1].address);
+
+    try testing.expectEqual(sound_write_trace.Kind.bus_request, entries[2].kind);
+    try testing.expectEqual(sound_write_trace.Outcome.applied, entries[2].outcome);
+    try testing.expectEqual(@as(u16, 0x0000), entries[2].busack);
+
+    try testing.expectEqual(sound_write_trace.Kind.reset, entries[3].kind);
+    try testing.expectEqual(sound_write_trace.Outcome.applied, entries[3].outcome);
+    try testing.expectEqual(@as(u16, 0x0100), entries[3].reset);
+
+    try testing.expectEqual(sound_write_trace.Kind.z80_window, entries[4].kind);
+    try testing.expectEqual(sound_write_trace.Outcome.applied, entries[4].outcome);
+    try testing.expectEqual(@as(u16, 0x34), fixture.z80.readByte(0x0020));
+
+    try testing.expectEqual(sound_write_trace.Kind.z80_window, entries[5].kind);
+    try testing.expectEqual(sound_write_trace.Outcome.ignored_host_misc, entries[5].outcome);
+
+    try testing.expectEqual(sound_write_trace.Kind.bus_request, entries[6].kind);
+    try testing.expectEqual(sound_write_trace.Outcome.ignored_odd_control_byte, entries[6].outcome);
 }
 
 test "cpu memory psg writes through vdp ports reach the psg shadow registers" {
@@ -929,6 +1049,22 @@ test "cpu memory psg writes through vdp ports reach the psg shadow registers" {
     var cmds: [4]Z80.PsgCommandEvent = undefined;
     const count = fixture.z80.takePsgCommands(cmds[0..]);
     try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "cpu memory unsupported byte vdp mirrors do not route to the psg" {
+    const testing = std.testing;
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    var view = fixture.view();
+
+    view.write8(0x00C0_0013, 0x9F);
+    view.write8(0x00C0_0017, 0x87);
+
+    try testing.expectEqual(@as(u8, 0), fixture.z80.getPsgLast());
+
+    var cmds: [2]Z80.PsgCommandEvent = undefined;
+    try testing.expectEqual(@as(usize, 0), fixture.z80.takePsgCommands(cmds[0..]));
 }
 
 test "cpu memory ym key-on register updates the channel key mask" {

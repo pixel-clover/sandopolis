@@ -1,5 +1,6 @@
 const std = @import("std");
 const clock = @import("../clock.zig");
+const m68k_instruction_trace = @import("m68k_instruction_trace.zig");
 const MemoryInterface = @import("memory_interface.zig").MemoryInterface;
 const runtime_state = @import("runtime_state.zig");
 const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
@@ -107,6 +108,8 @@ fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
 }
 
 pub const Cpu = struct {
+    pub const M68kInstructionTraceEntry = m68k_instruction_trace.Entry;
+
     const default_stack_pointer: u32 = 0x00FF_FE00;
     const default_program_counter: u32 = 0x0000_0200;
 
@@ -159,6 +162,7 @@ pub const Cpu = struct {
     pending_wait_master_cycles: u32,
     active_memory: ?*MemoryInterface,
     active_execution_counters: ?*CoreFrameCounters,
+    instruction_trace: m68k_instruction_trace.Trace,
 
     pub var trace_enabled: bool = false;
 
@@ -171,6 +175,7 @@ pub const Cpu = struct {
             .pending_wait_master_cycles = 0,
             .active_memory = null,
             .active_execution_counters = null,
+            .instruction_trace = .{},
         };
 
         c.m68k_init(&self.core, &fallback_memory[0], fallback_memory.len);
@@ -194,6 +199,7 @@ pub const Cpu = struct {
         copy.pending_wait_master_cycles = self.pending_wait_master_cycles;
         copy.active_memory = null;
         copy.active_execution_counters = null;
+        copy.instruction_trace = self.instruction_trace;
         copy.core.fault_trap_active = false;
         copy.core.fault_trap = std.mem.zeroes(@TypeOf(copy.core.fault_trap));
         return copy;
@@ -330,6 +336,7 @@ pub const Cpu = struct {
         self.halted = self.core.stopped;
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
+        self.instruction_trace.clear();
     }
 
     pub fn setActiveExecutionCounters(self: *Cpu, counters: ?*CoreFrameCounters) void {
@@ -406,6 +413,16 @@ pub const Cpu = struct {
         self.halted = self.core.stopped;
         if (self.active_execution_counters) |counters| counters.m68k_instructions += 1;
 
+        self.instruction_trace.record(
+            self.core.ppc,
+            self.core.pc,
+            self.cycles,
+            self.core.sr,
+            self.core.ir,
+            self.core.exception_thrown,
+            self.halted,
+        );
+
         return .{
             .m68k_cycles = ran_cycles,
             .ppc = self.core.ppc,
@@ -449,6 +466,26 @@ pub const Cpu = struct {
         if (new_level > current) {
             c.m68k_set_irq(&self.core, new_level);
         }
+    }
+
+    pub fn setInstructionTraceEnabled(self: *Cpu, enabled: bool) void {
+        self.instruction_trace.setEnabled(enabled);
+    }
+
+    pub fn setInstructionTraceStopOnFault(self: *Cpu, stop_on_fault: bool) void {
+        self.instruction_trace.setStopOnFault(stop_on_fault);
+    }
+
+    pub fn clearInstructionTrace(self: *Cpu) void {
+        self.instruction_trace.clear();
+    }
+
+    pub fn instructionTraceEntries(self: *const Cpu) []const M68kInstructionTraceEntry {
+        return self.instruction_trace.entriesSlice();
+    }
+
+    pub fn instructionTraceDroppedCount(self: *const Cpu) u32 {
+        return self.instruction_trace.dropped;
     }
 
     pub fn debugDump(self: *const Cpu) void {
@@ -496,3 +533,62 @@ pub const Cpu = struct {
         std.debug.print("68K {X:0>8}: {s}\n", .{ @as(u32, self.core.pc), text });
     }
 };
+
+test "rocket68 cpu instruction trace records stepped instructions when enabled" {
+    const testing = std.testing;
+
+    const Probe = struct {
+        mem: [8]u8 = [_]u8{ 0x4E, 0x71, 0x4E, 0x71, 0, 0, 0, 0 },
+
+        pub fn read8(self: *@This(), address: u32) u8 {
+            return self.mem[@intCast(address)];
+        }
+
+        pub fn read16(self: *@This(), address: u32) u16 {
+            const high = self.mem[@intCast(address)];
+            const low = self.mem[@intCast(address + 1)];
+            return (@as(u16, high) << 8) | low;
+        }
+
+        pub fn read32(self: *@This(), address: u32) u32 {
+            return (@as(u32, self.read16(address)) << 16) | self.read16(address + 2);
+        }
+
+        pub fn write8(_: *@This(), _: u32, _: u8) void {}
+        pub fn write16(_: *@This(), _: u32, _: u16) void {}
+        pub fn write32(_: *@This(), _: u32, _: u32) void {}
+        pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
+            return 0;
+        }
+        pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn reserveDataPortWriteWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn controlPortWriteWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn setCpuRuntimeState(_: *@This(), _: runtime_state.RuntimeState) void {}
+        pub fn clearCpuRuntimeState(_: *@This()) void {}
+    };
+
+    var probe = Probe{};
+    var memory = MemoryInterface.bind(Probe, &probe);
+    var cpu = Cpu.init();
+    cpu.core.pc = 0;
+    cpu.core.a_regs[7].l = 0x1000;
+    cpu.core.sr = 0x2700;
+
+    cpu.setInstructionTraceEnabled(true);
+    _ = cpu.stepInstruction(&memory);
+    _ = cpu.stepInstruction(&memory);
+
+    const entries = cpu.instructionTraceEntries();
+    try testing.expectEqual(@as(usize, 2), entries.len);
+    try testing.expectEqual(@as(u32, 0), entries[0].ppc);
+    try testing.expectEqual(@as(u16, 0x4E71), entries[0].ir);
+    try testing.expectEqual(@as(u32, 2), entries[0].pc_after);
+    try testing.expectEqual(@as(u32, 2), entries[1].ppc);
+    try testing.expectEqual(@as(u32, 4), entries[1].pc_after);
+}

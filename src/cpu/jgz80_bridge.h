@@ -22,6 +22,16 @@ typedef struct Jgz80PsgCommandEvent {
     uint8_t value;
 } Jgz80PsgCommandEvent;
 
+typedef struct Jgz80AudioOpTraceEntry {
+    uint32_t master_offset;
+    uint32_t sequence;
+    uint16_t pc;
+    uint16_t addr;
+    uint8_t opcode;
+    uint8_t kind;
+    uint8_t value;
+} Jgz80AudioOpTraceEntry;
+
 typedef struct Jgz80YmDacSampleEvent {
     uint32_t master_offset;
     uint32_t sequence;
@@ -194,6 +204,8 @@ uint16_t jgz80_peek_ym_dac_count(const Jgz80Handle *handle);
 
 uint16_t jgz80_peek_psg_command_count(const Jgz80Handle *handle);
 
+uint16_t jgz80_peek_audio_op_trace_count(const Jgz80Handle *handle);
+
 uint16_t jgz80_take_ym_writes(Jgz80Handle *handle, Jgz80YmWriteEvent *dest, uint16_t max_events);
 
 uint16_t jgz80_take_ym_dac_samples(Jgz80Handle *handle, Jgz80YmDacSampleEvent *dest, uint16_t max_samples);
@@ -201,6 +213,8 @@ uint16_t jgz80_take_ym_dac_samples(Jgz80Handle *handle, Jgz80YmDacSampleEvent *d
 uint16_t jgz80_take_ym_resets(Jgz80Handle *handle, Jgz80YmResetEvent *dest, uint16_t max_events);
 
 uint16_t jgz80_take_psg_commands(Jgz80Handle *handle, Jgz80PsgCommandEvent *dest, uint16_t max_commands);
+
+uint16_t jgz80_take_audio_op_trace(Jgz80Handle *handle, Jgz80AudioOpTraceEntry *dest, uint16_t max_events);
 
 uint8_t jgz80_get_psg_last(Jgz80Handle *handle);
 
@@ -214,6 +228,12 @@ uint32_t jgz80_take_68k_bus_access_count(Jgz80Handle *handle);
 
 uint32_t jgz80_take_overflow_counts(Jgz80Handle * handle, uint32_t * ym_write, uint32_t * ym_dac, uint32_t * ym_reset,
                                     uint32_t * psg_command);
+
+uint32_t jgz80_take_audio_op_trace_dropped_count(Jgz80Handle *handle);
+
+void jgz80_set_audio_op_trace_enabled(Jgz80Handle *handle, uint8_t enabled);
+
+void jgz80_clear_audio_op_trace(Jgz80Handle *handle);
 
 void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset);
 
