@@ -4,7 +4,8 @@ const internal_timing = @import("../audio/timing.zig");
 const state_file = @import("../state_file.zig");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
 const M68kInstructionTraceEntry = @import("../cpu/rocket68_cpu.zig").Cpu.M68kInstructionTraceEntry;
-const M68kSoundWriteTraceEntry = @import("../bus/bus.zig").Bus.M68kSoundWriteTraceEntry;
+const Bus = @import("../bus/bus.zig").Bus;
+const M68kSoundWriteTraceEntry = Bus.M68kSoundWriteTraceEntry;
 const Z80AudioOpTraceEntry = @import("../cpu/z80.zig").Z80.AudioOpTraceEntry;
 const YmWriteEvent = @import("../audio/ym2612.zig").YmWriteEvent;
 const YmDacSampleEvent = @import("../cpu/z80.zig").Z80.YmDacSampleEvent;
@@ -154,6 +155,13 @@ pub const Emulator = struct {
     pub fn formatCurrentInstruction(self: *Emulator, buffer: []u8) []const u8 {
         var machine = self.handle.machine.testing();
         return machine.formatCurrentInstruction(buffer);
+    }
+
+    pub const TestPrefetchCtx = Bus.TestPrefetchCtx;
+
+    pub fn setTestPrefetch(self: *Emulator, ctx: *TestPrefetchCtx) void {
+        var machine = self.handle.machine.testing();
+        machine.setTestPrefetch(ctx);
     }
 
     pub fn read8(self: *Emulator, address: u32) u8 {

@@ -79,6 +79,10 @@ pub const Machine = struct {
             self.machine.bus.write32(address, value);
         }
 
+        pub fn setTestPrefetch(self: *TestingView, ctx: *Bus.TestPrefetchCtx) void {
+            self.machine.bus.setTestPrefetch(ctx);
+        }
+
         pub fn writeRomByte(self: *TestingView, offset: usize, value: u8) void {
             std.debug.assert(offset < self.machine.bus.rom.len);
             self.machine.bus.rom[offset] = value;

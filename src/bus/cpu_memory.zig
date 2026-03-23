@@ -24,6 +24,8 @@ pub const View = struct {
     m68k_sound_write_trace: *sound_write_trace.Trace,
     ensure_z80_host_window_ctx: ?*anyopaque,
     ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
+    notify_bus_access_ctx: ?*anyopaque,
+    notify_bus_access_fn: *const fn (?*anyopaque, u32) void,
 
     pub fn init(
         cartridge: *Cartridge,
@@ -39,6 +41,8 @@ pub const View = struct {
         m68k_sound_write_trace: *sound_write_trace.Trace,
         ensure_z80_host_window_ctx: ?*anyopaque,
         ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
+        notify_bus_access_ctx: ?*anyopaque,
+        notify_bus_access_fn: *const fn (?*anyopaque, u32) void,
     ) View {
         return .{
             .cartridge = cartridge,
@@ -54,11 +58,17 @@ pub const View = struct {
             .m68k_sound_write_trace = m68k_sound_write_trace,
             .ensure_z80_host_window_ctx = ensure_z80_host_window_ctx,
             .ensure_z80_host_window_fn = ensure_z80_host_window_fn,
+            .notify_bus_access_ctx = notify_bus_access_ctx,
+            .notify_bus_access_fn = notify_bus_access_fn,
         };
     }
 
     fn ensureZ80HostWindow(self: *View) void {
         self.ensure_z80_host_window_fn(self.ensure_z80_host_window_ctx);
+    }
+
+    pub fn notifyBusAccess(self: *View, delta_master_cycles: u32) void {
+        self.notify_bus_access_fn(self.notify_bus_access_ctx, delta_master_cycles);
     }
 
     fn currentCpuAccessAudioMasterOffset(self: *const View) u32 {
@@ -402,6 +412,7 @@ pub const View = struct {
 
 const TestHooks = struct {
     fn ensureZ80HostWindow(_: ?*anyopaque) void {}
+    fn notifyBusAccess(_: ?*anyopaque, _: u32) void {}
 };
 
 const TestRuntimeCtx = struct {
@@ -492,6 +503,8 @@ const TestFixture = struct {
             &self.trace,
             null,
             TestHooks.ensureZ80HostWindow,
+            null,
+            TestHooks.notifyBusAccess,
         );
     }
 };
@@ -534,24 +547,32 @@ test "cpu memory z80 bus window and bus request registers behave as expected" {
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.initRuntime();
     var view = fixture.view();
+
+    // Grant Z80 bus first, then write and read back
+    grantM68kZ80Bus(&view);
 
     view.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A0_0010));
-    try testing.expectEqual(@as(u16, 0x5A00), view.read16(0x00A0_0010));
+    // Z80 is 8-bit: word reads duplicate the byte to both halves
+    try testing.expectEqual(@as(u16, 0x5A5A), view.read16(0x00A0_0010));
 
+    // Request bus (already granted) — BUSACK bit 8 = 0
     view.write16(0x00A1_1100, 0x0100);
     try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
 
     view.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A0_0010));
 
+    // Release bus — BUSACK bit 8 = 1, unused bits from prefetch=0
     view.write16(0x00A1_1100, 0x0000);
     try testing.expectEqual(@as(u16, 0x0100), view.read16(0x00A1_1100));
 
+    // Z80 bus is no longer granted — writes are blocked, reads return prefetch
     view.write8(0x00A0_0010, 0xA5);
-    try testing.expectEqual(@as(u8, 0xA5), view.read8(0x00A0_0010));
-    try testing.expectEqual(@as(u16, 0xA500), view.read16(0x00A0_0010));
+    try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A0_0010));
+    try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A0_0010));
 }
 
 test "cpu memory bus request does not grant z80 bus while reset is held" {
@@ -559,19 +580,27 @@ test "cpu memory bus request does not grant z80 bus while reset is held" {
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.runtime_ctx.opcode = 0xBEEF;
+    fixture.initRuntime();
     var view = fixture.view();
 
+    // Hold Z80 in reset then request bus — bus should NOT be granted
     view.write16(0x00A1_1200, 0x0000);
     view.write16(0x00A1_1100, 0x0100);
 
-    try testing.expectEqual(@as(u16, 0x0100), view.read16(0x00A1_1100));
+    // Not granted: bit 8 set, other bits from prefetch 0xBEEF
+    try testing.expectEqual(@as(u16, 0xBFEF), view.read16(0x00A1_1100));
+    // Z80 writes are blocked when bus is not granted
     view.write8(0x00A0_0010, 0x5A);
-    try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A0_0010));
-    try testing.expectEqual(@as(u16, 0x5A00), view.read16(0x00A0_0010));
+    // Blocked reads return instruction prefetch, not the written value
+    try testing.expectEqual(@as(u8, 0xBE), view.read8(0x00A0_0010));
+    try testing.expectEqual(@as(u16, 0xBEEF), view.read16(0x00A0_0010));
 
+    // Release reset — now bus should be granted
     view.write16(0x00A1_1200, 0x0100);
 
-    try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
+    // Granted: bit 8 cleared
+    try testing.expectEqual(@as(u16, 0xBEEF & 0xFEFF), view.read16(0x00A1_1100));
     view.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A0_0010));
 }
@@ -675,12 +704,17 @@ test "cpu memory z80 control register pages mirror across a111xx and a112xx" {
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.initRuntime();
     var view = fixture.view();
 
+    // BUSREQ write at mirrored even address 0xA111FE asserts bus request
     view.write8(0x00A1_11FE, 0x01);
-    try testing.expectEqual(@as(u16, 0x0001), view.read16(0x00A1_1100));
+    // Bus granted: bit 8 cleared, other bits from prefetch=0 → 0x0000
+    try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
 
+    // Release at mirrored odd address (ignored since odd)
     view.write8(0x00A1_11FF, 0x00);
+    // Still granted (odd write ignored)
     try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
 
     view.write8(0x00A1_12FE, 0x00);
@@ -841,14 +875,16 @@ test "cpu memory io register byte writes require odd address strobes and word wr
     try testing.expectEqual(@as(u8, 0x58), fixture.io.serial_ctrl[2]);
 }
 
-test "cpu memory io window decode stops at a1001f and higher addresses fall back to open bus" {
+test "cpu memory io window decode stops at a1001f and higher addresses fall back to prefetch" {
     const testing = std.testing;
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.runtime_ctx.opcode = 0x5A3C;
+    fixture.initRuntime();
     var view = fixture.view();
 
-    fixture.open_bus = 0x5A3C;
+    // Addresses >= 0xA10020 are unmapped — return instruction prefetch
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A1_0020));
     try testing.expectEqual(@as(u8, 0x3C), view.read8(0x00A1_0021));
     try testing.expectEqual(@as(u16, 0x5A3C), view.read16(0x00A1_0020));
@@ -1101,9 +1137,12 @@ test "cpu memory psg writes through vdp ports reach the psg shadow registers" {
     try testing.expectEqual(@as(usize, 3), count);
 }
 
-test "cpu memory unsupported byte vdp mirrors do not route to the psg" {
+test "cpu memory psg byte writes reach psg through vdp mirror ports 0x13 and 0x17" {
     const testing = std.testing;
 
+    // Genesis Plus GX routes byte writes to all odd ports in 0x10-0x17
+    // to the PSG: (address & 0xFC) matches case 0x10/0x14, then (address & 1)
+    // selects odd bytes.  This covers 0x11, 0x13, 0x15, and 0x17.
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
@@ -1111,9 +1150,28 @@ test "cpu memory unsupported byte vdp mirrors do not route to the psg" {
     view.write8(0x00C0_0013, 0x9F);
     view.write8(0x00C0_0017, 0x87);
 
-    try testing.expectEqual(@as(u8, 0), fixture.z80.getPsgLast());
+    try testing.expectEqual(@as(u8, 0x87), fixture.z80.getPsgLast());
 
     var cmds: [2]Z80.PsgCommandEvent = undefined;
+    try testing.expectEqual(@as(usize, 2), fixture.z80.takePsgCommands(cmds[0..]));
+}
+
+test "cpu memory even byte writes to vdp psg ports are silently ignored" {
+    const testing = std.testing;
+
+    // Even byte addresses in the PSG range (0x10, 0x12, 0x14, 0x16) are
+    // unused on real hardware (GPGX: m68k_unused_8_w).
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    var view = fixture.view();
+
+    view.write8(0x00C0_0010, 0x9F);
+    view.write8(0x00C0_0012, 0x87);
+    view.write8(0x00C0_0014, 0xBF);
+    view.write8(0x00C0_0016, 0xC0);
+
+    try testing.expectEqual(@as(u8, 0), fixture.z80.getPsgLast());
+    var cmds: [4]Z80.PsgCommandEvent = undefined;
     try testing.expectEqual(@as(usize, 0), fixture.z80.takePsgCommands(cmds[0..]));
 }
 
@@ -1286,6 +1344,8 @@ test "tmss wrong value keeps vdp locked" {
     defer fixture.deinit(testing.allocator);
     fixture.tmss_register = .{ 0, 0, 0, 0 };
     fixture.tmss_locked = true;
+    fixture.runtime_ctx.opcode = 0xBEEF;
+    fixture.initRuntime();
     var view = fixture.view();
 
     // Write wrong value
@@ -1293,8 +1353,7 @@ test "tmss wrong value keeps vdp locked" {
     view.write16(0x00A1_4002, 0x4742); // "GB" (wrong!)
     try testing.expect(fixture.tmss_locked);
 
-    // VDP reads still return open bus
-    fixture.open_bus = 0xBEEF;
+    // VDP reads still return prefetch when locked
     try testing.expectEqual(@as(u16, 0xBEEF), view.read16(0x00C0_0004));
 }
 
@@ -1336,4 +1395,44 @@ test "tmss vdp write8 is blocked when locked" {
     // Now VDP byte write should work
     view.write8(0x00C0_0011, 0x80);
     try testing.expectEqual(@as(u8, 0x80), fixture.z80.getPsgLast());
+}
+
+test "cpu memory writes do not contaminate open-bus prefetch reads" {
+    const testing = std.testing;
+
+    // On real hardware, the 68K data bus holds the instruction prefetch
+    // between cycles.  Write data appears momentarily but does not persist.
+    // Reads from unmapped regions after a write should return the prefetch
+    // word, not the written value.  This matches Genesis Plus GX behavior
+    // and fixes games like Time Killers that depend on prefetch-based open bus.
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    fixture.runtime_ctx.opcode = 0x4E71; // NOP opcode
+    fixture.initRuntime();
+    var view = fixture.view();
+
+    // Write a value to RAM, then read from an unmapped region
+    view.write16(0x00E0_0000, 0xDEAD);
+    // I/O region above 0xA1001F is unmapped — should return prefetch, not 0xDEAD
+    try testing.expectEqual(@as(u8, 0x4E), view.read8(0x00A1_0020));
+    try testing.expectEqual(@as(u8, 0x71), view.read8(0x00A1_0021));
+
+    // BUSREQ unused bits should also be from prefetch, not from the write
+    try testing.expectEqual(@as(u16, 0x4F71), view.read16(0x00A1_1100));
+}
+
+test "cpu memory vdp hvc counter is readable at mirror ports 0x0A and 0x0E" {
+    const testing = std.testing;
+
+    // Genesis Plus GX masks byte reads with (address & 0xFD), making ports
+    // 0x0A/0x0B mirror 0x08/0x09 and ports 0x0E/0x0F mirror 0x0C/0x0D.
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    var view = fixture.view();
+
+    // All HVC mirror ports should return the same counter value
+    const hvc_base = view.read16(0x00C0_0008);
+    try testing.expectEqual(hvc_base, view.read16(0x00C0_000A));
+    try testing.expectEqual(hvc_base, view.read16(0x00C0_000C));
+    try testing.expectEqual(hvc_base, view.read16(0x00C0_000E));
 }

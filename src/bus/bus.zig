@@ -140,6 +140,12 @@ pub const Bus = struct {
         self.ensureZ80HostWindow();
     }
 
+    fn notifySubInstructionBusAccess(ctx: ?*anyopaque, delta_master_cycles: u32) void {
+        const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
+        var timing = self.z80TimingView();
+        timing.runZ80Early(delta_master_cycles);
+    }
+
     fn cpuMemoryView(self: *Bus) cpu_memory.View {
         return cpu_memory.View.init(
             &self.cartridge,
@@ -155,6 +161,8 @@ pub const Bus = struct {
             &self.m68k_sound_write_trace,
             self,
             ensureZ80HostWindowCallback,
+            self,
+            notifySubInstructionBusAccess,
         );
     }
 
@@ -394,6 +402,30 @@ pub const Bus = struct {
         return MemoryInterface.bind(Bus, self);
     }
 
+    /// Install a fixed instruction-prefetch word for open-bus reads.
+    /// This is only meaningful outside of CPU execution (e.g. tests).
+    /// During real CPU execution the runtime state is managed by the CPU.
+    pub fn setTestPrefetch(self: *Bus, ctx: *TestPrefetchCtx) void {
+        self.cpu_runtime_state = cpu_runtime.RuntimeState.init(
+            ctx,
+            TestPrefetchCtx.currentOpcode,
+            TestPrefetchCtx.clearInterrupt,
+            null,
+            null,
+        );
+    }
+
+    pub const TestPrefetchCtx = struct {
+        opcode: u16 = 0,
+
+        fn currentOpcode(raw_ctx: ?*anyopaque) u16 {
+            const self: *const @This() = @ptrCast(@alignCast(raw_ctx orelse return 0));
+            return self.opcode;
+        }
+
+        fn clearInterrupt(_: ?*anyopaque) void {}
+    };
+
     pub fn read8(self: *Bus, address: u32) u8 {
         var memory = self.cpuMemoryView();
         return memory.read8(address);
@@ -429,8 +461,10 @@ pub const Bus = struct {
     }
 
     pub fn write32(self: *Bus, address: u32, value: u32) void {
+        const control_before = if (isZ80ControlPage(address)) self.captureZ80ControlLines() else null;
         var memory = self.cpuMemoryView();
         memory.write32(address, value);
+        if (control_before) |before| self.noteZ80ControlStateTransition(before, address);
     }
 
     pub fn dataPortReadWaitMasterCycles(self: *Bus) u32 {
@@ -456,6 +490,11 @@ pub const Bus = struct {
     pub fn clearCpuRuntimeState(self: *Bus) void {
         var memory = self.cpuMemoryView();
         memory.clearCpuRuntimeState();
+    }
+
+    pub fn notifyBusAccess(self: *Bus, delta_master_cycles: u32) void {
+        var memory = self.cpuMemoryView();
+        memory.notifyBusAccess(delta_master_cycles);
     }
 
     pub fn setM68kSoundWriteTraceEnabled(self: *Bus, enabled: bool) void {
@@ -645,6 +684,8 @@ const ControlWriteTimingProbe = struct {
     pub fn clearCpuRuntimeState(self: *@This()) void {
         self.runtime.clear();
     }
+
+    pub fn notifyBusAccess(_: *@This(), _: u32) void {}
 };
 
 fn writeBe16(bytes: []u8, offset: usize, value: u16) void {
@@ -794,6 +835,21 @@ test "z80 reset release aligns the first instruction to the current z80 phase" {
 
     bus.write16(0x00A1_1200, 0x0100);
     bus.stepMaster(1);
+
+    try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
+}
+
+test "write32 to z80 reset register triggers control state transition" {
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    bus.reset();
+    bus.z80.writeByte(0x0000, 0x00);
+
+    // Release Z80 reset via 32-bit write. Both words must release
+    // reset (0x0100) since write32 decomposes into two write16 calls.
+    bus.write32(0x00A1_1200, 0x0100_0100);
+    bus.stepMaster(clock.z80_divider);
 
     try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
 }

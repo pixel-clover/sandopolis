@@ -422,8 +422,10 @@ test "read16 routes only the primary io window through io handler" {
     const base = emulator.read16(0xA10000);
     try testing.expectEqual(@as(u16, 0xA0A0), base);
 
-    emulator.write16(0xE00000, 0x5A3C);
-    _ = emulator.read16(0xE00000);
+    // On real hardware, unmapped reads return the instruction prefetch word.
+    // Set the prefetch to a known value and verify the unmapped region returns it.
+    var prefetch_ctx = Emulator.TestPrefetchCtx{ .opcode = 0x5A3C };
+    emulator.setTestPrefetch(&prefetch_ctx);
 
     const open_bus = emulator.read16(0xA10020);
     try testing.expectEqual(@as(u16, 0x5A3C), open_bus);

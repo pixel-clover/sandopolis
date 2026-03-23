@@ -172,6 +172,7 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
         }
         pub fn setCpuRuntimeState(_: *@This(), _: @import("../cpu/runtime_state.zig").RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
     };
 
     const BusProbe = struct {
@@ -262,6 +263,7 @@ test "scheduler cpu bind forwards instruction stepping through memory" {
         }
         pub fn setCpuRuntimeState(_: *@This(), _: @import("../cpu/runtime_state.zig").RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
     };
 
     const CpuProbe = struct {

@@ -133,8 +133,7 @@ fn normalizeTransferLineMasterCycle(total_master_cycles: u32) u16 {
 }
 
 fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
-    var total = @as(u32, self.transfer_line_master_cycle) + master_cycles;
-    if (total >= clock.ntsc_master_cycles_per_line) total -= clock.ntsc_master_cycles_per_line;
+    const total = (@as(u32, self.transfer_line_master_cycle) + master_cycles) % clock.ntsc_master_cycles_per_line;
     self.transfer_line_master_cycle = @intCast(total);
 }
 
@@ -1927,6 +1926,15 @@ test "progressTransfers normalizes the transfer cursor after line overshoot" {
 
     try testing.expectEqual(@as(u16, 12), vdp.transfer_line_master_cycle);
     try testing.expect(vdp.nextTransferStepMasterCycles() > 0);
+}
+
+test "advanceTransferCursor wraps correctly across multiple line periods" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.transfer_line_master_cycle = 50;
+
+    advanceTransferCursor(&vdp, clock.ntsc_master_cycles_per_line * 2 + 100);
+    try testing.expectEqual(@as(u16, 150), vdp.transfer_line_master_cycle);
 }
 
 test "projected data port write wait carries hblank phase across reservations" {

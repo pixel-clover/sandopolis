@@ -177,6 +177,35 @@ pub const View = struct {
         self.state.z80_stall_master_debt += master_cycles;
     }
 
+    /// Advance Z80 execution for the given master cycles without advancing
+    /// VDP, audio, or I/O timing. Uses a temporary credit grant: credit is
+    /// added so Z80 can execute, then removed so the scheduler's stepMaster
+    /// re-accumulates it normally alongside VDP/audio advancement.
+    pub fn runZ80Early(self: *View, master_cycles: u32) void {
+        if (master_cycles == 0) return;
+        if (!self.state.z80_cached_can_run) return;
+        if (self.state.z80_dma_halted) return;
+        if (self.state.z80_wait_master_cycles != 0) return;
+
+        self.ensureZ80HostWindow();
+
+        self.state.z80_master_credit += @intCast(master_cycles);
+        defer self.state.z80_master_credit -= @intCast(master_cycles);
+
+        while (self.state.z80_master_credit >= @as(i64, clock.z80_divider)) {
+            if (self.state.z80_wait_master_cycles != 0) break;
+            if (self.state.z80_dma_halted) break;
+
+            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+            const instruction_cycles = self.z80.stepInstruction();
+            if (instruction_cycles == 0) break;
+            if (self.active_execution_counters) |counters| counters.z80_instructions += 1;
+
+            self.state.z80_master_credit -= @as(i64, instruction_cycles) * clock.z80_divider;
+            _ = self.z80.take68kBusAccessCount();
+        }
+    }
+
     pub fn stepMaster(self: *View, master_cycles: u32) void {
         self.ensureZ80HostWindow();
         var remaining = master_cycles;

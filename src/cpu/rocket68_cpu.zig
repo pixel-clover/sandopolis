@@ -142,6 +142,7 @@ pub const Cpu = struct {
         halted: bool,
         pending_wait_cycles: u32,
         pending_wait_master_cycles: u32,
+        sub_instruction_advanced_master: u32,
     };
 
     pub const WaitAccounting = struct {
@@ -160,6 +161,7 @@ pub const Cpu = struct {
     halted: bool,
     pending_wait_cycles: u32,
     pending_wait_master_cycles: u32,
+    sub_instruction_advanced_master: u32,
     active_memory: ?*MemoryInterface,
     active_execution_counters: ?*CoreFrameCounters,
     instruction_trace: m68k_instruction_trace.Trace,
@@ -173,6 +175,7 @@ pub const Cpu = struct {
             .halted = false,
             .pending_wait_cycles = 0,
             .pending_wait_master_cycles = 0,
+            .sub_instruction_advanced_master = 0,
             .active_memory = null,
             .active_execution_counters = null,
             .instruction_trace = .{},
@@ -197,6 +200,7 @@ pub const Cpu = struct {
         copy.halted = self.halted;
         copy.pending_wait_cycles = self.pending_wait_cycles;
         copy.pending_wait_master_cycles = self.pending_wait_master_cycles;
+        copy.sub_instruction_advanced_master = self.sub_instruction_advanced_master;
         copy.active_memory = null;
         copy.active_execution_counters = null;
         copy.instruction_trace = self.instruction_trace;
@@ -239,6 +243,7 @@ pub const Cpu = struct {
         state.halted = self.halted;
         state.pending_wait_cycles = self.pending_wait_cycles;
         state.pending_wait_master_cycles = self.pending_wait_master_cycles;
+        state.sub_instruction_advanced_master = self.sub_instruction_advanced_master;
 
         return state;
     }
@@ -277,6 +282,7 @@ pub const Cpu = struct {
         self.halted = state.halted;
         self.pending_wait_cycles = state.pending_wait_cycles;
         self.pending_wait_master_cycles = state.pending_wait_master_cycles;
+        self.sub_instruction_advanced_master = state.sub_instruction_advanced_master;
         self.active_memory = null;
     }
 
@@ -342,6 +348,7 @@ pub const Cpu = struct {
         self.halted = self.core.stopped;
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
+        self.sub_instruction_advanced_master = 0;
         self.instruction_trace.clear();
     }
 
@@ -365,6 +372,25 @@ pub const Cpu = struct {
         // effects. Skip the vtable call and VDP address checks entirely.
         const addr = address & 0xFFFFFF;
         if (addr < 0xA00000 or addr >= 0xE00000) return;
+
+        // Sub-instruction Z80 advancement: advance Z80 timing up to the
+        // current point within this 68K instruction so that the Z80 doesn't
+        // fall behind during long multi-access instructions.
+        // Skip for Z80 control registers (0xA11100-0xA112FF) — those have
+        // their own sub-instruction advancement via noteZ80ControlStateTransition.
+        const is_z80_control = (addr >= 0xA11100 and addr < 0xA11300);
+        if (!is_z80_control) {
+            const m68k_cycles_raw = c.m68k_cycles_run(&self.core);
+            const m68k_cycles_run: u32 = if (m68k_cycles_raw > 0) @intCast(m68k_cycles_raw) else 0;
+            const elapsed = clock.m68kCyclesToMaster(m68k_cycles_run) + self.pending_wait_master_cycles;
+            if (elapsed > self.sub_instruction_advanced_master) {
+                const delta = elapsed - self.sub_instruction_advanced_master;
+                if (delta >= clock.z80_divider) {
+                    memory.notifyBusAccess(delta);
+                    self.sub_instruction_advanced_master = elapsed;
+                }
+            }
+        }
 
         self.addBusWaitMaster(memory.m68kAccessWaitMasterCycles(address, size_bytes));
 
@@ -406,6 +432,7 @@ pub const Cpu = struct {
         defer self.endExecution();
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
+        self.sub_instruction_advanced_master = 0;
         self.core.target_cycles = 0;
         self.core.cycles_remaining = 0;
 
@@ -581,6 +608,7 @@ test "rocket68 cpu instruction trace records stepped instructions when enabled" 
         }
         pub fn setCpuRuntimeState(_: *@This(), _: runtime_state.RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
     };
 
     var probe = Probe{};
@@ -601,4 +629,85 @@ test "rocket68 cpu instruction trace records stepped instructions when enabled" 
     try testing.expectEqual(@as(u32, 2), entries[0].pc_after);
     try testing.expectEqual(@as(u32, 2), entries[1].ppc);
     try testing.expectEqual(@as(u32, 4), entries[1].pc_after);
+}
+
+test "noteBusAccessWait calls notifyBusAccess for slow bus but not z80 control" {
+    const testing = std.testing;
+
+    const BusAccessProbe = struct {
+        mem: [16]u8,
+        notify_count: u32 = 0,
+        last_notify_delta: u32 = 0,
+
+        pub fn read8(self: *@This(), address: u32) u8 {
+            if (address < self.mem.len) return self.mem[@intCast(address)];
+            return 0;
+        }
+
+        pub fn read16(self: *@This(), address: u32) u16 {
+            return (@as(u16, self.read8(address)) << 8) | self.read8(address + 1);
+        }
+
+        pub fn read32(self: *@This(), address: u32) u32 {
+            return (@as(u32, self.read16(address)) << 16) | self.read16(address + 2);
+        }
+
+        pub fn write8(_: *@This(), _: u32, _: u8) void {}
+        pub fn write16(_: *@This(), _: u32, _: u16) void {}
+        pub fn write32(_: *@This(), _: u32, _: u32) void {}
+        pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
+            return 0;
+        }
+        pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn reserveDataPortWriteWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn controlPortWriteWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn setCpuRuntimeState(_: *@This(), _: runtime_state.RuntimeState) void {}
+        pub fn clearCpuRuntimeState(_: *@This()) void {}
+
+        pub fn notifyBusAccess(self: *@This(), delta: u32) void {
+            self.notify_count += 1;
+            self.last_notify_delta = delta;
+        }
+    };
+
+    // VDP region write (0xC00000) should trigger notifyBusAccess.
+    // Instruction: MOVE.W #$1234, ($C00000).L
+    {
+        var probe = BusAccessProbe{
+            .mem = .{ 0x33, 0xFC, 0x12, 0x34, 0x00, 0xC0, 0x00, 0x00, 0x4E, 0x71, 0, 0, 0, 0, 0, 0 },
+        };
+        var memory = MemoryInterface.bind(BusAccessProbe, &probe);
+        var cpu = Cpu.init();
+        cpu.core.pc = 0;
+        cpu.core.a_regs[7].l = 0x1000;
+        cpu.core.sr = 0x2700;
+
+        _ = cpu.stepInstruction(&memory);
+
+        try testing.expect(probe.notify_count > 0);
+        try testing.expect(probe.last_notify_delta >= clock.z80_divider);
+    }
+
+    // Z80 control register write (0xA11200) should NOT trigger notifyBusAccess.
+    // Instruction: MOVE.W #$0100, ($A11200).L
+    {
+        var probe = BusAccessProbe{
+            .mem = .{ 0x33, 0xFC, 0x01, 0x00, 0x00, 0xA1, 0x12, 0x00, 0x4E, 0x71, 0, 0, 0, 0, 0, 0 },
+        };
+        var memory = MemoryInterface.bind(BusAccessProbe, &probe);
+        var cpu = Cpu.init();
+        cpu.core.pc = 0;
+        cpu.core.a_regs[7].l = 0x1000;
+        cpu.core.sr = 0x2700;
+
+        _ = cpu.stepInstruction(&memory);
+
+        try testing.expectEqual(@as(u32, 0), probe.notify_count);
+    }
 }
