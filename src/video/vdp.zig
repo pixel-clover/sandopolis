@@ -510,6 +510,7 @@ pub const Vdp = struct {
     pub const setScanlineState = timing_mod.setScanlineState;
     pub const setHBlank = timing_mod.setHBlank;
     pub const isVBlankInterruptEnabled = timing_mod.isVBlankInterruptEnabled;
+    pub const currentInterruptLevel = timing_mod.currentInterruptLevel;
     pub const beginFrame = timing_mod.beginFrame;
     pub const applyPowerOnResetTiming = timing_mod.applyPowerOnResetTiming;
     pub const consumeHintForLine = timing_mod.consumeHintForLine;

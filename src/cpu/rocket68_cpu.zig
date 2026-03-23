@@ -290,6 +290,11 @@ pub const Cpu = struct {
         self.clearInterrupt();
     }
 
+    fn updateInterruptLevelFromCpu(ctx: ?*anyopaque, level: u3) void {
+        const self: *Cpu = @ptrCast(@alignCast(ctx orelse return));
+        self.updateInterruptLevel(level);
+    }
+
     fn currentAccessElapsedMasterCyclesFromCpu(ctx: ?*anyopaque) u32 {
         const self: *Cpu = @ptrCast(@alignCast(ctx orelse return 0));
         const elapsed_m68k_cycles_raw = c.m68k_cycles_run(&self.core);
@@ -302,6 +307,7 @@ pub const Cpu = struct {
             self,
             currentOpcodeFromCpu,
             clearInterruptFromCpu,
+            updateInterruptLevelFromCpu,
             currentAccessElapsedMasterCyclesFromCpu,
         );
     }
@@ -458,6 +464,10 @@ pub const Cpu = struct {
 
     pub fn clearInterrupt(self: *Cpu) void {
         self.core.irq_level = 0;
+    }
+
+    pub fn updateInterruptLevel(self: *Cpu, level: u3) void {
+        c.m68k_set_irq(&self.core, @intCast(level));
     }
 
     pub fn requestInterrupt(self: *Cpu, level: u3) void {

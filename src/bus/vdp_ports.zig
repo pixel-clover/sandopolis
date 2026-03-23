@@ -16,7 +16,15 @@ fn readStatus(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeStat
     const opcode = runtime.currentOpcode();
     const status = vdp.readControlAdjusted(opcode) | (open_bus.* & 0xFC00);
     open_bus.* = status;
-    runtime.clearInterrupt();
+    // readControlAdjusted() already cleared vint_pending/sprite flags in the VDP.
+    // Recalculate the M68K IRQ level from remaining VDP sources instead of
+    // unconditionally zeroing it.  On real hardware the VDP de-asserts its
+    // interrupt output when vint_pending clears; it does NOT reach into the
+    // CPU and cancel an already-latched interrupt.  The old clearInterrupt()
+    // call would zero irq_level even if the CPU hadn't serviced a pending
+    // VBlank yet, causing games that poll VDP status in a loop (like SoR's
+    // GEMS driver) to lose interrupts.
+    runtime.updateInterruptLevel(vdp.currentInterruptLevel());
     return status;
 }
 

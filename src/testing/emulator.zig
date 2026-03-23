@@ -81,6 +81,14 @@ pub const Emulator = struct {
         self.handle.machine.runFrame();
     }
 
+    pub const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
+
+    pub fn runFrameProfiled(self: *Emulator) CoreFrameCounters {
+        var counters = CoreFrameCounters{};
+        self.handle.machine.runFrameProfiled(&counters);
+        return counters;
+    }
+
     pub fn runFrames(self: *Emulator, frames: usize) void {
         for (0..frames) |_| {
             self.handle.machine.runFrame();

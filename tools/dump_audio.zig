@@ -304,8 +304,14 @@ fn dumpSandopolis(allocator: std.mem.Allocator, config: Config) !void {
         try emulator.discardPendingAudioWithOutput(&output);
     }
 
+    var total_m68k_instructions: u64 = 0;
+    var total_z80_instructions: u64 = 0;
+    var total_dma_words: u64 = 0;
     for (0..config.frames) |_| {
-        emulator.runFrame();
+        const counters = emulator.runFrameProfiled();
+        total_m68k_instructions += counters.m68k_instructions;
+        total_z80_instructions += counters.z80_instructions;
+        total_dma_words += counters.dma_words;
         total_ym_writes += emulator.pendingYmWriteCount();
         total_ym_dac_samples += emulator.pendingYmDacCount();
         total_psg_commands += emulator.pendingPsgCommandCount();
@@ -333,6 +339,18 @@ fn dumpSandopolis(allocator: std.mem.Allocator, config: Config) !void {
             emulator.z80Halted(),
         },
     );
+    // Read VBlank vector and M68K SR
+    const vblank_vec_hi = emulator.read16(0x78);
+    const vblank_vec_lo = emulator.read16(0x7A);
+    const vblank_vec: u32 = (@as(u32, vblank_vec_hi) << 16) | vblank_vec_lo;
+    std.debug.print("m68k_sr=0x{X:0>4} vblank_vec=0x{X:0>8} m68k_pc=0x{X:0>8}\n", .{ emulator.cpuSr(), vblank_vec, emulator.cpuPc() });
+    std.debug.print("m68k_insns={d} z80_insns={d} dma_words={d} m68k/frame={d} z80/frame={d}\n", .{
+        total_m68k_instructions,
+        total_z80_instructions,
+        total_dma_words,
+        total_m68k_instructions / config.frames,
+        total_z80_instructions / config.frames,
+    });
     // Dump Z80 state details
     std.debug.print("z80 bank=0x{X:0>3} comm[0x1FF0-0x2000]: ", .{emulator.z80Bank()});
     for (0x1FF0..0x2000) |addr| {

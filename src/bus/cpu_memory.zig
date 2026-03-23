@@ -479,7 +479,7 @@ test "cpu memory runtime hooks and z80 wait logic stay local to the view" {
     var view = fixture.view();
 
     var callback_ctx = CallbackCtx{ .opcode = 0x4E71 };
-    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt, null));
+    view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt, null, null));
     try testing.expectEqual(@as(u16, 0x4E71), fixture.runtime.currentOpcode());
 
     fixture.z80.writeBusReq(0x0100);
@@ -828,6 +828,7 @@ test "cpu memory z80 window writes include the current access audio skew" {
         &runtime_ctx,
         AudioOffsetRuntimeCtx.currentOpcode,
         AudioOffsetRuntimeCtx.clearInterrupt,
+        null,
         AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
@@ -855,6 +856,7 @@ test "cpu memory vdp psg writes include the current access audio skew" {
         &runtime_ctx,
         AudioOffsetRuntimeCtx.currentOpcode,
         AudioOffsetRuntimeCtx.clearInterrupt,
+        null,
         AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
@@ -886,6 +888,7 @@ test "cpu memory z80 window reads include the current access audio skew" {
         &runtime_ctx,
         AudioOffsetRuntimeCtx.currentOpcode,
         AudioOffsetRuntimeCtx.clearInterrupt,
+        null,
         AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
@@ -1148,6 +1151,7 @@ test "cpu memory z80 reset line edges carry the current audio master offset into
         &runtime_ctx,
         AudioOffsetRuntimeCtx.currentOpcode,
         AudioOffsetRuntimeCtx.clearInterrupt,
+        null,
         AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
