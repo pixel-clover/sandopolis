@@ -144,16 +144,30 @@ pub const View = struct {
         return value;
     }
 
-    fn openBusByte(self: *const View, address: u32) u8 {
+    /// Returns the 68K instruction prefetch word, used for open-bus reads.
+    /// On real hardware, unused/undefined address reads return whatever is
+    /// on the data bus, which is the instruction being fetched.  Genesis
+    /// Plus GX reads from m68k.pc for this purpose.
+    fn prefetchWord(self: *const View) u16 {
+        return self.runtime_state.currentOpcode();
+    }
+
+    fn prefetchByte(self: *const View, address: u32) u8 {
+        const word = self.prefetchWord();
         return if ((address & 1) == 0)
-            @truncate((self.open_bus.* >> 8) & 0xFF)
+            @truncate((word >> 8) & 0xFF)
         else
-            @truncate(self.open_bus.* & 0xFF);
+            @truncate(word & 0xFF);
+    }
+
+    fn openBusByte(self: *const View, address: u32) u8 {
+        return self.prefetchByte(address);
     }
 
     fn readMirroredZ80ControlRegister(self: *View, control_word: u16) u16 {
+        const prefetch = self.prefetchWord();
         const control_bits: u16 = if ((control_word & 0x0100) != 0) 0x0100 else 0x0000;
-        return self.latchOpenBus((self.open_bus.* & ~@as(u16, 0x0100)) | control_bits);
+        return self.latchOpenBus((prefetch & ~@as(u16, 0x0100)) | control_bits);
     }
 
     fn readZ80BusAckRegister(self: *View) u16 {
@@ -198,10 +212,10 @@ pub const View = struct {
         } else if (addr >= 0xE00000 and addr < 0x1000000) {
             return self.ram[addr & 0xFFFF];
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
-            if (!self.hasZ80BusFor68k()) return @truncate((self.open_bus.* >> 8) & 0xFF);
+            if (!self.hasZ80BusFor68k()) return self.prefetchByte(addr);
             self.ensureZ80HostWindow();
             const zaddr: u16 = @truncate(addr & 0x7FFF);
-            if (isZ80HostMiscAddress(zaddr)) return @truncate((self.open_bus.* >> 8) & 0xFF);
+            if (isZ80HostMiscAddress(zaddr)) return self.prefetchByte(addr);
             self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
             return self.z80.readByte(zaddr);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
@@ -215,7 +229,7 @@ pub const View = struct {
             return self.openBusByte(addr);
         }
 
-        return 0;
+        return self.prefetchByte(addr);
     }
 
     pub fn peek8NoSideEffects(self: *View, address: u32) u8 {
@@ -239,9 +253,9 @@ pub const View = struct {
         if (isZ80BusAckPage(addr)) {
             return self.readZ80BusAckRegister();
         } else if (isZ80ResetPage(addr)) {
-            return self.latchOpenBus(self.open_bus.*);
+            return self.latchOpenBus(self.prefetchWord());
         } else if (addr >= 0xA00000 and addr < 0xA10000 and !self.hasZ80BusFor68k()) {
-            return self.latchOpenBus(self.open_bus.* & 0xFF00);
+            return self.latchOpenBus(self.prefetchWord());
         } else if (addr >= 0xA00000 and addr < 0xA10000) {
             const value = self.read8(address);
             return self.latchOpenBus((@as(u16, value) << 8) | value);
@@ -249,7 +263,7 @@ pub const View = struct {
             const value = io_window.readRegisterByte(self.io, self.vdp.pal_mode, addr);
             return self.latchOpenBus((@as(u16, value) << 8) | value);
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
-            if (self.tmss_locked.*) return self.latchOpenBus(self.open_bus.*);
+            if (self.tmss_locked.*) return self.latchOpenBus(self.prefetchWord());
             return vdp_ports.readWord(self.vdp, self.open_bus, self.runtime_state, addr);
         }
 
@@ -266,7 +280,11 @@ pub const View = struct {
 
     pub fn write8(self: *View, address: u32, value: u8) void {
         const addr = address & 0xFFFFFF;
-        self.open_bus.* = (@as(u16, value) << 8) | value;
+        // Do NOT latch open_bus on writes.  On real hardware the 68K data bus
+        // holds the instruction prefetch between cycles, and write data only
+        // appears momentarily.  Reads from unmapped regions during a write
+        // instruction should still see the prefetch, not the written value.
+        // Genesis Plus GX never updates its open-bus equivalent on writes.
 
         if (self.cartridge.writeRegisterByte(addr, value)) return;
         if (self.cartridge.writeByte(addr, value)) return;
@@ -321,7 +339,10 @@ pub const View = struct {
         } else if (addr >= 0xC00000 and addr <= 0xDFFFFF) {
             if (self.tmss_locked.*) return;
             const port = addr & 0x1F;
-            if (port == 0x11 or port == 0x15) {
+            // PSG is reachable from M68K via odd VDP port bytes in the
+            // 0x10-0x17 range.  Genesis Plus GX uses (address & 0xFC) cases
+            // 0x10/0x14 with an (address & 1) filter, matching 0x11/0x13/0x15/0x17.
+            if (port >= 0x10 and port < 0x18 and (port & 1) != 0) {
                 self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeByte(0x7F11, value);
             } else {
@@ -333,7 +354,6 @@ pub const View = struct {
 
     pub fn write16(self: *View, address: u32, value: u16) void {
         const addr = address & 0xFFFFFF;
-        self.open_bus.* = value;
 
         if (self.cartridge.writeRegisterWord(addr, value)) return;
         if (self.cartridge.writeWord(addr, value)) return;
@@ -384,11 +404,13 @@ const TestHooks = struct {
     fn ensureZ80HostWindow(_: ?*anyopaque) void {}
 };
 
-const AudioOffsetRuntimeCtx = struct {
+const TestRuntimeCtx = struct {
+    opcode: u16 = 0,
     elapsed_master_cycles: u32 = 0,
 
-    fn currentOpcode(_: ?*anyopaque) u16 {
-        return 0;
+    fn currentOpcode(ctx: ?*anyopaque) u16 {
+        const self: *const @This() = @ptrCast(@alignCast(ctx orelse unreachable));
+        return self.opcode;
     }
 
     fn clearInterrupt(_: ?*anyopaque) void {}
@@ -412,6 +434,7 @@ const TestFixture = struct {
     audio_timing: AudioTiming,
     open_bus: u16,
     runtime: cpu_runtime.RuntimeState,
+    runtime_ctx: TestRuntimeCtx,
     tmss_register: [4]u8,
     tmss_locked: bool,
     trace: sound_write_trace.Trace,
@@ -429,10 +452,24 @@ const TestFixture = struct {
             .audio_timing = .{},
             .open_bus = 0,
             .runtime = .{},
+            .runtime_ctx = .{},
             .tmss_register = .{ 'S', 'E', 'G', 'A' },
             .tmss_locked = false,
             .trace = .{},
         };
+    }
+
+    /// Wire up the test runtime context so that prefetchWord() returns
+    /// runtime_ctx.opcode.  Must be called after the fixture has its
+    /// final stack address (i.e. after `var fixture = ...`).
+    fn initRuntime(self: *TestFixture) void {
+        self.runtime = cpu_runtime.RuntimeState.init(
+            &self.runtime_ctx,
+            TestRuntimeCtx.currentOpcode,
+            TestRuntimeCtx.clearInterrupt,
+            null,
+            TestRuntimeCtx.currentAccessElapsedMasterCycles,
+        );
     }
 
     fn deinit(self: *TestFixture, allocator: std.mem.Allocator) void {
@@ -539,26 +576,28 @@ test "cpu memory bus request does not grant z80 bus while reset is held" {
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A0_0010));
 }
 
-test "cpu memory z80 busack reads preserve open-bus bits and reset page reads stay open bus" {
+test "cpu memory z80 busack reads use instruction prefetch for unused bits" {
     const testing = std.testing;
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.runtime_ctx.opcode = 0xA400;
+    fixture.initRuntime();
     var view = fixture.view();
 
-    fixture.open_bus = 0xA400;
+    // BUSREQ not granted: bit 8 is set, other bits from prefetch 0xA400
     try testing.expectEqual(@as(u16, 0xA500), view.read16(0x00A1_1100));
 
+    // Grant bus: bit 8 is cleared
     view.write16(0x00A1_1100, 0x0100);
-    fixture.open_bus = 0xA400;
     try testing.expectEqual(@as(u16, 0xA400), view.read16(0x00A1_1100));
 
+    // Reset page reads return the full prefetch word
+    fixture.runtime_ctx.opcode = 0xB600;
     view.write16(0x00A1_1200, 0x0000);
-    fixture.open_bus = 0xB600;
     try testing.expectEqual(@as(u16, 0xB600), view.read16(0x00A1_1200));
 
     view.write16(0x00A1_1200, 0x0100);
-    fixture.open_bus = 0xB600;
     try testing.expectEqual(@as(u16, 0xB600), view.read16(0x00A1_1200));
 }
 
@@ -567,20 +606,27 @@ test "cpu memory z80 control registers support byte reads and writes on even add
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.initRuntime();
     var view = fixture.view();
 
+    // With prefetch=0: BUSREQ not granted → bit 8 set → high byte 0x01
     try testing.expectEqual(@as(u8, 0x01), view.read8(0x00A1_1100));
     try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A1_1101));
-    fixture.open_bus = 0xCAFE;
+    // Reset page returns prefetch bytes
+    fixture.runtime_ctx.opcode = 0xCAFE;
     try testing.expectEqual(@as(u8, 0xCA), view.read8(0x00A1_1200));
     try testing.expectEqual(@as(u8, 0xFE), view.read8(0x00A1_1201));
 
+    // Even byte write asserts BUSREQ; prefetch provides unused bits
+    fixture.runtime_ctx.opcode = 0;
     view.write8(0x00A1_1100, 0x01);
-    try testing.expectEqual(@as(u16, 0x0001), view.read16(0x00A1_1100));
+    // Bus granted: (prefetch=0 & 0xFEFF) | 0x0000 = 0x0000
+    try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
     try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A1_1100));
 
+    // Odd byte write is ignored
     view.write8(0x00A1_1101, 0x01);
-    try testing.expectEqual(@as(u16, 0x0001), view.read16(0x00A1_1100));
+    try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
 
     view.write8(0x00A1_1200, 0x00);
     try testing.expectEqual(@as(u16, 0x0000), fixture.z80.readReset());
@@ -592,8 +638,8 @@ test "cpu memory z80 control registers support byte reads and writes on even add
     view.write8(0x00A1_1200, 0x01);
     view.write8(0x00A1_1100, 0x00);
     try testing.expectEqual(@as(u16, 0x0100), fixture.z80.readReset());
+    // Not granted: (prefetch=0 & 0xFEFF) | 0x0100 = 0x0100
     try testing.expectEqual(@as(u16, 0x0100), view.read16(0x00A1_1100));
-    fixture.open_bus = 0;
     try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A1_1200));
     try testing.expectEqual(@as(u8, 0x01), view.read8(0x00A1_1100));
 }
@@ -647,19 +693,20 @@ test "cpu memory z80 control register pages mirror across a111xx and a112xx" {
     try testing.expectEqual(@as(u16, 0x0100), fixture.z80.readReset());
 }
 
-test "cpu memory unused vdp ports 0x18 and 0x1c return open bus" {
+test "cpu memory unused vdp ports 0x18 and 0x1c return instruction prefetch" {
     const testing = std.testing;
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.runtime_ctx.opcode = 0xA5C3;
+    fixture.initRuntime();
     var view = fixture.view();
 
-    fixture.open_bus = 0xA5C3;
     try testing.expectEqual(@as(u8, 0xA5), view.read8(0x00C0_0018));
     try testing.expectEqual(@as(u8, 0xC3), view.read8(0x00C0_0019));
     try testing.expectEqual(@as(u16, 0xA5C3), view.read16(0x00C0_0018));
 
-    fixture.open_bus = 0x5AA7;
+    fixture.runtime_ctx.opcode = 0x5AA7;
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00C0_001C));
     try testing.expectEqual(@as(u8, 0xA7), view.read8(0x00C0_001D));
     try testing.expectEqual(@as(u16, 0x5AA7), view.read16(0x00C0_001C));
@@ -822,14 +869,14 @@ test "cpu memory z80 window writes include the current access audio skew" {
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
-    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 321 };
+    var runtime_ctx = TestRuntimeCtx{ .elapsed_master_cycles = 321 };
 
     view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
         &runtime_ctx,
-        AudioOffsetRuntimeCtx.currentOpcode,
-        AudioOffsetRuntimeCtx.clearInterrupt,
+        TestRuntimeCtx.currentOpcode,
+        TestRuntimeCtx.clearInterrupt,
         null,
-        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+        TestRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
     grantM68kZ80Bus(&view);
@@ -850,14 +897,14 @@ test "cpu memory vdp psg writes include the current access audio skew" {
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
-    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 111 };
+    var runtime_ctx = TestRuntimeCtx{ .elapsed_master_cycles = 111 };
 
     view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
         &runtime_ctx,
-        AudioOffsetRuntimeCtx.currentOpcode,
-        AudioOffsetRuntimeCtx.clearInterrupt,
+        TestRuntimeCtx.currentOpcode,
+        TestRuntimeCtx.clearInterrupt,
         null,
-        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+        TestRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
     fixture.audio_timing.consumeMaster(6000);
@@ -882,14 +929,14 @@ test "cpu memory z80 window reads include the current access audio skew" {
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
-    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 0 };
+    var runtime_ctx = TestRuntimeCtx{ .elapsed_master_cycles = 0 };
 
     view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
         &runtime_ctx,
-        AudioOffsetRuntimeCtx.currentOpcode,
-        AudioOffsetRuntimeCtx.clearInterrupt,
+        TestRuntimeCtx.currentOpcode,
+        TestRuntimeCtx.clearInterrupt,
         null,
-        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+        TestRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
     grantM68kZ80Bus(&view);
@@ -1145,14 +1192,14 @@ test "cpu memory z80 reset line edges carry the current audio master offset into
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
-    var runtime_ctx = AudioOffsetRuntimeCtx{ .elapsed_master_cycles = 123 };
+    var runtime_ctx = TestRuntimeCtx{ .elapsed_master_cycles = 123 };
 
     view.setCpuRuntimeState(cpu_runtime.RuntimeState.init(
         &runtime_ctx,
-        AudioOffsetRuntimeCtx.currentOpcode,
-        AudioOffsetRuntimeCtx.clearInterrupt,
+        TestRuntimeCtx.currentOpcode,
+        TestRuntimeCtx.clearInterrupt,
         null,
-        AudioOffsetRuntimeCtx.currentAccessElapsedMasterCycles,
+        TestRuntimeCtx.currentAccessElapsedMasterCycles,
     ));
 
     fixture.audio_timing.consumeMaster(4321);
@@ -1189,15 +1236,16 @@ test "cpu memory z80 reset preserves uploaded z80 ram" {
     try testing.expectEqual(@as(u8, 0xD9), fixture.z80.readByte(0x0002));
 }
 
-test "cpu memory vdp status high bits come from bus open bus" {
+test "cpu memory vdp status high bits come from instruction prefetch" {
     const testing = std.testing;
 
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
+    fixture.runtime_ctx.opcode = 0xA5A5;
+    fixture.initRuntime();
     var view = fixture.view();
 
-    view.write16(0x00E0_0000, 0xA5A5);
-
+    // Upper 6 bits (15:10) come from the instruction prefetch word
     const status = view.read16(0x00C0_0004);
     try testing.expectEqual(@as(u16, 0xA400), status & 0xFC00);
     try testing.expectEqual(@as(u16, 0x0200), status & 0x0300);
@@ -1210,10 +1258,11 @@ test "tmss writing SEGA unlocks vdp access" {
     defer fixture.deinit(testing.allocator);
     fixture.tmss_register = .{ 0, 0, 0, 0 };
     fixture.tmss_locked = true;
+    fixture.runtime_ctx.opcode = 0x1234;
+    fixture.initRuntime();
     var view = fixture.view();
 
-    // VDP reads should return open bus when locked
-    fixture.open_bus = 0x1234;
+    // VDP reads should return prefetch when locked
     try testing.expectEqual(@as(u16, 0x1234), view.read16(0x00C0_0004));
 
     // VDP writes should be ignored when locked

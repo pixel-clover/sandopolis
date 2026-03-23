@@ -14,7 +14,10 @@ fn readOpenBusByte(open_bus: *const u16, address: u32) u8 {
 
 fn readStatus(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeState) u16 {
     const opcode = runtime.currentOpcode();
-    const status = vdp.readControlAdjusted(opcode) | (open_bus.* & 0xFC00);
+    // On real hardware, undefined VDP status bits (15:10) return the
+    // instruction prefetch word, not the last value on the data bus.
+    // Genesis Plus GX reads from m68k.pc for these bits.
+    const status = vdp.readControlAdjusted(opcode) | (opcode & 0xFC00);
     open_bus.* = status;
     // readControlAdjusted() already cleared vint_pending/sprite flags in the VDP.
     // Recalculate the M68K IRQ level from remaining VDP sources instead of
@@ -44,9 +47,14 @@ pub fn readByte(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeSt
             return splitWordByte(word, address);
         },
         0x04, 0x05, 0x06, 0x07 => return splitWordByte(readStatus(vdp, open_bus, runtime), address),
-        0x08, 0x09, 0x0C, 0x0D => return splitWordByte(readHVCounter(vdp, open_bus, runtime), address),
-        0x18, 0x19, 0x1C, 0x1D => return readOpenBusByte(open_bus, address),
-        else => return 0xFF,
+        // HVC counter mirrors: GPGX masks with (address & 0xFD) so 0x0A/0x0B
+        // map to 0x08/0x09 and 0x0E/0x0F map to 0x0C/0x0D.
+        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F => return splitWordByte(readHVCounter(vdp, open_bus, runtime), address),
+        // Unused ports return instruction prefetch (open bus), matching GPGX.
+        0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F => return splitWordByte(runtime.currentOpcode(), address),
+        // PSG / test register / invalid ports (0x10-0x17): on real hardware
+        // these cause a lockup (no /DTACK). Return prefetch as a safe fallback.
+        else => return splitWordByte(runtime.currentOpcode(), address),
     }
 }
 
@@ -60,7 +68,7 @@ pub fn readWord(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeSt
         },
         0x04, 0x06 => return readStatus(vdp, open_bus, runtime),
         0x08, 0x0A, 0x0C, 0x0E => return readHVCounter(vdp, open_bus, runtime),
-        0x18, 0x1A, 0x1C, 0x1E => return open_bus.*,
+        0x18, 0x1A, 0x1C, 0x1E => return runtime.currentOpcode(),
         else => {
             open_bus.* = 0xFFFF;
             return 0xFFFF;
