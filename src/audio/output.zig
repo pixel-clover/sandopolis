@@ -127,12 +127,14 @@ const BoardOutputLpf = struct {
     }
 };
 
-// Board output low-pass filter. Genesis Plus GX uses lp_range = 0x9999 (fc ≈ 3.9 kHz)
-// but its blip_buffer resampler has a near-flat passband. Our cubic Hermite resampler
-// already provides some high-frequency rolloff, so using the same coefficient would
-// over-filter. Lower the coefficient to 0x6000 (fc ≈ 7.5 kHz) to compensate and match
-// the combined frequency response of GPGX's blip_buffer + board LPF.
-const board_output_history_factor: f32 = @as(f32, 0x6000) / 65536.0;
+// Board output low-pass filter, modelling the analog path on the Genesis
+// mainboard.  Genesis Plus GX uses lp_range = 0x9999 (single-pole IIR,
+// fc ≈ 3.9 kHz at 44.1 kHz).  Empirical A/B comparison of all four test
+// ROMs (SOR, GA2, ROS, SN) showed that using the GPGX coefficient at our
+// 48 kHz output rate (fc ≈ 4.0 kHz) produces the closest match in both
+// RMS level and spectral content above 6 kHz.  The earlier 0x6000 value
+// (fc ≈ 8 kHz) left Sandopolis +4 to +13 dB too bright above 6 kHz.
+const board_output_history_factor: f32 = @as(f32, 0x9999) / 65536.0;
 const board_output_input_factor: f32 = 1.0 - board_output_history_factor;
 // PSG low-pass filter before downsampling. Genesis Plus GX doesn't apply any PSG
 // filtering (blip_buffer handles anti-aliasing). Setting this very high (22 kHz)
@@ -2677,8 +2679,8 @@ test "board output lpf applies high-frequency roll-off" {
         if (i > 250) peak = @max(peak, @abs(out));
     }
 
-    // The gentler board LPF (fc ≈ 7.5 kHz) still attenuates 20 kHz significantly.
-    try std.testing.expect(peak < 0.55);
+    // The board LPF (fc ≈ 4 kHz, matching GPGX) attenuates 20 kHz to ~0.26.
+    try std.testing.expect(peak < 0.30);
 }
 
 test "board output lpf passes audible content with minimal loss" {
@@ -2690,8 +2692,9 @@ test "board output lpf passes audible content with minimal loss" {
         const out = lpf.processL(@sin(phase));
         if (i > 480) peak = @max(peak, @abs(out));
     }
-    // With fc ≈ 7.5 kHz, 1 kHz passes through with very little attenuation.
-    try std.testing.expect(peak > 0.97);
+    // With fc ≈ 4 kHz (matching GPGX 0x9999), a 1 kHz tone passes with
+    // only ~3% attenuation (single-pole IIR well below cutoff).
+    try std.testing.expect(peak > 0.95);
 }
 
 test "soft saturate leaves in-range samples unchanged" {

@@ -303,14 +303,15 @@ test "frame scheduler consumes pending z80-induced m68k wait before running cpu"
     try testing.expect(emulator.cpuState().program_counter != pc_before);
 }
 
-test "frame scheduler interleaves z80 contention within a master slice" {
+test "frame scheduler defers z80 contention to next master slice" {
     const rom = try seedResetNopsRom(testing.allocator, 32);
     defer testing.allocator.free(rom);
 
     var base = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer base.deinit(testing.allocator);
     base.reset();
-    base.runMasterSlice(224);
+    // Run two slices so deferred contention from slice 1 is consumed in slice 2.
+    base.runMasterSlice(448);
 
     var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer contended.deinit(testing.allocator);
@@ -322,6 +323,8 @@ test "frame scheduler interleaves z80 contention within a master slice" {
     contended.z80WriteByte(0x0002, 0x80);
     contended.z80WriteByte(0x0003, 0x18);
     contended.z80WriteByte(0x0004, 0xFB);
+    // Two slices: Z80 burst in slice 1 creates M68K contention consumed in slice 2.
+    contended.runMasterSlice(224);
     contended.runMasterSlice(224);
 
     try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);
@@ -329,14 +332,14 @@ test "frame scheduler interleaves z80 contention within a master slice" {
     try testing.expect(contended.z80ProgramCounter() != 0);
 }
 
-test "frame scheduler interleaves z80 vdp-window contention within a master slice" {
+test "frame scheduler defers z80 vdp-window contention to next master slice" {
     const rom = try seedResetNopsRom(testing.allocator, 32);
     defer testing.allocator.free(rom);
 
     var base = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer base.deinit(testing.allocator);
     base.reset();
-    base.runMasterSlice(224);
+    base.runMasterSlice(448);
 
     var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer contended.deinit(testing.allocator);
@@ -348,6 +351,7 @@ test "frame scheduler interleaves z80 vdp-window contention within a master slic
     contended.z80WriteByte(0x0003, 0x7E);
     contended.z80WriteByte(0x0004, 0x18);
     contended.z80WriteByte(0x0005, 0xFD);
+    contended.runMasterSlice(224);
     contended.runMasterSlice(224);
 
     try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);
@@ -383,14 +387,14 @@ test "frame scheduler does not stall cpu for z80 psg writes" {
     try testing.expectEqual(@as(u32, 0), psg.pendingM68kWaitMasterCycles());
 }
 
-test "frame scheduler interleaves z80 vdp-window writes within a master slice" {
+test "frame scheduler defers z80 vdp-window write contention to next master slice" {
     const rom = try seedResetNopsRom(testing.allocator, 32);
     defer testing.allocator.free(rom);
 
     var base = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer base.deinit(testing.allocator);
     base.reset();
-    base.runMasterSlice(448);
+    base.runMasterSlice(896);
 
     var contended = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer contended.deinit(testing.allocator);
@@ -404,6 +408,7 @@ test "frame scheduler interleaves z80 vdp-window writes within a master slice" {
     contended.z80WriteByte(0x0005, 0x77);
     contended.z80WriteByte(0x0006, 0x18);
     contended.z80WriteByte(0x0007, 0xFD);
+    contended.runMasterSlice(448);
     contended.runMasterSlice(448);
 
     try testing.expect(contended.cpuState().program_counter < base.cpuState().program_counter);

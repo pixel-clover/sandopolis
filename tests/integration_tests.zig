@@ -311,3 +311,4 @@ test "cpu formats current instruction with the built-in disassembler" {
     const text = emulator.formatCurrentInstruction(&buffer);
     try testing.expect(std.mem.indexOf(u8, text, "NOP") != null);
 }
+

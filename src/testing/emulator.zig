@@ -234,6 +234,10 @@ pub const Emulator = struct {
         return machine.vdpRegister(index);
     }
 
+    pub fn vramReadByte(self: *const Emulator, addr: u16) u8 {
+        return self.handle.machine.bus.vdp.vramReadByte(addr);
+    }
+
     pub fn setVdpCode(self: *Emulator, code: u8) void {
         var machine = self.handle.machine.testing();
         machine.setVdpCode(code);
@@ -286,6 +290,10 @@ pub const Emulator = struct {
 
     pub fn framebuffer(self: *const Emulator) []const u32 {
         return self.handle.machine.framebuffer();
+    }
+
+    pub fn setButton(self: *Emulator, port: usize, button: u16, pressed: bool) void {
+        self.handle.machine.bus.io.setButton(port, button, pressed);
     }
 
     pub fn takePendingAudio(self: *Emulator) PendingAudioFrames {
