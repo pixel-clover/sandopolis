@@ -137,6 +137,10 @@ pub const Vdp = struct {
         word: u16 = 0,
         latency: u8 = 0,
         second_service_pending: bool = false,
+        /// When true, the CRAM write was already applied at M68K write
+        /// time (immediate) and writeTargetWord should skip the CRAM
+        /// update when this entry drains from the FIFO.
+        cram_already_applied: bool = false,
     };
 
     pub const ProjectedFifoEntry = struct {

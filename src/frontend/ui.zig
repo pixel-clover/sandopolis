@@ -791,8 +791,8 @@ pub fn renderHomeOverlay(
     const item_count = HomeMenuState.itemCount(cfg);
     const note_count: usize = if (cfg.recent_rom_count == 0) 1 else 0;
 
-    var line_buffers: [recent_rom_limit + 3][256]u8 = undefined;
-    var menu_lines: [recent_rom_limit + 3][]const u8 = undefined;
+    var line_buffers: [recent_rom_limit + 4][256]u8 = undefined;
+    var menu_lines: [recent_rom_limit + 4][]const u8 = undefined;
     var max_width = textWidth(title, scale);
     max_width = @max(max_width, textWidth(subtitle, scale));
     max_width = @max(max_width, textWidth(footer_a, scale));

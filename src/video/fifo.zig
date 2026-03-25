@@ -1244,12 +1244,24 @@ pub fn writeData(self: *Vdp, value: u16) void {
 
     self.pending_command = false;
 
-    // CRAM events are recorded at FIFO-service time (writeTargetWord)
-    // to avoid double-recording which breaks the undo/redo pass in
-    // renderScanline.  The FIFO drain timing is close enough for
-    // HBlank palette-per-line effects (TiTAN Overdrive).
+    // Apply CRAM writes immediately at M68K write time, matching GPGX's
+    // vdp_bus_w() behavior.  The FIFO entry is still created for timing
+    // (M68K wait cycles) but the actual CRAM update happens NOW so that
+    // mid-scanline palette changes take effect at the correct pixel.
+    var entry = makeWriteFifoEntry(self, value, dma_fifo_latency_slots);
+    if ((self.code & 0xF) == 0x3) {
+        const cram_idx: u8 = @intCast(self.addr & 0x7E);
+        // Record the CRAM dot event (for undo/redo during rendering).
+        // This may be rejected if in VBlank or display off, but the
+        // actual CRAM write below always applies.
+        self.recordCramDot(self.line_master_cycle, cram_idx, value);
+        // Apply CRAM write immediately regardless of display state.
+        const masked = value & 0x0EEE;
+        self.cram[cram_idx] = @intCast((masked >> 8) & 0xFF);
+        self.cram[cram_idx + 1] = @intCast(masked & 0xFF);
+        entry.cram_already_applied = true;
+    }
 
-    const entry = makeWriteFifoEntry(self, value, dma_fifo_latency_slots);
     if (fifoIsFull(self)) {
         pendingFifoPush(self, entry);
     } else {
@@ -1294,7 +1306,16 @@ fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopa
     if (slot_idx != 0 and transferSlotIsRefresh(self, slot_idx - 1)) return;
 
     const word = read_word(read_ctx, self.dma_source_addr);
-    const entry = makeWriteFifoEntry(self, word, dma_fifo_latency_slots);
+    var entry = makeWriteFifoEntry(self, word, dma_fifo_latency_slots);
+    // Apply DMA-to-CRAM immediately, same as data port CRAM writes.
+    if ((self.code & 0xF) == 0x3) {
+        const cram_idx: u8 = @intCast(self.addr & 0x7E);
+        self.recordCramDot(self.transfer_line_master_cycle, cram_idx, word);
+        const masked = word & 0x0EEE;
+        self.cram[cram_idx] = @intCast((masked >> 8) & 0xFF);
+        self.cram[cram_idx + 1] = @intCast(masked & 0xFF);
+        entry.cram_already_applied = true;
+    }
     // DMA source wraps within a 128K window (bits 0-16), preserving the
     // upper address from reg[23].  GPGX: source = (reg[23] << 17) | (source & 0x1FFFF)
     const next_src = self.dma_source_addr +% 2;
@@ -1402,7 +1423,7 @@ fn serviceFifoFront(self: *Vdp) void {
     if (entry.latency != 0) return;
 
     const committed = entry.*;
-    if (!committed.second_service_pending) {
+    if (!committed.second_service_pending and !committed.cram_already_applied) {
         writeTargetWord(self, committed.code, committed.addr, committed.word);
     }
 
