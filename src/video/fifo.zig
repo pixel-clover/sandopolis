@@ -133,8 +133,7 @@ fn normalizeTransferLineMasterCycle(total_master_cycles: u32) u16 {
 }
 
 fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
-    var total = @as(u32, self.transfer_line_master_cycle) + master_cycles;
-    if (total >= clock.ntsc_master_cycles_per_line) total -= clock.ntsc_master_cycles_per_line;
+    const total = (@as(u32, self.transfer_line_master_cycle) + master_cycles) % clock.ntsc_master_cycles_per_line;
     self.transfer_line_master_cycle = @intCast(total);
 }
 
@@ -1213,7 +1212,10 @@ fn writeTargetWord(self: *Vdp, code: u8, addr: u16, value: u16) void {
         0x3 => {
             self.dbg_cram_writes += 1;
             const idx = addr & 0x7E;
-            self.recordCramDot(self.transfer_line_master_cycle, value);
+            // Record CRAM event at FIFO service time as well.  This catches
+            // DMA-to-CRAM writes and any writes whose early recording in
+            // writeData was skipped (e.g. buffered port writes).
+            self.recordCramDot(self.transfer_line_master_cycle, @intCast(idx), value);
             // CRAM stores 9-bit color in format ----BBB0GGG0RRR0.
             // Mask out unused bits so readback returns canonical values.
             const masked = value & 0x0EEE;
@@ -1241,6 +1243,16 @@ pub fn writeData(self: *Vdp, value: u16) void {
     }
 
     self.pending_command = false;
+
+    // Record CRAM dot at M68K write time (before FIFO deferral) so the
+    // pixel position reflects when the 68K issued the write, not when
+    // the FIFO drains.  Use line_master_cycle (the VDP's current
+    // scanline position) rather than transfer_line_master_cycle (the
+    // FIFO drain cursor).
+    if ((self.code & 0xF) == 0x3) {
+        const cram_idx: u8 = @intCast(self.addr & 0x7E);
+        self.recordCramDot(self.line_master_cycle, cram_idx, value);
+    }
 
     const entry = makeWriteFifoEntry(self, value, dma_fifo_latency_slots);
     if (fifoIsFull(self)) {
@@ -1288,7 +1300,10 @@ fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopa
 
     const word = read_word(read_ctx, self.dma_source_addr);
     const entry = makeWriteFifoEntry(self, word, dma_fifo_latency_slots);
-    self.dma_source_addr +%= 2;
+    // DMA source wraps within a 128K window (bits 0-16), preserving the
+    // upper address from reg[23].  GPGX: source = (reg[23] << 17) | (source & 0x1FFFF)
+    const next_src = self.dma_source_addr +% 2;
+    self.dma_source_addr = (self.dma_source_addr & 0xFFFE0000) | (next_src & 0x1FFFF);
     self.dma_remaining -= 1;
     if (self.active_execution_counters) |counters| counters.dma_words += 1;
     fifoPush(self, entry);
@@ -1341,7 +1356,7 @@ fn progressDmaFill(self: *Vdp, access_slots: u32) void {
             0x3 => {
                 self.dbg_cram_writes += 1;
                 const idx = self.addr & 0x7E;
-                self.recordCramDot(self.transfer_line_master_cycle, fill_word);
+                self.recordCramDot(self.transfer_line_master_cycle, @intCast(idx & 0x7E), fill_word);
                 const masked = fill_word & 0x0EEE;
                 self.cram[idx] = @intCast((masked >> 8) & 0xFF);
                 self.cram[idx + 1] = @intCast(masked & 0xFF);
@@ -1510,7 +1525,12 @@ pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
 }
 
 pub fn writeControl(self: *Vdp, value: u16) void {
-    if (shouldBufferPortWrite(self)) {
+    // VDP register writes (8xxx pattern) are always processed immediately,
+    // even during active DMA.  Only the second word of a 2-word command
+    // is cached during 68K-bus DMA, matching GPGX (vdp_68k_ctrl_w).
+    if (!self.pending_command and (value & 0xE000) == 0x8000) {
+        // Register write — never buffered
+    } else if (shouldBufferPortWrite(self)) {
         pushPendingPortWrite(self, .{ .control = value });
         return;
     }
@@ -1583,10 +1603,10 @@ pub fn writeControl(self: *Vdp, value: u16) void {
                 self.dma_active = true;
                 self.dma_start_delay_slots = 0;
             }
-            self.fifo_head = 0;
-            self.fifo_len = 0;
-            self.pending_fifo_head = 0;
-            self.pending_fifo_len = 0;
+            // Do NOT clear the FIFO when DMA starts.  GPGX only resets the
+            // FIFO at VDP hard reset, not on DMA activation.  Clearing here
+            // would drop any pending data port writes that are still in the
+            // pipeline, corrupting VRAM (e.g. Warsong's stats panel tiles).
         }
     }
 }
@@ -1927,6 +1947,15 @@ test "progressTransfers normalizes the transfer cursor after line overshoot" {
 
     try testing.expectEqual(@as(u16, 12), vdp.transfer_line_master_cycle);
     try testing.expect(vdp.nextTransferStepMasterCycles() > 0);
+}
+
+test "advanceTransferCursor wraps correctly across multiple line periods" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.transfer_line_master_cycle = 50;
+
+    advanceTransferCursor(&vdp, clock.ntsc_master_cycles_per_line * 2 + 100);
+    try testing.expectEqual(@as(u16, 150), vdp.transfer_line_master_cycle);
 }
 
 test "projected data port write wait carries hblank phase across reservations" {

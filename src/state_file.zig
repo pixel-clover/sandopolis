@@ -391,8 +391,7 @@ test "save-state files round-trip machine state" {
     machine.bus.z80.writeByte(0x7F11, 0x90);
     var timing_state = machine.bus.captureTimingState();
     timing_state.z80_stall_master_debt = 49;
-    timing_state.z80_wait_master_cycles = 50;
-    timing_state.z80_odd_access = true;
+    timing_state.z80_wait_master_cycles = 45;
     timing_state.m68k_wait_master_cycles = 33;
     machine.bus.restoreTimingState(timing_state);
     machine.bus.z80.writeByte(0x0000, 0x9A);
@@ -423,8 +422,7 @@ test "save-state files round-trip machine state" {
     try testing.expectEqual(@as(u64, 777), restored.m68k_sync.master_cycles);
     const restored_timing_state = restored.bus.captureTimingState();
     try testing.expectEqual(@as(u32, 49), restored_timing_state.z80_stall_master_debt);
-    try testing.expectEqual(@as(u32, 50), restored_timing_state.z80_wait_master_cycles);
-    try testing.expect(restored_timing_state.z80_odd_access);
+    try testing.expectEqual(@as(u32, 45), restored_timing_state.z80_wait_master_cycles);
     try testing.expectEqual(@as(u32, 33), restored_timing_state.m68k_wait_master_cycles);
     try testing.expectEqualStrings("saves/test.sav", restored.bus.persistentSavePath().?);
     try testing.expectEqualStrings("roms/test.md", restored.bus.sourcePath().?);

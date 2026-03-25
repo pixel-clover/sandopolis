@@ -15,7 +15,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Z80 bus control with BUSREQ/RESET and 68K window gating
 - [x] Coarse-grain 68K/Z80 bus arbitration with wait-state delays for Z80 window access
 - [x] Per-access wait cycle tracking for VDP FIFO and Z80 window within multi-access instructions
-- [ ] Sub-instruction Z80 timing advancement during 68K multi-access instructions
+- [x] Sub-instruction Z80 timing advancement during 68K multi-access instructions
 - [ ] Dynamic arbitration during VDP DMA with shared bus windows
 
 ### Video Display Processor

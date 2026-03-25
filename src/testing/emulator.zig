@@ -3,6 +3,12 @@ const internal_machine = @import("../machine.zig");
 const internal_timing = @import("../audio/timing.zig");
 const state_file = @import("../state_file.zig");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
+const M68kInstructionTraceEntry = @import("../cpu/rocket68_cpu.zig").Cpu.M68kInstructionTraceEntry;
+const Bus = @import("../bus/bus.zig").Bus;
+const M68kSoundWriteTraceEntry = Bus.M68kSoundWriteTraceEntry;
+const Z80AudioOpTraceEntry = @import("../cpu/z80.zig").Z80.AudioOpTraceEntry;
+const YmWriteEvent = @import("../audio/ym2612.zig").YmWriteEvent;
+const YmDacSampleEvent = @import("../cpu/z80.zig").Z80.YmDacSampleEvent;
 
 const empty_rom = [_]u8{};
 
@@ -32,6 +38,7 @@ pub const Emulator = struct {
         state.* = .{
             .machine = try internal_machine.Machine.init(allocator, rom_path),
         };
+        state.machine.reset();
         return .{ .handle = state };
     }
 
@@ -42,6 +49,7 @@ pub const Emulator = struct {
         state.* = .{
             .machine = try internal_machine.Machine.initFromRomBytes(allocator, rom_bytes),
         };
+        state.machine.reset();
         return .{ .handle = state };
     }
 
@@ -74,6 +82,14 @@ pub const Emulator = struct {
         self.handle.machine.runFrame();
     }
 
+    pub const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
+
+    pub fn runFrameProfiled(self: *Emulator) CoreFrameCounters {
+        var counters = CoreFrameCounters{};
+        self.handle.machine.runFrameProfiled(&counters);
+        return counters;
+    }
+
     pub fn runFrames(self: *Emulator, frames: usize) void {
         for (0..frames) |_| {
             self.handle.machine.runFrame();
@@ -98,6 +114,16 @@ pub const Emulator = struct {
             const pending = self.handle.machine.takePendingAudio();
             try output.discardPending(pending, &self.handle.machine.bus.z80, self.handle.machine.palMode());
         }
+    }
+
+    pub fn renderPendingAudio(self: *Emulator, output: *AudioOutput, sink: anytype) !void {
+        const pending = self.handle.machine.takePendingAudio();
+        try output.renderPending(pending, &self.handle.machine.bus.z80, self.handle.machine.palMode(), sink);
+    }
+
+    pub fn discardPendingAudioWithOutput(self: *Emulator, output: *AudioOutput) !void {
+        const pending = self.handle.machine.takePendingAudio();
+        try output.discardPending(pending, &self.handle.machine.bus.z80, self.handle.machine.palMode());
     }
 
     pub fn cpuState(self: *const Emulator) CpuState {
@@ -129,6 +155,13 @@ pub const Emulator = struct {
     pub fn formatCurrentInstruction(self: *Emulator, buffer: []u8) []const u8 {
         var machine = self.handle.machine.testing();
         return machine.formatCurrentInstruction(buffer);
+    }
+
+    pub const TestPrefetchCtx = Bus.TestPrefetchCtx;
+
+    pub fn setTestPrefetch(self: *Emulator, ctx: *TestPrefetchCtx) void {
+        var machine = self.handle.machine.testing();
+        machine.setTestPrefetch(ctx);
     }
 
     pub fn read8(self: *Emulator, address: u32) u8 {
@@ -201,6 +234,10 @@ pub const Emulator = struct {
         return machine.vdpRegister(index);
     }
 
+    pub fn vramReadByte(self: *const Emulator, addr: u16) u8 {
+        return self.handle.machine.bus.vdp.vramReadByte(addr);
+    }
+
     pub fn setVdpCode(self: *Emulator, code: u8) void {
         var machine = self.handle.machine.testing();
         machine.setVdpCode(code);
@@ -255,6 +292,10 @@ pub const Emulator = struct {
         return self.handle.machine.framebuffer();
     }
 
+    pub fn setButton(self: *Emulator, port: usize, button: u16, pressed: bool) void {
+        self.handle.machine.bus.io.setButton(port, button, pressed);
+    }
+
     pub fn takePendingAudio(self: *Emulator) PendingAudioFrames {
         return self.handle.machine.takePendingAudio();
     }
@@ -267,6 +308,95 @@ pub const Emulator = struct {
     pub fn ymRegister(self: *const Emulator, port: u1, reg: u8) u8 {
         const machine = self.handle.machine.testingConst();
         return machine.ymRegister(port, reg);
+    }
+
+    pub fn pendingYmWriteCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingYmWriteCount();
+    }
+
+    pub fn takeYmWrites(self: *Emulator, dest: []YmWriteEvent) usize {
+        return self.handle.machine.bus.z80.takeYmWrites(dest);
+    }
+
+    pub fn pendingYmDacCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingYmDacCount();
+    }
+
+    pub fn takeYmDacSamples(self: *Emulator, dest: []YmDacSampleEvent) usize {
+        return self.handle.machine.bus.z80.takeYmDacSamples(dest);
+    }
+
+    pub fn pendingPsgCommandCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingPsgCommandCount();
+    }
+
+    pub fn takeAudioOverflowCounts(self: *Emulator) u32 {
+        return self.handle.machine.bus.z80.takeOverflowCounts();
+    }
+
+    pub fn setZ80AudioOpTraceEnabled(self: *Emulator, enabled: bool) void {
+        self.handle.machine.bus.z80.setAudioOpTraceEnabled(enabled);
+    }
+
+    pub fn clearZ80AudioOpTrace(self: *Emulator) void {
+        self.handle.machine.bus.z80.clearAudioOpTrace();
+    }
+
+    pub fn pendingZ80AudioOpTraceCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingAudioOpTraceCount();
+    }
+
+    pub fn takeZ80AudioOpTrace(self: *Emulator, dest: []Z80AudioOpTraceEntry) usize {
+        return self.handle.machine.bus.z80.takeAudioOpTrace(dest);
+    }
+
+    pub fn takeZ80AudioOpTraceDroppedCount(self: *Emulator) u32 {
+        return self.handle.machine.bus.z80.takeAudioOpTraceDroppedCount();
+    }
+
+    pub fn setM68kInstructionTraceEnabled(self: *Emulator, enabled: bool) void {
+        var machine = self.handle.machine.testing();
+        machine.setM68kInstructionTraceEnabled(enabled);
+    }
+
+    pub fn setM68kInstructionTraceStopOnFault(self: *Emulator, stop_on_fault: bool) void {
+        var machine = self.handle.machine.testing();
+        machine.setM68kInstructionTraceStopOnFault(stop_on_fault);
+    }
+
+    pub fn clearM68kInstructionTrace(self: *Emulator) void {
+        var machine = self.handle.machine.testing();
+        machine.clearM68kInstructionTrace();
+    }
+
+    pub fn m68kInstructionTraceEntries(self: *const Emulator) []const M68kInstructionTraceEntry {
+        const machine = self.handle.machine.testingConst();
+        return machine.m68kInstructionTraceEntries();
+    }
+
+    pub fn m68kInstructionTraceDroppedCount(self: *const Emulator) u32 {
+        const machine = self.handle.machine.testingConst();
+        return machine.m68kInstructionTraceDroppedCount();
+    }
+
+    pub fn setM68kSoundWriteTraceEnabled(self: *Emulator, enabled: bool) void {
+        var machine = self.handle.machine.testing();
+        machine.setM68kSoundWriteTraceEnabled(enabled);
+    }
+
+    pub fn clearM68kSoundWriteTrace(self: *Emulator) void {
+        var machine = self.handle.machine.testing();
+        machine.clearM68kSoundWriteTrace();
+    }
+
+    pub fn m68kSoundWriteTraceEntries(self: *const Emulator) []const M68kSoundWriteTraceEntry {
+        const machine = self.handle.machine.testingConst();
+        return machine.m68kSoundWriteTraceEntries();
+    }
+
+    pub fn m68kSoundWriteTraceDroppedCount(self: *const Emulator) u32 {
+        const machine = self.handle.machine.testingConst();
+        return machine.m68kSoundWriteTraceDroppedCount();
     }
 
     pub fn z80Reset(self: *Emulator) void {
@@ -282,6 +412,26 @@ pub const Emulator = struct {
     pub fn z80ProgramCounter(self: *const Emulator) u16 {
         const machine = self.handle.machine.testingConst();
         return machine.z80ProgramCounter();
+    }
+
+    pub fn z80Iff1(self: *const Emulator) u8 {
+        return self.handle.machine.bus.z80.getRegisterDump().iff1;
+    }
+
+    pub fn z80InterruptMode(self: *const Emulator) u8 {
+        return self.handle.machine.bus.z80.getRegisterDump().interrupt_mode;
+    }
+
+    pub fn z80Halted(self: *const Emulator) u8 {
+        return self.handle.machine.bus.z80.getRegisterDump().halted;
+    }
+
+    pub fn z80ReadByte(self: *const Emulator, addr: u16) u8 {
+        return self.handle.machine.bus.z80.readByte(addr);
+    }
+
+    pub fn z80Bank(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.getBank();
     }
 
     pub fn z80BusAckWord(self: *const Emulator) u16 {
@@ -335,6 +485,18 @@ pub const Emulator = struct {
 
     pub fn cpuPc(self: *const Emulator) u32 {
         return self.handle.machine.programCounter();
+    }
+
+    pub fn palMode(self: *const Emulator) bool {
+        return self.handle.machine.palMode();
+    }
+
+    pub fn cpuInstructionRegister(self: *const Emulator) u16 {
+        return self.handle.machine.cpu.core.ir;
+    }
+
+    pub fn cpuExceptionThrown(self: *const Emulator) i32 {
+        return self.handle.machine.cpu.core.exception_thrown;
     }
 
     pub fn cpuSr(self: *const Emulator) u16 {

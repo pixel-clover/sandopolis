@@ -56,4 +56,11 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
             remaining -= stepped_master;
         }
     }
+
+    // Run the Z80 as a burst after all M68K instructions for this slice.
+    // This matches GPGX's per-line model where both CPUs run to the same
+    // target: M68K first, then Z80.  The Z80 sees all M68K shared-RAM
+    // writes before executing, avoiding race conditions in Z80 sound
+    // drivers like SOR's GEMS that depend on initialization order.
+    bus.flushDeferredZ80();
 }

@@ -15,6 +15,7 @@ pub const MemoryInterface = struct {
     controlPortWriteWaitMasterCyclesFn: *const fn (?*anyopaque) u32,
     setCpuRuntimeStateFn: *const fn (?*anyopaque, runtime_state.RuntimeState) void,
     clearCpuRuntimeStateFn: *const fn (?*anyopaque) void,
+    notifyBusAccessFn: *const fn (?*anyopaque, u32) void,
 
     pub fn bind(comptime Context: type, ctx: *Context) MemoryInterface {
         return .{
@@ -91,6 +92,12 @@ pub const MemoryInterface = struct {
                     self.clearCpuRuntimeState();
                 }
             }.call,
+            .notifyBusAccessFn = struct {
+                fn call(raw_ctx: ?*anyopaque, delta_master_cycles: u32) void {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    self.notifyBusAccess(delta_master_cycles);
+                }
+            }.call,
         };
     }
 
@@ -140,6 +147,10 @@ pub const MemoryInterface = struct {
 
     pub fn clearCpuRuntimeState(self: *const MemoryInterface) void {
         self.clearCpuRuntimeStateFn(self.ctx);
+    }
+
+    pub fn notifyBusAccess(self: *const MemoryInterface, delta_master_cycles: u32) void {
+        self.notifyBusAccessFn(self.ctx, delta_master_cycles);
     }
 };
 
@@ -212,6 +223,8 @@ test "memory interface bind forwards reads writes waits and runtime hooks" {
         fn clearCpuRuntimeState(self: *@This()) void {
             self.runtime.clear();
         }
+
+        fn notifyBusAccess(_: *@This(), _: u32) void {}
     };
 
     var probe = Probe{};
@@ -239,7 +252,7 @@ test "memory interface bind forwards reads writes waits and runtime hooks" {
     try testing.expectEqual(@as(u32, 33), memory.controlPortWriteWaitMasterCycles());
 
     var callback_ctx = CallbackCtx{ .opcode = 0x4E71 };
-    memory.setCpuRuntimeState(runtime_state.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt, null));
+    memory.setCpuRuntimeState(runtime_state.RuntimeState.init(&callback_ctx, CallbackCtx.currentOpcode, CallbackCtx.clearInterrupt, null, null));
     try testing.expectEqual(@as(u16, 0x4E71), probe.runtime.currentOpcode());
 
     memory.clearCpuRuntimeState();

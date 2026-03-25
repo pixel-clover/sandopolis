@@ -25,7 +25,7 @@ pub const AudioTiming = struct {
             self.pending_psg_start_remainder = self.psg_master_remainder;
         }
 
-        self.pending_master_cycles += master_cycles;
+        self.pending_master_cycles +%= master_cycles;
 
         const fm_total = @as(u32, self.fm_master_remainder) + master_cycles;
         self.pending_fm_frames += fm_total / clock.fm_master_cycles_per_sample;

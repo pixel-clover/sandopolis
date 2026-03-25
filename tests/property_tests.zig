@@ -402,9 +402,8 @@ fn initEmptyEmulator() !Emulator {
     return Emulator.initEmpty(testing.allocator);
 }
 
-fn seedOpenBus(emulator: *Emulator, value: u16) void {
-    emulator.write16(0x00E0_0000, value);
-    _ = emulator.read16(0x00E0_0000);
+fn seedOpenBus(emulator: *Emulator, prefetch_ctx: *Emulator.TestPrefetchCtx) void {
+    emulator.setTestPrefetch(prefetch_ctx);
 }
 
 fn configureVdpFromCase(vdp: *Vdp, input: VdpStateCase) void {
@@ -606,7 +605,8 @@ fn busControlRegisterMirrorProperty(input: BusControlCase) !void {
     emulator.write16(0x00A1_1200, if (input.reset_asserted) 0x0000 else 0x0100);
     emulator.write16(0x00A1_1100, if (input.request_bus) 0x0100 else 0x0000);
 
-    seedOpenBus(&emulator, input.open_bus);
+    var prefetch_ctx = Emulator.TestPrefetchCtx{ .opcode = input.open_bus };
+    seedOpenBus(&emulator, &prefetch_ctx);
     const bus_ack = emulator.read16(0x00A1_1100);
     const expected_bus_ack_bit: u16 = if (input.request_bus and !input.reset_asserted) 0x0000 else 0x0100;
     try testing.expectEqual((input.open_bus & ~@as(u16, 0x0100)) | expected_bus_ack_bit, bus_ack);
@@ -619,7 +619,8 @@ fn vdpStatusOpenBusHighBitsProperty(input: OpenBusStatusCase) !void {
     var emulator = try initEmptyEmulator();
     defer emulator.deinit(testing.allocator);
 
-    seedOpenBus(&emulator, input.open_bus);
+    var prefetch_ctx = Emulator.TestPrefetchCtx{ .opcode = input.open_bus };
+    seedOpenBus(&emulator, &prefetch_ctx);
     const status = emulator.read16(0x00C0_0004);
     try testing.expectEqual(input.open_bus & @as(u16, 0xFC00), status & @as(u16, 0xFC00));
 }
@@ -628,17 +629,19 @@ fn z80WindowBlockedReadProperty(input: Z80WindowCase) !void {
     var emulator = try initEmptyEmulator();
     defer emulator.deinit(testing.allocator);
 
-    seedOpenBus(&emulator, input.open_bus);
+    var prefetch_ctx = Emulator.TestPrefetchCtx{ .opcode = input.open_bus };
+    seedOpenBus(&emulator, &prefetch_ctx);
     const address = 0x00A0_0000 + @as(u32, input.offset);
     try testing.expectEqual(@as(u8, @truncate(input.open_bus >> 8)), emulator.read8(address));
-    try testing.expectEqual(input.open_bus & @as(u16, 0xFF00), emulator.read16(address));
+    try testing.expectEqual(input.open_bus, emulator.read16(address));
 }
 
 fn unusedVdpPortReadProperty(input: UnusedVdpPortCase) !void {
     var emulator = try initEmptyEmulator();
     defer emulator.deinit(testing.allocator);
 
-    seedOpenBus(&emulator, input.open_bus);
+    var prefetch_ctx = Emulator.TestPrefetchCtx{ .opcode = input.open_bus };
+    seedOpenBus(&emulator, &prefetch_ctx);
     const address = 0x00C0_0000 + @as(u32, input.base_offset);
     try testing.expectEqual(@as(u8, @truncate(input.open_bus >> 8)), emulator.read8(address));
     try testing.expectEqual(@as(u8, @truncate(input.open_bus)), emulator.read8(address + 1));
@@ -760,6 +763,7 @@ fn z80WindowBlockedWriteProperty(input: Z80WindowWriteCase) !void {
 
     const address = 0x00A0_0000 + @as(u32, input.offset);
 
+    emulator.write16(0x00A1_1200, 0x0100);
     emulator.write16(0x00A1_1100, 0x0100);
     emulator.write8(address, input.granted_value);
     try testing.expectEqual(input.granted_value, emulator.read8(address));

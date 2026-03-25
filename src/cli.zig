@@ -9,6 +9,9 @@ pub const TimingModeOption = rom_metadata.TimingModeOption;
 pub const Config = struct {
     rom_path: ?[]const u8 = null,
     audio_mode: AudioOutput.RenderMode = .normal,
+    audio_mode_overridden: bool = false,
+    audio_queue_ms: u16 = AudioOutput.default_queue_budget_ms,
+    audio_queue_ms_overridden: bool = false,
     renderer_name: ?[]const u8 = null,
     timing_mode: TimingModeOption = .auto,
     config_path: ?[]const u8 = null,
@@ -25,9 +28,20 @@ fn exec(ctx: chilli.CommandContext) !void {
 
     // --audio-mode
     const audio_str = try ctx.getFlag("audio-mode", []const u8);
-    if (!std.mem.eql(u8, audio_str, "normal")) {
+    if (audio_str.len != 0) {
         config.audio_mode = AudioOutput.RenderMode.parse(audio_str) catch
             return error.InvalidAudioMode;
+        config.audio_mode_overridden = true;
+    }
+
+    // --audio-queue-ms
+    const audio_queue_str = try ctx.getFlag("audio-queue-ms", []const u8);
+    if (audio_queue_str.len != 0) {
+        const parsed = std.fmt.parseUnsigned(u16, audio_queue_str, 10) catch
+            return error.InvalidAudioQueueMs;
+        if (!AudioOutput.isValidQueueBudgetMs(parsed)) return error.InvalidAudioQueueMs;
+        config.audio_queue_ms = parsed;
+        config.audio_queue_ms_overridden = true;
     }
 
     // --renderer — dupe for same reason as rom_path
@@ -60,7 +74,13 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
         .name = "audio-mode",
         .description = "Audio render mode: normal, ym-only, psg-only, unfiltered-mix",
         .type = .String,
-        .default_value = .{ .String = "normal" },
+        .default_value = .{ .String = "" },
+    });
+    try cmd.addFlag(.{
+        .name = "audio-queue-ms",
+        .description = "Audio queue budget in milliseconds (40-150) before backlog recovery",
+        .type = .String,
+        .default_value = .{ .String = "" },
     });
     try cmd.addFlag(.{
         .name = "renderer",

@@ -1,6 +1,6 @@
 .{
     .name = .sandopolis,
-    .version = "0.1.0-alpha.3",
+    .version = "0.1.0-alpha.4",
     .fingerprint = 0x50bf614ce7c127dd, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
@@ -21,8 +21,8 @@
             .hash = "N-V-__8AAOj4AgCPCxSePjb6U-Kb3CMWSn14SVV5AOOWXXCt",
         },
         .rocket68 = .{
-            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.1.0-alpha.5.tar.gz",
-            .hash = "rocket68-0.1.0-alpha.5-Jd6gXIGhAgDEazdf8Egn0nuf7v_kLUc7Lh9ngn1ATOJX",
+            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.1.2.tar.gz",
+            .hash = "rocket68-0.1.2-Jd6gXDu9AgDdKnmMb3rLhNZ4iR7hHrKOgcbHDZCNgLrd",
         },
         .sdl3 = .{
             .url = "https://github.com/castholm/SDL/archive/refs/tags/v0.4.1+3.4.2.tar.gz",

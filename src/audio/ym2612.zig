@@ -25,12 +25,10 @@ pub const ChipType = enum {
 const operator_reg_offsets = [_]u8{ 0x00, 0x08, 0x04, 0x0C };
 const internal_clock_master_cycles: u16 = @as(u16, clock.m68k_divider) * 6;
 const internal_clocks_per_sample: usize = clock.fm_master_cycles_per_sample / internal_clock_master_cycles;
-const ym_output_scale: f32 = 1.0 / 192.0;
-// YM2612 low-pass filter cutoff. Models the DAC's own analog rolloff. This is
-// intentionally higher than the ~5 kHz total hardware path because the board output
-// LPF (BoardOutputLpf, ~7 kHz 1-pole) handles the remaining filtering. Setting this
-// too low causes over-filtering when both stages cascade.
-const ym_cutoff_hz: f32 = 12000.0;
+// Genesis Plus GX's Nuked wrapper sums 24 internal clocks and writes
+// `ym3438_sample * 11` into the FM buffer. Normalize against 16-bit PCM so the
+// Sandopolis output wrapper uses the same amplitude basis.
+const ym_output_scale: f32 = 11.0 / 32767.0;
 const ym_busy_cycles: u8 = 32;
 const ym_status_latch_cycles: u32 = 300_000;
 
@@ -212,7 +210,7 @@ const Opn2Core = struct {
     lfo_enabled_mask: u8 = 0,
     lfo_freq: u8 = 0,
     lfo_pm: u8 = 0,
-    lfo_am: u8 = 0,
+    lfo_am: u8 = 126,
     lfo_cnt: u8 = 0,
     lfo_inc: u8 = 0,
     lfo_quotient: u32 = 0,
@@ -422,6 +420,12 @@ const Opn2Core = struct {
                     0x22 => {
                         self.lfo_enabled_mask = if (((write.value >> 3) & 0x01) != 0) 0x7F else 0;
                         self.lfo_freq = write.value & 0x07;
+                        if (self.lfo_enabled_mask == 0) {
+                            self.lfo_cnt = 0;
+                            self.lfo_pm = 0;
+                            self.lfo_am = 126;
+                            self.lfo_quotient = 0;
+                        }
                     },
                     0x24 => {
                         self.timer_a_reg &= 0x03;
@@ -433,6 +437,8 @@ const Opn2Core = struct {
                     },
                     0x26 => self.timer_b_reg = write.value,
                     0x27 => {
+                        const prev_timer_a_load = self.timer_a_load;
+                        const prev_timer_b_load = self.timer_b_load;
                         self.mode_ch3 = (write.value & 0xC0) >> 6;
                         self.mode_csm = @intFromBool(self.mode_ch3 == 0x02);
                         self.timer_a_load = write.value & 0x01;
@@ -441,6 +447,18 @@ const Opn2Core = struct {
                         self.timer_b_load = (write.value >> 1) & 0x01;
                         self.timer_b_enable = (write.value >> 3) & 0x01;
                         self.timer_b_reset = (write.value >> 5) & 0x01;
+                        if (self.timer_a_load != 0 and prev_timer_a_load == 0) {
+                            self.timer_a_load_latch = 1;
+                        }
+                        if (self.timer_b_load != 0 and prev_timer_b_load == 0) {
+                            self.timer_b_load_latch = 1;
+                        }
+                        if (self.timer_a_reset != 0) {
+                            self.timer_a_overflow_flag = 0;
+                        }
+                        if (self.timer_b_reset != 0) {
+                            self.timer_b_overflow_flag = 0;
+                        }
                     },
                     0x28 => {
                         inline for (0..4) |i| {
@@ -936,10 +954,17 @@ const Opn2Core = struct {
         var inc: i16 = 0;
 
         if (kon_event) {
-            next_state = .attack;
+            const sustain_level_zero = self.sl[slot] == 0;
             if (self.eg_ratemax) {
                 next_level = 0;
-            } else if (current_state == .attack and level != 0 and self.eg_inc != 0 and nkon != 0) {
+                next_state = if (sustain_level_zero) .sustain else .decay;
+            } else if (level == 0) {
+                next_state = if (sustain_level_zero) .sustain else .decay;
+            } else {
+                next_state = .attack;
+            }
+
+            if (next_state == .attack and current_state == .attack and self.eg_inc != 0 and nkon != 0) {
                 inc = (@as(i16, ~level) << @intCast(self.eg_inc)) >> 5;
             }
         } else {
@@ -1099,72 +1124,16 @@ const Opn2Core = struct {
     }
 };
 
-const BiquadLpf = struct {
-    b0: f32 = 0,
-    b1: f32 = 0,
-    b2: f32 = 0,
-    a1: f32 = 0,
-    a2: f32 = 0,
-    z1: f32 = 0,
-    z2: f32 = 0,
-    warmup_samples: u8 = 0,
-
-    const warmup_count: u8 = 16;
-
-    fn process(self: *BiquadLpf, x: f32) f32 {
-        const y = self.b0 * x + self.z1;
-        self.z1 = self.b1 * x - self.a1 * y + self.z2;
-        self.z2 = self.b2 * x - self.a2 * y;
-
-        // Apply gradual fade-in during warmup to avoid startup transient.
-        // The biquad filter needs a few samples to stabilize.
-        if (self.warmup_samples < warmup_count) {
-            self.warmup_samples += 1;
-            const blend = @as(f32, @floatFromInt(self.warmup_samples)) / @as(f32, warmup_count);
-            return y * blend;
-        }
-        return y;
-    }
-};
-
-fn buildBiquadLpf(sample_rate: f32, cutoff_hz: f32) BiquadLpf {
-    const w0 = std.math.tau * cutoff_hz / sample_rate;
-    const cos_w0 = @cos(w0);
-    const sin_w0 = @sin(w0);
-
-    const alpha = sin_w0 / (2.0 * 0.7071067811865476);
-
-    const a0_inv = 1.0 / (1.0 + alpha);
-    return .{
-        .b0 = ((1.0 - cos_w0) / 2.0) * a0_inv,
-        .b1 = (1.0 - cos_w0) * a0_inv,
-        .b2 = ((1.0 - cos_w0) / 2.0) * a0_inv,
-        .a1 = (-2.0 * cos_w0) * a0_inv,
-        .a2 = (1.0 - alpha) * a0_inv,
-    };
-}
-
 pub const Ym2612Synth = struct {
     core: Opn2Core = .{},
     timing_is_pal: bool = false,
-    native_sample_rate: f32 = ntscNativeSampleRate(),
-    lpf_left: BiquadLpf = buildBiquadLpf(ntscNativeSampleRate(), ym_cutoff_hz),
-    lpf_right: BiquadLpf = buildBiquadLpf(ntscNativeSampleRate(), ym_cutoff_hz),
     pending_writes: [max_pending_writes]YmWriteEvent = undefined,
     pending_write_count: usize = 0,
     chip_type: ChipType = .discrete,
-    /// Per-channel output sign tracking for DAC ladder effect.
-    /// Tracks whether each channel's last output was negative (for ladder offset calculation).
-    channel_output_negative: [6]bool = .{ false, false, false, false, false, false },
-    /// Per-channel mute state (based on pan L/R both being 0).
-    channel_muted: [6]bool = .{ false, false, false, false, false, false },
 
     pub fn setTimingMode(self: *Ym2612Synth, is_pal: bool) void {
         if (self.timing_is_pal == is_pal) return;
         self.timing_is_pal = is_pal;
-        self.native_sample_rate = if (is_pal) palNativeSampleRate() else ntscNativeSampleRate();
-        self.lpf_left = buildBiquadLpf(self.native_sample_rate, ym_cutoff_hz);
-        self.lpf_right = buildBiquadLpf(self.native_sample_rate, ym_cutoff_hz);
     }
 
     pub fn reset(self: *Ym2612Synth) void {
@@ -1205,19 +1174,6 @@ pub const Ym2612Synth = struct {
             const pins = self.clockOneInternal();
             sum_left += pins[0];
             sum_right += pins[1];
-
-            // Track per-channel output sign for DAC ladder effect.
-            // Channel output happens when slot & 0x03 == 0x03, i.e., every 4 cycles.
-            const slot = (self.core.cycles + 23) % 24; // Get the slot that just completed
-            if ((slot & 0x03) == 0x03) {
-                const output_channel = slot / 4; // Which channel just output
-                // The output is considered "negative" if mol is negative (before the *3 scaling,
-                // the sign is preserved). We check the actual output value.
-                self.channel_output_negative[output_channel] = self.core.mol < 0;
-                // A channel is muted if both pan L and pan R are 0
-                self.channel_muted[output_channel] = (self.core.pan_l[output_channel] == 0 and
-                    self.core.pan_r[output_channel] == 0);
-            }
         }
 
         return self.finishAccumulatedSample(sum_left, sum_right);
@@ -1240,44 +1196,28 @@ pub const Ym2612Synth = struct {
     }
 
     pub fn finishAccumulatedSample(self: *Ym2612Synth, sum_left: i32, sum_right: i32) StereoSample {
+        _ = self.chip_type;
         var adjusted_left = sum_left;
         var adjusted_right = sum_right;
 
-        // Apply DAC ladder effect for discrete YM2612 chips.
-        // The discrete chip's 9-bit DAC has non-linear step sizes that create a small
-        // offset based on output polarity, giving the characteristic "gritty" sound.
-        // Reference: Genesis-Plus-GX ym2612.c lines 2110-2131
-        if (self.chip_type == .discrete) {
-            for (0..6) |ch| {
-                if (self.channel_output_negative[ch]) {
-                    // Negative output: -4 offset (-3 when not muted) in 9-bit DAC units.
-                    // The offset is (4 - pan_bit) << 5, scaled by *3 for internal representation.
-                    const pan_l: i32 = if (self.core.pan_l[ch] != 0) 1 else 0;
-                    const pan_r: i32 = if (self.core.pan_r[ch] != 0) 1 else 0;
-                    adjusted_left -|= (4 - pan_l) * 32 * 3;
-                    adjusted_right -|= (4 - pan_r) * 32 * 3;
-                } else {
-                    // Positive output: +4 offset (regardless of mute) in 9-bit DAC units.
-                    adjusted_left +|= 4 * 32 * 3;
-                    adjusted_right +|= 4 * 32 * 3;
-                }
-            }
-        }
-
+        // clockOneInternal() already returns YM2612-mode output pins, including
+        // the per-cycle sign handling used by the ym3438 reference core. Do not
+        // add a second per-channel ladder offset here, or DAC-heavy playback
+        // picks up a large artificial DC bias.
+        //
         // Clamp to prevent overflow before float conversion.
-        // Max theoretical value: ~144 clocks * 576 + 6 channels * 384 = ~85,000
+        // Max theoretical value: ~144 clocks * 576 = ~82,944
         // This keeps values within safe i32 range for the subsequent division.
         const max_safe_value: i32 = 100_000;
         adjusted_left = std.math.clamp(adjusted_left, -max_safe_value, max_safe_value);
         adjusted_right = std.math.clamp(adjusted_right, -max_safe_value, max_safe_value);
 
-        const inv_cycles = 1.0 / @as(f32, @floatFromInt(internal_clocks_per_sample));
-        const left = @as(f32, @floatFromInt(adjusted_left)) * inv_cycles * ym_output_scale;
-        const right = @as(f32, @floatFromInt(adjusted_right)) * inv_cycles * ym_output_scale;
+        const left = @as(f32, @floatFromInt(adjusted_left)) * ym_output_scale;
+        const right = @as(f32, @floatFromInt(adjusted_right)) * ym_output_scale;
 
         return .{
-            .left = self.lpf_left.process(left),
-            .right = self.lpf_right.process(right),
+            .left = left,
+            .right = right,
         };
     }
 
@@ -1510,6 +1450,73 @@ test "ym native sample drains exactly one frame of internal writes" {
     try std.testing.expectEqual(@as(usize, 1), synth.pending_write_count);
 }
 
+test "ym key on at minimal attenuation enters sustain immediately when sl is zero" {
+    var core = Opn2Core{};
+    const slot: usize = 0;
+    core.cycles = (slot + 2) % 24;
+    core.eg_kon_latch[slot] = 1;
+    core.eg_level[slot] = 0;
+    core.sl[slot] = 0;
+
+    core.envelopeAdsr();
+
+    try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.sustain)), core.eg_state[slot]);
+}
+
+test "ym key on with maximal attack bypasses attack and enters decay" {
+    var core = Opn2Core{};
+    const slot: usize = 0;
+    core.cycles = (slot + 2) % 24;
+    core.eg_kon_latch[slot] = 1;
+    core.eg_level[slot] = 0x01A0;
+    core.sl[slot] = 5;
+    core.eg_ratemax = true;
+
+    core.envelopeAdsr();
+
+    try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.decay)), core.eg_state[slot]);
+}
+
+test "ym lfo reset state matches disabled waveform defaults" {
+    var core = Opn2Core{};
+
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_cnt);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_pm);
+    try std.testing.expectEqual(@as(u8, 126), core.lfo_am);
+
+    core.lfo_cnt = 0x3F;
+    core.lfo_pm = 0x12;
+    core.lfo_am = 0x24;
+    core.lfo_quotient = 9;
+    core.reset();
+
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_cnt);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_pm);
+    try std.testing.expectEqual(@as(u8, 126), core.lfo_am);
+    try std.testing.expectEqual(@as(u32, 0), core.lfo_quotient);
+}
+
+test "ym lfo disable write immediately restores reset waveform" {
+    var core = Opn2Core{};
+    core.lfo_enabled_mask = 0x7F;
+    core.lfo_freq = 7;
+    core.lfo_cnt = 0x35;
+    core.lfo_pm = 0x11;
+    core.lfo_am = 0x22;
+    core.lfo_quotient = 5;
+
+    try std.testing.expect(core.doRegWrite(writeEvent(0, 0x22, 0x00)));
+
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_enabled_mask);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_freq);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_cnt);
+    try std.testing.expectEqual(@as(u8, 0), core.lfo_pm);
+    try std.testing.expectEqual(@as(u8, 126), core.lfo_am);
+    try std.testing.expectEqual(@as(u32, 0), core.lfo_quotient);
+}
+
 test "ym immediate mode writes bypass blocked deferred writes" {
     var synth = Ym2612Synth{};
 
@@ -1648,6 +1655,17 @@ test "ym timer b overflow sets irq and status" {
     core.doTimerB();
     try std.testing.expectEqual(@as(u1, 1), core.readIrqPin());
     try std.testing.expectEqual(@as(u8, 0x02), core.readStatus(0) & 0x02);
+}
+
+test "ym timer reset bits clear status immediately on mode write" {
+    var synth = Ym2612Synth{};
+    synth.core.timer_a_overflow_flag = 1;
+    synth.core.timer_b_overflow_flag = 1;
+
+    synth.applyWrite(writeEvent(0, 0x27, 0x30));
+    _ = synth.clockOneInternal();
+
+    try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(0) & 0x03);
 }
 
 test "ym test pin and test-data status reads follow mode bits" {
@@ -1921,37 +1939,49 @@ test "ym set chip type changes the chip type" {
     try std.testing.expectEqual(ChipType.discrete, synth.chip_type);
 }
 
-test "ym discrete chip type applies ladder effect to output" {
-    // The ladder effect adds a small offset based on channel output polarity.
-    // We test by comparing discrete vs integrated output for the same input.
-    var discrete = Ym2612Synth{};
-    var integrated = Ym2612Synth{};
+test "ym discrete accumulation does not add a second ladder dc offset" {
+    var synth = Ym2612Synth{};
+    synth.setChipType(.discrete);
+    synth.applyWrite(writeEvent(0, 0x2B, 0x80));
+    synth.applyWrite(writeEvent(0, 0x2A, 0x80));
 
-    discrete.setChipType(.discrete);
-    integrated.setChipType(.integrated);
-
-    // Enable DAC with a known value (produces consistent output)
-    discrete.applyWrite(writeEvent(0, 0x2B, 0x80)); // DAC enable
-    discrete.applyWrite(writeEvent(0, 0x2A, 0xFF)); // DAC data (positive)
-    integrated.applyWrite(writeEvent(0, 0x2B, 0x80));
-    integrated.applyWrite(writeEvent(0, 0x2A, 0xFF));
-
-    // Generate samples
-    var discrete_sum: f32 = 0.0;
-    var integrated_sum: f32 = 0.0;
-    for (0..256) |_| {
-        const d = discrete.tick();
-        const i = integrated.tick();
-        discrete_sum += d.left + d.right;
-        integrated_sum += i.left + i.right;
+    var sum: f32 = 0.0;
+    for (0..128) |_| {
+        const sample = synth.tick();
+        sum += sample.left + sample.right;
     }
 
-    // Discrete should have some offset due to ladder effect
-    // The exact amount depends on channel polarities, but there should be a measurable difference
-    try std.testing.expect(discrete_sum != integrated_sum);
+    const mean = sum / 256.0;
+    try std.testing.expect(@abs(mean) < 0.05);
 }
 
-test "ym channel output sign tracking updates during tick" {
+test "ym tick uses the reference summed internal sample scaling" {
+    var tick_synth = Ym2612Synth{};
+    var manual_synth = Ym2612Synth{};
+
+    tick_synth.applyWrite(writeEvent(0, 0x2B, 0x80));
+    tick_synth.applyWrite(writeEvent(0, 0x2A, 0xFF));
+    manual_synth.applyWrite(writeEvent(0, 0x2B, 0x80));
+    manual_synth.applyWrite(writeEvent(0, 0x2A, 0xFF));
+
+    const tick_sample = tick_synth.tick();
+
+    var sum_left: i32 = 0;
+    var sum_right: i32 = 0;
+    for (0..internal_clocks_per_sample) |_| {
+        const pins = manual_synth.clockOneInternal();
+        sum_left += pins[0];
+        sum_right += pins[1];
+    }
+
+    const expected_left = @as(f32, @floatFromInt(sum_left)) * ym_output_scale;
+    const expected_right = @as(f32, @floatFromInt(sum_right)) * ym_output_scale;
+
+    try std.testing.expectApproxEqAbs(expected_left, tick_sample.left, 0.000001);
+    try std.testing.expectApproxEqAbs(expected_right, tick_sample.right, 0.000001);
+}
+
+test "ym tick completes for discrete dac output" {
     var synth = Ym2612Synth{};
     synth.setChipType(.discrete);
 
@@ -1959,12 +1989,6 @@ test "ym channel output sign tracking updates during tick" {
     synth.applyWrite(writeEvent(0, 0x2B, 0x80)); // DAC enable
     synth.applyWrite(writeEvent(0, 0x2A, 0xFF)); // DAC data = 255 (positive after -128)
 
-    // Tick to process the DAC output and update channel tracking
-    _ = synth.tick();
-
-    // The tracking happens for all channels based on their output signs.
-    // Verify the tracking arrays are accessible and the tick completed without error.
-    // Note: With DAC enabled on channel 5, at least one channel should have been tracked.
-    try std.testing.expectEqual(@as(usize, 6), synth.channel_output_negative.len);
-    try std.testing.expectEqual(@as(usize, 6), synth.channel_muted.len);
+    const sample = synth.tick();
+    try std.testing.expect(sample.left != 0.0 or sample.right != 0.0);
 }

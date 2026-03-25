@@ -1,5 +1,6 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
+const AudioOutput = @import("../audio/output.zig").AudioOutput;
 const Vdp = @import("../video/vdp.zig").Vdp;
 
 // Configuration constants
@@ -98,13 +99,13 @@ pub const VideoScaleMode = enum {
     pub fn configValue(self: VideoScaleMode) []const u8 {
         return switch (self) {
             .fit => "fit",
-            .whole_pixels => "whole",
+            .whole_pixels => "whole_pixels",
         };
     }
 
     pub fn parse(value: []const u8) error{InvalidVideoScale}!VideoScaleMode {
         if (std.mem.eql(u8, value, "fit")) return .fit;
-        if (std.mem.eql(u8, value, "whole_pixels")) return .whole_pixels;
+        if (std.mem.eql(u8, value, "whole_pixels") or std.mem.eql(u8, value, "whole")) return .whole_pixels;
         return error.InvalidVideoScale;
     }
 
@@ -182,6 +183,8 @@ pub const FrontendConfig = struct {
     video_aspect_mode: VideoAspectMode = .stretch,
     video_scale_mode: VideoScaleMode = .fit,
     font_face: FontFace = .jbm_regular,
+    audio_render_mode: AudioOutput.RenderMode = .normal,
+    audio_queue_ms: u16 = AudioOutput.default_queue_budget_ms,
 
     pub fn parseContents(contents: []const u8) !FrontendConfig {
         var config = FrontendConfig{};
@@ -203,6 +206,11 @@ pub const FrontendConfig = struct {
                 config.video_scale_mode = VideoScaleMode.parse(rhs) catch config.video_scale_mode;
             } else if (std.ascii.eqlIgnoreCase(lhs, "font_face")) {
                 config.font_face = FontFace.parse(rhs) catch config.font_face;
+            } else if (std.ascii.eqlIgnoreCase(lhs, "audio_mode") or std.ascii.eqlIgnoreCase(lhs, "audio_render_mode") or std.ascii.eqlIgnoreCase(lhs, "audio.mode")) {
+                config.audio_render_mode = AudioOutput.RenderMode.parse(rhs) catch config.audio_render_mode;
+            } else if (std.ascii.eqlIgnoreCase(lhs, "audio_queue_ms") or std.ascii.eqlIgnoreCase(lhs, "audio.queue_ms")) {
+                const parsed = std.fmt.parseUnsigned(u16, rhs, 10) catch config.audio_queue_ms;
+                config.audio_queue_ms = AudioOutput.clampQueueBudgetMs(parsed);
             } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
                 config.appendRecentRom(rhs);
             }
@@ -230,6 +238,8 @@ pub const FrontendConfig = struct {
         try writer.print("video_aspect = {s}\n", .{self.video_aspect_mode.name()});
         try writer.print("video_scale = {s}\n", .{self.video_scale_mode.name()});
         try writer.print("font_face = {s}\n", .{self.font_face.name()});
+        try writer.print("audio_mode = {s}\n", .{self.audio_render_mode.name()});
+        try writer.print("audio_queue_ms = {d}\n", .{self.audio_queue_ms});
         for (self.recent_roms[0..self.recent_rom_count]) |path| {
             try writer.print("recent_rom = {s}\n", .{path.slice()});
         }

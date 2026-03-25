@@ -397,18 +397,76 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         }
     }
 
-    // Apply CRAM dot artifacts.
-    for (0..@as(usize, cram_dot_count)) |event_idx| {
-        const event = cram_dot_events[event_idx];
-        if (event.pixel_x >= screen_w) continue;
-        const px: usize = event.pixel_x;
-        const display_pal_idx = if (pixel_buf[px] == 0) (self.regs[7] & 0x3F) else pixel_buf[px];
-        const display_word = paletteColorWord(self, display_pal_idx);
-        const dot_word = (event.written_word | display_word) & 0x0EEE;
-        const b3: u3 = @intCast((dot_word >> 9) & 0x7);
-        const g3: u3 = @intCast((dot_word >> 5) & 0x7);
-        const r3: u3 = @intCast((dot_word >> 1) & 0x7);
-        self.framebuffer[line_start + px] = 0xFF000000 | (@as(u32, color_lut[r3]) << 16) | (@as(u32, color_lut[g3]) << 8) | color_lut[b3];
+    // Apply mid-scanline CRAM updates.
+    // On real hardware, a CRAM write during active display changes the palette
+    // permanently: all subsequent pixels using that entry get the new color.
+    // There is also a single-pixel "dot" artifact at the write position where
+    // the written value is OR'd with the display output.
+    //
+    // Strategy: undo all CRAM events to get the start-of-line palette, sort
+    // events by pixel position, then re-render pixel spans between events.
+    if (cram_dot_count > 0) {
+        // Sort events by pixel_x using insertion sort (small N).
+        var sorted: [Vdp.max_cram_dot_events]Vdp.CramDotEvent = undefined;
+        @memcpy(sorted[0..cram_dot_count], cram_dot_events[0..cram_dot_count]);
+        {
+            var si: usize = 1;
+            while (si < @as(usize, cram_dot_count)) : (si += 1) {
+                const key = sorted[si];
+                var j: usize = si;
+                while (j > 0 and sorted[j - 1].pixel_x > key.pixel_x) : (j -= 1) {
+                    sorted[j] = sorted[j - 1];
+                }
+                sorted[j] = key;
+            }
+        }
+
+        // Undo events in reverse to get start-of-line CRAM.
+        {
+            var ui: usize = cram_dot_count;
+            while (ui > 0) {
+                ui -= 1;
+                const ev = cram_dot_events[ui]; // use original order for undo
+                self.cram[ev.cram_addr] = ev.old_hi;
+                self.cram[ev.cram_addr + 1] = ev.old_lo;
+            }
+        }
+
+        // Re-render from the earliest visible event (or pixel 0 if all
+        // events are in HBlank) to end of screen, applying CRAM changes
+        // at each event's pixel position.  Even if all events are in
+        // HBlank (pixel_x >= screen_w), we must re-render the visible
+        // area because the main pipeline used end-of-line CRAM.
+        const backdrop_idx = self.regs[7] & 0x3F;
+        const first_px: usize = @min(@as(usize, sorted[0].pixel_x), @as(usize, screen_w));
+        var ev_idx: usize = 0;
+
+        // Re-render from pixel 0 if any CRAM change happened (even in HBlank).
+        const render_start: usize = if (first_px >= @as(usize, screen_w)) 0 else first_px;
+
+        for (render_start..@as(usize, screen_w)) |x| {
+            // Apply all CRAM events at this pixel position.
+            while (ev_idx < @as(usize, cram_dot_count) and sorted[ev_idx].pixel_x <= @as(u16, @intCast(x))) {
+                const ev = sorted[ev_idx];
+                const masked = ev.written_word & 0x0EEE;
+                self.cram[ev.cram_addr] = @intCast((masked >> 8) & 0xFF);
+                self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
+                ev_idx += 1;
+            }
+            // Re-render pixel with updated palette.
+            const pal_idx = if (pixel_buf[x] == 0) backdrop_idx else pixel_buf[x];
+            self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
+        }
+        // Apply remaining events beyond the visible area (HBlank CRAM
+        // writes with pixel_x >= screen_w).  This restores CRAM to the
+        // correct end-of-line state for the next scanline.
+        while (ev_idx < @as(usize, cram_dot_count)) {
+            const ev = sorted[ev_idx];
+            const masked = ev.written_word & 0x0EEE;
+            self.cram[ev.cram_addr] = @intCast((masked >> 8) & 0xFF);
+            self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
+            ev_idx += 1;
+        }
     }
 }
 

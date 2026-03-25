@@ -16,8 +16,12 @@ pub fn queuedAudioNsFromBytes(queued_bytes: usize) u64 {
         (@as(u128, AudioOutput.output_rate) * AudioOutput.channels * @sizeOf(i16)));
 }
 
+pub fn queueIsBackloggedForBudget(queued_bytes: usize, budget_bytes: usize) bool {
+    return queued_bytes >= budget_bytes;
+}
+
 pub fn queueIsBacklogged(queued_bytes: usize) bool {
-    return queued_bytes >= AudioOutput.max_queued_bytes;
+    return queueIsBackloggedForBudget(queued_bytes, AudioOutput.queueBudgetBytes(AudioOutput.default_queue_budget_ms));
 }
 
 pub const StageSample = struct {
@@ -63,6 +67,9 @@ pub const HudState = struct {
     worst_work_ns: u64 = 0,
     worst_overrun_ns: u64 = 0,
     last_audio_queued_bytes: ?usize = null,
+    last_audio_queue_budget_bytes: ?usize = null,
+    last_audio_backlog_recoveries: ?u64 = null,
+    last_audio_overflow_events: ?u64 = null,
     last_phases: FramePhases = .{},
     average_phases: FramePhases = .{},
     last_core_counters: CoreFrameCounters = .{},
@@ -78,6 +85,9 @@ pub const HudState = struct {
         present_ns: u64,
         target_ns: u64,
         audio_queued_bytes: ?usize,
+        audio_queue_budget_bytes: ?usize,
+        audio_backlog_recoveries: ?u64,
+        audio_overflow_events: ?u64,
         phases: FramePhases,
         core_counters: ?CoreFrameCounters,
     ) void {
@@ -93,6 +103,9 @@ pub const HudState = struct {
         self.worst_work_ns = @max(self.worst_work_ns, work_ns);
         self.worst_overrun_ns = @max(self.worst_overrun_ns, self.last_overrun_ns);
         self.last_audio_queued_bytes = audio_queued_bytes;
+        self.last_audio_queue_budget_bytes = audio_queue_budget_bytes;
+        self.last_audio_backlog_recoveries = audio_backlog_recoveries;
+        self.last_audio_overflow_events = audio_overflow_events;
         self.last_phases = phases;
         self.last_core_counters_sampled = core_counters != null;
         if (self.last_overrun_ns != 0) self.slow_frame_count += 1;
@@ -134,6 +147,11 @@ pub const HudState = struct {
 
     pub fn queuedAudioNs(self: *const HudState) ?u64 {
         const queued_bytes = self.last_audio_queued_bytes orelse return null;
+        return queuedAudioNsFromBytes(queued_bytes);
+    }
+
+    pub fn queuedAudioBudgetNs(self: *const HudState) ?u64 {
+        const queued_bytes = self.last_audio_queue_budget_bytes orelse return null;
         return queuedAudioNsFromBytes(queued_bytes);
     }
 
@@ -397,7 +415,7 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
     const padding = 8.0 * scale;
     const line_height = 10.0 * scale;
 
-    var metric_buffers: [12][16]u8 = undefined;
+    var metric_buffers: [14][16]u8 = undefined;
     const fps_text = try formatRateHzTenths(metric_buffers[0][0..], perf.last_present_ns);
     const avg_fps_text = try formatRateHzTenths(metric_buffers[1][0..], perf.average_present_ns);
     const target_fps_text = try formatRateHzTenths(metric_buffers[2][0..], perf.last_target_ns);
@@ -413,9 +431,13 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
         try formatDurationMsTenths(metric_buffers[11][0..], queued_ns)
     else
         "OFF";
+    const audio_budget_text = if (perf.queuedAudioBudgetNs()) |queued_ns|
+        try formatDurationMsTenths(metric_buffers[12][0..], queued_ns)
+    else
+        null;
 
-    var line_buffers: [11][72]u8 = undefined;
-    var lines: [11][]const u8 = undefined;
+    var line_buffers: [12][72]u8 = undefined;
+    var lines: [12][]const u8 = undefined;
     lines[0] = try std.fmt.bufPrint(&line_buffers[0], "FPS {s} / {s}", .{ fps_text, target_fps_text });
     lines[1] = try std.fmt.bufPrint(&line_buffers[1], "FPS AVG {s}", .{avg_fps_text});
     lines[2] = try std.fmt.bufPrint(&line_buffers[2], "WORK {s} / {s} MS", .{ work_text, target_text });
@@ -427,9 +449,17 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
     lines[8] = try std.fmt.bufPrint(&line_buffers[8], "WORST OVR {s} MS", .{worst_overrun_text});
     lines[9] = if (perf.last_audio_queued_bytes == null)
         "AUDIO OFF"
+    else if (audio_budget_text) |budget_text|
+        try std.fmt.bufPrint(&line_buffers[9], "AUDIO {s}/{s} MS", .{ audio_text, budget_text })
     else
         try std.fmt.bufPrint(&line_buffers[9], "AUDIO {s} MS", .{audio_text});
-    lines[10] = "F12 RESET";
+    lines[10] = if (perf.last_audio_backlog_recoveries) |backlog_recoveries|
+        try std.fmt.bufPrint(&line_buffers[10], "ABK {d} AOV {d}", .{ backlog_recoveries, perf.last_audio_overflow_events orelse 0 })
+    else if (perf.last_audio_overflow_events) |overflow_events|
+        try std.fmt.bufPrint(&line_buffers[10], "ABK 0 AOV {d}", .{overflow_events})
+    else
+        "ABK OFF AOV OFF";
+    lines[11] = "F12 RESET";
 
     var max_width = ui.textWidth(title, scale);
     for (lines) |line| {

@@ -30,12 +30,14 @@ const ToneState = struct {
     countdown: u16 = 0,
     countdown_master: u16 = 0,
     attenuation: u4 = 0xF,
+    level: i16 = 0,
     output_bit: u1 = 0,
 };
 
 const NoiseState = struct {
     countdown: u16 = 0,
     attenuation: u4 = 0xF,
+    level: i16 = 0,
     fake_output_bit: u1 = 0,
     real_output_bit: u1 = 0,
     frequency_mode: u2 = 0,
@@ -81,7 +83,7 @@ pub const Psg = struct {
 
     fn toneLevel(tone: *const ToneState) i16 {
         // The integrated PSG core is a unipolar pulse generator. Board-side filtering centers it later.
-        return if (tone.output_bit == 0) psg_levels[tone.attenuation] else 0;
+        return if (tone.output_bit == 0) tone.level else 0;
     }
 
     fn stepTone(tone: *ToneState) void {
@@ -94,7 +96,7 @@ pub const Psg = struct {
     }
 
     fn noiseLevel(noise: *const NoiseState) i16 {
-        return if (noise.real_output_bit != 0) psg_levels[noise.attenuation] else 0;
+        return if (noise.real_output_bit != 0) noise.level else 0;
     }
 
     fn stepNoise(noise: *NoiseState, tone2_period: u16) void {
@@ -135,6 +137,7 @@ pub const Psg = struct {
 
             if (self.latched.is_volume) {
                 tone.attenuation = @intCast(command & 0xF);
+                tone.level = psg_levels[tone.attenuation];
             } else {
                 if (is_latch) {
                     tone.countdown_master = (tone.countdown_master & ~@as(u16, 0xF)) | (command & 0xF);
@@ -145,6 +148,7 @@ pub const Psg = struct {
         } else {
             if (self.latched.is_volume) {
                 self.noise.attenuation = @intCast(command & 0xF);
+                self.noise.level = psg_levels[self.noise.attenuation];
             } else {
                 self.noise.noise_type = if ((command & 4) != 0) .white else .periodic;
                 self.noise.frequency_mode = @intCast(command & 3);
@@ -306,6 +310,41 @@ test "psg power-on latch targets tone channel 2 attenuation" {
     try std.testing.expectEqual(@as(u4, 0x0), psg.tones[0].attenuation);
     try std.testing.expectEqual(@as(u4, 0x0), psg.tones[1].attenuation);
     try std.testing.expectEqual(@as(u4, 0x0), psg.tones[2].attenuation);
+}
+
+test "psg integrated power-on stays silent until attenuation writes occur" {
+    var psg = Psg.powerOn();
+
+    psg.doCommand(0x80);
+    psg.doCommand(0x00);
+
+    var buf: [16]i16 = [_]i16{0} ** 16;
+    psg.update(&buf, buf.len);
+
+    for (buf) |sample| {
+        try std.testing.expectEqual(@as(i16, 0), sample);
+    }
+}
+
+test "psg volume write after power-on enables audible output" {
+    var psg = Psg.powerOn();
+
+    psg.doCommand(0x90);
+    psg.doCommand(0x80);
+    psg.doCommand(0x00);
+
+    var buf: [16]i16 = [_]i16{0} ** 16;
+    psg.update(&buf, buf.len);
+
+    var nonzero = false;
+    for (buf) |sample| {
+        if (sample != 0) {
+            nonzero = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(nonzero);
 }
 
 test "psg zero tone period behaves like period one" {

@@ -75,6 +75,22 @@ test "machine reset preserves zero stack pointer when reset pc is valid" {
     try testing.expectEqual(@as(u32, 0x0000_0200), cpu.program_counter);
 }
 
+test "testing emulator init starts from the ROM reset vector" {
+    const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x4E, 0x71,
+    });
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u32, 0x0000_0200), emulator.cpuPc());
+
+    emulator.runMasterSlice(clock.m68kCyclesToMaster(4));
+    try testing.expectEqual(@as(u32, 0x0000_0202), emulator.cpuPc());
+}
+
 test "machine runMasterSlice advances the reset program through the public API" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -295,3 +311,4 @@ test "cpu formats current instruction with the built-in disassembler" {
     const text = emulator.formatCurrentInstruction(&buffer);
     try testing.expect(std.mem.indexOf(u8, text, "NOP") != null);
 }
+

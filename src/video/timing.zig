@@ -305,7 +305,9 @@ pub fn readControl(self: *Vdp) u16 {
     const status = statusWordForAdjustedState(self, current);
 
     self.pending_command = false;
-    self.vint_pending = false;
+    if (isVBlankInterruptEnabled(self)) {
+        self.vint_pending = false;
+    }
     self.sprite_overflow = false;
     self.sprite_collision = false;
 
@@ -317,7 +319,13 @@ pub fn readControlAdjusted(self: *Vdp, opcode: u16) u16 {
     const status = statusWordForAdjustedState(self, adjusted);
 
     self.pending_command = false;
-    self.vint_pending = false;
+    // Match Genesis Plus GX: only clear vint_pending when VInt is enabled.
+    // If VInt is disabled, the pending flag must be preserved so it can fire
+    // as soon as the game enables VInt.  Clearing it unconditionally causes
+    // games that read status before enabling VInt to miss the first VBlank.
+    if (isVBlankInterruptEnabled(self)) {
+        self.vint_pending = false;
+    }
     self.sprite_overflow = false;
     self.sprite_collision = false;
 
@@ -348,8 +356,7 @@ pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
 }
 
 pub fn step(self: *Vdp, cycles: u32) void {
-    var total = @as(u32, self.line_master_cycle) + cycles;
-    if (total >= clock.ntsc_master_cycles_per_line) total -= clock.ntsc_master_cycles_per_line;
+    const total = (@as(u32, self.line_master_cycle) + cycles) % clock.ntsc_master_cycles_per_line;
     self.line_master_cycle = @intCast(total);
 }
 
@@ -383,6 +390,17 @@ pub fn isVBlankInterruptEnabled(self: *const Vdp) bool {
     return (self.regs[1] & 0x20) != 0;
 }
 
+/// Compute the M68K interrupt level the VDP should currently assert based on
+/// pending interrupt flags and their enable bits.  This mirrors Genesis Plus GX's
+/// `update_irq_line()` and is called after a status-register read clears
+/// `vint_pending` so the CPU sees the correct residual level instead of zero.
+pub fn currentInterruptLevel(self: *const Vdp) u3 {
+    if (self.vint_pending and isVBlankInterruptEnabled(self)) return 6;
+    // HInt in Sandopolis is edge-triggered per-line (no persistent pending flag).
+    // After vint_pending is cleared by a status read, no VDP source remains.
+    return 0;
+}
+
 pub fn beginFrame(self: *Vdp) void {
     self.hint_counter = @intCast(self.regs[10]);
 }
@@ -399,13 +417,48 @@ pub fn applyPowerOnResetTiming(self: *Vdp) void {
 }
 
 pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
-    if (line > visible_lines) return false;
+    if (line >= visible_lines) return false;
     self.hint_counter -= 1;
     if (self.hint_counter < 0) {
         self.hint_counter = @intCast(self.regs[10]);
         return (self.regs[0] & 0x10) != 0;
     }
     return false;
+}
+
+test "consumeHintForLine does not decrement counter on the first vblank line" {
+    var vdp = Vdp.init();
+    vdp.regs[10] = 1;
+    vdp.regs[0] = 0x10; // HInt enabled
+
+    vdp.beginFrame();
+    try testing.expectEqual(@as(i16, 1), vdp.hint_counter);
+
+    // Line 222: counter decrements to 0, no HInt (counter not negative).
+    try testing.expect(!vdp.consumeHintForLine(222, 224));
+    try testing.expectEqual(@as(i16, 0), vdp.hint_counter);
+
+    // Line 223: counter decrements to -1, reloads, HInt fires.
+    try testing.expect(vdp.consumeHintForLine(223, 224));
+    try testing.expectEqual(@as(i16, 1), vdp.hint_counter);
+
+    // Line 224 (first VBlank line): counter must NOT be decremented.
+    try testing.expect(!vdp.consumeHintForLine(224, 224));
+    try testing.expectEqual(@as(i16, 1), vdp.hint_counter);
+}
+
+test "vdp step wraps correctly across multiple line periods" {
+    var vdp = Vdp.init();
+    vdp.line_master_cycle = 100;
+
+    // Advance by exactly 2 full lines + 200 cycles.
+    vdp.step(clock.ntsc_master_cycles_per_line * 2 + 200);
+    try testing.expectEqual(@as(u16, 300), vdp.line_master_cycle);
+
+    // Advance by exactly 3 full lines (should wrap to same position).
+    vdp.line_master_cycle = 0;
+    vdp.step(clock.ntsc_master_cycles_per_line * 3);
+    try testing.expectEqual(@as(u16, 0), vdp.line_master_cycle);
 }
 
 test "H40 status hblank flag turns on after the external hblank edge" {

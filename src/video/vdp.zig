@@ -20,11 +20,16 @@ pub const Vdp = struct {
     pub const framebuffer_width: usize = 320;
     pub const max_framebuffer_height: usize = 240;
     pub const sprite_cache_entry_count: usize = 80;
-    pub const max_cram_dot_events: usize = 20;
+    // TiTAN Overdrive writes CRAM hundreds of times per scanline for
+    // raster-bar effects.  320 entries covers one write per pixel in H40.
+    pub const max_cram_dot_events: usize = 320;
 
     pub const CramDotEvent = struct {
         pixel_x: u16,
-        written_word: u16,
+        cram_addr: u8, // CRAM byte address (0x00-0x7E, even)
+        old_hi: u8, // previous CRAM value (high byte)
+        old_lo: u8, // previous CRAM value (low byte)
+        written_word: u16, // 16-bit word written to CRAM
     };
 
     pub const max_reg_change_events: usize = 16;
@@ -113,7 +118,7 @@ pub const Vdp = struct {
     sprite_cache_base: u16,
     sprite_cache_total: u8,
     cram_dot_events: [max_cram_dot_events]CramDotEvent,
-    cram_dot_event_count: u8,
+    cram_dot_event_count: u16,
     reg_change_events: [max_reg_change_events]RegChangeEvent,
     reg_change_event_count: u8,
 
@@ -236,7 +241,7 @@ pub const Vdp = struct {
             .sprite_cache_valid = false,
             .sprite_cache_base = 0,
             .sprite_cache_total = 0,
-            .cram_dot_events = [_]CramDotEvent{.{ .pixel_x = 0, .written_word = 0 }} ** max_cram_dot_events,
+            .cram_dot_events = [_]CramDotEvent{.{ .pixel_x = 0, .cram_addr = 0, .old_hi = 0, .old_lo = 0, .written_word = 0 }} ** max_cram_dot_events,
             .cram_dot_event_count = 0,
             .reg_change_events = [_]RegChangeEvent{.{ .pixel_x = 0, .reg = 0, .old_value = 0, .new_value = 0 }} ** max_reg_change_events,
             .reg_change_event_count = 0,
@@ -418,28 +423,35 @@ pub const Vdp = struct {
         }
     }
 
-    pub fn recordCramDot(self: *Vdp, line_master_cycle: u16, written_word: u16) void {
-        if (self.vblank or self.hblank or !self.isDisplayEnabled()) return;
+    pub fn recordCramDot(self: *Vdp, line_master_cycle: u16, cram_addr: u8, written_word: u16) void {
+        // Allow HBlank writes — TiTAN Overdrive updates CRAM during HBlank
+        // for palette-per-line effects.  These events get pixel_x >= screen_w
+        // so they don't produce visible dots, but the undo/redo logic in
+        // renderScanline uses them to restore start-of-line CRAM state.
+        // Only reject VBlank writes (inter-frame palette setup).
+        if (self.vblank or !self.isDisplayEnabled()) return;
         if (self.cram_dot_event_count >= max_cram_dot_events) return;
 
-        const hblank_start = self.hblankStartMasterCycles();
-        if (line_master_cycle >= hblank_start) return;
-
-        // Convert master cycle to pixel position
-        // H40: 8 master cycles per pixel, H32: 10 master cycles per pixel
         const pixel: u16 = if (self.isH40())
             line_master_cycle / 8
         else
             line_master_cycle / 10;
 
-        const screen_w = self.screenWidth();
-        if (pixel >= screen_w) return;
-
         self.cram_dot_events[self.cram_dot_event_count] = .{
             .pixel_x = pixel,
+            .cram_addr = cram_addr,
+            .old_hi = self.cram[cram_addr],
+            .old_lo = self.cram[cram_addr + 1],
             .written_word = written_word,
         };
         self.cram_dot_event_count += 1;
+
+        // Apply the CRAM write immediately so subsequent events for
+        // the same entry capture the correct "old" value.  The FIFO
+        // will write the same value again when it drains (harmless).
+        const masked = written_word & 0x0EEE;
+        self.cram[cram_addr] = @intCast((masked >> 8) & 0xFF);
+        self.cram[cram_addr + 1] = @intCast(masked & 0xFF);
     }
 
     pub fn recordRegChange(self: *Vdp, reg_index: u8, new_value: u8) void {
@@ -510,6 +522,7 @@ pub const Vdp = struct {
     pub const setScanlineState = timing_mod.setScanlineState;
     pub const setHBlank = timing_mod.setHBlank;
     pub const isVBlankInterruptEnabled = timing_mod.isVBlankInterruptEnabled;
+    pub const currentInterruptLevel = timing_mod.currentInterruptLevel;
     pub const beginFrame = timing_mod.beginFrame;
     pub const applyPowerOnResetTiming = timing_mod.applyPowerOnResetTiming;
     pub const consumeHintForLine = timing_mod.consumeHintForLine;

@@ -9,6 +9,7 @@ pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
 
     pub const YmWriteEvent = c.Jgz80YmWriteEvent;
+    pub const AudioOpTraceEntry = c.Jgz80AudioOpTraceEntry;
     pub const YmDacSampleEvent = c.Jgz80YmDacSampleEvent;
     pub const YmResetEvent = c.Jgz80YmResetEvent;
     pub const PsgCommandEvent = c.Jgz80PsgCommandEvent;
@@ -175,6 +176,11 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn pendingAudioOpTraceCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_audio_op_trace_count(h);
+        return 0;
+    }
+
     pub fn hasPendingAudibleEvents(self: *const Z80) bool {
         return self.pendingYmWriteCount() != 0 or
             self.pendingYmDacCount() != 0 or
@@ -205,6 +211,12 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn takeAudioOpTrace(self: *Z80, dest: []AudioOpTraceEntry) usize {
+        if (dest.len == 0) return 0;
+        if (self.handle) |h| return c.jgz80_take_audio_op_trace(h, dest.ptr, @intCast(dest.len));
+        return 0;
+    }
+
     /// Returns the total number of audio buffer overflow events since the last
     /// call and resets all overflow counters. Nonzero means audio events were
     /// silently dropped because a ring buffer was full.
@@ -225,6 +237,19 @@ pub const Z80 = struct {
 
         var psg_commands: [64]PsgCommandEvent = undefined;
         while (self.takePsgCommands(psg_commands[0..]) != 0) {}
+    }
+
+    pub fn setAudioOpTraceEnabled(self: *Z80, enabled: bool) void {
+        if (self.handle) |h| c.jgz80_set_audio_op_trace_enabled(h, if (enabled) 1 else 0);
+    }
+
+    pub fn clearAudioOpTrace(self: *Z80) void {
+        if (self.handle) |h| c.jgz80_clear_audio_op_trace(h);
+    }
+
+    pub fn takeAudioOpTraceDroppedCount(self: *Z80) u32 {
+        if (self.handle) |h| return c.jgz80_take_audio_op_trace_dropped_count(h);
+        return 0;
     }
 
     pub fn setAudioMasterOffset(self: *Z80, master_offset: u32) void {
@@ -318,6 +343,17 @@ test "z80 clone preserves and decouples RAM contents" {
     try std.testing.expectEqual(@as(u8, 0xAB), cloned.readByte(0x0000));
 }
 
+test "z80 ram is mirrored across 0x0000-0x3fff" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.writeByte(0x2000, 0x5A);
+    try std.testing.expectEqual(@as(u8, 0x5A), z80.readByte(0x0000));
+
+    z80.writeByte(0x3FFF, 0xC3);
+    try std.testing.expectEqual(@as(u8, 0xC3), z80.readByte(0x1FFF));
+}
+
 test "direct z80 audio writes retain explicit master offsets" {
     var z80 = Z80.init();
     defer z80.deinit();
@@ -394,7 +430,7 @@ test "z80 can discard all pending audio event queues" {
     try std.testing.expectEqual(@as(usize, 0), z80.takeYmResets(ym_reset_events[0..]));
 }
 
-test "z80 instruction writes stamp ym events at the in-instruction access time" {
+test "z80 instruction writes stamp ym events at instruction completion time" {
     var z80 = Z80.init();
     defer z80.deinit();
 
@@ -413,12 +449,35 @@ test "z80 instruction writes stamp ym events at the in-instruction access time" 
 
     var ym_events: [1]Z80.YmWriteEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takeYmWrites(ym_events[0..]));
-    try std.testing.expectEqual(@as(u32, 12 + (10 * clock.z80_divider)), ym_events[0].master_offset);
+    try std.testing.expectEqual(@as(u32, 12 + (13 * clock.z80_divider)), ym_events[0].master_offset);
     try std.testing.expectEqual(@as(u8, 0x22), ym_events[0].reg);
     try std.testing.expectEqual(@as(u8, 0x56), ym_events[0].value);
 }
 
-test "z80 instruction writes stamp psg events at the in-instruction access time" {
+test "z80 instruction writes stamp dac events at instruction completion time" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    z80.setAudioMasterOffset(12);
+    z80.writeByte(0x4000, 0x2A);
+    z80.writeByte(0x0000, 0x32);
+    z80.writeByte(0x0001, 0x01);
+    z80.writeByte(0x0002, 0x40);
+
+    var state = z80.captureState();
+    state.pc = 0x0000;
+    state.af = 0x5600;
+    z80.restoreState(&state);
+
+    try std.testing.expectEqual(@as(u32, 13), z80.stepInstruction());
+
+    var ym_dac_events: [1]Z80.YmDacSampleEvent = undefined;
+    try std.testing.expectEqual(@as(usize, 1), z80.takeYmDacSamples(ym_dac_events[0..]));
+    try std.testing.expectEqual(@as(u32, 12 + (13 * clock.z80_divider)), ym_dac_events[0].master_offset);
+    try std.testing.expectEqual(@as(u8, 0x56), ym_dac_events[0].value);
+}
+
+test "z80 instruction writes stamp psg events at instruction completion time" {
     var z80 = Z80.init();
     defer z80.deinit();
 
@@ -435,7 +494,7 @@ test "z80 instruction writes stamp psg events at the in-instruction access time"
 
     var psg_events: [1]Z80.PsgCommandEvent = undefined;
     try std.testing.expectEqual(@as(usize, 1), z80.takePsgCommands(psg_events[0..]));
-    try std.testing.expectEqual(@as(u32, 12 + (4 * clock.z80_divider)), psg_events[0].master_offset);
+    try std.testing.expectEqual(@as(u32, 12 + (7 * clock.z80_divider)), psg_events[0].master_offset);
     try std.testing.expectEqual(@as(u8, 0x90), psg_events[0].value);
 }
 
@@ -608,6 +667,27 @@ test "z80 ym status read reports and clears timer a overflow" {
 
     z80.writeByte(0x4000, 0x27);
     z80.writeByte(0x4001, 0x10);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
     z80.setAudioMasterOffset(49 * ym_internal_master_cycles);
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
+}
+
+test "z80 ym status read clears timer b overflow immediately on reset write" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.setAudioMasterOffset(0);
+    z80.writeByte(0x4000, 0x26);
+    z80.writeByte(0x4001, 0xFF);
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x0A);
+
+    z80.setAudioMasterOffset(363 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x02), z80.readByte(0x4000) & 0x02);
+
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x20);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x02);
 }

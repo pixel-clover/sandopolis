@@ -31,11 +31,19 @@ const menu_module = @import("frontend/menu.zig");
 const rom_metadata = @import("rom_metadata.zig");
 const cli_module = @import("cli.zig");
 
+const AudioRuntimeMetrics = struct {
+    queue_budget_bytes: usize,
+    backlog_recoveries: u64,
+    overflow_events: u64,
+};
+
 const AudioInit = struct {
     stream: *zsdl3.AudioStream,
     output: AudioOutput,
     startup_mute_active: bool = true,
     startup_mute_warmup_frames: u8 = 0,
+    queue_budget_ms: u16 = AudioOutput.default_queue_budget_ms,
+    backlog_recovery_count: u64 = 0,
     playback_shadow: [playback_shadow_capacity]i16 = undefined,
     playback_shadow_len: usize = 0,
 
@@ -67,7 +75,7 @@ const AudioInit = struct {
 
     fn queueHasRoom(self: *const AudioInit) bool {
         const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return false;
-        return !queueIsBacklogged(@intCast(queued_bytes));
+        return !queueIsBackloggedForBudget(@intCast(queued_bytes), self.queueBudgetBytes());
     }
 
     fn recoverBackloggedQueue(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool, wav_recorder: ?*WavRecorder) !void {
@@ -75,6 +83,7 @@ const AudioInit = struct {
             try self.output.discardPending(pending, z80, is_pal);
             return;
         };
+        self.backlog_recovery_count += 1;
         self.clearPlaybackShadow();
         self.output.dropQueuedOutput(is_pal);
         try self.pushPending(pending, z80, is_pal, wav_recorder);
@@ -103,6 +112,26 @@ const AudioInit = struct {
     fn armStartupMute(self: *AudioInit) void {
         self.startup_mute_active = true;
         self.startup_mute_warmup_frames = 0;
+    }
+
+    fn queueBudgetBytes(self: *const AudioInit) usize {
+        return AudioOutput.queueBudgetBytes(self.queue_budget_ms);
+    }
+
+    fn setQueueBudgetMs(self: *AudioInit, queue_budget_ms: u16) void {
+        self.queue_budget_ms = AudioOutput.clampQueueBudgetMs(queue_budget_ms);
+    }
+
+    fn runtimeMetrics(self: *const AudioInit) AudioRuntimeMetrics {
+        return .{
+            .queue_budget_bytes = self.queueBudgetBytes(),
+            .backlog_recoveries = self.backlog_recovery_count,
+            .overflow_events = self.output.totalOverflowEvents(),
+        };
+    }
+
+    fn resetTelemetry(self: *AudioInit) void {
+        self.backlog_recovery_count = 0;
     }
 
     fn clearStartupMute(self: *AudioInit) void {
@@ -268,6 +297,7 @@ const PerformanceSpikeLogState = perf_monitor.SpikeLogState;
 const PerformanceSpikeWindowSummary = perf_monitor.SpikeWindowSummary;
 const queuedAudioNsFromBytes = perf_monitor.queuedAudioNsFromBytes;
 const queueIsBacklogged = perf_monitor.queueIsBacklogged;
+const queueIsBackloggedForBudget = perf_monitor.queueIsBackloggedForBudget;
 const shouldSampleCoreCounters = perf_monitor.shouldSampleCoreCounters;
 const nextCoreBurstFramesRemaining = perf_monitor.nextCoreBurstFramesRemaining;
 const isThresholdSlowFrame = perf_monitor.isThresholdSlowFrame;
@@ -756,7 +786,10 @@ fn applySettingsAction(
             }
         },
         .audio_render_mode => {
-            applyAudioRenderModeSetting(audio, current_audio_mode, current_audio_mode.cycle(if (delta == 0) 1 else delta), notifications);
+            const next_mode = current_audio_mode.cycle(if (delta == 0) 1 else delta);
+            frontend_config.audio_render_mode = next_mode;
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
+            applyAudioRenderModeSetting(audio, current_audio_mode, next_mode, notifications);
         },
         .performance_hud => {
             if (delta < 0) {
@@ -1428,6 +1461,7 @@ fn resetAudioOutput(audio: *AudioInit, wav_recorder: ?*WavRecorder) void {
     };
     audio.clearPlaybackShadow();
     audio.output.reset();
+    audio.resetTelemetry();
     audio.armStartupMute();
 }
 
@@ -1722,6 +1756,25 @@ fn handleQuickStateAction(
     }
 }
 
+const PersistentStateActionResult = enum {
+    ignored,
+    handled,
+    loaded_machine,
+};
+
+fn syncFrontendAfterPersistentStateLoad(
+    ui: *FrontendUi,
+    current_rom_path: *DialogPathCopy,
+    machine: *const Machine,
+) void {
+    if (machine.bus.sourcePath()) |source_path| {
+        current_rom_path.set(source_path);
+    } else {
+        current_rom_path.* = .{};
+    }
+    ui.show_home = false;
+}
+
 fn handlePersistentStateAction(
     allocator: std.mem.Allocator,
     action: InputBindings.HotkeyAction,
@@ -1733,7 +1786,7 @@ fn handlePersistentStateAction(
     wav_recorder: *?WavRecorder,
     frame_counter: *u32,
     notifications: FrontendNotifications,
-) bool {
+) PersistentStateActionResult {
     persistent_state_slot.* = StateFile.normalizePersistentStateSlot(persistent_state_slot.*);
     if (action == .next_state_slot) {
         persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
@@ -1741,7 +1794,7 @@ fn handlePersistentStateAction(
         const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
             std.debug.print("Failed to resolve state-file slot path: {s}\n", .{@errorName(err)});
             notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE SLOT", .{});
-            return true;
+            return .handled;
         };
         defer allocator.free(state_path);
 
@@ -1754,7 +1807,7 @@ fn handlePersistentStateAction(
             persistent_state_slot.*,
             StateFile.persistent_state_slot_count,
         });
-        return true;
+        return .handled;
     }
 
     var owned_state_path: ?[]u8 = null;
@@ -1763,7 +1816,7 @@ fn handlePersistentStateAction(
     owned_state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
         std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
         notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
-        return true;
+        return .handled;
     };
     const state_path = owned_state_path.?;
 
@@ -1772,14 +1825,14 @@ fn handlePersistentStateAction(
             StateFile.saveToFile(machine, state_path) catch |err| {
                 std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
                 notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
-                return true;
+                return .handled;
             };
             saveStatePreviewFile(allocator, machine, state_path) catch |err| {
                 std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
             };
             std.debug.print("Saved state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE SAVED", .{});
-            return true;
+            return .handled;
         },
         .load_state_file => {
             var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
@@ -1789,7 +1842,7 @@ fn handlePersistentStateAction(
                     std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
                     notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
                 }
-                return true;
+                return .handled;
             };
             errdefer next_machine.deinit(allocator);
 
@@ -1806,9 +1859,9 @@ fn handlePersistentStateAction(
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE LOADED", .{});
-            return true;
+            return .loaded_machine;
         },
-        else => return false,
+        else => return .ignored,
     }
 }
 
@@ -2474,14 +2527,8 @@ pub fn main() !void {
 
     var audio_userdata: u8 = 0;
     var audio: ?AudioInit = tryInitAudio(&audio_userdata);
-    var current_audio_mode = cli.audio_mode;
     if (audio == null) {
         std.debug.print("Audio disabled: no compatible stream format\n", .{});
-    } else {
-        audio.?.output.setRenderMode(cli.audio_mode);
-    }
-    if (cli.audio_mode != .normal) {
-        std.debug.print("Audio render mode: {s}\n", .{cli.audio_mode.name()});
     }
     defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
@@ -2558,6 +2605,20 @@ pub fn main() !void {
         ui_font.deinit();
         ui_font = ui_render.Font.init(fontDataForFace(frontend_config.font_face));
         ui_render.initFont(&ui_font);
+    }
+
+    var current_audio_mode = frontend_config.audio_render_mode;
+    if (cli.audio_mode_overridden) current_audio_mode = cli.audio_mode;
+    const current_audio_queue_ms = if (cli.audio_queue_ms_overridden) cli.audio_queue_ms else frontend_config.audio_queue_ms;
+    if (audio) |*a| {
+        a.output.setRenderMode(current_audio_mode);
+        a.setQueueBudgetMs(current_audio_queue_ms);
+    }
+    if (current_audio_mode != .normal) {
+        std.debug.print("Audio render mode: {s}\n", .{current_audio_mode.name()});
+    }
+    if (current_audio_queue_ms != AudioOutput.default_queue_budget_ms) {
+        std.debug.print("Audio queue budget: {d} ms\n", .{current_audio_queue_ms});
     }
 
     var machine = try Machine.init(allocator, rom_path);
@@ -3136,7 +3197,7 @@ pub fn main() !void {
                             )) {
                                 continue;
                             }
-                            if (handlePersistentStateAction(
+                            const persistent_state_result = handlePersistentStateAction(
                                 allocator,
                                 action,
                                 &machine,
@@ -3147,7 +3208,12 @@ pub fn main() !void {
                                 &wav_recorder,
                                 &frame_counter,
                                 notifications,
-                            )) {
+                            );
+                            if (persistent_state_result == .loaded_machine) {
+                                syncFrontendAfterPersistentStateLoad(&frontend_ui, &current_rom_path, &machine);
+                                continue;
+                            }
+                            if (persistent_state_result != .ignored) {
                                 continue;
                             }
 
@@ -3411,6 +3477,10 @@ pub fn main() !void {
             zsdl3.getAudioStreamQueued(a.stream) catch null
         else
             null;
+        const audio_runtime_metrics: ?AudioRuntimeMetrics = if (audio) |*a|
+            a.runtimeMetrics()
+        else
+            null;
 
         const framebuffer = machine.framebuffer();
         const framebuffer_height: i32 = @intCast(framebuffer.len / Vdp.framebuffer_width);
@@ -3495,6 +3565,9 @@ pub fn main() !void {
                     present_elapsed,
                     frame_ns,
                     queued_audio_bytes,
+                    if (audio_runtime_metrics) |metrics| metrics.queue_budget_bytes else null,
+                    if (audio_runtime_metrics) |metrics| metrics.backlog_recoveries else null,
+                    if (audio_runtime_metrics) |metrics| metrics.overflow_events else null,
                     frame_phases,
                     if (sample_core_counters) core_counters else null,
                 );
@@ -3672,7 +3745,7 @@ test "rate and percent formatters round to tenths" {
 
 test "performance spike formatter includes frame timing and audio" {
     var perf = PerformanceHudState{};
-    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600, .{
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600, null, null, null, .{
         .emulation_ns = 15_100_000,
         .audio_ns = 400_000,
         .upload_ns = 200_000,
@@ -3696,7 +3769,7 @@ test "performance spike formatter includes frame timing and audio" {
         try formatPerformanceSpikeLine(buffer[0..], 42, &perf),
     );
 
-    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, null, .{
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, null, null, null, null, .{
         .emulation_ns = 15_100_000,
         .audio_ns = 400_000,
         .upload_ns = 200_000,
@@ -3721,7 +3794,7 @@ test "performance spike formatter includes frame timing and audio" {
 
 test "performance spike formatter reports OTHER when unmeasured work dominates" {
     var perf = PerformanceHudState{};
-    perf.noteFrame(25_000_000, 25_000_000, 16_700_000, null, .{
+    perf.noteFrame(25_000_000, 25_000_000, 16_700_000, null, null, null, null, .{
         .emulation_ns = 8_000_000,
         .audio_ns = 500_000,
         .upload_ns = 200_000,
@@ -3739,10 +3812,10 @@ test "performance spike formatter reports OTHER when unmeasured work dominates" 
 test "performance spike threshold ignores tiny overruns" {
     var perf = PerformanceHudState{};
 
-    perf.noteFrame(20_600_000, 20_600_000, 16_700_000, null, .{}, null);
+    perf.noteFrame(20_600_000, 20_600_000, 16_700_000, null, null, null, null, .{}, null);
     try std.testing.expect(!isThresholdSlowFrame(&perf));
 
-    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, .{}, null);
+    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, null, null, null, .{}, null);
     try std.testing.expect(isThresholdSlowFrame(&perf));
 }
 
@@ -3768,24 +3841,24 @@ test "performance spike logger suppresses repeated frames inside a burst" {
     var perf = PerformanceHudState{};
     var spikes = PerformanceSpikeLogState{};
 
-    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, .{ .emulation_ns = 19_500_000 }, null);
+    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 19_500_000 }, null);
     var update = spikes.noteFrame(10, &perf);
     try std.testing.expect(update.log_frame);
     try std.testing.expect(update.summary == null);
 
-    perf.noteFrame(25_000_000, 25_000_000, 16_700_000, null, .{ .emulation_ns = 23_800_000 }, null);
+    perf.noteFrame(25_000_000, 25_000_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 23_800_000 }, null);
     update = spikes.noteFrame(11, &perf);
     try std.testing.expect(!update.log_frame);
 
-    perf.noteFrame(28_800_000, 28_800_000, 16_700_000, null, .{ .emulation_ns = 27_000_000 }, null);
+    perf.noteFrame(28_800_000, 28_800_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 27_000_000 }, null);
     update = spikes.noteFrame(12, &perf);
     try std.testing.expect(update.log_frame);
 
-    perf.noteFrame(16_700_000, 16_700_000, 16_700_000, null, .{ .emulation_ns = 15_500_000 }, null);
+    perf.noteFrame(16_700_000, 16_700_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 15_500_000 }, null);
     update = spikes.noteFrame(13, &perf);
     try std.testing.expect(!update.log_frame);
 
-    perf.noteFrame(21_000_000, 21_000_000, 16_700_000, null, .{ .emulation_ns = 19_800_000 }, null);
+    perf.noteFrame(21_000_000, 21_000_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 19_800_000 }, null);
     update = spikes.noteFrame(14, &perf);
     try std.testing.expect(update.log_frame);
 }
@@ -3794,22 +3867,22 @@ test "performance spike window emits one-second summaries and resets" {
     var perf = PerformanceHudState{};
     var spikes = PerformanceSpikeLogState{};
 
-    perf.noteFrame(260_000_000, 260_000_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    perf.noteFrame(260_000_000, 260_000_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 240_000_000 }, null);
     var update = spikes.noteFrame(100, &perf);
     try std.testing.expect(update.log_frame);
     try std.testing.expect(update.summary == null);
 
-    perf.noteFrame(200_000_000, 200_000_000, 250_000_000, 9_600, .{ .emulation_ns = 180_000_000 }, null);
+    perf.noteFrame(200_000_000, 200_000_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 180_000_000 }, null);
     update = spikes.noteFrame(101, &perf);
     try std.testing.expect(!update.log_frame);
     try std.testing.expect(update.summary == null);
 
-    perf.noteFrame(280_000_000, 280_000_000, 250_000_000, 9_600, .{ .emulation_ns = 260_000_000 }, null);
+    perf.noteFrame(280_000_000, 280_000_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 260_000_000 }, null);
     update = spikes.noteFrame(102, &perf);
     try std.testing.expect(update.log_frame);
     try std.testing.expect(update.summary == null);
 
-    perf.noteFrame(240_000_000, 240_000_000, 250_000_000, 9_600, .{ .emulation_ns = 220_000_000 }, null);
+    perf.noteFrame(240_000_000, 240_000_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 220_000_000 }, null);
     update = spikes.noteFrame(103, &perf);
     const summary = update.summary.?;
     try std.testing.expectEqual(@as(u64, 100), summary.start_frame);
@@ -3827,16 +3900,16 @@ test "performance spike window ignores sub-threshold overruns" {
     var perf = PerformanceHudState{};
     var spikes = PerformanceSpikeLogState{};
 
-    perf.noteFrame(250_200_000, 250_200_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    perf.noteFrame(250_200_000, 250_200_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 240_000_000 }, null);
     _ = spikes.noteFrame(200, &perf);
 
-    perf.noteFrame(253_900_000, 253_900_000, 250_000_000, 9_600, .{ .emulation_ns = 243_000_000 }, null);
+    perf.noteFrame(253_900_000, 253_900_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 243_000_000 }, null);
     _ = spikes.noteFrame(201, &perf);
 
-    perf.noteFrame(250_000_000, 250_000_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    perf.noteFrame(250_000_000, 250_000_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 240_000_000 }, null);
     _ = spikes.noteFrame(202, &perf);
 
-    perf.noteFrame(250_000_000, 250_000_000, 250_000_000, 9_600, .{ .emulation_ns = 240_000_000 }, null);
+    perf.noteFrame(250_000_000, 250_000_000, 250_000_000, 9_600, null, null, null, .{ .emulation_ns = 240_000_000 }, null);
     const update = spikes.noteFrame(203, &perf);
     try std.testing.expect(!update.log_frame);
     try std.testing.expect(update.summary == null);
@@ -3846,8 +3919,9 @@ test "performance spike window ignores sub-threshold overruns" {
 
 test "performance hud tracks slow frames and queued audio" {
     var perf = PerformanceHudState{};
+    const queue_budget_bytes = AudioOutput.queueBudgetBytes(AudioOutput.default_queue_budget_ms);
 
-    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600, .{
+    perf.noteFrame(17_500_000, 18_200_000, 16_700_000, 9_600, queue_budget_bytes, 2, 7, .{
         .emulation_ns = 15_100_000,
         .audio_ns = 400_000,
         .upload_ns = 200_000,
@@ -3882,9 +3956,13 @@ test "performance hud tracks slow frames and queued audio" {
     try std.testing.expectEqual(@as(u64, 96), perf.last_core_counters.render_sprite_pixels);
     try std.testing.expectEqual(@as(u64, 48), perf.last_core_counters.render_sprite_opaque_pixels);
     try std.testing.expect(perf.queuedAudioNs() != null);
+    try std.testing.expect(perf.queuedAudioBudgetNs() != null);
+    try std.testing.expectEqual(@as(?usize, queue_budget_bytes), perf.last_audio_queue_budget_bytes);
+    try std.testing.expectEqual(@as(?u64, 2), perf.last_audio_backlog_recoveries);
+    try std.testing.expectEqual(@as(?u64, 7), perf.last_audio_overflow_events);
     try std.testing.expectEqual(@as(u64, 1000), perf.slowFramePercentTenths());
 
-    perf.noteFrame(12_000_000, 16_700_000, 16_700_000, null, .{
+    perf.noteFrame(12_000_000, 16_700_000, 16_700_000, null, null, null, null, .{
         .emulation_ns = 10_000_000,
         .audio_ns = 300_000,
         .upload_ns = 100_000,
@@ -3922,7 +4000,7 @@ test "performance hud tracks slow frames and queued audio" {
 test "performance hud preserves counter sample until the next sampled frame" {
     var perf = PerformanceHudState{};
 
-    perf.noteFrame(17_000_000, 17_000_000, 16_700_000, null, .{ .emulation_ns = 15_000_000 }, .{
+    perf.noteFrame(17_000_000, 17_000_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 15_000_000 }, .{
         .m68k_instructions = 1000,
         .z80_instructions = 200,
         .transfer_slots = 300,
@@ -3933,7 +4011,7 @@ test "performance hud preserves counter sample until the next sampled frame" {
         .render_sprite_pixels = 72,
         .render_sprite_opaque_pixels = 36,
     });
-    perf.noteFrame(16_500_000, 16_500_000, 16_700_000, null, .{ .emulation_ns = 14_500_000 }, null);
+    perf.noteFrame(16_500_000, 16_500_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 14_500_000 }, null);
 
     try std.testing.expectEqual(@as(u64, 2), perf.frame_count);
     try std.testing.expectEqual(@as(u64, 1), perf.core_sample_count);
@@ -3952,7 +4030,7 @@ test "performance hud preserves counter sample until the next sampled frame" {
 
 test "core counter sampling enters burst mode after a threshold slow frame" {
     var perf = PerformanceHudState{};
-    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, .{ .emulation_ns = 19_500_000 }, null);
+    perf.noteFrame(20_700_000, 20_700_000, 16_700_000, null, null, null, null, .{ .emulation_ns = 19_500_000 }, null);
 
     try std.testing.expect(!shouldSampleCoreCounters(true, 1, 0));
     try std.testing.expect(shouldSampleCoreCounters(true, 16, 0));
@@ -4207,9 +4285,12 @@ test "audio init stays muted until it sees audible startup activity" {
 }
 
 test "audio backlog threshold trips at the queued audio budget" {
-    try std.testing.expect(!queueIsBacklogged(AudioOutput.max_queued_bytes - 1));
-    try std.testing.expect(queueIsBacklogged(AudioOutput.max_queued_bytes));
-    try std.testing.expect(queueIsBacklogged(AudioOutput.max_queued_bytes + AudioOutput.channels * @sizeOf(i16)));
+    const default_budget = AudioOutput.queueBudgetBytes(AudioOutput.default_queue_budget_ms);
+    const widened_budget = AudioOutput.queueBudgetBytes(100);
+    try std.testing.expect(!queueIsBacklogged(default_budget - 1));
+    try std.testing.expect(queueIsBacklogged(default_budget));
+    try std.testing.expect(!queueIsBackloggedForBudget(widened_budget - 1, widened_budget));
+    try std.testing.expect(queueIsBackloggedForBudget(widened_budget, widened_budget));
 }
 
 test "audio playback shadow only records samples that have actually drained" {
@@ -4309,12 +4390,12 @@ test "persistent state helper saves and restores machine state" {
     defer allocator.free(slot1_state_path);
 
     machine.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
@@ -4340,30 +4421,82 @@ test "persistent state helper cycles slots and keeps files separate" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 3), persistent_state_slot);
-    try std.testing.expect(handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
     machine.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
-    try std.testing.expect(handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
+}
+
+test "persistent state load sync exits home screen and updates current rom path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = [_]u8{0} ** 0x400;
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
+
+    var saved_machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer saved_machine.deinit(allocator);
+    saved_machine.bus.replaceStoragePaths(allocator, null, try allocator.dupe(u8, rom_path));
+    saved_machine.writeWorkRamByte(0x20, 0x5A);
+
+    const state_path = try rom_paths.statePath(allocator, rom_path, StateFile.default_persistent_state_slot);
+    defer allocator.free(state_path);
+    try StateFile.saveToFile(&saved_machine, state_path);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+
+    var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
+    var frame_counter: u32 = 0;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+    var ui = FrontendUi{ .show_home = true };
+    var current_rom_path = DialogPathCopy{};
+
+    try std.testing.expectEqual(
+        PersistentStateActionResult.loaded_machine,
+        handlePersistentStateAction(
+            allocator,
+            .load_state_file,
+            &machine,
+            rom_path,
+            &persistent_state_slot,
+            null,
+            &gif_recorder,
+            &wav_recorder,
+            &frame_counter,
+            .{},
+        ),
+    );
+    syncFrontendAfterPersistentStateLoad(&ui, &current_rom_path, &machine);
+
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
+    try std.testing.expect(!ui.show_home);
+    try std.testing.expectEqualStrings(rom_path, current_rom_path.slice());
 }
 
 test "save manager metadata tracks slot files and deletions" {
@@ -4390,7 +4523,7 @@ test "save manager metadata tracks slot files and deletions" {
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
     machine.writeWorkRamByte(0x20, 0x11);
-    try std.testing.expect(handlePersistentStateAction(
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(
         allocator,
         .save_state_file,
         &machine,
@@ -4405,7 +4538,7 @@ test "save manager metadata tracks slot files and deletions" {
 
     persistent_state_slot = 2;
     machine.writeWorkRamByte(0x20, 0x22);
-    try std.testing.expect(handlePersistentStateAction(
+    try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(
         allocator,
         .save_state_file,
         &machine,
@@ -4488,6 +4621,8 @@ test "frontend config parsing preserves recent rom order" {
         \\last_open_dir = roms
         \\video_aspect = 4:3
         \\video_scale = whole_pixels
+        \\audio_mode = unfiltered-mix
+        \\audio_queue_ms = 80
         \\recent_rom = roms/b.bin
         \\recent_rom = roms/a.bin
     ;
@@ -4496,6 +4631,8 @@ test "frontend config parsing preserves recent rom order" {
     try std.testing.expectEqualStrings("roms", config.last_open_dir.slice());
     try std.testing.expectEqual(VideoAspectMode.four_three, config.video_aspect_mode);
     try std.testing.expectEqual(VideoScaleMode.whole_pixels, config.video_scale_mode);
+    try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, config.audio_render_mode);
+    try std.testing.expectEqual(@as(u16, 80), config.audio_queue_ms);
     try std.testing.expectEqual(@as(usize, 2), config.recent_rom_count);
     try std.testing.expectEqualStrings("roms/b.bin", config.recentRom(0));
     try std.testing.expectEqualStrings("roms/a.bin", config.recentRom(1));
@@ -4988,6 +5125,7 @@ const CliTestResult = struct {
     fn deinit(self: CliTestResult) void {
         if (self.config.rom_path) |p| std.testing.allocator.free(p);
         if (self.config.renderer_name) |p| std.testing.allocator.free(p);
+        if (self.config.config_path) |p| std.testing.allocator.free(p);
     }
 };
 
@@ -5006,6 +5144,7 @@ test "cli parser accepts audio mode before rom path" {
     defer result.deinit();
     try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
     try std.testing.expectEqual(AudioOutput.RenderMode.psg_only, result.config.audio_mode);
+    try std.testing.expect(result.config.audio_mode_overridden);
 }
 
 test "cli parser accepts renderer override before rom path" {
@@ -5014,6 +5153,8 @@ test "cli parser accepts renderer override before rom path" {
     try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
     try std.testing.expectEqualStrings("software", result.config.renderer_name.?);
     try std.testing.expectEqual(AudioOutput.RenderMode.normal, result.config.audio_mode);
+    try std.testing.expect(!result.config.audio_mode_overridden);
+    try std.testing.expect(!result.config.audio_queue_ms_overridden);
 }
 
 test "cli parser accepts pal timing override" {
@@ -5035,6 +5176,15 @@ test "cli parser accepts spaced audio mode after rom path" {
     defer result.deinit();
     try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
     try std.testing.expectEqual(AudioOutput.RenderMode.unfiltered_mix, result.config.audio_mode);
+    try std.testing.expect(result.config.audio_mode_overridden);
+}
+
+test "cli parser accepts audio queue override" {
+    const result = try runCliTest(&.{ "--audio-queue-ms=80", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqual(@as(u16, 80), result.config.audio_queue_ms);
+    try std.testing.expect(result.config.audio_queue_ms_overridden);
 }
 
 test "cli parser accepts spaced renderer override after rom path" {
@@ -5046,6 +5196,11 @@ test "cli parser accepts spaced renderer override after rom path" {
 
 test "cli parser rejects invalid audio mode values" {
     try std.testing.expectError(error.InvalidAudioMode, runCliTest(&.{ "--audio-mode", "broken" }));
+}
+
+test "cli parser rejects invalid audio queue values" {
+    try std.testing.expectError(error.InvalidAudioQueueMs, runCliTest(&.{ "--audio-queue-ms", "20" }));
+    try std.testing.expectError(error.InvalidAudioQueueMs, runCliTest(&.{ "--audio-queue-ms", "broken" }));
 }
 
 test "cli parser rejects missing renderer value" {

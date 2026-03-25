@@ -2,24 +2,28 @@ const std = @import("std");
 
 pub const CurrentOpcodeFn = *const fn (?*anyopaque) u16;
 pub const ClearInterruptFn = *const fn (?*anyopaque) void;
+pub const UpdateInterruptLevelFn = *const fn (?*anyopaque, u3) void;
 pub const CurrentAccessElapsedMasterCyclesFn = *const fn (?*anyopaque) u32;
 
 pub const RuntimeState = struct {
     ctx: ?*anyopaque = null,
     current_opcode_fn: ?CurrentOpcodeFn = null,
     clear_interrupt_fn: ?ClearInterruptFn = null,
+    update_interrupt_level_fn: ?UpdateInterruptLevelFn = null,
     current_access_elapsed_master_cycles_fn: ?CurrentAccessElapsedMasterCyclesFn = null,
 
     pub fn init(
         ctx: ?*anyopaque,
         opcode_fn: CurrentOpcodeFn,
         clear_fn: ClearInterruptFn,
+        update_interrupt_level_fn: ?UpdateInterruptLevelFn,
         current_access_elapsed_master_cycles_fn: ?CurrentAccessElapsedMasterCyclesFn,
     ) RuntimeState {
         return .{
             .ctx = ctx,
             .current_opcode_fn = opcode_fn,
             .clear_interrupt_fn = clear_fn,
+            .update_interrupt_level_fn = update_interrupt_level_fn,
             .current_access_elapsed_master_cycles_fn = current_access_elapsed_master_cycles_fn,
         };
     }
@@ -36,6 +40,11 @@ pub const RuntimeState = struct {
     pub fn clearInterrupt(self: *const RuntimeState) void {
         const clear_fn = self.clear_interrupt_fn orelse return;
         clear_fn(self.ctx);
+    }
+
+    pub fn updateInterruptLevel(self: *const RuntimeState, level: u3) void {
+        const update_fn = self.update_interrupt_level_fn orelse return;
+        update_fn(self.ctx, level);
     }
 
     pub fn currentAccessElapsedMasterCycles(self: *const RuntimeState) u32 {
@@ -73,6 +82,7 @@ test "runtime state dispatches callbacks and clears cleanly" {
         &callback_ctx,
         CallbackCtx.currentOpcode,
         CallbackCtx.clearInterrupt,
+        null,
         CallbackCtx.currentAccessElapsedMasterCycles,
     );
 

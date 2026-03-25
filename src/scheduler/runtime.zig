@@ -18,6 +18,7 @@ pub const SchedulerBus = struct {
     pending_wait_master_cycles_fn: *const fn (?*anyopaque) u32,
     consume_wait_master_cycles_fn: *const fn (?*anyopaque, u32) u32,
     step_master_fn: *const fn (?*anyopaque, u32) void,
+    flush_deferred_z80_fn: *const fn (?*anyopaque) void,
     cpu_memory_fn: *const fn (?*anyopaque) MemoryInterface,
     dma_halt_quantum_fn: *const fn (?*anyopaque) u32,
     record_refresh_cycles_fn: *const fn (?*anyopaque, u32, u32) void,
@@ -48,6 +49,12 @@ pub const SchedulerBus = struct {
                 fn call(raw_ctx: ?*anyopaque, master_cycles: u32) void {
                     const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
                     self.stepMaster(master_cycles);
+                }
+            }.call,
+            .flush_deferred_z80_fn = struct {
+                fn call(raw_ctx: ?*anyopaque) void {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    self.flushDeferredZ80();
                 }
             }.call,
             .cpu_memory_fn = struct {
@@ -91,6 +98,10 @@ pub const SchedulerBus = struct {
 
     pub fn stepMaster(self: SchedulerBus, master_cycles: u32) void {
         self.step_master_fn(self.ctx, master_cycles);
+    }
+
+    pub fn flushDeferredZ80(self: SchedulerBus) void {
+        self.flush_deferred_z80_fn(self.ctx);
     }
 
     pub fn cpuMemory(self: SchedulerBus) MemoryInterface {
@@ -172,6 +183,7 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
         }
         pub fn setCpuRuntimeState(_: *@This(), _: @import("../cpu/runtime_state.zig").RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
     };
 
     const BusProbe = struct {
@@ -208,6 +220,7 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
             return 17;
         }
 
+        fn flushDeferredZ80(_: *@This()) void {}
         fn recordRefreshCycles(_: *@This(), _: u32, _: u32) void {}
         fn resetRefreshCounter(_: *@This()) void {}
     };
@@ -262,6 +275,7 @@ test "scheduler cpu bind forwards instruction stepping through memory" {
         }
         pub fn setCpuRuntimeState(_: *@This(), _: @import("../cpu/runtime_state.zig").RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
     };
 
     const CpuProbe = struct {
