@@ -49,7 +49,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM
   tables
 - [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
-- [x] Audio filtering with YM2612 low-pass (5 kHz analog path model), board output LPF, and DC-blocking on the final mix
+- [x] Audio filtering with YM2612 low-pass, board output LPF matched to Genesis Plus GX (fc ≈ 4 kHz), and DC-blocking on the final mix
 - [x] Debug render modes (YM-only, PSG-only, unfiltered mix)
 - [ ] Compare YM2612 output against Nuked-OPN2 reference for key titles (Sonic, Streets of Rage, Thunderforce IV)
 - [ ] Validate CSM mode percussion synthesis against hardware recordings
