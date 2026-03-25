@@ -114,14 +114,14 @@ Arguments:
   rom_file  Path to a ROM file (.bin, .md, or .smd) (optional)
 
 Flags:
-  -h, --help        Shows help information for this command [Bool] (default: false)
-      --audio-mode  Audio render mode override: normal, ym-only, psg-only, unfiltered-mix [String] (default: "")
-      --audio-queue-ms  Audio queue budget override in milliseconds (40-150) [String] (default: "")
-      --renderer    SDL render driver override (e.g. software, opengl) [String] (default: "")
-      --config      Path to config file (default: sandopolis.cfg in current directory) [String] (default: "")
-      --pal         Force PAL/50Hz timing and version bits [Bool] (default: false)
-      --ntsc        Force NTSC/60Hz timing and version bits [Bool] (default: false)
-      --version     Print version information and exit [Bool] (default: false)
+  -h, --help            Shows help information for this command [Bool] (default: false)
+      --audio-mode      Audio render mode: normal, ym-only, psg-only, unfiltered-mix [String] (default: "")
+      --audio-queue-ms  Audio queue budget in milliseconds (40-150) before backlog recovery [String] (default: "")
+      --renderer        SDL render driver override (e.g. software, opengl) [String] (default: "")
+      --config          Path to config file (default: sandopolis.cfg in current directory) [String] (default: "")
+      --pal             Force PAL/50Hz timing and version bits [Bool] (default: false)
+      --ntsc            Force NTSC/60Hz timing and version bits [Bool] (default: false)
+      --version         Print version information and exit [Bool] (default: false)
 ```
 
 ---
