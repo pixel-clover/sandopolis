@@ -1212,9 +1212,9 @@ fn writeTargetWord(self: *Vdp, code: u8, addr: u16, value: u16) void {
         0x3 => {
             self.dbg_cram_writes += 1;
             const idx = addr & 0x7E;
-            // Record CRAM event at FIFO service time as well.  This catches
-            // DMA-to-CRAM writes and any writes whose early recording in
-            // writeData was skipped (e.g. buffered port writes).
+            // Record CRAM event at FIFO service time.  The event captures
+            // the old CRAM value before overwrite, enabling the undo/redo
+            // pass in renderScanline to restore per-line palette state.
             self.recordCramDot(self.transfer_line_master_cycle, @intCast(idx), value);
             // CRAM stores 9-bit color in format ----BBB0GGG0RRR0.
             // Mask out unused bits so readback returns canonical values.
@@ -1244,15 +1244,10 @@ pub fn writeData(self: *Vdp, value: u16) void {
 
     self.pending_command = false;
 
-    // Record CRAM dot at M68K write time (before FIFO deferral) so the
-    // pixel position reflects when the 68K issued the write, not when
-    // the FIFO drains.  Use line_master_cycle (the VDP's current
-    // scanline position) rather than transfer_line_master_cycle (the
-    // FIFO drain cursor).
-    if ((self.code & 0xF) == 0x3) {
-        const cram_idx: u8 = @intCast(self.addr & 0x7E);
-        self.recordCramDot(self.line_master_cycle, cram_idx, value);
-    }
+    // CRAM events are recorded at FIFO-service time (writeTargetWord)
+    // to avoid double-recording which breaks the undo/redo pass in
+    // renderScanline.  The FIFO drain timing is close enough for
+    // HBlank palette-per-line effects (TiTAN Overdrive).
 
     const entry = makeWriteFifoEntry(self, value, dma_fifo_latency_slots);
     if (fifoIsFull(self)) {

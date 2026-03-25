@@ -32,7 +32,9 @@ pub const Vdp = struct {
         written_word: u16, // 16-bit word written to CRAM
     };
 
-    pub const max_reg_change_events: usize = 16;
+    // TiTAN Overdrive changes registers every HBlank (224+ times per frame).
+    // Multiple registers can change per line.  512 covers practical cases.
+    pub const max_reg_change_events: usize = 512;
 
     pub const RegChangeEvent = struct {
         pixel_x: u16,
@@ -120,7 +122,7 @@ pub const Vdp = struct {
     cram_dot_events: [max_cram_dot_events]CramDotEvent,
     cram_dot_event_count: u16,
     reg_change_events: [max_reg_change_events]RegChangeEvent,
-    reg_change_event_count: u8,
+    reg_change_event_count: u16,
 
     pub const DmaReadFn = *const fn (ctx: ?*anyopaque, addr: u32) u16;
 
@@ -455,7 +457,10 @@ pub const Vdp = struct {
     }
 
     pub fn recordRegChange(self: *Vdp, reg_index: u8, new_value: u8) void {
-        if (self.vblank or self.hblank) return;
+        // Allow HBlank register changes — games like TiTAN Overdrive
+        // change scroll/plane-base/backdrop registers during HBlank for
+        // per-scanline raster effects.  Only reject VBlank changes.
+        if (self.vblank) return;
         if (self.reg_change_event_count >= max_reg_change_events) return;
 
         // Track registers that affect rendering:
@@ -469,9 +474,6 @@ pub const Vdp = struct {
 
         const old_value = self.regs[reg_index];
         if (old_value == new_value) return;
-
-        const hblank_start = self.hblankStartMasterCycles();
-        if (self.line_master_cycle >= hblank_start) return;
 
         const pixel: u16 = if (self.isH40())
             self.line_master_cycle / 8
