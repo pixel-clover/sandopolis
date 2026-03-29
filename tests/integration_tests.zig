@@ -312,3 +312,8 @@ test "cpu formats current instruction with the built-in disassembler" {
     try testing.expect(std.mem.indexOf(u8, text, "NOP") != null);
 }
 
+
+
+
+
+

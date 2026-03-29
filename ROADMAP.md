@@ -14,8 +14,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Frame scheduler with per-line HINT/HBlank/VBlank event handling
 - [x] Z80 bus control with BUSREQ/RESET and 68K window gating
 - [x] Coarse-grain 68K/Z80 bus arbitration with wait-state delays for Z80 window access
-- [x] Per-access wait cycle tracking for VDP FIFO and Z80 window within multi-access instructions
+- [x] Per-access wait cycle tracking for the VDP FIFO and the Z80 window within multi-access instructions
 - [x] Sub-instruction Z80 timing advancement during 68K multi-access instructions
+- [x] Deferred Z80 burst execution per scheduler slice, matching GPGX's per-line model
+- [x] Z80 bank-access stall and M68K contention aligned with GPGX cycle counts
 - [ ] Dynamic arbitration during VDP DMA with shared bus windows
 
 ### Video Display Processor
@@ -23,13 +25,14 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] VDP registers, VRAM/CRAM/VSRAM, and pattern/tile rendering
 - [x] Plane A/B with scrolling (full-screen, per-8-line, per-column), window plane, and priority handling
 - [x] Sprites with SAT parsing, 7-layer priority, per-line count/dot overflow, and x=0 masking
-- [x] DMA with 68K-to-VDP transfers, fill, VRAM copy, and access-slot-accurate timing
+- [x] DMA with 68K-to-VDP transfers, fill, VRAM copy, access-slot-accurate timing, and 128K source-window wrapping
 - [x] FIFO emulation with 4-entry queue, latency tracking, and write-ahead projection
 - [x] Shadow/highlight mode with special sprite palette handling
 - [x] H32/H40 mode, interlace mode 2, display enable blanking, and VRAM read buffer
 - [x] Status register with VInt, sprite overflow/collision, FIFO flags, and HV counter-latch
 - [x] Pre-line sprite overflow detection visible to CPU during scanline execution
-- [x] CRAM pixel-granule updates during active display (CRAM dot behavior)
+- [x] CRAM pixel-granule updates during active display (CRAM dot behavior) with immediate writes bypassing FIFO latency
+- [x] HBlank CRAM palette-per-line updates with per-scanline undo/redo rendering
 - [x] Mid-scanline register change re-scan (backdrop, display enable, palette mode, plane base, scroll mode, window split)
 - [ ] Right-edge border rendering and overscan area coloring
 - [x] HInt/VInt priority ordering when both are pending on the same line
@@ -46,7 +49,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM
   tables
 - [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
-- [x] Audio filtering with YM2612 low-pass (5 kHz analog path model), board output LPF, and DC-blocking on the final mix
+- [x] Audio filtering with YM2612 low-pass, board output LPF matched to Genesis Plus GX (fc ≈ 4 kHz), and DC-blocking on the final mix
 - [x] Debug render modes (YM-only, PSG-only, unfiltered mix)
 - [ ] Compare YM2612 output against Nuked-OPN2 reference for key titles (Sonic, Streets of Rage, Thunderforce IV)
 - [ ] Validate CSM mode percussion synthesis against hardware recordings
