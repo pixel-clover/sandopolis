@@ -96,7 +96,7 @@ sandopolis
 ```
 
 <div align="center">
-<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.3.png" width="100%">
+<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.4.png" width="100%">
 </div>
 
 Run `sandopolis --help` to see the list of available command-line options.
