@@ -252,6 +252,7 @@ fn controllerTypeLabel(ct: ControllerType) []const u8 {
         .three_button => "3-BUTTON",
         .six_button => "6-BUTTON",
         .ea_4way_play => "4-WAY PLAY",
+        .sega_mouse => "SEGA MOUSE",
     };
 }
 
@@ -259,15 +260,17 @@ pub fn nextControllerType(ct: ControllerType) ControllerType {
     return switch (ct) {
         .three_button => .six_button,
         .six_button => .ea_4way_play,
-        .ea_4way_play => .three_button,
+        .ea_4way_play => .sega_mouse,
+        .sega_mouse => .three_button,
     };
 }
 
 pub fn prevControllerType(ct: ControllerType) ControllerType {
     return switch (ct) {
-        .three_button => .ea_4way_play,
+        .three_button => .sega_mouse,
         .six_button => .three_button,
         .ea_4way_play => .six_button,
+        .sega_mouse => .ea_4way_play,
     };
 }
 
