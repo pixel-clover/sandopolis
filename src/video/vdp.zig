@@ -469,10 +469,10 @@ pub const Vdp = struct {
 
         // Track registers that affect rendering:
         // 0: palette mode, 1: display enable, 7: backdrop color (output pass)
-        // 2: plane A base, 4: plane B base, 11: scroll mode, 13: hscroll table,
-        // 16: plane size, 17: window H split, 18: window V split (plane pass)
+        // 2: plane A base, 4: plane B base, 11: scroll mode, 12: display mode,
+        // 13: hscroll table, 16: plane size, 17: window H split, 18: window V split
         switch (reg_index) {
-            0, 1, 2, 4, 7, 11, 13, 16, 17, 18 => {},
+            0, 1, 2, 4, 7, 11, 12, 13, 16, 17, 18 => {},
             else => return,
         }
 
@@ -646,4 +646,118 @@ test "HV counter latch controlled by reg 0 bit 1" {
 
     vdp.regs[0] = 0xFD;
     try std.testing.expect(!vdp.isHVCounterLatchEnabled());
+}
+
+test "mid-scanline shadow highlight toggle via register 12" {
+    // Set up VDP in H40 mode with shadow/highlight enabled and display on.
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // display enable
+    vdp.regs[12] = 0x09; // H40 + shadow/highlight
+
+    // Write a non-zero backdrop color (red) to CRAM entry 0.
+    vdp.cram[0] = 0x00;
+    vdp.cram[1] = 0x0E; // red in 9-bit Genesis format
+
+    // Inject a mid-scanline register 12 change at pixel 160: disable S/H.
+    vdp.reg_change_events[0] = .{
+        .pixel_x = 160,
+        .reg = 12,
+        .old_value = 0x09,
+        .new_value = 0x01, // H40 without shadow/highlight
+    };
+    vdp.reg_change_event_count = 1;
+    // Set regs to end-of-line state (after the change was applied by the CPU).
+    vdp.regs[12] = 0x01;
+
+    vdp.renderScanline(0);
+
+    // Pixels 0-159 should be rendered with shadow/highlight (shadowed backdrop).
+    // Pixels 160-319 should be rendered with normal palette colors.
+    const shadow_red = vdp.getPaletteColorShadow(0);
+    const normal_red = vdp.getPaletteColor(0);
+    try std.testing.expect(shadow_red != normal_red);
+
+    // Check a pixel in the S/H region and one in the normal region.
+    try std.testing.expectEqual(shadow_red, vdp.framebuffer[80]);
+    try std.testing.expectEqual(normal_red, vdp.framebuffer[200]);
+}
+
+test "mid-scanline H40 to H32 switch renders backdrop for inactive pixels" {
+    // Start in H40 mode, switch to H32 mid-line.
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // display enable
+    vdp.regs[12] = 0x01; // H40
+
+    // Write a non-zero backdrop color (blue) to CRAM entry 0.
+    vdp.cram[0] = 0x0E;
+    vdp.cram[1] = 0x00; // blue in 9-bit Genesis format
+
+    // Inject a mid-scanline register 12 change at pixel 128: switch to H32.
+    vdp.reg_change_events[0] = .{
+        .pixel_x = 128,
+        .reg = 12,
+        .old_value = 0x01,
+        .new_value = 0x00, // H32
+    };
+    vdp.reg_change_event_count = 1;
+    vdp.regs[12] = 0x00; // end-of-line state
+
+    vdp.renderScanline(0);
+
+    const backdrop_color = vdp.getPaletteColor(0);
+
+    // Pixels before the switch (H40 region) should have backdrop.
+    try std.testing.expectEqual(backdrop_color, vdp.framebuffer[64]);
+    // Pixels after the switch but within H32 range should still be rendered.
+    try std.testing.expectEqual(backdrop_color, vdp.framebuffer[200]);
+    // Pixels beyond H32 range (256-319) should be filled with backdrop
+    // by the right-edge fill pass.
+    try std.testing.expectEqual(backdrop_color, vdp.framebuffer[300]);
+}
+
+test "mid-scanline H32 to H40 switch extends rendered area" {
+    // Start in H32 mode, switch to H40 mid-line.
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // display enable
+    vdp.regs[12] = 0x00; // H32
+
+    // Write a green backdrop to CRAM entry 0.
+    vdp.cram[0] = 0x02;
+    vdp.cram[1] = 0x00; // green in 9-bit Genesis format
+
+    // Inject a mid-scanline register 12 change at pixel 128: switch to H40.
+    vdp.reg_change_events[0] = .{
+        .pixel_x = 128,
+        .reg = 12,
+        .old_value = 0x00,
+        .new_value = 0x01, // H40
+    };
+    vdp.reg_change_event_count = 1;
+    vdp.regs[12] = 0x01; // end-of-line state
+
+    vdp.renderScanline(0);
+
+    const backdrop_color = vdp.getPaletteColor(0);
+
+    // Pixels in the H32 region should have backdrop.
+    try std.testing.expectEqual(backdrop_color, vdp.framebuffer[64]);
+    // After the switch, H40 extends to 320 pixels.
+    // Pixels 128-319 should be rendered (backdrop since no tile data).
+    try std.testing.expectEqual(backdrop_color, vdp.framebuffer[200]);
+    try std.testing.expectEqual(backdrop_color, vdp.framebuffer[300]);
+}
+
+test "recordRegChange tracks register 12 changes" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x44; // display enable
+    vdp.regs[12] = 0x09; // H40 + shadow/highlight
+    vdp.line_master_cycle = 640; // pixel 80 in H40 mode (640/8)
+
+    vdp.recordRegChange(12, 0x01); // disable shadow/highlight
+
+    try std.testing.expectEqual(@as(u16, 1), vdp.reg_change_event_count);
+    try std.testing.expectEqual(@as(u16, 80), vdp.reg_change_events[0].pixel_x);
+    try std.testing.expectEqual(@as(u8, 12), vdp.reg_change_events[0].reg);
+    try std.testing.expectEqual(@as(u8, 0x09), vdp.reg_change_events[0].old_value);
+    try std.testing.expectEqual(@as(u8, 0x01), vdp.reg_change_events[0].new_value);
 }

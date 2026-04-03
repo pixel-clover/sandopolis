@@ -54,7 +54,7 @@ fn paletteColorWord(self: *const Vdp, index: u8) u16 {
 
 fn isPlaneDependentReg(reg: u8) bool {
     return switch (reg) {
-        2, 4, 11, 13, 16, 17, 18 => true,
+        2, 4, 11, 12, 13, 16, 17, 18 => true,
         else => false,
     };
 }
@@ -252,10 +252,13 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
 
     // Render planes in segments, applying register changes at boundaries.
     // Plane-affecting registers: 2 (plane A base), 4 (plane B base),
-    // 11 (scroll mode), 13 (hscroll table), 16 (plane size), 17/18 (window).
+    // 11 (scroll mode), 12 (display mode), 13 (hscroll table),
+    // 16 (plane size), 17/18 (window).
+    var max_rendered_x: u16 = screen_w;
     {
         var seg_start: u16 = 0;
-        while (seg_start < screen_w) {
+        var effective_w = screen_w;
+        while (seg_start < effective_w) {
             // Apply all register changes at or before seg_start
             for (0..@as(usize, reg_change_count)) |ei| {
                 const evt = reg_change_events[ei];
@@ -263,9 +266,11 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                     self.regs[evt.reg] = evt.new_value;
                 }
             }
+            // Recompute effective width after applying register 12 changes.
+            effective_w = @max(effective_w, self.screenWidth());
 
             // Find next plane-affecting register change boundary
-            var seg_end = screen_w;
+            var seg_end = effective_w;
             for (0..@as(usize, reg_change_count)) |ei| {
                 const evt = reg_change_events[ei];
                 if (evt.pixel_x > seg_start and isPlaneDependentReg(evt.reg)) {
@@ -275,6 +280,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             }
 
             // Read plane parameters from current register state
+            const seg_screen_w = self.screenWidth();
             const plane_a_base = @as(u32, self.regs[2] & 0x38) << 10;
             const plane_b_base = @as(u32, self.regs[4] & 0x07) << 13;
             const plane_width_tiles: u16 = switch (self.regs[16] & 0x3) {
@@ -293,24 +299,25 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             const plane_height_px: i32 = @as(i32, plane_height_tiles) * @as(i32, tile_h);
             const hscroll_base = (@as(u16, self.regs[13]) & 0x3F) << 10;
 
-            const window_layout = windowLayoutForLine(self, line, screen_w);
+            const window_layout = windowLayoutForLine(self, line, seg_screen_w);
 
-            // Clamp window layout spans to segment bounds
+            // Clamp segment to current mode's screen width.
+            const clamped_end = @min(seg_end, seg_screen_w);
             const seg_plane_b_start = seg_start;
-            const seg_plane_b_end = seg_end;
+            const seg_plane_b_end = clamped_end;
 
             renderPlaneToBuffer(self, line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 1, seg_plane_b_start, seg_plane_b_end);
 
             if (window_layout.plane_a.enabled()) {
                 const pa_start = @max(window_layout.plane_a.start_x, seg_start);
-                const pa_end = @min(window_layout.plane_a.end_x, seg_end);
+                const pa_end = @min(window_layout.plane_a.end_x, clamped_end);
                 if (pa_start < pa_end) {
                     renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, pa_start, pa_end);
                 }
             }
             if (window_layout.window.enabled()) {
                 const win_start = @max(window_layout.window.start_x, seg_start);
-                const win_end = @min(window_layout.window.end_x, seg_end);
+                const win_end = @min(window_layout.window.end_x, clamped_end);
                 if (win_start < win_end) {
                     renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, win_start, win_end);
                 }
@@ -318,6 +325,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
 
             seg_start = seg_end;
         }
+        max_rendered_x = effective_w;
 
         // Restore regs to the state expected by the output pass (undo plane-only changes).
         // The output pass will replay ALL events from the beginning.
@@ -334,13 +342,17 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
     renderSpritesToBuffer(self, line, tile_h, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode);
 
     // Segmented output pass: apply register changes at the correct pixel positions.
-    // This handles mid-line backdrop color changes, display enable toggles, and palette mode.
+    // This handles mid-line backdrop color, display enable, palette mode, display
+    // mode (H32/H40), and shadow/highlight toggles.
     {
         var event_cursor: u8 = 0;
         var seg_start: u16 = 0;
-        while (seg_start < screen_w) {
+        while (seg_start < max_rendered_x) {
+            // Current mode's screen width determines the output bound.
+            var cur_w = self.screenWidth();
+
             // Find next segment boundary
-            var seg_end = screen_w;
+            var seg_end = @min(cur_w, max_rendered_x);
             while (event_cursor < reg_change_count) {
                 const evt = reg_change_events[event_cursor];
                 if (evt.pixel_x > seg_start) {
@@ -351,6 +363,9 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                 self.regs[evt.reg] = evt.new_value;
                 event_cursor += 1;
             }
+            // Recompute after applying events (reg 12 may have changed).
+            cur_w = self.screenWidth();
+            seg_end = @min(seg_end, cur_w);
 
             const display_on = self.isDisplayEnabled();
             const seg_backdrop_idx = self.regs[7] & 0x3F;
@@ -378,14 +393,26 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                     }
                 }
             }
-            seg_start = seg_end;
+
+            // When switching to a narrower mode (H40→H32), skip past any
+            // remaining pixels beyond the new width to prevent stalling.
+            if (seg_end == cur_w and cur_w < max_rendered_x and event_cursor >= reg_change_count) {
+                seg_start = max_rendered_x;
+            } else {
+                seg_start = seg_end;
+            }
         }
     }
 
-    if (screen_w < Vdp.framebuffer_width) {
-        const final_backdrop = getPaletteColor(self, self.regs[7] & 0x3F);
-        for (@as(usize, screen_w)..Vdp.framebuffer_width) |x| {
-            self.framebuffer[line_start + x] = final_backdrop;
+    // Fill pixels beyond the final active display width with backdrop.
+    {
+        const final_w = self.screenWidth();
+        const fill_start = @min(final_w, max_rendered_x);
+        if (fill_start < Vdp.framebuffer_width) {
+            const final_backdrop = getPaletteColor(self, self.regs[7] & 0x3F);
+            for (@as(usize, fill_start)..Vdp.framebuffer_width) |x| {
+                self.framebuffer[line_start + x] = final_backdrop;
+            }
         }
     }
 
@@ -435,16 +462,19 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         // Re-render from the earliest visible event (or pixel 0 if all
         // events are in HBlank) to end of screen, applying CRAM changes
         // at each event's pixel position.  Even if all events are in
-        // HBlank (pixel_x >= screen_w), we must re-render the visible
-        // area because the main pipeline used end-of-line CRAM.
+        // HBlank, we must re-render the visible area because the main
+        // pipeline used end-of-line CRAM.  Use max_rendered_x to cover
+        // all pixels that were rendered by the output pass (accounts for
+        // mid-scanline H32/H40 mode switches).
+        const cram_render_w: usize = @as(usize, max_rendered_x);
         const backdrop_idx = self.regs[7] & 0x3F;
-        const first_px: usize = @min(@as(usize, sorted[0].pixel_x), @as(usize, screen_w));
+        const first_px: usize = @min(@as(usize, sorted[0].pixel_x), cram_render_w);
         var ev_idx: usize = 0;
 
         // Re-render from pixel 0 if any CRAM change happened (even in HBlank).
-        const render_start: usize = if (first_px >= @as(usize, screen_w)) 0 else first_px;
+        const render_start: usize = if (first_px >= cram_render_w) 0 else first_px;
 
-        for (render_start..@as(usize, screen_w)) |x| {
+        for (render_start..cram_render_w) |x| {
             // Apply all CRAM events at this pixel position.
             while (ev_idx < @as(usize, cram_dot_count) and sorted[ev_idx].pixel_x <= @as(u16, @intCast(x))) {
                 const ev = sorted[ev_idx];
