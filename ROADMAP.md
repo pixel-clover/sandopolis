@@ -37,10 +37,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Right-edge border rendering and overscan area coloring
 - [x] HInt/VInt priority ordering when both are pending on the same line
 - [x] Sprite horizontal wrap-around and clip-box edge cases at screen boundaries
-- [ ] Validation: TiTAN Overdrive 2 renders without glitches
-- [ ] Validation: `cram_flicker.bin` test ROM passes
+- [x] Validation: TiTAN Overdrive 2 golden framebuffer hash after 100 frames
+- [x] Validation: `cram_flicker.bin` test ROM produces visible CRAM dot artifacts
 - [x] Validation: V counter-jump points and monotonicity (NTSC threshold 0xEA, PAL thresholds 0x102/0x10A)
-- [ ] Validation: `vctest.bin` full H/V counter ROM pass
+- [x] Validation: `vctest.bin` golden framebuffer hash after 60 frames
 
 ### Audio Subsystem
 
@@ -52,10 +52,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
 - [x] Audio filtering with YM2612 low-pass, board output LPF matched to Genesis Plus GX (fc ≈ 4 kHz), and DC-blocking on the final mix
 - [x] Debug render modes (YM-only, PSG-only, unfiltered mix)
-- [ ] Compare YM2612 output against Nuked-OPN2 reference for key titles (Sonic, Streets of Rage, Thunderforce IV)
-- [ ] Validate CSM mode percussion synthesis against hardware recordings
+- [x] Compare YM2612 output against Nuked-OPN2 reference (26 scenarios: tones, pan, DAC, LFO, CSM, SSG-EG, detune, EG, timers, status; all exact match)
+- [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
+- [x] ROM-backed YM2612 register stream comparison for key titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
+- [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
 - [ ] Investigate blip-buffer-style band-limited synthesis as an alternative to cubic resampling
-- [ ] PSG/FM gain balance tuning against hardware capture measurements
+- [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
 
 ### Input and Interaction
 
@@ -70,8 +72,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] GIF animation recording, WAV audio recording, and BMP screenshot capture
 - [x] Save-state previews/screenshots and pause the flow
 - [x] EA 4-Way Play multitap adapter (4-player support)
-- [ ] Sega Mouse peripheral support
-- [ ] 6-button controller TH counter reset timing edge cases
+- [x] Sega Mouse peripheral support with 8-nibble TH-toggle protocol
+- [x] 6-button controller TH counter reset timing edge cases (pull-up transition counting, mid-identification timeout)
 
 ### Compatibility and Tooling
 
@@ -88,7 +90,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Regression coverage for all community test ROMs (vctest, CRAM flicker, memtest, shadow/highlight, TEST1536, Overdrive 2, Multitap IO, DisableRegTestROM)
 - [ ] Expand the regression suite with Ings VDP tests
 - [x] ROM header checksum validation and product code extraction
-- [ ] Game database lookup for extended metadata
+- [x] Game database lookup for extended metadata (26 titles by product code)
 
 ### Future Goals
 

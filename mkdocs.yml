@@ -46,8 +46,8 @@ plugins:
 nav:
   - Overview: index.md
   - Getting Started: getting-started.md
-  - Development: development.md
-  - Public API: api-reference.md
+  - Controls: controls.md
+  - Public API: core-api.md
   - Compatibility: compatibility.md
 
 markdown_extensions:

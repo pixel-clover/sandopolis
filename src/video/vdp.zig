@@ -515,6 +515,8 @@ pub const Vdp = struct {
     pub const reserveDataPortWriteWaitMasterCycles = fifo_mod.reserveDataPortWriteWaitMasterCycles;
     pub const dataPortReadWaitMasterCycles = fifo_mod.dataPortReadWaitMasterCycles;
     pub const shouldHaltCpu = fifo_mod.shouldHaltCpu;
+    pub const masterCyclesToNextRefreshSlot = fifo_mod.masterCyclesToNextRefreshSlot;
+    pub const refreshSlotDurationMasterCycles = fifo_mod.refreshSlotDurationMasterCycles;
     pub const controlPortWriteWaitMasterCycles = fifo_mod.controlPortWriteWaitMasterCycles;
 
     pub const readControl = timing_mod.readControl;
@@ -760,4 +762,52 @@ test "recordRegChange tracks register 12 changes" {
     try std.testing.expectEqual(@as(u8, 12), vdp.reg_change_events[0].reg);
     try std.testing.expectEqual(@as(u8, 0x09), vdp.reg_change_events[0].old_value);
     try std.testing.expectEqual(@as(u8, 0x01), vdp.reg_change_events[0].new_value);
+}
+
+test "cram dot artifact ors written color with display output at write pixel" {
+    // On real hardware, a CRAM write during active display produces a
+    // single-pixel artifact where the written 9-bit color is OR'd with
+    // the display output at the write position.
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x04; // palette mode enabled
+    vdp.regs[1] = 0x44; // display enable
+    vdp.regs[12] = 0x01; // H40
+
+    // Set backdrop (palette 0, entry 0) to pure red: 0x000E → R=7, G=0, B=0
+    vdp.cram[0] = 0x00;
+    vdp.cram[1] = 0x0E;
+
+    // Inject a CRAM write at pixel 100 that writes pure blue (0x0E00).
+    // The artifact should OR red backdrop with blue write = red+blue (magenta).
+    vdp.cram_dot_events[0] = .{
+        .pixel_x = 100,
+        .cram_addr = 0, // writing to palette entry 0
+        .old_hi = 0x00, // previous CRAM high byte
+        .old_lo = 0x0E, // previous CRAM low byte (red)
+        .written_word = 0x0E00, // pure blue in Genesis format
+    };
+    vdp.cram_dot_event_count = 1;
+    // End-of-line CRAM should reflect the write.
+    vdp.cram[0] = 0x0E;
+    vdp.cram[1] = 0x00;
+
+    vdp.renderScanline(0);
+
+    // The backdrop at pixel 50 (before the write) should be red.
+    const red = vdp.getPaletteColor(0);
+    _ = red;
+
+    // The pixel at 100 should show the OR artifact: red | blue.
+    // Red in ARGB: 0xFF_FF0000 (from color_lut[7]=255 for R, 0 for G, B)
+    // Blue in ARGB: 0xFF_0000FF (from color_lut[7]=255 for B, 0 for R, G)
+    // OR'd: 0xFF_FF00FF (magenta)
+    const artifact_pixel = vdp.framebuffer[100];
+    // The artifact pixel should have both R and B channels set.
+    try std.testing.expect((artifact_pixel & 0x00FF0000) != 0); // R channel
+    try std.testing.expect((artifact_pixel & 0x000000FF) != 0); // B channel
+
+    // The pixel at 101 (after the write) should be pure blue (new palette).
+    const blue_argb = vdp.framebuffer[101];
+    try std.testing.expect((blue_argb & 0x000000FF) != 0); // B channel
+    try std.testing.expect((blue_argb & 0x00FF0000) == 0); // no R channel
 }

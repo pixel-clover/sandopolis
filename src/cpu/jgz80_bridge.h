@@ -22,6 +22,13 @@ typedef struct Jgz80PsgCommandEvent {
     uint8_t value;
 } Jgz80PsgCommandEvent;
 
+typedef struct Jgz80InstructionTraceEntry {
+    uint32_t master_offset;
+    uint16_t pc;
+    uint8_t z80_cycles;
+    uint8_t opcode;
+} Jgz80InstructionTraceEntry;
+
 typedef struct Jgz80AudioOpTraceEntry {
     uint32_t master_offset;
     uint32_t sequence;
@@ -234,6 +241,14 @@ uint32_t jgz80_take_audio_op_trace_dropped_count(Jgz80Handle *handle);
 void jgz80_set_audio_op_trace_enabled(Jgz80Handle *handle, uint8_t enabled);
 
 void jgz80_clear_audio_op_trace(Jgz80Handle *handle);
+
+void jgz80_set_instruction_trace_enabled(Jgz80Handle *handle, uint8_t enabled);
+
+void jgz80_clear_instruction_trace(Jgz80Handle *handle);
+
+uint16_t jgz80_peek_instruction_trace_count(const Jgz80Handle *handle);
+
+uint16_t jgz80_take_instruction_trace(Jgz80Handle *handle, Jgz80InstructionTraceEntry *dest, uint16_t max_events);
 
 void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset);
 

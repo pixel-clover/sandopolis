@@ -10,6 +10,7 @@ pub const Z80 = struct {
 
     pub const YmWriteEvent = c.Jgz80YmWriteEvent;
     pub const AudioOpTraceEntry = c.Jgz80AudioOpTraceEntry;
+    pub const InstructionTraceEntry = c.Jgz80InstructionTraceEntry;
     pub const YmDacSampleEvent = c.Jgz80YmDacSampleEvent;
     pub const YmResetEvent = c.Jgz80YmResetEvent;
     pub const PsgCommandEvent = c.Jgz80PsgCommandEvent;
@@ -249,6 +250,25 @@ pub const Z80 = struct {
 
     pub fn takeAudioOpTraceDroppedCount(self: *Z80) u32 {
         if (self.handle) |h| return c.jgz80_take_audio_op_trace_dropped_count(h);
+        return 0;
+    }
+
+    pub fn setInstructionTraceEnabled(self: *Z80, enabled: bool) void {
+        if (self.handle) |h| c.jgz80_set_instruction_trace_enabled(h, if (enabled) 1 else 0);
+    }
+
+    pub fn clearInstructionTrace(self: *Z80) void {
+        if (self.handle) |h| c.jgz80_clear_instruction_trace(h);
+    }
+
+    pub fn pendingInstructionTraceCount(self: *const Z80) u16 {
+        if (self.handle) |h| return c.jgz80_peek_instruction_trace_count(h);
+        return 0;
+    }
+
+    pub fn takeInstructionTrace(self: *Z80, dest: []InstructionTraceEntry) usize {
+        if (dest.len == 0) return 0;
+        if (self.handle) |h| return c.jgz80_take_instruction_trace(h, dest.ptr, @intCast(dest.len));
         return 0;
     }
 

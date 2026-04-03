@@ -178,7 +178,11 @@ pub const View = struct {
             return;
         }
 
-        self.state.z80_master_credit = self.state.z80_master_phase;
+        // Align to the next Z80 cycle boundary, matching GPGX's
+        // ((cycles + 14) / 15) * 15 rounding.  The Z80 loses 0-14
+        // master cycles per BUSREQ/RESET release.  This keeps sound
+        // driver timing (especially GEMS DAC playback) in sync.
+        self.state.z80_master_credit = 0;
     }
 
     pub fn refreshZ80CanRunCache(self: *View) void {
@@ -535,7 +539,11 @@ test "z80 timing carries instruction overshoot across stepMaster slices" {
     try testing.expectEqual(@as(i64, -45), state.z80_master_credit);
 }
 
-test "z80 timing resumes on the current 15-master phase after control-line release" {
+test "z80 timing aligns to next 15-cycle boundary on control-line release" {
+    // GPGX rounds Z80.cycles up to the next 15-cycle boundary when
+    // BUSREQ or RESET is released: Z80.cycles = ((cycles+14)/15)*15.
+    // This means the Z80 loses 0-14 cycles per release event. Sandopolis
+    // must match this to keep Z80 sound driver timing in sync with GPGX.
     const testing = std.testing;
 
     const TestHooks = struct {
@@ -573,6 +581,14 @@ test "z80 timing resumes on the current 15-master phase after control-line relea
     z80.setResetLineAsserted(false);
     view.noteZ80RunnableStateTransition(was_can_run);
 
+    // With GPGX-style alignment, phase=14 rounds up to 15, so the Z80
+    // gets 0 initial credit.  One more master cycle is not enough to
+    // reach a full 15-cycle Z80 instruction.
     view.stepMasterAndFlush(1);
+    try testing.expectEqual(@as(u16, 0x0000), z80.getPc());
+
+    // After 14 more master cycles (total 15 since release), the Z80
+    // should have enough credit for one instruction.
+    view.stepMasterAndFlush(14);
     try testing.expectEqual(@as(u16, 0x0001), z80.getPc());
 }

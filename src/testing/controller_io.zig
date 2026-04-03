@@ -8,6 +8,8 @@ const State = struct {
 pub const ControllerType = enum {
     three_button,
     six_button,
+    ea_4way_play,
+    sega_mouse,
 };
 
 pub const Button = struct {
@@ -23,6 +25,13 @@ pub const Button = struct {
     pub const Y: u16 = internal_io.Io.Button.Y;
     pub const Z: u16 = internal_io.Io.Button.Z;
     pub const Mode: u16 = internal_io.Io.Button.Mode;
+};
+
+pub const MouseButton = struct {
+    pub const left: u4 = internal_io.Io.MouseButton.left;
+    pub const right: u4 = internal_io.Io.MouseButton.right;
+    pub const middle: u4 = internal_io.Io.MouseButton.middle;
+    pub const start: u4 = internal_io.Io.MouseButton.start;
 };
 
 pub const ControllerIo = struct {
@@ -55,10 +64,20 @@ pub const ControllerIo = struct {
         self.handle.io.setButton(port, button, pressed);
     }
 
+    pub fn setMouseButton(self: *ControllerIo, port: usize, button: u4, pressed: bool) void {
+        self.handle.io.setMouseButton(port, button, pressed);
+    }
+
+    pub fn setMouseDelta(self: *ControllerIo, port: usize, dx: i16, dy: i16) void {
+        self.handle.io.setMouseDelta(port, dx, dy);
+    }
+
     pub fn setControllerType(self: *ControllerIo, port: usize, controller_type: ControllerType) void {
         self.handle.io.setControllerType(port, switch (controller_type) {
             .three_button => .three_button,
             .six_button => .six_button,
+            .ea_4way_play => .ea_4way_play,
+            .sega_mouse => .sega_mouse,
         });
     }
 
@@ -66,6 +85,8 @@ pub const ControllerIo = struct {
         return switch (self.handle.io.getControllerType(port)) {
             .three_button => .three_button,
             .six_button => .six_button,
+            .ea_4way_play => .ea_4way_play,
+            .sega_mouse => .sega_mouse,
         };
     }
 };

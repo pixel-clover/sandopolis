@@ -772,6 +772,9 @@ fn parseControllerType(name: []const u8) ?ControllerType {
     if (std.ascii.eqlIgnoreCase(name, "ea_4way_play")) {
         return .ea_4way_play;
     }
+    if (std.ascii.eqlIgnoreCase(name, "sega_mouse")) {
+        return .sega_mouse;
+    }
     return null;
 }
 
@@ -960,6 +963,15 @@ test "input bindings apply configured controller types" {
 
     try testing.expectEqual(ControllerType.six_button, io.getControllerType(0));
     try testing.expectEqual(ControllerType.three_button, io.getControllerType(1));
+}
+
+test "sega mouse controller type parses from config and serializes correctly" {
+    var bindings = Bindings.defaults();
+    bindings.applyConfigLine("controller.p1 = sega_mouse");
+    try testing.expectEqual(ControllerType.sega_mouse, bindings.controller_types[0]);
+
+    // Verify the name serialization is correct for round-trip.
+    try testing.expectEqualStrings("sega_mouse", controllerTypeName(.sega_mouse));
 }
 
 test "input bindings release mapped gamepad inputs for one port" {

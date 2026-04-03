@@ -21,6 +21,8 @@ pub const SchedulerBus = struct {
     flush_deferred_z80_fn: *const fn (?*anyopaque) void,
     cpu_memory_fn: *const fn (?*anyopaque) MemoryInterface,
     dma_halt_quantum_fn: *const fn (?*anyopaque) u32,
+    dma_refresh_gap_fn: *const fn (?*anyopaque) u32,
+    dma_refresh_slot_duration_fn: *const fn (?*anyopaque) u32,
     record_refresh_cycles_fn: *const fn (?*anyopaque, u32, u32) void,
     reset_refresh_counter_fn: *const fn (?*anyopaque) void,
 
@@ -69,6 +71,18 @@ pub const SchedulerBus = struct {
                     return self.dmaHaltQuantum();
                 }
             }.call,
+            .dma_refresh_gap_fn = struct {
+                fn call(raw_ctx: ?*anyopaque) u32 {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    return self.dmaRefreshGapMasterCycles();
+                }
+            }.call,
+            .dma_refresh_slot_duration_fn = struct {
+                fn call(raw_ctx: ?*anyopaque) u32 {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    return self.dmaRefreshSlotDuration();
+                }
+            }.call,
             .record_refresh_cycles_fn = struct {
                 fn call(raw_ctx: ?*anyopaque, m68k_cycles: u32, ppc: u32) void {
                     const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
@@ -110,6 +124,14 @@ pub const SchedulerBus = struct {
 
     pub fn dmaHaltQuantum(self: SchedulerBus) u32 {
         return self.dma_halt_quantum_fn(self.ctx);
+    }
+
+    pub fn dmaRefreshGapMasterCycles(self: SchedulerBus) u32 {
+        return self.dma_refresh_gap_fn(self.ctx);
+    }
+
+    pub fn dmaRefreshSlotDuration(self: SchedulerBus) u32 {
+        return self.dma_refresh_slot_duration_fn(self.ctx);
     }
 
     pub fn recordRefreshCycles(self: SchedulerBus, m68k_cycles: u32, ppc: u32) void {
@@ -220,6 +242,12 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
             return 17;
         }
 
+        fn dmaRefreshGapMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        fn dmaRefreshSlotDuration(_: *@This()) u32 {
+            return 16;
+        }
         fn flushDeferredZ80(_: *@This()) void {}
         fn recordRefreshCycles(_: *@This(), _: u32, _: u32) void {}
         fn resetRefreshCounter(_: *@This()) void {}

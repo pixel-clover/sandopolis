@@ -354,6 +354,24 @@ pub const Emulator = struct {
         return self.handle.machine.bus.z80.takeAudioOpTraceDroppedCount();
     }
 
+    pub const Z80InstructionTraceEntry = @import("../cpu/z80.zig").Z80.InstructionTraceEntry;
+
+    pub fn setZ80InstructionTraceEnabled(self: *Emulator, enabled: bool) void {
+        self.handle.machine.bus.z80.setInstructionTraceEnabled(enabled);
+    }
+
+    pub fn clearZ80InstructionTrace(self: *Emulator) void {
+        self.handle.machine.bus.z80.clearInstructionTrace();
+    }
+
+    pub fn pendingZ80InstructionTraceCount(self: *const Emulator) u16 {
+        return self.handle.machine.bus.z80.pendingInstructionTraceCount();
+    }
+
+    pub fn takeZ80InstructionTrace(self: *Emulator, dest: []Z80InstructionTraceEntry) usize {
+        return self.handle.machine.bus.z80.takeInstructionTrace(dest);
+    }
+
     pub fn setM68kInstructionTraceEnabled(self: *Emulator, enabled: bool) void {
         var machine = self.handle.machine.testing();
         machine.setM68kInstructionTraceEnabled(enabled);

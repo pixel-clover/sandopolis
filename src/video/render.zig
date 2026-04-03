@@ -475,15 +475,26 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         const render_start: usize = if (first_px >= cram_render_w) 0 else first_px;
 
         for (render_start..cram_render_w) |x| {
-            // Apply all CRAM events at this pixel position.
-            while (ev_idx < @as(usize, cram_dot_count) and sorted[ev_idx].pixel_x <= @as(u16, @intCast(x))) {
+            // Apply all CRAM events BEFORE this pixel (strictly less than).
+            // Events at earlier positions must update the palette before we
+            // render this pixel.
+            while (ev_idx < @as(usize, cram_dot_count) and sorted[ev_idx].pixel_x < @as(u16, @intCast(x))) {
                 const ev = sorted[ev_idx];
                 const masked = ev.written_word & 0x0EEE;
                 self.cram[ev.cram_addr] = @intCast((masked >> 8) & 0xFF);
                 self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
                 ev_idx += 1;
             }
-            // Re-render pixel with updated palette, respecting shadow/highlight.
+
+            // Check if a CRAM event fires at exactly this pixel position.
+            // The dot artifact uses the pre-write palette color (current
+            // CRAM state before this event is applied).
+            var dot_word: ?u16 = null;
+            if (ev_idx < @as(usize, cram_dot_count) and sorted[ev_idx].pixel_x == @as(u16, @intCast(x))) {
+                dot_word = sorted[ev_idx].written_word;
+            }
+
+            // Render the pixel with the current palette (pre-event for dots).
             const pal_idx = if (pixel_buf[x] == 0) backdrop_idx else pixel_buf[x];
             if (sh_mode) {
                 if (pixel_buf[x] == 0) {
@@ -497,6 +508,28 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                 }
             } else {
                 self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
+            }
+
+            // CRAM dot artifact: OR the written 9-bit color with the
+            // display output at the write position.
+            if (dot_word) |written| {
+                const dot_masked = written & 0x0EEE;
+                const b3: u3 = @intCast((dot_masked >> 9) & 0x7);
+                const g3: u3 = @intCast((dot_masked >> 5) & 0x7);
+                const r3: u3 = @intCast((dot_masked >> 1) & 0x7);
+                const dot_argb: u32 = (@as(u32, color_lut[r3]) << 16) |
+                    (@as(u32, color_lut[g3]) << 8) |
+                    @as(u32, color_lut[b3]);
+                self.framebuffer[line_start + x] |= dot_argb;
+            }
+
+            // Now apply the event at this pixel position (if any).
+            while (ev_idx < @as(usize, cram_dot_count) and sorted[ev_idx].pixel_x <= @as(u16, @intCast(x))) {
+                const ev = sorted[ev_idx];
+                const masked = ev.written_word & 0x0EEE;
+                self.cram[ev.cram_addr] = @intCast((masked >> 8) & 0xFF);
+                self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
+                ev_idx += 1;
             }
         }
         // Apply remaining events beyond the visible area (HBlank CRAM

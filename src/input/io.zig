@@ -274,6 +274,12 @@ pub const Io = struct {
             if (self.cycles_until_th_high[port] != 0) {
                 self.cycles_until_th_high[port] = self.cycles_until_th_high[port] -| m68k_cycles;
                 if (self.cycles_until_th_high[port] == 0) {
+                    // The pull-up drives TH high.  If TH was low, this is a
+                    // low→high transition that the 6-button controller counts.
+                    if (!self.controller_th[port]) {
+                        self.th_flip_count[port] +%= 1;
+                        self.flip_reset_counter[port] = six_button_timeout_m68k_cycles;
+                    }
                     self.controller_th[port] = true;
                 }
             }
@@ -318,12 +324,10 @@ pub const Io = struct {
         // Clamp to 8-bit magnitude and record sign bits.
         const abs_x: u8 = if (dx < 0)
             if (dx <= -256) 0xFF else @intCast(@as(u16, @bitCast(-dx)))
-        else
-            if (dx >= 256) 0xFF else @intCast(@as(u16, @bitCast(dx)));
+        else if (dx >= 256) 0xFF else @intCast(@as(u16, @bitCast(dx)));
         const abs_y: u8 = if (dy < 0)
             if (dy <= -256) 0xFF else @intCast(@as(u16, @bitCast(-dy)))
-        else
-            if (dy >= 256) 0xFF else @intCast(@as(u16, @bitCast(dy)));
+        else if (dy >= 256) 0xFF else @intCast(@as(u16, @bitCast(dy)));
         self.mouse_dx[port] = abs_x;
         self.mouse_dy[port] = abs_y;
         self.mouse_sign_x[port] = if (dx < 0) 1 else 0;
@@ -452,6 +456,121 @@ test "ea 4-way play multiplexes four controllers via port 2 th" {
     // In TH-high format: bit 5 = C button (active low)
     try testing.expect((c_high & 0x20) == 0); // C pressed on player C
     try testing.expect((a_high & 0x20) != 0); // C not pressed on player A
+}
+
+test "six-button timeout mid-identification reverts to standard three-button reads" {
+    // If the timeout fires while the flip counter is between 0 and 3
+    // (mid-identification), subsequent reads should return standard
+    // three-button data, not six-button identification nibbles.
+    var io = Io.init();
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.Z, true);
+
+    // Two TH low→high transitions: flip count = 2
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    try testing.expectEqual(@as(u2, 2), io.th_flip_count[0]);
+
+    // Timeout fires → counter resets to 0
+    io.tick(Io.six_button_timeout_m68k_cycles);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+
+    // TH high read should now return standard three-button format
+    // (not the six-button identification state).  Z button should NOT
+    // appear since we're back in standard mode.
+    io.write(0x03, 0x40);
+    const high_byte = io.read(0x03);
+    try testing.expectEqual(@as(u8, 0x7F), high_byte);
+}
+
+test "six-button identification wraps through multiple consecutive cycles" {
+    // After a full identification cycle (flip count wraps 3→0), a
+    // second complete cycle should also expose the extra buttons.
+    var io = Io.init();
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.Z, true);
+
+    // First full cycle: 3 TH low→high transitions
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // flip_count = 3, TH high → six-button state
+    try testing.expectEqual(@as(u8, 0x7E), io.read(0x03));
+
+    // Complete the wrap: one more low→high transition → flip_count wraps to 0
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+
+    // Standard TH-high read again (flip count 0)
+    try testing.expectEqual(@as(u8, 0x7F), io.read(0x03));
+
+    // Second full cycle
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // Should expose six-button data again
+    try testing.expectEqual(@as(u8, 0x7E), io.read(0x03));
+}
+
+test "th pull-up from ctrl de-assertion increments six-button flip counter" {
+    // When CTRL bit 6 is cleared (TH becomes input), the controller
+    // pulls TH high after 30 M68K cycles.  This pull-up transition
+    // should increment the flip counter, matching real hardware.
+    var io = Io.init();
+    io.write(0x09, 0x40); // TH output
+    io.setButton(0, Io.Button.Z, true);
+
+    // Set TH low via DATA register
+    io.write(0x03, 0x00);
+    try testing.expect(!io.controller_th[0]);
+
+    // Clear CTRL TH output → TH becomes input, will pull high after delay
+    io.write(0x09, 0x00);
+    io.tick(Io.th_high_delay_m68k_cycles);
+    try testing.expect(io.controller_th[0]);
+    // The pull-up should have incremented the flip counter
+    try testing.expectEqual(@as(u2, 1), io.th_flip_count[0]);
+}
+
+test "six-button timeout resets counter and subsequent identification works" {
+    // After a timeout resets the counter, a fresh identification
+    // sequence should work normally.
+    var io = Io.init();
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.X, true);
+
+    // Partial identification
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // Timeout
+    io.tick(Io.six_button_timeout_m68k_cycles);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+
+    // Fresh full identification cycle
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // Should reach six-button state (flip count 3, TH high)
+    const byte = io.read(0x03);
+    // X button (bit 2) should be visible in six-button mode
+    try testing.expectEqual(@as(u8, 0), byte & 0x04);
 }
 
 test "sega mouse returns identification nibbles on first two TH transitions" {
