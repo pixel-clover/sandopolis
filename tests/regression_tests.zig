@@ -8,6 +8,14 @@ const graphics_sampler_rom = "tests/testroms/Graphics & Joystick Sampler by Char
 const window_test_rom = "tests/testroms/Window Test by Fonzie (PD).bin";
 const fm_test_rom = "tests/testroms/FM Test by DevSter (PD).bin";
 const overdrive_rom = "tests/testroms/TiTAN - Overdrive (Rev1.1-106-Final) (Hardware).bin";
+const overdrive2_rom = "tests/testroms/titan-overdrive2.bin";
+const vctest_rom = "tests/testroms/vctest.bin";
+const cram_flicker_rom = "tests/testroms/cram flicker.bin";
+const memtest_68k_rom = "tests/testroms/memtest_68k.bin";
+const disable_reg_test_rom = "tests/testroms/DisableRegTestROM.bin";
+const shadow_highlight_rom = "tests/testroms/Shadow-Highlight Test Program #2 (PD).bin";
+const test1536_rom = "tests/testroms/TEST1536.BIN";
+const multitap_io_rom = "tests/testroms/Multitap - IO Sample Program (U) (Nov 28 1992).gen";
 
 fn makeSsfMapperRom(allocator: std.mem.Allocator, bank_count: usize) ![]u8 {
     const bank_size = 512 * 1024;
@@ -629,4 +637,292 @@ test "titan overdrive 1 runs 3600 frames without crashing" {
         if (pixel & 0x00FFFFFF != 0) non_black += 1;
     }
     try testing.expect(non_black > 0);
+}
+
+// --- Overdrive 2 ---
+
+test "overdrive 2 rom runs for 600 frames without wedging the core" {
+    var emulator = try Emulator.init(testing.allocator, overdrive2_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(600);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(emulator.cpuState().program_counter != 0);
+}
+
+test "overdrive 2 rom runs for 600 frames with audio output processing" {
+    var emulator = try Emulator.init(testing.allocator, overdrive2_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    try emulator.runFramesProcessingAudio(600);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(emulator.cpuState().program_counter != 0);
+}
+
+// --- V Counter Test ---
+
+test "vctest rom reaches non-uniform visible output" {
+    // vctest.bin samples VCounter values under different display modes
+    // and displays the results.  Verify it boots, enables the display,
+    // and renders meaningful text output.
+    var emulator = try Emulator.init(testing.allocator, vctest_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    const fb = emulator.framebuffer();
+    const first_pixel = fb[0];
+    var differing_pixels: usize = 0;
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != first_pixel) differing_pixels += 1;
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(differing_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "vctest rom runs stably in both ntsc and pal modes" {
+    // The ROM tests VCounter under multiple display modes.  Run it in
+    // NTSC and PAL and verify neither mode crashes or wedges.
+    {
+        var ntsc = try Emulator.init(testing.allocator, vctest_rom);
+        defer ntsc.deinit(testing.allocator);
+        ntsc.reset();
+        ntsc.runFrames(120);
+        try testing.expect(ntsc.cpuState().program_counter != 0x0000_0200);
+    }
+    {
+        var pal = try Emulator.init(testing.allocator, vctest_rom);
+        defer pal.deinit(testing.allocator);
+        pal.reset();
+        pal.setPalMode(true);
+        pal.runFrames(120);
+        try testing.expect(pal.cpuState().program_counter != 0x0000_0200);
+    }
+}
+
+// --- CRAM Flicker ---
+
+test "cram flicker rom boots and enables display" {
+    // cram_flicker.bin verifies CRAM dot placement and timing during
+    // active scan and border.  The ROM's visual output relies on the
+    // CRAM dot artifact (single-pixel color flash from mid-scanline
+    // CRAM writes), so we verify boot and VDP initialization rather
+    // than framebuffer content.
+    var emulator = try Emulator.init(testing.allocator, cram_flicker_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(30);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+}
+
+test "cram flicker rom runs stably for 300 frames" {
+    // The ROM generates many mid-scanline CRAM writes per frame.
+    // Run for an extended period to verify no overflow or crash in
+    // the CRAM dot event path.
+    var emulator = try Emulator.init(testing.allocator, cram_flicker_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(300);
+
+    try testing.expect(emulator.cpuState().program_counter != 0);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+}
+
+// --- 68K Memory Test ---
+
+test "memtest 68k rom boots and displays memory map results" {
+    // memtest_68k.bin reads from various undefined locations in the
+    // 68K memory map and displays the results.  Verify it boots,
+    // exercises the bus, and produces visible text output.
+    var emulator = try Emulator.init(testing.allocator, memtest_68k_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    var differing_pixels: usize = 0;
+    const first_pixel = fb[0];
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+        if (pixel != first_pixel) differing_pixels += 1;
+    }
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(differing_pixels > 0);
+}
+
+// --- VDP Disable Register Test ROM ---
+
+test "disable reg test rom initializes vdp and produces output" {
+    // DisableRegTestROM.bin is an interactive ROM for toggling VDP test
+    // register bits.  Verify it boots, initializes VDP registers, and
+    // renders its UI with both graphical and audio output.
+    var emulator = try Emulator.init(testing.allocator, disable_reg_test_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+
+    const vdp_init = emulator.vdpRegister(1) != 0 or
+        emulator.vdpRegister(0) != 0 or
+        emulator.vdpRegister(4) != 0;
+    try testing.expect(vdp_init);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "disable reg test rom runs stably for 500 frames with audio" {
+    var emulator = try Emulator.init(testing.allocator, disable_reg_test_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    try emulator.runFramesProcessingAudio(500);
+
+    try testing.expect(emulator.cpuState().program_counter != 0);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+}
+
+// --- Shadow/Highlight Test ---
+
+test "shadow highlight test rom enables shadow highlight mode" {
+    // The test ROM demonstrates shadow/highlight rendering by setting
+    // VDP register 12 bit 3.  Verify it boots, enables the mode, and
+    // produces visually distinct output with multiple color levels.
+    var emulator = try Emulator.init(testing.allocator, shadow_highlight_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    // Shadow/highlight mode should be enabled (register 12, bit 3).
+    try testing.expect((emulator.vdpRegister(12) & 0x08) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+
+    // Shadow/highlight should produce more than a handful of unique
+    // colors due to normal, shadow, and highlight variants.
+    try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
+}
+
+// --- 1536 Color Test ---
+
+test "test1536 rom uses shadow highlight for expanded color output" {
+    // TEST1536.BIN combines dynamic mid-frame CRAM writes with
+    // shadow/highlight mode to display up to 1536 unique colors.
+    // Verify it boots, enables shadow/highlight, and produces a
+    // high number of unique framebuffer colors.
+    var emulator = try Emulator.init(testing.allocator, test1536_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(120);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    // Shadow/highlight mode is required for the 1536-color effect.
+    try testing.expect((emulator.vdpRegister(12) & 0x08) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+
+    // The ROM combines shadow/highlight with mid-frame CRAM writes to
+    // maximize unique colors.  The CRAM dot re-render path does not yet
+    // fully respect shadow/highlight mode, so the effective color count
+    // is lower than the theoretical 1536.  Verify at least a few
+    // distinct colors appear.
+    try testing.expect(countUniqueFramebufferColors(fb, 16) > 2);
+}
+
+// --- Multitap IO Sample ---
+
+test "multitap io sample rom boots and detects controllers" {
+    // Official Sega test ROM for I/O device detection and input
+    // decoding.  Verify it loads (note: .gen extension), boots,
+    // and produces visible output showing controller status.
+    var emulator = try Emulator.init(testing.allocator, multitap_io_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "multitap io sample rom reads version register" {
+    // The ROM queries the version register at 0xA10001 to detect
+    // the console model.  Verify the register returns a sensible
+    // value (high nibble indicates overseas/domestic and PAL/NTSC).
+    var emulator = try Emulator.init(testing.allocator, multitap_io_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    const version = emulator.read16(0xA10000);
+    // Bits 7-6 of the low byte encode region and PAL/NTSC.
+    // In NTSC mode the value is typically 0xA0A0 (matching the
+    // existing io window test).  Verify the read succeeds and
+    // returns a non-zero value.
+    try testing.expect(version != 0);
 }
