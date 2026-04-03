@@ -880,11 +880,9 @@ test "test1536 rom uses shadow highlight for expanded color output" {
     try testing.expect(non_black_pixels > 0);
 
     // The ROM combines shadow/highlight with mid-frame CRAM writes to
-    // maximize unique colors.  The CRAM dot re-render path does not yet
-    // fully respect shadow/highlight mode, so the effective color count
-    // is lower than the theoretical 1536.  Verify at least a few
-    // distinct colors appear.
-    try testing.expect(countUniqueFramebufferColors(fb, 16) > 2);
+    // maximize unique colors.  With the CRAM dot re-render respecting
+    // shadow/highlight, verify multiple distinct colors appear.
+    try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
 }
 
 // --- Multitap IO Sample ---

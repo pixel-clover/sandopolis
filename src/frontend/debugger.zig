@@ -5,19 +5,28 @@ const Machine = @import("../machine.zig").Machine;
 const Vdp = @import("../video/vdp.zig").Vdp;
 
 pub const DebuggerState = struct {
+    pub const max_breakpoints: usize = 16;
+
     active: bool = false,
     step_mode: bool = false,
+    running_to_breakpoint: bool = false,
     memory_address: u32 = 0x000000,
     tab: Tab = .cpu,
+    breakpoints: [max_breakpoints]u32 = [_]u32{0} ** max_breakpoints,
+    breakpoint_count: u8 = 0,
 
     pub const Tab = enum {
         cpu,
         memory,
         vdp,
+        tiles,
     };
 
     pub fn toggle(self: *DebuggerState) void {
         self.active = !self.active;
+        if (!self.active) {
+            self.running_to_breakpoint = false;
+        }
     }
 
     pub fn stepOnce(self: *DebuggerState) void {
@@ -30,6 +39,41 @@ pub const DebuggerState = struct {
             return true;
         }
         return false;
+    }
+
+    pub fn runToBreakpoint(self: *DebuggerState) void {
+        if (self.breakpoint_count > 0) {
+            self.running_to_breakpoint = true;
+        }
+    }
+
+    pub fn stopRunning(self: *DebuggerState) void {
+        self.running_to_breakpoint = false;
+    }
+
+    pub fn hasBreakpoint(self: *const DebuggerState, address: u32) bool {
+        const masked = address & 0xFFFFFF;
+        for (self.breakpoints[0..self.breakpoint_count]) |bp| {
+            if (bp == masked) return true;
+        }
+        return false;
+    }
+
+    pub fn toggleBreakpoint(self: *DebuggerState, address: u32) void {
+        const masked = address & 0xFFFFFF;
+        // If already set, remove it.
+        for (0..self.breakpoint_count) |i| {
+            if (self.breakpoints[i] == masked) {
+                self.breakpoints[i] = self.breakpoints[self.breakpoint_count - 1];
+                self.breakpoint_count -= 1;
+                return;
+            }
+        }
+        // Otherwise add if there is room.
+        if (self.breakpoint_count < max_breakpoints) {
+            self.breakpoints[self.breakpoint_count] = masked;
+            self.breakpoint_count += 1;
+        }
     }
 
     pub fn adjustMemoryAddress(self: *DebuggerState, delta: i32) void {
@@ -46,15 +90,17 @@ pub const DebuggerState = struct {
         self.tab = switch (self.tab) {
             .cpu => .memory,
             .memory => .vdp,
-            .vdp => .cpu,
+            .vdp => .tiles,
+            .tiles => .cpu,
         };
     }
 
     pub fn prevTab(self: *DebuggerState) void {
         self.tab = switch (self.tab) {
-            .cpu => .vdp,
+            .cpu => .tiles,
             .memory => .cpu,
             .vdp => .memory,
+            .tiles => .vdp,
         };
     }
 };
@@ -132,6 +178,7 @@ pub fn render(
             break :blk @as(f32, @floatFromInt(7 + bpr * 3));
         },
         .vdp => 28.0, // "MODE H40 LINE 224/224" ~ 24 chars
+        .tiles => 36.0, // palette row + tile grid needs width
     };
     // Footer is the widest fixed text; ensure panel fits it
     const footer_cols: f32 = 36.0; // "F10 CLOSE  TAB TABS  PGUP/DN SCROLL"
@@ -147,6 +194,7 @@ pub fn render(
             break :blk 1.5 + @as(f32, @floatFromInt(rows));
         },
         .vdp => 17.5, // header + 12 reg pairs + gap + mode + flags + addr + dma
+        .tiles => 22.0, // palette header + palette + gap + tile header + tile grid
     };
     // tab header (1.5) + tab content + footer (1)
     const total_lines = 1.5 + tab_lines + 1.5;
@@ -168,26 +216,30 @@ pub fn render(
         const cpu_color = if (state.tab == .cpu) ui.Colors.cyan else ui.Colors.text_muted;
         const mem_color = if (state.tab == .memory) ui.Colors.cyan else ui.Colors.text_muted;
         const vdp_color = if (state.tab == .vdp) ui.Colors.cyan else ui.Colors.text_muted;
+        const tile_color = if (state.tab == .tiles) ui.Colors.cyan else ui.Colors.text_muted;
         try ui.drawText(renderer, content_x, y, scale, cpu_color, "CPU");
         try ui.drawText(renderer, content_x + glyph_w * 5, y, scale, mem_color, "MEM");
         try ui.drawText(renderer, content_x + glyph_w * 10, y, scale, vdp_color, "VDP");
+        try ui.drawText(renderer, content_x + glyph_w * 15, y, scale, tile_color, "TILE");
         y += line_h * 1.5;
     }
 
     const content_bottom = panel_y + panel_h - padding - line_h * 1.5;
 
     switch (state.tab) {
-        .cpu => try renderCpuTab(renderer, machine, content_x, y, content_bottom, scale, line_h),
+        .cpu => try renderCpuTab(renderer, machine, state, content_x, y, content_bottom, scale, line_h),
         .memory => try renderMemoryTab(renderer, machine, state, content_x, y, content_bottom, scale, line_h, glyph_w, content_w),
         .vdp => try renderVdpTab(renderer, machine, content_x, y, content_bottom, scale, line_h),
+        .tiles => try renderTileTab(renderer, machine, content_x, y, content_bottom, scale, line_h, glyph_w),
     }
 
     // Footer
     const footer_y = panel_y + panel_h - padding - line_h;
     const footer_text = switch (state.tab) {
-        .cpu => "[F10] CLOSE  [TAB] TABS  [SPACE] STEP",
+        .cpu => "[SPC] STEP [B] BRK [G] RUN [F10] CLOSE [TAB] TABS",
         .memory => "[F10] CLOSE  [TAB] TABS  [PGUP/DN] SCROLL",
         .vdp => "[F10] CLOSE  [TAB] TABS  [SPACE] STEP",
+        .tiles => "[F10] CLOSE  [TAB] TABS  [PGUP/DN] PAGE",
     };
     try ui.drawText(renderer, content_x, footer_y, scale, ui.Colors.text_muted, footer_text);
 }
@@ -195,6 +247,7 @@ pub fn render(
 fn renderCpuTab(
     renderer: *zsdl3.Renderer,
     machine: *const Machine,
+    state: *const DebuggerState,
     x: f32,
     start_y: f32,
     max_y: f32,
@@ -262,8 +315,9 @@ fn renderCpuTab(
         if (y + line_h > max_y) return;
         const addr = pc +% @as(u32, @intCast(i * 2));
         const word = readWordSafe(machine, addr);
-        const dis_text = std.fmt.bufPrint(&buf, "  {X:0>6}  {X:0>4}", .{ addr & 0xFFFFFF, word }) catch "???";
-        const color = if (i == 0) ui.Colors.gold else ui.Colors.text_secondary;
+        const prefix: []const u8 = if (state.hasBreakpoint(addr)) "* " else "  ";
+        const dis_text = std.fmt.bufPrint(&buf, "{s}{X:0>6}  {X:0>4}", .{ prefix, addr & 0xFFFFFF, word }) catch "???";
+        const color = if (i == 0) ui.Colors.gold else if (state.hasBreakpoint(addr)) ui.Colors.orange else ui.Colors.text_secondary;
         try ui.drawText(renderer, x, y, scale, color, dis_text);
         y += line_h;
     }
@@ -376,6 +430,113 @@ fn renderVdpTab(
     }
 }
 
+fn renderTileTab(
+    renderer: *zsdl3.Renderer,
+    machine: *const Machine,
+    x: f32,
+    start_y: f32,
+    max_y: f32,
+    scale: f32,
+    line_h: f32,
+    glyph_w: f32,
+) !void {
+    var y = start_y;
+    var buf: [64]u8 = undefined;
+    const vdp = &machine.bus.vdp;
+
+    // Palette viewer: show all 4 palettes (16 colors each).
+    if (y + line_h > max_y) return;
+    try ui.drawText(renderer, x, y, scale, ui.Colors.cyan, "CRAM PALETTE");
+    y += line_h;
+
+    const swatch_sz = @max(glyph_w, scale * 4.0);
+    const swatch_gap = scale;
+    for (0..4) |pal| {
+        if (y + swatch_sz > max_y) break;
+        // Palette label
+        const pal_label = std.fmt.bufPrint(&buf, "P{d}", .{pal}) catch "?";
+        try ui.drawText(renderer, x, y, scale * 0.8, ui.Colors.text_muted, pal_label);
+        const swatch_x_start = x + glyph_w * 3;
+
+        for (0..16) |color_idx| {
+            const cram_idx: u8 = @intCast(pal * 16 + color_idx);
+            const argb = vdp.getPaletteColor(cram_idx);
+            const r: u8 = @truncate((argb >> 16) & 0xFF);
+            const g: u8 = @truncate((argb >> 8) & 0xFF);
+            const b: u8 = @truncate(argb & 0xFF);
+            const sx = swatch_x_start + @as(f32, @floatFromInt(color_idx)) * (swatch_sz + swatch_gap);
+            try zsdl3.setRenderDrawColor(renderer, .{ .r = r, .g = g, .b = b, .a = 0xFF });
+            try zsdl3.renderFillRect(renderer, .{ .x = sx, .y = y, .w = swatch_sz, .h = swatch_sz });
+        }
+        y += swatch_sz + swatch_gap;
+    }
+    y += line_h * 0.5;
+
+    // Tile grid: show VRAM patterns rendered with palette 0.
+    if (y + line_h > max_y) return;
+    try ui.drawText(renderer, x, y, scale, ui.Colors.cyan, "VRAM TILES (PAL 0)");
+    y += line_h;
+
+    // Each tile is 8x8 pixels; render at 1px = scale pixels.
+    const px_sz = scale;
+    const tile_px: f32 = 8.0 * px_sz;
+    const tile_gap = scale * 0.5;
+
+    // Compute how many tiles fit in the available width and height.
+    const avail_w = @as(f32, @floatFromInt(machine.bus.vdp.screenWidth())) * scale * 1.2;
+    const cols = @max(@as(usize, 1), @as(usize, @intFromFloat(avail_w / (tile_px + tile_gap))));
+    const avail_h = max_y - y;
+    const rows = @max(@as(usize, 1), @as(usize, @intFromFloat(avail_h / (tile_px + tile_gap))));
+    const total_tiles = 64 * 1024 / 32; // 2048 tiles in 64KB VRAM
+    _ = total_tiles;
+
+    // Page offset: reuse memory_address scrolled by tile count.
+    // Each PGUP/PGDN moves 256 bytes → 8 tiles.
+    const tile_page_offset: usize = 0; // Could be driven by state in the future.
+
+    for (0..rows) |tile_row| {
+        const ty = y + @as(f32, @floatFromInt(tile_row)) * (tile_px + tile_gap);
+        if (ty + tile_px > max_y) break;
+
+        for (0..cols) |tile_col| {
+            const tile_idx = tile_page_offset + tile_row * cols + tile_col;
+            if (tile_idx >= 2048) break;
+
+            const tx = x + @as(f32, @floatFromInt(tile_col)) * (tile_px + tile_gap);
+            const pattern_base: u32 = @as(u32, @intCast(tile_idx)) * 32;
+
+            // Render 8 rows of 8 pixels each.
+            for (0..8) |row| {
+                const row_addr = pattern_base + @as(u32, @intCast(row)) * 4;
+                const b0 = vdp.vramReadByte(@intCast(row_addr & 0xFFFF));
+                const b1 = vdp.vramReadByte(@intCast((row_addr + 1) & 0xFFFF));
+                const b2 = vdp.vramReadByte(@intCast((row_addr + 2) & 0xFFFF));
+                const b3 = vdp.vramReadByte(@intCast((row_addr + 3) & 0xFFFF));
+                const bytes = [4]u8{ b0, b1, b2, b3 };
+
+                for (0..8) |col| {
+                    const byte_idx = col >> 1;
+                    const color_idx: u8 = if ((col & 1) == 0)
+                        (bytes[byte_idx] >> 4) & 0xF
+                    else
+                        bytes[byte_idx] & 0xF;
+
+                    if (color_idx == 0) continue; // transparent
+
+                    const argb = vdp.getPaletteColor(color_idx);
+                    const r: u8 = @truncate((argb >> 16) & 0xFF);
+                    const g: u8 = @truncate((argb >> 8) & 0xFF);
+                    const b: u8 = @truncate(argb & 0xFF);
+                    const px = tx + @as(f32, @floatFromInt(col)) * px_sz;
+                    const py = ty + @as(f32, @floatFromInt(row)) * px_sz;
+                    try zsdl3.setRenderDrawColor(renderer, .{ .r = r, .g = g, .b = b, .a = 0xFF });
+                    try zsdl3.renderFillRect(renderer, .{ .x = px, .y = py, .w = px_sz, .h = px_sz });
+                }
+            }
+        }
+    }
+}
+
 fn readByteSafe(machine: *const Machine, address: u32) u8 {
     const addr = address & 0xFFFFFF;
     if (addr < machine.bus.rom.len) {
@@ -391,4 +552,45 @@ fn readWordSafe(machine: *const Machine, address: u32) u16 {
     const hi = readByteSafe(machine, address);
     const lo = readByteSafe(machine, address +% 1);
     return (@as(u16, hi) << 8) | lo;
+}
+
+test "breakpoint toggle adds and removes addresses" {
+    var state = DebuggerState{};
+
+    state.toggleBreakpoint(0x000200);
+    try std.testing.expectEqual(@as(u8, 1), state.breakpoint_count);
+    try std.testing.expect(state.hasBreakpoint(0x000200));
+    try std.testing.expect(!state.hasBreakpoint(0x000202));
+
+    state.toggleBreakpoint(0x001000);
+    try std.testing.expectEqual(@as(u8, 2), state.breakpoint_count);
+    try std.testing.expect(state.hasBreakpoint(0x001000));
+
+    // Toggle off the first breakpoint.
+    state.toggleBreakpoint(0x000200);
+    try std.testing.expectEqual(@as(u8, 1), state.breakpoint_count);
+    try std.testing.expect(!state.hasBreakpoint(0x000200));
+    try std.testing.expect(state.hasBreakpoint(0x001000));
+}
+
+test "breakpoint addresses are masked to 24 bits" {
+    var state = DebuggerState{};
+
+    state.toggleBreakpoint(0xFF000200);
+    try std.testing.expect(state.hasBreakpoint(0x000200));
+    try std.testing.expect(state.hasBreakpoint(0xFF000200));
+}
+
+test "run to breakpoint requires at least one breakpoint" {
+    var state = DebuggerState{};
+
+    state.runToBreakpoint();
+    try std.testing.expect(!state.running_to_breakpoint);
+
+    state.toggleBreakpoint(0x000200);
+    state.runToBreakpoint();
+    try std.testing.expect(state.running_to_breakpoint);
+
+    state.stopRunning();
+    try std.testing.expect(!state.running_to_breakpoint);
 }

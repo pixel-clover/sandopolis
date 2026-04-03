@@ -3161,6 +3161,14 @@ pub fn main() !void {
                                 debugger_state.stepOnce();
                                 break :blk true;
                             },
+                            .b => blk: {
+                                debugger_state.toggleBreakpoint(machine.programCounter());
+                                break :blk true;
+                            },
+                            .g => blk: {
+                                debugger_state.runToBreakpoint();
+                                break :blk true;
+                            },
                             .tab => blk: {
                                 debugger_state.nextTab();
                                 break :blk true;
@@ -3438,6 +3446,22 @@ pub fn main() !void {
                 machine.runFrame();
             }
             frame_phases.emulation_ns = (std.time.Instant.now() catch emulation_start).since(emulation_start);
+        } else if (debugger_state.active and debugger_state.running_to_breakpoint) {
+            // Run instructions until a breakpoint is hit or one frame's worth of
+            // instructions have executed (to keep the UI responsive).
+            var testing_view = machine.testing();
+            var budget: u32 = 100_000;
+            while (budget > 0) : (budget -= 1) {
+                _ = testing_view.runCpuCycles(1);
+                if (debugger_state.hasBreakpoint(machine.programCounter())) {
+                    debugger_state.stopRunning();
+                    break;
+                }
+            }
+            if (budget == 0) {
+                // Ran out of budget without hitting a breakpoint; keep running
+                // next frame to stay responsive.
+            }
         } else if (debugger_state.active and debugger_state.shouldStep()) {
             // Single-step: run one M68K instruction
             var testing_view = machine.testing();
@@ -5216,9 +5240,13 @@ test "timing auto-detection chooses pal for europe-only country code" {
     const metadata = Machine.RomMetadata{
         .console = null,
         .title = null,
+        .product_code = null,
         .country_codes = "E               ",
         .reset_stack_pointer = 0,
         .reset_program_counter = 0,
+        .header_checksum = 0,
+        .computed_checksum = 0,
+        .checksum_valid = false,
     };
 
     const resolved = resolveTimingMode(metadata, .auto);
@@ -5230,9 +5258,13 @@ test "timing auto-detection defaults to ntsc for multi-region country code" {
     const metadata = Machine.RomMetadata{
         .console = null,
         .title = null,
+        .product_code = null,
         .country_codes = "JUE             ",
         .reset_stack_pointer = 0,
         .reset_program_counter = 0,
+        .header_checksum = 0,
+        .computed_checksum = 0,
+        .checksum_valid = false,
     };
 
     const resolved = resolveTimingMode(metadata, .auto);
@@ -5244,9 +5276,13 @@ test "console region auto-detection chooses domestic for japan-only country code
     const metadata = Machine.RomMetadata{
         .console = null,
         .title = null,
+        .product_code = null,
         .country_codes = "J               ",
         .reset_stack_pointer = 0,
         .reset_program_counter = 0,
+        .header_checksum = 0,
+        .computed_checksum = 0,
+        .checksum_valid = false,
     };
 
     const resolved = resolveConsoleRegion(metadata);
@@ -5258,9 +5294,13 @@ test "console region auto-detection defaults to overseas for multi-region countr
     const metadata = Machine.RomMetadata{
         .console = null,
         .title = null,
+        .product_code = null,
         .country_codes = "JUE             ",
         .reset_stack_pointer = 0,
         .reset_program_counter = 0,
+        .header_checksum = 0,
+        .computed_checksum = 0,
+        .checksum_valid = false,
     };
 
     const resolved = resolveConsoleRegion(metadata);

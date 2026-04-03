@@ -28,9 +28,13 @@ pub const Machine = struct {
     pub const RomMetadata = struct {
         console: ?[]const u8,
         title: ?[]const u8,
+        product_code: ?[]const u8,
         country_codes: ?[]const u8,
         reset_stack_pointer: u32,
         reset_program_counter: u32,
+        header_checksum: u16,
+        computed_checksum: u16,
+        checksum_valid: bool,
     };
 
     pub const TestingView = struct {
@@ -511,13 +515,37 @@ pub const Machine = struct {
     }
 
     pub fn romMetadata(self: *const Machine) RomMetadata {
+        const rom = self.bus.rom;
+        const has_header = rom.len >= 0x200;
+        const header_checksum: u16 = if (has_header)
+            (@as(u16, rom[0x18E]) << 8) | rom[0x18F]
+        else
+            0;
+        const computed_checksum = computeRomChecksum(rom);
         return .{
-            .console = if (self.bus.rom.len >= 0x200) self.bus.rom[0x100..0x110] else null,
-            .title = if (self.bus.rom.len >= 0x200) self.bus.rom[0x150..0x180] else null,
-            .country_codes = if (self.bus.rom.len >= 0x200) self.bus.rom[0x1F0..0x200] else null,
-            .reset_stack_pointer = readBeU32(self.bus.rom[0..], 0),
-            .reset_program_counter = readBeU32(self.bus.rom[0..], 4),
+            .console = if (has_header) rom[0x100..0x110] else null,
+            .title = if (has_header) rom[0x150..0x180] else null,
+            .product_code = if (has_header) rom[0x183..0x18B] else null,
+            .country_codes = if (has_header) rom[0x1F0..0x200] else null,
+            .reset_stack_pointer = readBeU32(rom[0..], 0),
+            .reset_program_counter = readBeU32(rom[0..], 4),
+            .header_checksum = header_checksum,
+            .computed_checksum = computed_checksum,
+            .checksum_valid = has_header and header_checksum == computed_checksum,
         };
+    }
+
+    fn computeRomChecksum(rom: []const u8) u16 {
+        // Genesis ROM checksum: sum of all 16-bit words from offset 0x200
+        // to end of ROM, wrapping at 16 bits.
+        if (rom.len < 0x202) return 0;
+        var sum: u16 = 0;
+        var offset: usize = 0x200;
+        while (offset + 1 < rom.len) : (offset += 2) {
+            const word = (@as(u16, rom[offset]) << 8) | rom[offset + 1];
+            sum +%= word;
+        }
+        return sum;
     }
 
     pub fn controllerPadState(self: *const Machine, port: usize) u16 {
@@ -953,8 +981,46 @@ test "machine rom metadata exposes header slices and reset vectors" {
     const metadata = machine.romMetadata();
     try std.testing.expect(metadata.console != null);
     try std.testing.expect(metadata.title != null);
+    try std.testing.expect(metadata.product_code != null);
     try std.testing.expectEqual(@as(u32, 0x00FF_FE00), metadata.reset_stack_pointer);
     try std.testing.expectEqual(@as(u32, 0x0000_0200), metadata.reset_program_counter);
+}
+
+test "rom checksum validation detects correct and incorrect checksums" {
+    const allocator = std.testing.allocator;
+    // Build a ROM with a program starting at 0x200.
+    const program = [_]u8{ 0x4E, 0x71, 0x4E, 0x71 }; // two NOPs
+    const rom = try makeGenesisRom(allocator, 0x00FF_FE00, 0x0000_0200, &program);
+    defer allocator.free(rom);
+
+    // Compute the expected checksum by summing words from 0x200.
+    var expected: u16 = 0;
+    var offset: usize = 0x200;
+    while (offset + 1 < rom.len) : (offset += 2) {
+        const word = (@as(u16, rom[offset]) << 8) | rom[offset + 1];
+        expected +%= word;
+    }
+
+    // Write the correct checksum into the header.
+    rom[0x18E] = @intCast((expected >> 8) & 0xFF);
+    rom[0x18F] = @intCast(expected & 0xFF);
+
+    var valid_machine = try Machine.initFromRomBytes(allocator, rom);
+    defer valid_machine.deinit(allocator);
+    const valid_meta = valid_machine.romMetadata();
+    try std.testing.expect(valid_meta.checksum_valid);
+    try std.testing.expectEqual(expected, valid_meta.header_checksum);
+    try std.testing.expectEqual(expected, valid_meta.computed_checksum);
+
+    // Corrupt the checksum and verify detection.
+    rom[0x18E] = 0xFF;
+    rom[0x18F] = 0xFF;
+    var invalid_machine = try Machine.initFromRomBytes(allocator, rom);
+    defer invalid_machine.deinit(allocator);
+    const invalid_meta = invalid_machine.romMetadata();
+    try std.testing.expect(!invalid_meta.checksum_valid);
+    try std.testing.expectEqual(@as(u16, 0xFFFF), invalid_meta.header_checksum);
+    try std.testing.expectEqual(expected, invalid_meta.computed_checksum);
 }
 
 test "machine installs dummy test rom vectors and program" {

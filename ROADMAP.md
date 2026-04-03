@@ -32,14 +32,15 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Status register with VInt, sprite overflow/collision, FIFO flags, and HV counter-latch
 - [x] Pre-line sprite overflow detection visible to CPU during scanline execution
 - [x] CRAM pixel-granule updates during active display (CRAM dot behavior) with immediate writes bypassing FIFO latency
-- [x] HBlank CRAM palette-per-line updates with per-scanline undo/redo rendering
-- [x] Mid-scanline register change re-scan (backdrop, display enable, palette mode, plane base, scroll mode, window split)
-- [ ] Right-edge border rendering and overscan area coloring
+- [x] HBlank CRAM palette-per-line updates with per-scanline undo/redo rendering (shadow/highlight aware)
+- [x] Mid-scanline register change re-scan (backdrop, display enable, palette mode, display mode, plane base, scroll mode, window split)
+- [x] Right-edge border rendering and overscan area coloring
 - [x] HInt/VInt priority ordering when both are pending on the same line
-- [ ] Sprite horizontal wrap-around and clip-box edge cases at screen boundaries
+- [x] Sprite horizontal wrap-around and clip-box edge cases at screen boundaries
 - [ ] Validation: TiTAN Overdrive 2 renders without glitches
 - [ ] Validation: `cram_flicker.bin` test ROM passes
-- [ ] Validation: `vctest.bin` HV counter accuracy
+- [x] Validation: V counter-jump points and monotonicity (NTSC threshold 0xEA, PAL thresholds 0x102/0x10A)
+- [ ] Validation: `vctest.bin` full H/V counter ROM pass
 
 ### Audio Subsystem
 
@@ -82,10 +83,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Debugger: M68K single stepping with F10, register display (D0-D7, A0-A7, PC, SR flags)
 - [x] Debugger: memory hex dump viewer with page navigation
 - [x] Debugger: VDP state viewer (24 registers, mode/scanline/flags, DMA status)
-- [ ] Debugger: instruction-level breakpoints
-- [ ] Debugger: tile/sprite/plane visualizer
-- [ ] Expand the regression suite with Overdrive 2, Ings VDP tests, and community test ROMs
-- [ ] ROM header CRC validation and game database lookup
+- [x] Debugger: instruction-level breakpoints with toggle (B), run-to-breakpoint (G), and visual markers
+- [x] Debugger: tile and palette visualizer (CRAM palette grid and VRAM tile pattern viewer with palette 0)
+- [x] Regression coverage for all community test ROMs (vctest, CRAM flicker, memtest, shadow/highlight, TEST1536, Overdrive 2, Multitap IO, DisableRegTestROM)
+- [ ] Expand the regression suite with Ings VDP tests
+- [x] ROM header checksum validation and product code extraction
+- [ ] Game database lookup for extended metadata
 
 ### Future Goals
 

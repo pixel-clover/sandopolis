@@ -150,8 +150,21 @@ pub fn logLoadedRomMetadata(machine: *Machine, rom_path: []const u8) void {
     if (metadata.title) |title| {
         std.debug.print("Title:   {s}\n", .{title});
     }
+    if (metadata.product_code) |code| {
+        std.debug.print("Product: {s}\n", .{code});
+    }
     std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{
         metadata.reset_stack_pointer,
         metadata.reset_program_counter,
     });
+    if (metadata.header_checksum != 0 or metadata.computed_checksum != 0) {
+        if (metadata.checksum_valid) {
+            std.debug.print("Checksum: {X:0>4} (valid)\n", .{metadata.header_checksum});
+        } else {
+            std.debug.print("Checksum: header={X:0>4} computed={X:0>4} (MISMATCH)\n", .{
+                metadata.header_checksum,
+                metadata.computed_checksum,
+            });
+        }
+    }
 }

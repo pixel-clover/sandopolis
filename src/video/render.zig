@@ -483,9 +483,21 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                 self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
                 ev_idx += 1;
             }
-            // Re-render pixel with updated palette.
+            // Re-render pixel with updated palette, respecting shadow/highlight.
             const pal_idx = if (pixel_buf[x] == 0) backdrop_idx else pixel_buf[x];
-            self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
+            if (sh_mode) {
+                if (pixel_buf[x] == 0) {
+                    self.framebuffer[line_start + x] = getPaletteColorShadow(self, backdrop_idx);
+                } else {
+                    self.framebuffer[line_start + x] = switch (sh_buf[x]) {
+                        SH_SHADOW => getPaletteColorShadow(self, pal_idx),
+                        SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
+                        else => getPaletteColor(self, pal_idx),
+                    };
+                }
+            } else {
+                self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
+            }
         }
         // Apply remaining events beyond the visible area (HBlank CRAM
         // writes with pixel_x >= screen_w).  This restores CRAM to the
@@ -960,14 +972,14 @@ fn renderSpritesToBuffer(
                         if (color_idx == 0) continue;
 
                         // Collision detection in the full 512-pixel internal space.
+                        // The VDP wraps the 9-bit X coordinate, so pixels past
+                        // position 511 wrap to position 0.
                         const col_x: i32 = tile_screen_start + px_in_tile;
-                        const raw_x = @as(u32, @intCast(col_x + 128));
-                        if (raw_x < 512) {
-                            if (collision_buf[raw_x] != 0) {
-                                self.sprite_collision = true;
-                            }
-                            collision_buf[raw_x] = 1;
+                        const raw_x = @as(u32, @intCast(col_x + 128)) & 0x1FF;
+                        if (collision_buf[raw_x] != 0) {
+                            self.sprite_collision = true;
                         }
+                        collision_buf[raw_x] = 1;
 
                         // Only render to the framebuffer for visible pixels.
                         const screen_x = tile_screen_start + @as(i32, px_in_tile);
@@ -1204,6 +1216,38 @@ test "sprite renderer rebuilds cache when the SAT base changes" {
 
     try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[8..16]);
+}
+
+test "sprite collision wraps in the 9-bit internal coordinate space" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x02;
+    vdp.regs[12] = 0x01; // H40
+
+    seedAscendingSpritePattern(&vdp, 0);
+    seedAscendingSpritePattern(&vdp, 1);
+
+    const sprite_base: u16 = 0x0400;
+    // Sprite 0 at x_pos_raw = 508 (near right edge of 512-pixel space).
+    // An 8-pixel sprite spans raw positions 508-515.  Positions 512-515
+    // wrap to 0-3 in the 9-bit internal coordinate space.
+    writeTestSpriteEntryFull(&vdp, sprite_base, 128, 0x00, 1, 0x0000, 508);
+    // Sprite 1 at x_pos_raw = 1 (overlaps with wrapped pixels from sprite 0
+    // at raw positions 1-3).  Use x_pos_raw > 0 to avoid triggering the
+    // x=0 sprite masking behavior.
+    writeTestSpriteEntryFull(&vdp, sprite_base + 8, 128, 0x00, 0, 0x0001, 1);
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+
+    // Sprite 0's wrapped pixels at raw positions 0-3 overlap with
+    // sprite 1's pixels at raw positions 1-8.  The collision flag
+    // should be set for the overlapping positions.
+    try std.testing.expect(vdp.sprite_collision);
 }
 
 test "palette mode off masks mode 5 CRAM channel bits" {

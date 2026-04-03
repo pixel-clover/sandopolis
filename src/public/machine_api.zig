@@ -15,9 +15,13 @@ pub const CpuState = struct {
 pub const RomMetadata = struct {
     console: ?[]const u8,
     title: ?[]const u8,
+    product_code: ?[]const u8,
     country_codes: ?[]const u8,
     reset_stack_pointer: u32,
     reset_program_counter: u32,
+    header_checksum: u16,
+    computed_checksum: u16,
+    checksum_valid: bool,
 };
 
 pub const Snapshot = struct {
@@ -99,9 +103,13 @@ pub const Machine = struct {
         return .{
             .console = metadata.console,
             .title = metadata.title,
+            .product_code = metadata.product_code,
             .country_codes = metadata.country_codes,
             .reset_stack_pointer = metadata.reset_stack_pointer,
             .reset_program_counter = metadata.reset_program_counter,
+            .header_checksum = metadata.header_checksum,
+            .computed_checksum = metadata.computed_checksum,
+            .checksum_valid = metadata.checksum_valid,
         };
     }
 
