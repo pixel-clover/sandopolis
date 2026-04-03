@@ -109,13 +109,15 @@ Before coding:
 1. Identify whether this is a timing, API, frontend, or docs change.
 2. Read the touched module and existing nearby tests.
 
-Implement and test:
+Implement using red-green TDD:
 
-1. Make the smallest change that solves the problem.
-2. Add or update tests in the correct location (module-local `test` blocks for unit behavior, `tests/` for integration/regression/property coverage).
-3. Run the narrowest relevant test target while iterating (`zig build test-unit`, `zig build test-integration`, etc.).
-4. Run `zig build check` and `zig build test`.
-5. Update docs (`README.md`, `ROADMAP.md`, `src/api.zig` exports) if behavior or workflow changed.
+1. Write a failing test first that describes the expected behavior (red).
+2. Run the test and verify it fails for the right reason.
+3. Write the smallest implementation that makes the test pass (green).
+4. Refactor if needed while keeping tests green.
+5. Run the narrowest relevant test target while iterating (`zig build test-unit`, `zig build test-integration`, etc.).
+6. Run `zig build check` and `zig build test`.
+7. Update docs (`README.md`, `ROADMAP.md`, `src/api.zig` exports) if behavior or workflow changed.
 
 Additional validation when relevant:
 
