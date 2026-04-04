@@ -106,14 +106,14 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
+            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
           else
-            zig build -Doptimize=ReleaseSmall
+            zig build -Doptimize=ReleaseFast
           fi
 
       - name: Build the binary (Windows)
         if: runner.os == 'Windows'
-        run: zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
 
       - name: Verify built binary exists (Unix)
         if: runner.os != 'Windows'
