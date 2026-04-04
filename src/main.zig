@@ -2118,8 +2118,8 @@ fn renderSaveManagerOverlay(
     frame_number: u64,
 ) !void {
     const title = "SAVE MANAGER";
-    const controls_a = "DPAD OR LB RB SLOT  A LOAD  X SAVE";
-    const controls_b = "B CLOSE  Y DELETE  F8 F9 DEL ALSO WORK";
+    const controls_a = "(DPAD) OR (LB) (RB) SLOT  (A) LOAD  (X) SAVE";
+    const controls_b = "(B) CLOSE  (Y) DELETE  [F8] [F9] [DEL] ALSO WORK";
     const scale = overlayScale(viewport);
     const padding = 12.0 * scale;
     const summary_height = 9.0 * scale;
@@ -2393,8 +2393,8 @@ fn renderSettingsOverlay(
     config_path: []const u8,
 ) !void {
     const title = "SETTINGS";
-    const controls_a = "UP DOWN MOVE  LEFT RIGHT ADJUST";
-    const controls_b = "ENTER APPLY  ESC BACK  PAD B CLOSE";
+    const controls_a = "[UP] [DOWN] MOVE  [LEFT] [RIGHT] ADJUST";
+    const controls_b = "[ENTER] APPLY  [ESC] BACK  (B) CLOSE";
     const heading_video = "VIDEO";
     const heading_audio = "AUDIO";
     const heading_system = "SYSTEM";

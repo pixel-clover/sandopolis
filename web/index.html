@@ -1,194 +1,960 @@
 <!DOCTYPE html>
-<html lang="en">
+<html data-theme="light" lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sandopolis - Sega Genesis Emulator</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+    <meta charset="utf-8">
+    <meta content="width=device-width, initial-scale=1" name="viewport">
+    <title>Sandopolis - Sega Genesis Emulator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-  body {
-    background: #0D1117;
-    color: #E6EDF3;
-    font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    min-height: 100vh;
-    padding: 24px 16px;
-  }
+        /* Design tokens */
+        :root {
+            --radius-sm: 4px;
+            --radius-md: 6px;
+            --radius-lg: 8px;
+            --transition-fast: 0.15s ease;
+            --transition-normal: 0.25s ease;
+            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
+            --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.2);
+        }
 
-  h1 { color: #F7A41D; font-size: 2rem; letter-spacing: 0.15em; margin-bottom: 4px; }
-  .subtitle { color: #8B949E; font-size: 0.85rem; margin-bottom: 16px; }
+        /* Dark: Genesis blue-black + Zig orange */
+        :root[data-theme="dark"] {
+            --bg: #0A0E1A;
+            --bg-panel: #111730;
+            --bg-input: #0A0E1A;
+            --bg-btn-hover: #1A2244;
+            --border: #2A3050;
+            --border-accent: #3366CC;
+            --text: #E0E4EF;
+            --text-muted: #7A82A0;
+            --text-accent: #F7A41D;
+            --text-link: #5B8ECC;
+            --text-heading: #4A90D9;
+            --toast-bg: #111730;
+            --toast-border: #F7A41D;
+            --toast-text: #F7A41D;
+            --screen-bg: #000;
+            --group-bg: #0D1225;
+            --error-bg: rgba(220, 50, 47, 0.12);
+            --error-border: #DC322F;
+            --overlay-bg: rgba(5, 8, 20, 0.8);
+        }
 
-  #drop-zone {
-    border: 2px dashed #5B8DBE;
-    border-radius: 8px;
-    padding: 16px 32px;
-    text-align: center;
-    cursor: pointer;
-    margin-bottom: 12px;
-    transition: border-color 0.2s, background 0.2s;
-    max-width: 660px; width: 100%;
-  }
-  #drop-zone:hover, #drop-zone.drag-over {
-    border-color: #F7A41D; background: rgba(247,164,29,0.06);
-  }
-  #drop-zone label { color: #6EB8D4; cursor: pointer; font-size: 0.9rem; }
-  #rom-input { display: none; }
+        /* Light: warm white + Genesis blue + Zig orange */
+        :root[data-theme="light"] {
+            --bg: #F5F6FA;
+            --bg-panel: #FFFFFF;
+            --bg-input: #F0F1F8;
+            --bg-btn-hover: #E8EAF2;
+            --border: #C8CCE0;
+            --border-accent: #2856A8;
+            --text: #1A1E30;
+            --text-muted: #5A6080;
+            --text-accent: #D4820E;
+            --text-link: #2856A8;
+            --text-heading: #1E3A7A;
+            --toast-bg: #FFFFFF;
+            --toast-border: #D4820E;
+            --toast-text: #D4820E;
+            --screen-bg: #101428;
+            --group-bg: #ECEEF6;
+            --error-bg: rgba(220, 50, 47, 0.08);
+            --error-border: #DC322F;
+            --overlay-bg: rgba(10, 14, 26, 0.5);
+        }
 
-  .toolbar {
-    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-    justify-content: center; margin-bottom: 8px; max-width: 660px;
-  }
-  .toolbar button, .toolbar select {
-    background: #161B22; color: #E6EDF3; border: 1px solid #30363D;
-    border-radius: 4px; padding: 4px 10px; font-family: inherit;
-    font-size: 0.75rem; cursor: pointer;
-  }
-  .toolbar button:hover { border-color: #F7A41D; }
-  .toolbar .sep { width: 1px; height: 20px; background: #30363D; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px 16px;
+            transition: background var(--transition-normal), color var(--transition-normal);
+        }
 
-  #screen-container {
-    position: relative;
-    background: #000; border: 2px solid #5B8DBE;
-    border-radius: 4px; overflow: hidden; margin-bottom: 8px;
-  }
-  #screen {
-    display: block; width: 640px; height: 480px;
-    image-rendering: pixelated; image-rendering: crisp-edges;
-  }
+        /* Header */
+        header {
+            text-align: center;
+            margin-bottom: 12px;
+        }
 
-  #toast {
-    position: fixed; top: 20px; right: 20px;
-    background: #161B22; border: 1px solid #F7A41D;
-    border-radius: 4px; padding: 8px 16px;
-    font-size: 0.8rem; color: #F7A41D;
-    opacity: 0; transition: opacity 0.3s;
-    pointer-events: none; z-index: 100;
-  }
-  #toast.visible { opacity: 1; }
+        header h1 {
+            color: var(--text-accent);
+            font-size: 1.6rem;
+            letter-spacing: 0.12em;
+            margin-bottom: 2px;
+        }
 
-  #status { color: #8B949E; font-size: 0.8rem; margin-bottom: 12px; text-align: center; }
+        header p {
+            color: var(--text-muted);
+            font-size: 0.78rem;
+        }
 
-  #settings-panel {
-    max-width: 660px; width: 100%;
-    background: #161B22; border: 1px solid #30363D;
-    border-radius: 6px; padding: 12px 16px; margin-bottom: 16px;
-  }
-  #settings-panel.hidden { display: none; }
-  #settings-panel h3 { color: #6EB8D4; font-size: 0.8rem; margin-bottom: 8px; }
+        /* Error banner */
+        #error-banner {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--error-bg);
+            border: 1px solid var(--error-border);
+            border-left: 4px solid var(--error-border);
+            border-radius: var(--radius-sm);
+            padding: 10px 16px;
+            font-size: 0.78rem;
+            color: var(--error-border);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            box-shadow: var(--shadow-md);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity var(--transition-fast);
+            max-width: 90vw;
+        }
 
-  .settings-grid {
-    display: grid; grid-template-columns: 1fr 1fr;
-    gap: 6px 16px; font-size: 0.78rem; align-items: center;
-  }
-  .settings-grid label { color: #8B949E; }
-  .settings-grid select, .settings-grid input[type=range] {
-    background: #0D1117; color: #E6EDF3; border: 1px solid #30363D;
-    border-radius: 3px; padding: 2px 6px; font-family: inherit; font-size: 0.75rem;
-    width: 100%;
-  }
-  .volume-row { display: flex; align-items: center; gap: 6px; }
-  .volume-row input { flex: 1; }
-  .volume-row span { color: #8B949E; font-size: 0.7rem; min-width: 3.5em; text-align: right; }
+        #error-banner.visible {
+            opacity: 1;
+            pointer-events: all;
+        }
 
-  .controls {
-    max-width: 660px; width: 100%;
-    display: grid; grid-template-columns: 1fr 1fr;
-    gap: 4px 24px; font-size: 0.75rem; color: #8B949E; margin-bottom: 16px;
-  }
-  .controls .section-title { color: #6EB8D4; font-weight: bold; grid-column: span 2; margin-top: 4px; }
-  .controls .key {
-    display: inline-block; background: #161B22; border: 1px solid #30363D;
-    border-radius: 3px; padding: 1px 5px; color: #E6EDF3; font-size: 0.7rem;
-  }
+        #error-banner button {
+            background: none;
+            border: none;
+            color: var(--error-border);
+            font-size: 1.1rem;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+        }
 
-  footer { margin-top: auto; padding-top: 16px; font-size: 0.75rem; color: #8B949E; }
-  footer a { color: #5B8DBE; text-decoration: none; }
-  footer a:hover { color: #F7A41D; }
+        /* ROM loader */
+        #drop-zone {
+            border: 2px dashed var(--border-accent);
+            border-radius: var(--radius-lg);
+            padding: 14px 24px;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 10px;
+            transition: all var(--transition-fast);
+            max-width: 660px;
+            width: 100%;
+        }
 
-  @media (max-width: 700px) {
-    #screen { width: 100%; height: auto; aspect-ratio: 4/3; }
-    .controls { grid-template-columns: 1fr; }
-    .controls .section-title { grid-column: 1; }
-    .settings-grid { grid-template-columns: 1fr; }
-  }
-</style>
+        #drop-zone:hover, #drop-zone.drag-over {
+            border-color: var(--text-accent);
+            background: color-mix(in srgb, var(--text-accent) 6%, transparent);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-sm);
+        }
+
+        #drop-zone label {
+            color: var(--text-heading);
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        #rom-input {
+            display: none;
+        }
+
+        /* Screen */
+        #screen-container {
+            position: relative;
+            background: var(--screen-bg);
+            border: 2px solid var(--border-accent);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            box-shadow: var(--shadow-md);
+            transition: box-shadow var(--transition-fast);
+            margin-bottom: 6px;
+        }
+
+        #screen {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #screen.aspect-fit {
+            width: 640px;
+            height: 480px;
+        }
+
+        #screen.aspect-stretch {
+            width: 640px;
+            height: 400px;
+        }
+
+        #screen.aspect-native {
+            width: 640px;
+            height: 448px;
+        }
+
+        #screen-container.fullscreen {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            border-radius: 0;
+        }
+
+        #screen-container.fullscreen #screen.aspect-fit {
+            width: auto;
+            height: 100vh;
+            max-width: 100vw;
+            aspect-ratio: 4/3;
+        }
+
+        #screen-container.fullscreen #screen.aspect-stretch {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #screen-container.fullscreen #screen.aspect-native {
+            width: auto;
+            height: 100vh;
+            max-width: 100vw;
+            aspect-ratio: 320/224;
+        }
+
+        /* CRT bezel overlay */
+        #screen-container.crt-bezel::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: url(img/crt-bezel.png) center/100% 100% no-repeat;
+            pointer-events: none;
+            z-index: 1;
+            opacity: 0.6;
+        }
+
+        /* CRT scanlines */
+        #screen-container.crt-scanlines::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: repeating-linear-gradient(0deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 3px);
+            pointer-events: none;
+            z-index: 2;
+            mix-blend-mode: multiply;
+        }
+
+        #screen-container.crt-scanlines #screen {
+            filter: contrast(1.04) brightness(1.02);
+        }
+
+        /* Genesis button icons in help */
+        .genesis-btn {
+            display: inline-block;
+            width: 22px;
+            height: 22px;
+            vertical-align: middle;
+            image-rendering: auto;
+            margin: 0 1px;
+        }
+
+        .genesis-layout {
+            display: block;
+            width: 80px;
+            height: auto;
+            margin: 6px auto 4px;
+            image-rendering: auto;
+            opacity: 0.85;
+        }
+
+        /* Action bar */
+        .action-bar {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 4px 6px;
+            max-width: 660px;
+            width: 100%;
+            flex-wrap: wrap;
+            box-shadow: var(--shadow-sm);
+            transition: background var(--transition-normal);
+        }
+
+        .btn-group {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            background: var(--group-bg);
+            border-radius: var(--radius-sm);
+            padding: 2px;
+            transition: background var(--transition-normal);
+        }
+
+        .btn-group-label {
+            color: var(--text-muted);
+            font-size: 0.6rem;
+            padding: 0 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+
+        .action-bar button, .action-bar select {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid transparent;
+            border-radius: 3px;
+            padding: 3px 8px;
+            font-family: inherit;
+            font-size: 0.68rem;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all var(--transition-fast);
+        }
+
+        .action-bar button:hover {
+            background: var(--bg-btn-hover);
+            border-color: var(--border);
+            transform: translateY(-1px);
+        }
+
+        .action-bar button:active {
+            transform: scale(0.97) translateY(0);
+        }
+
+        .action-bar button.active {
+            color: var(--text-accent);
+            border-color: var(--text-accent);
+        }
+
+        .action-bar select {
+            background: var(--bg-input);
+            border-color: var(--border);
+            padding: 3px 4px;
+        }
+
+        .action-bar .spacer {
+            flex: 1;
+            min-width: 4px;
+        }
+
+        .vol-slider {
+            width: 60px;
+            height: 14px;
+            cursor: pointer;
+            accent-color: var(--text-accent);
+        }
+
+        .vol-label {
+            color: var(--text-muted);
+            font-size: 0.6rem;
+            min-width: 2.5em;
+            text-align: right;
+            padding-right: 2px;
+        }
+
+        /* Status bar */
+        .status-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            max-width: 660px;
+            width: 100%;
+            padding: 4px 10px;
+            margin-bottom: 8px;
+            font-size: 0.68rem;
+            color: var(--text-muted);
+        }
+
+        .status-bar .status-left {
+            flex: 1;
+            text-align: left;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .status-bar .status-right {
+            flex-shrink: 0;
+            text-align: right;
+        }
+
+        /* Settings panel */
+        #settings-panel {
+            max-width: 660px;
+            width: 100%;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px 18px;
+            margin-bottom: 12px;
+            box-shadow: var(--shadow-sm);
+            transition: background var(--transition-normal), border-color var(--transition-normal);
+            animation: slideDown 0.2s ease-out;
+        }
+
+        #settings-panel.hidden {
+            display: none;
+        }
+
+        #settings-panel h3 {
+            color: var(--text-heading);
+            font-size: 0.78rem;
+            margin-bottom: 10px;
+        }
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns: auto 1fr auto 1fr;
+            gap: 8px 12px;
+            font-size: 0.75rem;
+            align-items: center;
+        }
+
+        .settings-grid label {
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .settings-grid select, .settings-grid input[type=range] {
+            background: var(--bg-input);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 3px 6px;
+            font-family: inherit;
+            font-size: 0.72rem;
+            width: 100%;
+            transition: border-color var(--transition-fast);
+        }
+
+        .settings-grid select:hover, .settings-grid input[type=range]:hover {
+            border-color: var(--text-accent);
+        }
+
+        .volume-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .volume-row input {
+            flex: 1;
+        }
+
+        .volume-row span {
+            color: var(--text-muted);
+            font-size: 0.68rem;
+            min-width: 3em;
+            text-align: right;
+        }
+
+        /* Toast */
+        #toast {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            background: var(--toast-bg);
+            border: 1px solid var(--toast-border);
+            border-radius: var(--radius-sm);
+            padding: 8px 16px;
+            font-size: 0.78rem;
+            color: var(--toast-text);
+            box-shadow: var(--shadow-md);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            opacity: 0;
+            transform: translateY(-8px);
+            transition: opacity 0.25s ease, transform 0.25s ease;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        #toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Help overlay */
+        #help-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: var(--overlay-bg);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity var(--transition-normal);
+        }
+
+        #help-overlay.visible {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .help-panel {
+            background: var(--bg-panel);
+            border: 2px solid var(--text-heading);
+            border-radius: var(--radius-lg);
+            padding: 20px 28px;
+            max-width: 540px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: var(--shadow-lg);
+            animation: modalPop 0.25s ease-out;
+        }
+
+        .help-panel h3 {
+            color: var(--text-accent);
+            font-size: 1rem;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+
+        .help-panel h4 {
+            color: var(--text-heading);
+            font-size: 0.75rem;
+            margin: 10px 0 5px;
+        }
+
+        .help-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 24px;
+        }
+
+        .help-row {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-bottom: 2px;
+        }
+
+        .help-row .key {
+            display: inline-block;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 1px 5px;
+            color: var(--text);
+            font-size: 0.68rem;
+            min-width: 2.2em;
+            text-align: center;
+            transition: border-color var(--transition-fast);
+        }
+
+        .help-row .key:hover {
+            border-color: var(--text-accent);
+        }
+
+        #help-close {
+            display: block;
+            margin: 14px auto 0;
+            background: var(--bg);
+            color: var(--text-accent);
+            border: 1px solid var(--text-accent);
+            border-radius: var(--radius-sm);
+            padding: 5px 20px;
+            font-family: inherit;
+            font-size: 0.78rem;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        #help-close:hover {
+            background: color-mix(in srgb, var(--text-accent) 12%, var(--bg));
+            transform: translateY(-1px);
+        }
+
+        #help-close:active {
+            transform: scale(0.97);
+        }
+
+        /* Custom scrollbar */
+        .help-panel::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .help-panel::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        .help-panel::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+
+        /* Performance HUD */
+        #perf-hud {
+            position: fixed;
+            top: 50px;
+            left: 10px;
+            z-index: 40;
+            background: rgba(10, 14, 26, 0.88);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 6px 10px;
+            font-size: 0.62rem;
+            color: #8CB4E0;
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            min-width: 140px;
+        }
+
+        #perf-hud.hidden {
+            display: none;
+        }
+
+        .perf-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 1px 0;
+        }
+
+        .perf-row span:first-child {
+            color: #5A7AAA;
+        }
+
+        .perf-row span:last-child {
+            color: #B8D4F0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* About modal */
+        #about-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: var(--overlay-bg);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity var(--transition-normal);
+        }
+
+        #about-overlay.visible {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .about-content {
+            text-align: center;
+        }
+
+        .about-title {
+            color: var(--text-accent);
+            font-size: 1.1rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 2px;
+        }
+
+        .about-subtitle {
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            margin-bottom: 14px;
+        }
+
+        .about-info {
+            text-align: left;
+            margin: 0 auto 14px;
+            max-width: 280px;
+        }
+
+        .about-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72rem;
+            padding: 3px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .about-row span:first-child {
+            color: var(--text-muted);
+        }
+
+        .about-row span:last-child {
+            color: var(--text);
+        }
+
+        .about-link {
+            margin: 10px 0 4px;
+            font-size: 0.72rem;
+        }
+
+        .about-link a {
+            color: var(--text-link);
+            text-decoration: none;
+        }
+
+        .about-link a:hover {
+            color: var(--text-accent);
+        }
+
+        .about-credits {
+            color: var(--text-muted);
+            font-size: 0.62rem;
+            margin-top: 4px;
+        }
+
+        .about-credits a {
+            color: var(--text-muted);
+            text-decoration: none;
+        }
+
+        .about-credits a:hover {
+            color: var(--text-link);
+        }
+
+        /* Footer */
+        footer {
+            margin-top: auto;
+            padding-top: 12px;
+            font-size: 0.72rem;
+            color: var(--text-muted);
+        }
+
+        footer a {
+            color: var(--text-link);
+            text-decoration: none;
+            transition: color var(--transition-fast);
+        }
+
+        footer a:hover {
+            color: var(--text-accent);
+        }
+
+        /* Animations */
+        @keyframes modalPop {
+            from {
+                opacity: 0;
+                transform: scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 700px) {
+            #screen.aspect-fit, #screen.aspect-stretch, #screen.aspect-native {
+                width: 100%;
+                height: auto;
+                aspect-ratio: 4/3;
+            }
+
+            .action-bar {
+                justify-content: center;
+            }
+
+            .settings-grid {
+                grid-template-columns: auto 1fr;
+            }
+
+            .status-bar {
+                font-size: 0.62rem;
+            }
+        }
+
+        @media (max-width: 500px) {
+            .help-columns {
+                grid-template-columns: 1fr;
+            }
+
+            .btn-group-label {
+                display: none;
+            }
+        }
+    </style>
 </head>
 <body>
 
-<h1>SANDOPOLIS</h1>
-<p class="subtitle">Sega Genesis / Mega Drive Emulator</p>
+<div id="error-banner"><span id="error-msg"></span>
+    <button id="error-dismiss">&times;</button>
+</div>
+
+<header>
+    <h1>SANDOPOLIS</h1>
+    <p>Sega Genesis / Mega Drive Emulator</p>
+</header>
 
 <div id="drop-zone">
-  <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
-  <input type="file" id="rom-input" accept=".bin,.md,.smd,.gen">
-</div>
-
-<div class="toolbar">
-  <button id="audio-toggle">AUDIO ON</button>
-  <div class="sep"></div>
-  <button id="btn-quick-save">QUICK SAVE</button>
-  <button id="btn-quick-load">QUICK LOAD</button>
-  <div class="sep"></div>
-  <button id="btn-save">SAVE</button>
-  <button id="btn-load">LOAD</button>
-  <select id="slot-select">
-    <option value="1">SLOT 1</option>
-    <option value="2">SLOT 2</option>
-    <option value="3">SLOT 3</option>
-  </select>
-  <div class="sep"></div>
-  <button id="settings-toggle">SETTINGS</button>
-</div>
-
-<div id="settings-panel" class="hidden">
-  <h3>SETTINGS</h3>
-  <div class="settings-grid">
-    <label>Audio Mode</label>
-    <select id="audio-mode">
-      <option value="0">Normal</option>
-      <option value="1">FM Only</option>
-      <option value="2">PSG Only</option>
-      <option value="3">Unfiltered</option>
-    </select>
-
-    <label>PSG Volume</label>
-    <div class="volume-row">
-      <input type="range" id="psg-volume" min="0" max="200" value="150" step="10">
-      <span id="psg-volume-label">150%</span>
-    </div>
-
-    <label>Controller</label>
-    <select id="controller-type">
-      <option value="1">6-Button</option>
-      <option value="0">3-Button</option>
-    </select>
-  </div>
+    <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
+    <input accept=".bin,.md,.smd,.gen" id="rom-input" type="file">
 </div>
 
 <div id="screen-container">
-  <canvas id="screen" width="320" height="224"></canvas>
+    <canvas class="aspect-fit" height="224" id="screen" width="320"></canvas>
 </div>
 
-<p id="status">Loading emulator...</p>
+<div class="action-bar">
+    <div class="btn-group">
+        <span class="btn-group-label">Audio</span>
+        <button id="audio-toggle">ON</button>
+        <input class="vol-slider" id="master-volume" max="100" min="0" step="5" title="Volume" type="range" value="70">
+        <span class="vol-label" id="master-volume-label">70%</span>
+    </div>
+    <div class="btn-group">
+        <span class="btn-group-label">Quick</span>
+        <button id="btn-quick-save">Save</button>
+        <button id="btn-quick-load">Load</button>
+    </div>
+    <div class="btn-group">
+        <span class="btn-group-label">Slot</span>
+        <select id="slot-select">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+        </select>
+        <button id="btn-save">Save</button>
+        <button id="btn-load">Load</button>
+    </div>
+    <span class="spacer"></span>
+    <div class="btn-group">
+        <span class="btn-group-label">View</span>
+        <button id="btn-fullscreen" title="Fullscreen [F11]">Fullscreen</button>
+        <button id="settings-toggle" title="Settings">Settings</button>
+    </div>
+    <div class="btn-group">
+        <button id="perf-toggle" title="Performance">Perf</button>
+        <button id="about-btn" title="About Sandopolis">About</button>
+        <button id="help-btn" title="Help [F1]">Help</button>
+        <button id="theme-toggle" title="Toggle theme">Dark</button>
+    </div>
+</div>
+
+<div class="status-bar">
+    <span class="status-left" id="status">Loading emulator...</span>
+    <span class="status-right" id="fps-display"></span>
+</div>
+
+<div class="hidden" id="settings-panel">
+    <h3>SETTINGS</h3>
+    <div class="settings-grid">
+        <label>Aspect</label>
+        <select id="aspect-mode">
+            <option value="fit">4:3 Fit</option>
+            <option value="stretch">Stretch</option>
+            <option value="native">Native (320x224)</option>
+        </select>
+        <label>Audio</label>
+        <select id="audio-mode">
+            <option value="0">Normal</option>
+            <option value="1">FM Only</option>
+            <option value="2">PSG Only</option>
+            <option value="3">Unfiltered</option>
+        </select>
+        <label>PSG Balance</label>
+        <div class="volume-row">
+            <input id="psg-volume" max="200" min="0" step="10" type="range" value="150">
+            <span id="psg-volume-label">150%</span>
+        </div>
+        <label>Controller</label>
+        <select id="controller-type">
+            <option value="1">6-Button</option>
+            <option value="0">3-Button</option>
+        </select>
+        <label>Screen</label>
+        <select id="screen-style">
+            <option value="clean">Clean</option>
+            <option value="crt">CRT Effect</option>
+        </select>
+    </div>
+</div>
 
 <div id="toast"></div>
 
-<div class="controls">
-  <div class="section-title">CONTROLS</div>
-  <div><span class="key">Arrows</span> D-Pad</div>
-  <div><span class="key">Enter</span> Start</div>
-  <div><span class="key">Z</span> A &nbsp; <span class="key">X</span> B &nbsp; <span class="key">C</span> C</div>
-  <div><span class="key">A</span> X &nbsp; <span class="key">S</span> Y &nbsp; <span class="key">D</span> Z</div>
-  <div class="section-title">SAVE STATES</div>
-  <div><span class="key">F5</span> Quick Save &nbsp; <span class="key">F8</span> Quick Load</div>
-  <div><span class="key">F6</span> Save Slot &nbsp; <span class="key">F9</span> Load Slot</div>
+<div id="help-overlay">
+    <div class="help-panel">
+        <h3>SANDOPOLIS WEB HELP</h3>
+        <div class="help-columns">
+            <div>
+                <h4>KEYBOARD</h4>
+                <div class="help-row">[Arrows] D-Pad</div>
+                <div class="help-row">[Enter] Start</div>
+                <div class="help-row">[Z] A &nbsp;[X] B &nbsp;[C] C</div>
+                <div class="help-row">[A] X &nbsp;[S] Y &nbsp;[D] Z</div>
+                <h4>HOTKEYS</h4>
+                <div class="help-row">[F5] Quick Save &nbsp;[F8] Quick Load</div>
+                <div class="help-row">[F6] Slot Save &nbsp;[F9] Slot Load</div>
+                <div class="help-row">[F11] Fullscreen &nbsp;[F1] Help</div>
+            </div>
+            <div>
+                <h4>GAMEPAD</h4>
+                <img src="img/6button.png" alt="Genesis 6-button" class="genesis-layout">
+                <div class="help-row">(X) <img src="img/a.png" class="genesis-btn" alt="A"> &nbsp;(A) <img src="img/b.png" class="genesis-btn" alt="B"> &nbsp;(B) <img src="img/c.png" class="genesis-btn" alt="C"></div>
+                <div class="help-row">(LB) <img src="img/x.png" class="genesis-btn" alt="X"> &nbsp;(RB) <img src="img/z.png" class="genesis-btn" alt="Z"> &nbsp;(Y) <img src="img/y.png" class="genesis-btn" alt="Y"></div>
+                <div class="help-row">(Start) <img src="img/start.png" class="genesis-btn" alt="Start"> &nbsp;(D-Pad) Movement</div>
+            </div>
+        </div>
+        <button id="help-close">CLOSE</button>
+    </div>
+</div>
+
+<!-- Performance HUD -->
+<div id="perf-hud" class="hidden">
+    <div class="perf-row"><span>FPS</span><span id="perf-fps">--</span></div>
+    <div class="perf-row"><span>Frame</span><span id="perf-frame-ms">--</span></div>
+    <div class="perf-row"><span>WASM Mem</span><span id="perf-wasm-mem">--</span></div>
+    <div class="perf-row"><span>JS Heap</span><span id="perf-js-heap">--</span></div>
+    <div class="perf-row"><span>Audio Buf</span><span id="perf-audio">--</span></div>
+</div>
+
+<!-- About modal -->
+<div id="about-overlay">
+    <div class="help-panel">
+        <h3>ABOUT SANDOPOLIS</h3>
+        <div class="about-content">
+            <p class="about-title">Sandopolis</p>
+            <p class="about-subtitle">Sega Genesis / Mega Drive Emulator</p>
+            <div class="about-info">
+                <div class="about-row"><span>Version</span><span>0.1.0-alpha.5</span></div>
+                <div class="about-row"><span>Build</span><span>Zig 0.15.2 + WebAssembly</span></div>
+                <div class="about-row"><span>Audio</span><span>YM2612 + SN76489 at 48 kHz</span></div>
+                <div class="about-row"><span>Video</span><span>320x224 ARGB Canvas</span></div>
+                <div class="about-row"><span>License</span><span>MIT</span></div>
+                <div class="about-row"><span>WASM Size</span><span id="about-wasm-size">--</span></div>
+            </div>
+            <p class="about-link"><a href="https://github.com/pixel-clover/sandopolis">github.com/pixel-clover/sandopolis</a></p>
+            <p class="about-credits">Overlay assets: <a href="https://github.com/libretro/common-overlays">libretro/common-overlays</a> (CC BY 4.0)</p>
+        </div>
+        <button id="about-close">CLOSE</button>
+    </div>
 </div>
 
 <footer>
-  <a href="https://pixel-clover.github.io/sandopolis/">Sandopolis Documentation</a>
+    <a href="https://github.com/pixel-clover/sandopolis">Sandopolis on GitHub</a>
 </footer>
 
 <script src="sandopolis.js"></script>
