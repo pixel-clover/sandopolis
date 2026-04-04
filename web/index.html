@@ -21,8 +21,8 @@
             --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
             --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
             --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.2);
-            --font-ui: "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif;
-            --font-mono: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+            --font-ui: "JetBrains Mono", monospace;
+            --font-mono: "JetBrains Mono", monospace;
         }
 
         @font-face {
@@ -648,7 +648,8 @@
             border-color: var(--text-accent);
         }
 
-        #help-close {
+        #help-close,
+        #about-close {
             display: block;
             margin: 14px auto 0;
             background: var(--bg);
@@ -662,12 +663,14 @@
             transition: all var(--transition-fast);
         }
 
-        #help-close:hover {
+        #help-close:hover,
+        #about-close:hover {
             background: color-mix(in srgb, var(--text-accent) 12%, var(--bg));
             transform: translateY(-1px);
         }
 
-        #help-close:active {
+        #help-close:active,
+        #about-close:active {
             transform: scale(0.97);
         }
 
@@ -939,7 +942,6 @@
         <button id="btn-save">Save</button>
         <button id="btn-load">Load</button>
     </div>
-    <span class="spacer"></span>
     <div class="btn-group tone-view">
         <span class="btn-group-label">View</span>
         <button id="btn-fullscreen" title="Fullscreen [F11]">Fullscreen</button>
@@ -965,7 +967,7 @@
 <div class="hidden" id="settings-panel">
     <h3>SETTINGS</h3>
     <div class="settings-grid">
-        <label>Aspect</label>
+        <label>Aspect Ratio</label>
         <select id="aspect-mode">
             <option value="fit">4:3 Fit</option>
             <option value="stretch">Stretch</option>
@@ -987,11 +989,6 @@
         <select id="controller-type">
             <option value="1">6-Button</option>
             <option value="0">3-Button</option>
-        </select>
-        <label>Screen</label>
-        <select id="screen-style">
-            <option value="clean">Clean</option>
-            <option value="crt">CRT Effect</option>
         </select>
     </div>
 </div>
@@ -1037,10 +1034,8 @@
 <!-- About modal -->
 <div id="about-overlay">
     <div class="help-panel">
-        <h3>ABOUT SANDOPOLIS</h3>
+        <h3>ABOUT SANDOPOLIS EMULATOR</h3>
         <div class="about-content">
-            <p class="about-title">Sandopolis</p>
-            <p class="about-subtitle">Sega Genesis / Mega Drive Emulator</p>
             <div class="about-info">
                 <div class="about-row"><span>Version</span><span>0.1.0-alpha.5</span></div>
                 <div class="about-row"><span>Build</span><span>Zig 0.15.2 + WebAssembly</span></div>

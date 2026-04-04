@@ -114,7 +114,6 @@ async function init() {
     document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
-    document.getElementById("screen-style").addEventListener("change", onScreenStyleChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
     document.getElementById("btn-quick-save").addEventListener("click", quickSave);
     document.getElementById("btn-quick-load").addEventListener("click", quickLoad);
@@ -153,7 +152,7 @@ async function init() {
 
     loadSettings();
     db = await openDB();
-    setStatus("Ready. Load a ROM to start.");
+    setStatus("We are ready. Load a ROM to start playing!");
 }
 
 // IndexedDB
@@ -206,7 +205,6 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
-        if (saved.screenStyle !== undefined) document.getElementById("screen-style").value = saved.screenStyle;
         if (saved.theme) applyTheme(saved.theme);
     } catch (_) {
     }
@@ -214,7 +212,6 @@ function loadSettings() {
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
     document.getElementById("master-volume-label").textContent = masterVolume + "%";
     applyAspectMode();
-    applyScreenStyle();
 }
 
 function saveSettings() {
@@ -226,7 +223,6 @@ function saveSettings() {
         slot: currentSlot,
         aspectMode,
         masterVolume,
-        screenStyle: document.getElementById("screen-style").value,
         theme: document.documentElement.getAttribute("data-theme") || "light",
     }));
 }
@@ -267,22 +263,6 @@ function applyAspectMode() {
     c.classList.add("aspect-" + aspectMode);
 }
 
-// Screen style
-
-function onScreenStyleChange() {
-    applyScreenStyle();
-    saveSettings();
-}
-
-function applyScreenStyle() {
-    const container = document.getElementById("screen-container");
-    const style = document.getElementById("screen-style").value;
-    container.classList.remove("crt-bezel", "crt-scanlines");
-    if (style === "crt") {
-        container.classList.add("crt-bezel", "crt-scanlines");
-    }
-}
-
 // Theme
 
 function toggleTheme() {
@@ -301,23 +281,30 @@ function applyTheme(theme) {
 let helpOpen = false;
 let wasRunningBeforeHelp = false;
 
+function pauseForOverlay() {
+    if (!running) return;
+    running = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    if (audioCtx) audioCtx.suspend();
+}
+
+function resumeAfterOverlay() {
+    if (wasRunningBeforeHelp && emu) {
+        running = true;
+        resumeFrame();
+        if (audioCtx && audioEnabled) audioCtx.resume();
+    }
+}
+
 function toggleHelp() {
     const overlay = document.getElementById("help-overlay");
     if (helpOpen) {
         overlay.classList.remove("visible");
         helpOpen = false;
-        if (wasRunningBeforeHelp && emu) {
-            running = true;
-            resumeFrame();
-            if (audioCtx && audioEnabled) audioCtx.resume();
-        }
+        resumeAfterOverlay();
     } else {
         wasRunningBeforeHelp = running;
-        if (running) {
-            running = false;
-            if (rafId) cancelAnimationFrame(rafId);
-            if (audioCtx) audioCtx.suspend();
-        }
+        pauseForOverlay();
         overlay.classList.add("visible");
         helpOpen = true;
     }
@@ -366,16 +353,20 @@ function updatePerf() {
 let aboutOpen = false;
 
 function toggleAbout() {
-    aboutOpen = !aboutOpen;
     const overlay = document.getElementById("about-overlay");
     if (aboutOpen) {
+        overlay.classList.remove("visible");
+        aboutOpen = false;
+        resumeAfterOverlay();
+    } else {
+        wasRunningBeforeHelp = running;
+        pauseForOverlay();
         if (wasm) {
             const bytes = wasm.instance.exports.memory.buffer.byteLength;
             document.getElementById("about-wasm-size").textContent = (bytes / 1048576).toFixed(1) + " MB";
         }
         overlay.classList.add("visible");
-    } else {
-        overlay.classList.remove("visible");
+        aboutOpen = true;
     }
 }
 
@@ -527,6 +518,10 @@ async function loadRom(file) {
     if (helpOpen) {
         document.getElementById("help-overlay").classList.remove("visible");
         helpOpen = false;
+    }
+    if (aboutOpen) {
+        document.getElementById("about-overlay").classList.remove("visible");
+        aboutOpen = false;
     }
 
     const e = wasm.instance.exports;
