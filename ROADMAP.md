@@ -96,5 +96,6 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
-- [ ] Browser/WebAssembly build and frontend path
+- [x] Browser/WebAssembly build with Canvas rendering and keyboard input (`zig build wasm`, `web/`)
+- [ ] Browser audio support via Web Audio API
 - [ ] Libretro core packaging and integration

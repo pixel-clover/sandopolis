@@ -56,6 +56,8 @@ Quick examples:
 - `src/video/`: VDP and video timing/rendering logic.
 - `src/frontend/`: SDL frontend helpers including config, UI state, save manager, menu, dialog, toast, and performance overlay logic.
 - `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
+- `src/wasm.zig`: WebAssembly export layer wrapping the Machine API for browser deployment.
+- `src/wasm_stubs.c`: minimal C stubs (setjmp/longjmp and main) needed for WASM builds.
 - `src/`: remaining core emulator modules (`machine.zig`, `cli.zig`, `performance_profile.zig`, `rom_metadata.zig`, `state_file.zig`, etc.).
 - `tests/`: non-unit suites only:
     - `integration_tests.zig`
@@ -65,6 +67,7 @@ Quick examples:
 - `roms/`: local ROMs for manual testing only; this directory may be absent.
 - `tools/`: developer-only utilities that are not part of the shipped emulator runtime.
 - `external/`: optional checked-out third-party source trees used for developer tooling or reference comparison, not default runtime dependencies.
+- `web/`: browser frontend for the WebAssembly build (HTML, JavaScript, and compiled `.wasm` binary).
 - `tmp/`: scratch/reference material only; do not treat it as the Sandopolis source, and it may be missing.
 - `build.zig.zon`: source dependencies only. Avoid adding checked-in platform binary packages when an upstream source dependency is available.
 
@@ -126,6 +129,8 @@ Additional validation when relevant:
 - `make test` / `make docs` when touching the Makefile or contributor workflow.
 - `zig build run -- <path-to-rom>` for frontend/manual runtime checks.
 - `zig build compare-ym -- [scenario]` when touching YM2612 synthesis and the Nuked submodule is available.
+- `zig build wasm` when touching `src/wasm.zig`, `src/wasm_stubs.c`, or core modules to verify the WebAssembly build still compiles.
+- `make web-serve` to build and test the browser frontend locally.
 
 Audio investigation workflow:
 

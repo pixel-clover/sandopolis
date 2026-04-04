@@ -28,7 +28,7 @@ SHELL         := /usr/bin/env bash
 ################################################################################
 
 .PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs docs-serve clean \
- install-deps release help setup-hooks test-hooks
+ install-deps release help setup-hooks test-hooks wasm web web-serve
 .DEFAULT_GOAL := help
 
 help: ## Show the help messages for all targets
@@ -89,6 +89,18 @@ docs-serve: ## Regenerate Zig API docs and serve the MkDocs site locally
 	$(ZIG) build docs $(BUILD_OPTS) --prefix . -j$(JOBS)
 	@echo "Starting MkDocs dev server..."
 	$(UV) run mkdocs serve
+
+wasm: ## Build the WebAssembly module
+	@echo "Building WebAssembly module..."
+	$(ZIG) build wasm -j$(JOBS)
+
+web: wasm ## Build WASM and assemble the web directory for deployment
+	@echo "Assembling web deployment..."
+	cp $(BUILD_DIR)/web/sandopolis.wasm web/sandopolis.wasm
+
+web-serve: web ## Build and serve the web emulator locally
+	@echo "Serving Sandopolis web emulator locally"
+	cd web && python3 -m http.server 8000
 
 install-deps: ## Install system dependencies (for Debian-based systems)
 	@echo "Installing system dependencies..."
