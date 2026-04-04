@@ -21,6 +21,32 @@
             --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
             --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
             --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.2);
+            --font-ui: "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif;
+            --font-mono: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+        }
+
+        @font-face {
+            font-family: "JetBrains Mono";
+            src: url("fonts/JetBrainsMono-Light.ttf") format("truetype");
+            font-weight: 300;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        @font-face {
+            font-family: "JetBrains Mono";
+            src: url("fonts/JetBrainsMono-Regular.ttf") format("truetype");
+            font-weight: 400;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        @font-face {
+            font-family: "JetBrains Mono";
+            src: url("fonts/JetBrainsMono-Medium.ttf") format("truetype");
+            font-weight: 500;
+            font-style: normal;
+            font-display: swap;
         }
 
         /* Dark: Genesis blue-black + Zig orange */
@@ -72,7 +98,8 @@
         body {
             background: var(--bg);
             color: var(--text);
-            font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            font-family: var(--font-ui);
+            font-weight: 400;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -91,12 +118,15 @@
             color: var(--text-accent);
             font-size: 1.6rem;
             letter-spacing: 0.12em;
+            font-family: var(--font-ui);
+            font-weight: 500;
             margin-bottom: 2px;
         }
 
         header p {
             color: var(--text-muted);
             font-size: 0.78rem;
+            font-family: var(--font-mono);
         }
 
         /* Error banner */
@@ -295,7 +325,7 @@
             display: flex;
             align-items: center;
             gap: 4px;
-            background: linear-gradient(180deg, color-mix(in srgb, var(--group-accent) 9%, var(--group-bg)) 0%, var(--group-bg) 100%);
+            background: var(--group-bg);
             border: 1px solid color-mix(in srgb, var(--group-accent) 30%, var(--border));
             border-radius: var(--radius-md);
             padding: 5px 6px;
@@ -312,14 +342,18 @@
 
         .btn-group.tone-view {
             --group-accent: #4C7BD9;
+            --group-chroma: 12%;
         }
 
         .btn-group.tone-system {
             --group-accent: #8D94B3;
+            --group-chroma: 6%;
         }
 
         .btn-group.tone-info {
             --group-accent: #9A67D6;
+            --group-chroma: 4%;
+            opacity: 0.92;
         }
 
         .btn-group-label {
@@ -329,7 +363,8 @@
             text-transform: uppercase;
             letter-spacing: 0.12em;
             white-space: nowrap;
-            font-weight: 700;
+            font-family: var(--font-ui);
+            font-weight: 500;
         }
 
         .action-bar button, .action-bar select {
@@ -338,8 +373,9 @@
             border: 1px solid color-mix(in srgb, var(--group-accent) 20%, var(--border));
             border-radius: 999px;
             padding: 4px 10px;
-            font-family: inherit;
+            font-family: var(--font-ui);
             font-size: 0.68rem;
+            font-weight: 400;
             cursor: pointer;
             white-space: nowrap;
             transition: all var(--transition-fast);
@@ -359,6 +395,22 @@
             color: var(--group-accent);
             border-color: var(--group-accent);
             box-shadow: 0 0 0 1px color-mix(in srgb, var(--group-accent) 20%, transparent) inset;
+        }
+
+        .btn-group.tone-info button,
+        .btn-group.tone-info select {
+            background: color-mix(in srgb, var(--group-accent) 2%, var(--bg-input));
+            border-color: color-mix(in srgb, var(--group-accent) 14%, var(--border));
+        }
+
+        .btn-group.tone-info button:hover,
+        .btn-group.tone-info select:hover {
+            background: color-mix(in srgb, var(--group-accent) 8%, var(--bg-btn-hover));
+            border-color: color-mix(in srgb, var(--group-accent) 42%, var(--border));
+        }
+
+        .btn-group.tone-system button {
+            color: color-mix(in srgb, var(--text), var(--group-accent) 18%);
         }
 
         .action-bar select {
@@ -385,6 +437,7 @@
             min-width: 2.5em;
             text-align: right;
             padding-right: 2px;
+            font-family: var(--font-mono);
         }
 
         /* Status bar */
@@ -398,6 +451,7 @@
             margin-bottom: 8px;
             font-size: 0.68rem;
             color: var(--text-muted);
+            font-family: var(--font-mono);
         }
 
         .status-bar .status-left {
@@ -435,6 +489,8 @@
             color: var(--text-heading);
             font-size: 0.78rem;
             margin-bottom: 10px;
+            font-family: var(--font-ui);
+            font-weight: 500;
         }
 
         .settings-grid {
@@ -448,6 +504,7 @@
         .settings-grid label {
             color: var(--text-muted);
             white-space: nowrap;
+            font-family: var(--font-ui);
         }
 
         .settings-grid select, .settings-grid input[type=range] {
@@ -456,7 +513,7 @@
             border: 1px solid var(--border);
             border-radius: 3px;
             padding: 3px 6px;
-            font-family: inherit;
+            font-family: var(--font-ui);
             font-size: 0.72rem;
             width: 100%;
             transition: border-color var(--transition-fast);
@@ -548,12 +605,16 @@
             font-size: 1rem;
             margin-bottom: 12px;
             text-align: center;
+            font-family: var(--font-ui);
+            font-weight: 500;
         }
 
         .help-panel h4 {
             color: var(--text-heading);
             font-size: 0.75rem;
             margin: 10px 0 5px;
+            font-family: var(--font-ui);
+            font-weight: 500;
         }
 
         .help-columns {
@@ -566,6 +627,7 @@
             font-size: 0.72rem;
             color: var(--text-muted);
             margin-bottom: 2px;
+            font-family: var(--font-ui);
         }
 
         .help-row .key {
@@ -578,6 +640,7 @@
             font-size: 0.68rem;
             min-width: 2.2em;
             text-align: center;
+            font-family: var(--font-mono);
             transition: border-color var(--transition-fast);
         }
 
@@ -593,7 +656,7 @@
             border: 1px solid var(--text-accent);
             border-radius: var(--radius-sm);
             padding: 5px 20px;
-            font-family: inherit;
+            font-family: var(--font-ui);
             font-size: 0.78rem;
             cursor: pointer;
             transition: all var(--transition-fast);
@@ -637,6 +700,7 @@
             backdrop-filter: blur(6px);
             -webkit-backdrop-filter: blur(6px);
             min-width: 140px;
+            font-family: var(--font-mono);
         }
 
         #perf-hud.hidden {
@@ -689,12 +753,15 @@
             font-size: 1.1rem;
             letter-spacing: 0.1em;
             margin-bottom: 2px;
+            font-family: var(--font-ui);
+            font-weight: 500;
         }
 
         .about-subtitle {
             color: var(--text-muted);
             font-size: 0.72rem;
             margin-bottom: 14px;
+            font-family: var(--font-mono);
         }
 
         .about-info {
@@ -709,6 +776,7 @@
             font-size: 0.72rem;
             padding: 3px 0;
             border-bottom: 1px solid var(--border);
+            font-family: var(--font-mono);
         }
 
         .about-row span:first-child {
@@ -722,6 +790,7 @@
         .about-link {
             margin: 10px 0 4px;
             font-size: 0.72rem;
+            font-family: var(--font-ui);
         }
 
         .about-link a {
@@ -737,6 +806,7 @@
             color: var(--text-muted);
             font-size: 0.62rem;
             margin-top: 4px;
+            font-family: var(--font-ui);
         }
 
         .about-credits a {
@@ -754,6 +824,7 @@
             padding-top: 12px;
             font-size: 0.72rem;
             color: var(--text-muted);
+            font-family: var(--font-ui);
         }
 
         footer a {
