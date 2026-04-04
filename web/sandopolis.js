@@ -577,15 +577,17 @@ function onKeyUp(ev) {
 const prevGamepadButtons = [new Uint8Array(17), new Uint8Array(17)];
 
 // Standard gamepad button index -> Genesis button (face buttons only)
+// Xbox: A=0 B=1 X=2 Y=3 LB=4 RB=5 Start=9 L3=10
+// Genesis bottom row: A B C  top row: X Y Z  plus Start, Mode
 const GAMEPAD_FACE_MAP = [
-    [0, "A"],     // A / Cross
-    [1, "B"],     // B / Circle
-    [2, "C"],     // X / Square
-    [3, "Start"], // Y / Triangle
-    [9, "Start"], // Start
-    [4, "X"],     // Left shoulder
-    [5, "Y"],     // Right shoulder
-    [10, "Z"],    // Left stick click
+    [2, "A"],     // X → Genesis A (leftmost face)
+    [0, "B"],     // A → Genesis B (bottom face)
+    [1, "C"],     // B → Genesis C (rightmost face)
+    [3, "Y"],     // Y → Genesis Y
+    [4, "X"],     // LB → Genesis X
+    [5, "Z"],     // RB → Genesis Z
+    [9, "Start"], // Menu/Start → Genesis Start
+    [10, "Start"],// L3 → Genesis Start (alt)
 ];
 
 const AXIS_THRESHOLD = 0.5;

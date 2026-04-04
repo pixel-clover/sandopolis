@@ -173,10 +173,11 @@
             position: relative;
             background: var(--screen-bg);
             border: 2px solid var(--border-accent);
-            border-radius: var(--radius-md) var(--radius-md) 0 0;
+            border-radius: var(--radius-md);
             overflow: hidden;
             box-shadow: var(--shadow-md);
             transition: box-shadow var(--transition-fast);
+            margin-bottom: 6px;
         }
 
         #screen {
@@ -233,9 +234,8 @@
             align-items: center;
             gap: 2px;
             background: var(--bg-panel);
-            border: 2px solid var(--border-accent);
-            border-top: none;
-            border-radius: 0 0 var(--radius-md) var(--radius-md);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
             padding: 4px 6px;
             max-width: 660px;
             width: 100%;
@@ -715,28 +715,21 @@
         <h3>SANDOPOLIS WEB HELP</h3>
         <div class="help-columns">
             <div>
-                <h4>CONTROLS</h4>
-                <div class="help-row"><span class="key">Arrows</span> D-Pad</div>
-                <div class="help-row"><span class="key">Enter</span> Start</div>
-                <div class="help-row"><span class="key">Z</span> A &nbsp;<span class="key">X</span> B &nbsp;<span
-                    class="key">C</span> C
-                </div>
-                <div class="help-row"><span class="key">A</span> X &nbsp;<span class="key">S</span> Y &nbsp;<span
-                    class="key">D</span> Z
-                </div>
+                <h4>KEYBOARD</h4>
+                <div class="help-row">[Arrows] D-Pad</div>
+                <div class="help-row">[Enter] Start</div>
+                <div class="help-row">[Z] A &nbsp;[X] B &nbsp;[C] C</div>
+                <div class="help-row">[A] X &nbsp;[S] Y &nbsp;[D] Z</div>
                 <h4>GAMEPAD</h4>
                 <div class="help-row">Standard controllers supported (2 players).</div>
-                <div class="help-row">Face: A/B/X/Y. Shoulders: X/Y/Z. D-pad + left stick.</div>
+                <div class="help-row">(X) A &nbsp;(A) B &nbsp;(B) C &nbsp;(Y) Y</div>
+                <div class="help-row">(LB) X &nbsp;(RB) Z &nbsp;(Start) Start</div>
             </div>
             <div>
                 <h4>HOTKEYS</h4>
-                <div class="help-row"><span class="key">F5</span> Quick Save &nbsp;<span class="key">F8</span> Quick
-                    Load
-                </div>
-                <div class="help-row"><span class="key">F6</span> Slot Save &nbsp;<span class="key">F9</span> Slot Load
-                </div>
-                <div class="help-row"><span class="key">F11</span> Fullscreen &nbsp;<span class="key">F1</span> Help
-                </div>
+                <div class="help-row">[F5] Quick Save &nbsp;[F8] Quick Load</div>
+                <div class="help-row">[F6] Slot Save &nbsp;[F9] Slot Load</div>
+                <div class="help-row">[F11] Fullscreen &nbsp;[F1] Help</div>
                 <h4>ABOUT</h4>
                 <div class="help-row">Sandopolis is a Sega Genesis / Mega Drive emulator built with Zig and compiled to
                     WebAssembly.
