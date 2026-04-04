@@ -264,6 +264,7 @@ const HomeScreenCommand = menu_module.HomeScreenCommand;
 const FrontendGamepadCommand = menu_module.FrontendGamepadCommand;
 const FrontendEventDisposition = menu_module.EventDisposition;
 const FrontendUi = menu_module.FrontendUi;
+const Overlay = menu_module.Overlay;
 const formatHomeMenuItem = menu_module.formatHomeMenuItem;
 const homeMenuActionForIndex = menu_module.homeMenuActionForIndex;
 const formatSettingsActionLine = menu_module.formatSettingsActionLine;
@@ -337,8 +338,7 @@ fn openSaveManager(
     explicit_state_path: ?[]const u8,
     notifications: FrontendNotifications,
 ) void {
-    ui.show_save_manager = true;
-    ui.show_help = false;
+    ui.overlay = .save_manager;
     refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
 }
 
@@ -387,7 +387,7 @@ fn handlePauseOverlayKey(
     pressed: bool,
     notifications: FrontendNotifications,
 ) bool {
-    if (!ui.paused or ui.show_home or ui.show_save_manager or ui.show_settings or ui.show_help or ui.dialog_active or ui.show_keyboard_editor) return false;
+    if (ui.overlay != .pause) return false;
     if (!pressed) return false;
 
     switch (scancode) {
@@ -422,7 +422,7 @@ fn handleSettingsKey(
     pressed: bool,
     notifications: FrontendNotifications,
 ) bool {
-    if (!ui.show_settings) return false;
+    if (ui.overlay != .settings) return false;
     if (!pressed) return true;
 
     switch (scancode) {
@@ -524,7 +524,7 @@ fn handleSaveManagerKey(
     pressed: bool,
     notifications: FrontendNotifications,
 ) bool {
-    if (!ui.show_save_manager) return false;
+    if (ui.overlay != .save_manager) return false;
     if (!pressed) return true;
 
     switch (scancode) {
@@ -718,7 +718,11 @@ fn configurePerformanceHud(
     core_profile_frames_remaining: *u32,
     enabled: bool,
 ) void {
-    ui.show_performance_hud = enabled;
+    if (enabled) {
+        ui.overlay = .performance_hud;
+    } else if (ui.overlay == .performance_hud) {
+        ui.overlay = .none;
+    }
     if (!enabled) {
         core_profile_frames_remaining.* = 0;
         return;
@@ -797,9 +801,9 @@ fn applySettingsAction(
             } else if (delta > 0) {
                 configurePerformanceHud(ui, perf, spike_log, core_profile_frames_remaining, true);
             } else {
-                configurePerformanceHud(ui, perf, spike_log, core_profile_frames_remaining, !ui.show_performance_hud);
+                configurePerformanceHud(ui, perf, spike_log, core_profile_frames_remaining, ui.overlay != .performance_hud);
             }
-            if (ui.show_performance_hud) {
+            if (ui.overlay == .performance_hud) {
                 notifyFrontend(notifications, .info, "PERF HUD ON", .{});
             } else {
                 notifyFrontend(notifications, .info, "PERF HUD OFF", .{});
@@ -840,7 +844,7 @@ fn handleHomeScreenKey(
     scancode: zsdl3.Scancode,
     pressed: bool,
 ) HomeScreenCommand {
-    if (!ui.show_home or ui.dialog_active or ui.show_keyboard_editor or ui.show_settings or ui.show_help) return .none;
+    if (ui.overlay != .home) return .none;
     if (!pressed) return .none;
 
     switch (scancode) {
@@ -865,7 +869,7 @@ fn handleHomeScreenGamepadInput(
     input: InputBindings.GamepadInput,
     pressed: bool,
 ) FrontendGamepadCommand {
-    if (!ui.show_home or ui.dialog_active or ui.show_keyboard_editor or ui.show_settings or ui.show_help) return .ignored;
+    if (ui.overlay != .home) return .ignored;
 
     return switch (input) {
         .dpad_up => blk: {
@@ -885,7 +889,7 @@ fn handleHomeScreenGamepadInput(
             break :blk .consumed;
         },
         .north => blk: {
-            if (pressed) ui.show_help = true;
+            if (pressed) ui.overlay = .help;
             break :blk .consumed;
         },
         else => .ignored,
@@ -897,17 +901,17 @@ fn handleHelpOverlayGamepadInput(
     input: InputBindings.GamepadInput,
     pressed: bool,
 ) FrontendGamepadCommand {
-    if (!ui.show_help) return .ignored;
+    if (ui.overlay != .help) return .ignored;
 
     return switch (input) {
         .south, .east, .back, .start => blk: {
-            if (pressed) ui.show_help = false;
+            if (pressed) ui.closeHelp();
             break :blk .consumed;
         },
         .guide => blk: {
             if (pressed) {
-                if (ui.show_home) {
-                    ui.show_help = false;
+                if (ui.parent_overlay == .home) {
+                    ui.closeHelp();
                 } else {
                     ui.resumeGame();
                 }
@@ -929,9 +933,7 @@ fn handlePauseOverlayGamepadInput(
     pressed: bool,
     notifications: FrontendNotifications,
 ) FrontendGamepadCommand {
-    if (!ui.paused or ui.show_home or ui.show_save_manager or ui.show_settings or ui.show_help or ui.dialog_active or ui.show_keyboard_editor) {
-        return .ignored;
-    }
+    if (ui.overlay != .pause) return .ignored;
 
     return switch (input) {
         .south => blk: {
@@ -943,7 +945,7 @@ fn handlePauseOverlayGamepadInput(
             break :blk .consumed;
         },
         .north => blk: {
-            if (pressed) ui.show_help = true;
+            if (pressed) ui.openHelp();
             break :blk .consumed;
         },
         .east, .back, .start, .guide => blk: {
@@ -973,7 +975,7 @@ fn handleSettingsGamepadInput(
     pressed: bool,
     notifications: FrontendNotifications,
 ) FrontendGamepadCommand {
-    if (!ui.show_settings) return .ignored;
+    if (ui.overlay != .settings) return .ignored;
 
     return switch (input) {
         .dpad_up => blk: {
@@ -1056,7 +1058,7 @@ fn handleSettingsGamepadInput(
         },
         .guide => blk: {
             if (pressed) {
-                if (ui.show_home) {
+                if (ui.parent_overlay == .home) {
                     ui.closeSettings();
                 } else {
                     ui.resumeGame();
@@ -1083,7 +1085,7 @@ fn handleSaveManagerGamepadInput(
     pressed: bool,
     notifications: FrontendNotifications,
 ) FrontendGamepadCommand {
-    if (!ui.show_save_manager) return .ignored;
+    if (ui.overlay != .save_manager) return .ignored;
 
     return switch (input) {
         .east, .back => blk: {
@@ -1212,12 +1214,12 @@ fn handleFrontendGamepadInput(
     notifications: FrontendNotifications,
 ) FrontendGamepadCommand {
     // Debugger gamepad handling (checked first when debugger is active)
-    if (ui.show_debugger) {
+    if (ui.overlay == .debugger) {
         if (pressed) {
             switch (input) {
                 .east, .back => {
                     debugger.toggle();
-                    ui.show_debugger = debugger.active;
+                    if (!debugger.active) ui.overlay = .none;
                 },
                 .south => debugger.stepOnce(),
                 .dpad_left, .left_shoulder => debugger.prevTab(),
@@ -1287,12 +1289,12 @@ fn handleFrontendGamepadInput(
     );
     if (pause_result != .ignored) return pause_result;
 
-    if (input == .guide and !ui.show_home and !ui.dialog_active and !ui.show_keyboard_editor) {
+    if (input == .guide and ui.overlay != .home and ui.overlay != .dialog and ui.overlay != .keyboard_editor) {
         if (pressed) {
-            if (ui.paused or ui.show_save_manager or ui.show_help) {
+            if (ui.overlay.pausesEmulation()) {
                 ui.resumeGame();
             } else {
-                ui.paused = true;
+                ui.overlay = .pause;
             }
         }
         return .consumed;
@@ -1303,8 +1305,8 @@ fn handleFrontendGamepadInput(
 
 fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: *zsdl3.Window, default_location: ?[]const u8) bool {
     if (!dialog_state.begin(default_location)) return false;
-    ui.dialog_active = true;
-    ui.show_help = false;
+    ui.parent_overlay = ui.overlay;
+    ui.overlay = .dialog;
     SDL_ShowOpenFileDialog(
         openRomDialogCallback,
         dialog_state,
@@ -1379,8 +1381,7 @@ fn dispatchHomeScreenCommand(
             current_rom_path.* = selected_path;
             rememberLoadedRom(frontend_config, input_bindings, frontend_config_path, notifications, selected_path.slice());
             home_menu.clamp(frontend_config);
-            ui.show_home = false;
-            ui.paused = false;
+            ui.overlay = .none;
             return .handled;
         },
         .quit => return .quit,
@@ -1629,12 +1630,11 @@ fn handleBindingEditorKey(
     hotkey_binding: ?InputBindings.HotkeyBinding,
     pressed: bool,
 ) bool {
-    if (!ui.show_keyboard_editor) {
+    if (ui.overlay != .keyboard_editor) {
         if (!pressed) return false;
         const binding = hotkey_binding orelse return false;
         if (bindings.hotkeyForBinding(binding) != .open_keyboard_editor) return false;
-        ui.show_keyboard_editor = true;
-        ui.show_help = false;
+        ui.overlay = .keyboard_editor;
         editor.open();
         machine.releaseKeyboardBindings(bindings);
         return true;
@@ -1673,14 +1673,14 @@ fn handleBindingEditorKey(
     }
 
     if (scancode == .escape) {
-        ui.show_keyboard_editor = false;
+        ui.overlay = .none;
         editor.close();
         unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch {};
         return true;
     }
     if (hotkey_binding) |binding| {
         if (bindings.hotkeyForBinding(binding) == .open_keyboard_editor) {
-            ui.show_keyboard_editor = false;
+            ui.overlay = .none;
             editor.close();
             unified_config.save(frontend_cfg, bindings, unified_cfg_path) catch {};
             return true;
@@ -1772,7 +1772,7 @@ fn syncFrontendAfterPersistentStateLoad(
     } else {
         current_rom_path.* = .{};
     }
-    ui.show_home = false;
+    if (ui.overlay == .home) ui.overlay = .none;
 }
 
 fn handlePersistentStateAction(
@@ -2298,7 +2298,7 @@ fn renderSettingsOverlay(
             fullscreenEnabled(window),
             current_audio_mode,
             machine.bus.io.controller_types,
-            ui.show_performance_hud,
+            ui.overlay == .performance_hud,
             frontend_config.font_face,
         );
     }
@@ -2434,13 +2434,10 @@ fn renderFrontendOverlay(
     current_rom_path: ?[]const u8,
     config_path: []const u8,
 ) !void {
-    const show_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.paused or ui.show_help or ui.dialog_active or ui.show_keyboard_editor;
     const show_toast = toast.visible(frontend_frame_number);
     const has_rom = current_rom_path != null and current_rom_path.?.len > 0;
-    // Show status bar when paused or help is open (not during gameplay or when other panels are open)
-    const show_blocking_panel = ui.show_home or ui.show_save_manager or ui.show_settings or ui.dialog_active or ui.show_keyboard_editor;
-    const show_status_bar = has_rom and (ui.paused or ui.show_help) and !show_blocking_panel;
-    if (!show_panel and !show_toast) return;
+    const show_status_bar = has_rom and ui.showsStatusBar();
+    if (ui.overlay == .none and !show_toast) return;
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
@@ -2451,21 +2448,15 @@ fn renderFrontendOverlay(
     if (show_toast) {
         try renderToastOverlay(renderer, viewport, toast, frontend_frame_number);
     }
-    if (!show_panel) return;
-    if (ui.dialog_active) {
-        try renderDialogOverlay(renderer, viewport);
-    } else if (ui.show_keyboard_editor) {
-        try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number, config_path);
-    } else if (ui.show_settings) {
-        try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode, config_path);
-    } else if (ui.show_save_manager) {
-        try renderSaveManagerOverlay(renderer, viewport, save_manager, persistent_state_slot, frontend_frame_number);
-    } else if (ui.show_help) {
-        try renderHelpOverlay(renderer, viewport, bindings, persistent_state_slot);
-    } else if (ui.show_home) {
-        try renderHomeOverlay(renderer, viewport, home_menu, frontend_config, frontend_frame_number);
-    } else {
-        try renderPauseOverlay(renderer, viewport, bindings, persistent_state_slot);
+    switch (ui.overlay) {
+        .none, .debugger, .performance_hud => {},
+        .dialog => try renderDialogOverlay(renderer, viewport),
+        .keyboard_editor => try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number, config_path),
+        .settings => try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode, config_path),
+        .save_manager => try renderSaveManagerOverlay(renderer, viewport, save_manager, persistent_state_slot, frontend_frame_number),
+        .help => try renderHelpOverlay(renderer, viewport, bindings, persistent_state_slot),
+        .home => try renderHomeOverlay(renderer, viewport, home_menu, frontend_config, frontend_frame_number),
+        .pause => try renderPauseOverlay(renderer, viewport, bindings, persistent_state_slot),
     }
 }
 
@@ -2655,7 +2646,7 @@ pub fn main() !void {
     var quick_state: ?Machine.Snapshot = null;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     defer if (quick_state) |*state| state.deinit(allocator);
-    var frontend_ui = FrontendUi{ .show_home = rom_path == null };
+    var frontend_ui = FrontendUi{ .overlay = if (rom_path == null) .home else .none };
     var home_menu = HomeMenuState{};
     var settings_menu = SettingsMenuState{};
     var save_manager = SaveManagerState{};
@@ -2689,7 +2680,7 @@ pub fn main() !void {
                     const port = findGamepadPort(&gamepads, event.gbutton.which) orelse continue;
 
                     // Binding editor gamepad capture
-                    if (frontend_ui.show_keyboard_editor and binding_editor.capture_mode and binding_editor.capture_gamepad) {
+                    if (frontend_ui.overlay == .keyboard_editor and binding_editor.capture_mode and binding_editor.capture_gamepad) {
                         const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
                         if (pressed_gp) {
                             if (gamepadInputFromButton(button)) |gp_input| {
@@ -2699,7 +2690,7 @@ pub fn main() !void {
                         continue;
                     }
                     // Binding editor navigation via gamepad (when open but not capturing)
-                    if (frontend_ui.show_keyboard_editor and !binding_editor.capture_mode) {
+                    if (frontend_ui.overlay == .keyboard_editor and !binding_editor.capture_mode) {
                         const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
                         if (pressed_gp) {
                             if (gamepadInputFromButton(button)) |gp_input| {
@@ -2708,7 +2699,7 @@ pub fn main() !void {
                                     .dpad_down => binding_editor.move(1),
                                     .south => binding_editor.beginCapture(),
                                     .east, .back => {
-                                        frontend_ui.show_keyboard_editor = false;
+                                        frontend_ui.overlay = .none;
                                         binding_editor.close();
                                     },
                                     else => {},
@@ -3151,11 +3142,16 @@ pub fn main() !void {
                     }
                     // Debugger controls (F10 toggle, Space step, Tab switch tabs)
                     if (pressed and scancode == .f10) {
-                        debugger_state.toggle();
-                        frontend_ui.show_debugger = debugger_state.active;
+                        if (frontend_ui.overlay == .debugger) {
+                            debugger_state.active = false;
+                            frontend_ui.overlay = .none;
+                        } else {
+                            debugger_state.active = true;
+                            frontend_ui.overlay = .debugger;
+                        }
                         continue;
                     }
-                    if (pressed and frontend_ui.show_debugger and debugger_state.active) {
+                    if (pressed and frontend_ui.overlay == .debugger and debugger_state.active) {
                         const consumed = switch (scancode) {
                             .space => blk: {
                                 debugger_state.stepOnce();
@@ -3226,10 +3222,20 @@ pub fn main() !void {
                             }
 
                             switch (action) {
-                                .toggle_help => frontend_ui.show_help = !frontend_ui.show_help,
+                                .toggle_help => {
+                                    if (frontend_ui.overlay == .help) {
+                                        frontend_ui.closeHelp();
+                                    } else {
+                                        frontend_ui.openHelp();
+                                    }
+                                },
                                 .toggle_pause => {
-                                    if (!frontend_ui.show_home) {
-                                        frontend_ui.paused = !frontend_ui.paused;
+                                    if (frontend_ui.overlay != .home) {
+                                        if (frontend_ui.overlay == .pause) {
+                                            frontend_ui.resumeGame();
+                                        } else if (frontend_ui.overlay == .none or frontend_ui.overlay == .performance_hud) {
+                                            frontend_ui.overlay = .pause;
+                                        }
                                     }
                                 },
                                 .open_rom => _ = launchOpenRomDialog(
@@ -3239,7 +3245,7 @@ pub fn main() !void {
                                     preferredOpenRomLocation(&frontend_config, &current_rom_path),
                                 ),
                                 .restart_rom => {
-                                    if (!frontend_ui.show_home) {
+                                    if (frontend_ui.overlay != .home) {
                                         softResetCurrentMachine(&machine, &frame_counter, notifications);
                                     }
                                 },
@@ -3266,7 +3272,7 @@ pub fn main() !void {
                                         &performance_hud,
                                         &performance_spike_log,
                                         &core_profile_frames_remaining,
-                                        !frontend_ui.show_performance_hud,
+                                        frontend_ui.overlay != .performance_hud,
                                     );
                                 },
                                 .reset_performance_hud => {
@@ -3275,7 +3281,7 @@ pub fn main() !void {
                                     core_profile_frames_remaining = 0;
                                 },
                                 .record_gif => {
-                                    if (frontend_ui.show_help) continue;
+                                    if (frontend_ui.overlay == .help) continue;
                                     if (gif_recorder) |*rec| {
                                         const frames = rec.frame_count;
                                         rec.finish();
@@ -3301,7 +3307,7 @@ pub fn main() !void {
                                     }
                                 },
                                 .record_wav => {
-                                    if (frontend_ui.show_help) continue;
+                                    if (frontend_ui.overlay == .help) continue;
                                     if (wav_recorder) |*rec| {
                                         if (audio) |*a| {
                                             a.syncRecordedPlayback(rec);
@@ -3332,7 +3338,7 @@ pub fn main() !void {
                                     }
                                 },
                                 .screenshot => {
-                                    if (frontend_ui.show_help) continue;
+                                    if (frontend_ui.overlay == .help) continue;
                                     const path = screenshotOutputPath(if (current_rom_path.len != 0) current_rom_path.slice() else "") orelse {
                                         std.debug.print("No available screenshot slot (001-999 all exist)\n", .{});
                                         notifyFrontend(notifications, .failure, "NO AVAILABLE SCREENSHOT SLOT", .{});
@@ -3377,9 +3383,13 @@ pub fn main() !void {
 
         switch (file_dialog_state.take()) {
             .none => {},
-            .canceled => frontend_ui.dialog_active = false,
+            .canceled => {
+                frontend_ui.overlay = if (frontend_ui.parent_overlay != .none) frontend_ui.parent_overlay else .home;
+                frontend_ui.parent_overlay = .none;
+            },
             .failed => |message| {
-                frontend_ui.dialog_active = false;
+                frontend_ui.overlay = if (frontend_ui.parent_overlay != .none) frontend_ui.parent_overlay else .home;
+                frontend_ui.parent_overlay = .none;
                 std.debug.print("Open ROM dialog failed: {s}\n", .{message.slice()});
                 notifyFrontend(
                     .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
@@ -3389,8 +3399,8 @@ pub fn main() !void {
                 );
             },
             .selected => |path| {
-                frontend_ui.dialog_active = false;
-                frontend_ui.show_help = false;
+                frontend_ui.overlay = .none;
+                frontend_ui.parent_overlay = .none;
                 loadRomIntoMachine(
                     allocator,
                     &machine,
@@ -3421,8 +3431,8 @@ pub fn main() !void {
                     path.slice(),
                 );
                 home_menu.clamp(&frontend_config);
-                if (frontend_ui.show_home) frontend_ui.paused = false;
-                frontend_ui.show_home = false;
+                // ROM loaded successfully: dismiss any overlay and start emulating
+                frontend_ui.overlay = .none;
             },
         }
 
@@ -3436,7 +3446,7 @@ pub fn main() !void {
         var frame_phases = PerformanceFramePhases{};
         var core_counters = CoreFrameCounters{};
         var target_frame_ns: ?u64 = null;
-        const sample_core_counters = shouldSampleCoreCounters(frontend_ui.show_performance_hud, frame_counter, core_profile_frames_remaining);
+        const sample_core_counters = shouldSampleCoreCounters(frontend_ui.overlay == .performance_hud, frame_counter, core_profile_frames_remaining);
         if (!emulation_paused) {
             target_frame_ns = frameDurationNs(machine.palMode(), machine.frameMasterCycles());
             const emulation_start = std.time.Instant.now() catch frame_timer;
@@ -3555,12 +3565,12 @@ pub fn main() !void {
             if (current_rom_path.len != 0) current_rom_path.slice() else null,
             config_file_path,
         );
-        if (frontend_ui.show_performance_hud) {
+        if (frontend_ui.overlay == .performance_hud) {
             const perf_viewport = try zsdl3.getRenderViewport(renderer);
             try zsdl3.setRenderDrawBlendMode(renderer, .blend);
             try renderPerformanceHud(renderer, perf_viewport, &performance_hud);
         }
-        if (frontend_ui.show_debugger and debugger_state.active) {
+        if (frontend_ui.overlay == .debugger and debugger_state.active) {
             const dbg_viewport = try zsdl3.getRenderViewport(renderer);
             try zsdl3.setRenderDrawBlendMode(renderer, .blend);
             try debugger_mod.render(renderer, dbg_viewport, &machine, &debugger_state);
@@ -4088,7 +4098,7 @@ test "binding editor opens releases inputs and rebinds selected action" {
         .{ .input = .f8 },
         true,
     ));
-    try std.testing.expect(ui.show_keyboard_editor);
+    try std.testing.expectEqual(Overlay.keyboard_editor, ui.overlay);
     try std.testing.expect(ui.emulationPaused());
     try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
 
@@ -4109,7 +4119,7 @@ test "binding editor opens releases inputs and rebinds selected action" {
         .{ .input = .f8 },
         true,
     ));
-    try std.testing.expect(!ui.show_keyboard_editor);
+    try std.testing.expect(ui.overlay != .keyboard_editor);
 }
 
 test "binding editor clears hotkeys during capture" {
@@ -4498,7 +4508,7 @@ test "persistent state load sync exits home screen and updates current rom path"
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 0;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
-    var ui = FrontendUi{ .show_home = true };
+    var ui = FrontendUi{ .overlay = .home };
     var current_rom_path = DialogPathCopy{};
 
     try std.testing.expectEqual(
@@ -4519,7 +4529,7 @@ test "persistent state load sync exits home screen and updates current rom path"
     syncFrontendAfterPersistentStateLoad(&ui, &current_rom_path, &machine);
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
-    try std.testing.expect(!ui.show_home);
+    try std.testing.expect(ui.overlay != .home);
     try std.testing.expectEqualStrings(rom_path, current_rom_path.slice());
 }
 
@@ -4692,7 +4702,7 @@ test "home screen gamepad navigation loads recent rom entries" {
     config.noteLoadedRom("roms/a.bin");
     config.noteLoadedRom("roms/b.bin");
 
-    var ui = FrontendUi{ .show_home = true };
+    var ui = FrontendUi{ .overlay = .home };
     var menu = HomeMenuState{};
     var settings = SettingsMenuState{};
 
@@ -4709,18 +4719,20 @@ test "home screen gamepad navigation loads recent rom entries" {
         else => try std.testing.expect(false),
     }
 
+    // Reset to home for next sub-test
+    ui.overlay = .home;
     switch (handleHomeScreenGamepadInput(&ui, &menu, &settings, &config, .west, true)) {
         .consumed => {},
         else => try std.testing.expect(false),
     }
-    try std.testing.expect(ui.show_settings);
-    ui.show_settings = false;
+    try std.testing.expectEqual(Overlay.settings, ui.overlay);
+    ui.closeSettings();
 
     switch (handleHomeScreenGamepadInput(&ui, &menu, &settings, &config, .north, true)) {
         .consumed => {},
         else => try std.testing.expect(false),
     }
-    try std.testing.expect(ui.show_help);
+    try std.testing.expectEqual(Overlay.help, ui.overlay);
 }
 
 test "frontend toast visibility expires after its frame window" {
@@ -4733,12 +4745,12 @@ test "frontend toast visibility expires after its frame window" {
 }
 
 test "frontend ui treats save manager as a paused overlay" {
-    var ui = FrontendUi{ .show_save_manager = true };
+    var ui = FrontendUi{ .overlay = .save_manager };
     try std.testing.expect(ui.emulationPaused());
 }
 
 test "frontend ui treats settings as a paused overlay" {
-    var ui = FrontendUi{ .show_settings = true };
+    var ui = FrontendUi{ .overlay = .settings };
     try std.testing.expect(ui.emulationPaused());
 }
 
@@ -4851,10 +4863,10 @@ test "guide button toggles pause and resumes overlays" {
         .consumed => {},
         else => try std.testing.expect(false),
     }
-    try std.testing.expect(ui.paused);
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
 
-    ui.show_help = true;
-    ui.show_save_manager = true;
+    // Open help from pause, then press guide to resume
+    ui.openHelp();
     switch (handleFrontendGamepadInput(
         &ui,
         &menu,
@@ -4886,9 +4898,7 @@ test "guide button toggles pause and resumes overlays" {
         .consumed => {},
         else => try std.testing.expect(false),
     }
-    try std.testing.expect(!ui.paused);
-    try std.testing.expect(!ui.show_help);
-    try std.testing.expect(!ui.show_save_manager);
+    try std.testing.expectEqual(Overlay.none, ui.overlay);
 }
 
 test "save manager gamepad controls save load delete and close" {
@@ -4907,7 +4917,7 @@ test "save manager gamepad controls save load delete and close" {
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
 
-    var ui = FrontendUi{ .paused = true, .show_save_manager = true };
+    var ui = FrontendUi{ .overlay = .save_manager, .parent_overlay = .pause };
     var save_manager = SaveManagerState{};
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     var gif_recorder: ?GifRecorder = null;
@@ -5062,8 +5072,7 @@ test "save manager gamepad controls save load delete and close" {
         .consumed => {},
         else => try std.testing.expect(false),
     }
-    try std.testing.expect(!ui.show_save_manager);
-    try std.testing.expect(ui.paused);
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
 }
 
 test "file dialog state records selected paths and failures" {
