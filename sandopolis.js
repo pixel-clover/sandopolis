@@ -18,6 +18,7 @@ let masterVolume = 70;
 let db = null;
 let currentRomName = "";
 let currentSlot = 1;
+const textDecoder = new TextDecoder();
 
 // Display
 let aspectMode = "fit"; // "fit" (4:3), "stretch", "native"
@@ -276,6 +277,37 @@ function applyTheme(theme) {
     document.getElementById("theme-toggle").textContent = theme === "dark" ? "Light" : "Dark";
 }
 
+function readWasmString(ptrFn, lenFn) {
+    if (!wasm) return "--";
+    const e = wasm.instance.exports;
+    const ptr = ptrFn(e);
+    const len = lenFn(e);
+    return textDecoder.decode(new Uint8Array(e.memory.buffer, ptr, len));
+}
+
+function updateAboutInfo() {
+    const versionEl = document.getElementById("about-version");
+    const buildEl = document.getElementById("about-build");
+    const audioEl = document.getElementById("about-audio");
+    const videoEl = document.getElementById("about-video");
+    if (!wasm) {
+        versionEl.textContent = "--";
+        buildEl.textContent = "--";
+        audioEl.textContent = "--";
+        videoEl.textContent = "--";
+        return;
+    }
+
+    const e = wasm.instance.exports;
+    versionEl.textContent = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
+    buildEl.textContent = readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len());
+    audioEl.textContent = `YM2612 + SN76489 at ${Math.round(e.sandopolis_audio_sample_rate() / 1000)} kHz`;
+
+    const width = e.sandopolis_video_width();
+    const height = emu ? e.sandopolis_screen_height(emu) : 224;
+    videoEl.textContent = `${width}x${height} ARGB Canvas`;
+}
+
 // Help overlay
 
 let helpOpen = false;
@@ -361,6 +393,7 @@ function toggleAbout() {
     } else {
         wasRunningBeforeHelp = running;
         pauseForOverlay();
+        updateAboutInfo();
         if (wasm) {
             const bytes = wasm.instance.exports.memory.buffer.byteLength;
             document.getElementById("about-wasm-size").textContent = (bytes / 1048576).toFixed(1) + " MB";
@@ -559,6 +592,7 @@ async function loadRom(file) {
 
     const isPal = e.sandopolis_is_pal(emu);
     setStatus(`Playing: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    if (aboutOpen) updateAboutInfo();
 
     running = true;
     frameInterval = 1000 / (isPal ? 50 : 60);
