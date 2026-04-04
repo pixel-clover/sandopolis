@@ -399,7 +399,28 @@ fn handlePauseOverlayKey(
             ui.openSettings(settings);
             return true;
         },
+        .i => {
+            ui.openGameInfo();
+            return true;
+        },
         else => return false,
+    }
+}
+
+fn handleGameInfoKey(
+    ui: *FrontendUi,
+    scancode: zsdl3.Scancode,
+    pressed: bool,
+) bool {
+    if (ui.overlay != .game_info) return false;
+    if (!pressed) return true;
+
+    switch (scancode) {
+        .escape, .i => {
+            ui.closeGameInfo();
+            return true;
+        },
+        else => return true,
     }
 }
 
@@ -794,6 +815,17 @@ fn applySettingsAction(
             frontend_config.audio_render_mode = next_mode;
             persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
             applyAudioRenderModeSetting(audio, current_audio_mode, next_mode, notifications);
+        },
+        .psg_volume => {
+            var vol: i16 = @intCast(frontend_config.psg_volume);
+            vol += if (delta == 0) 10 else @as(i16, @intCast(delta)) * 10;
+            vol = std.math.clamp(vol, 0, 200);
+            frontend_config.psg_volume = @intCast(vol);
+            if (audio) |a| {
+                a.output.setPsgVolume(frontend_config.psg_volume);
+            }
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
+            notifyFrontend(notifications, .info, "PSG VOLUME {d}%", .{frontend_config.psg_volume});
         },
         .performance_hud => {
             if (delta < 0) {
@@ -2264,6 +2296,86 @@ fn renderSaveManagerOverlay(
 // Re-export performance HUD rendering from frontend/performance.zig
 const renderPerformanceHud = perf_monitor.renderHud;
 
+fn renderGameInfoOverlay(
+    renderer: *zsdl3.Renderer,
+    viewport: zsdl3.Rect,
+    machine: *const Machine,
+) !void {
+    const metadata = machine.romMetadata();
+    const game_lookup = rom_metadata.lookupGameByProductCode(metadata.product_code);
+
+    const scale = overlayScale(viewport);
+    const padding = 14.0 * scale;
+    const line_height = 10.0 * scale;
+    const heading_color = UiColors.cyan;
+    const value_color = UiColors.text_primary;
+
+    var line_bufs: [8][80]u8 = undefined;
+    var lines: [8][]const u8 = undefined;
+    var line_count: usize = 0;
+
+    lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "CONSOLE   {s}", .{metadata.console orelse "UNKNOWN"}) catch "CONSOLE   ???";
+    line_count += 1;
+    lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "TITLE     {s}", .{metadata.title orelse "UNKNOWN"}) catch "TITLE     ???";
+    line_count += 1;
+    lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "PRODUCT   {s}", .{metadata.product_code orelse "UNKNOWN"}) catch "PRODUCT   ???";
+    line_count += 1;
+    lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "REGION    {s}", .{metadata.country_codes orelse "UNKNOWN"}) catch "REGION    ???";
+    line_count += 1;
+    lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "CHECKSUM  {X:0>4} {s}", .{
+        metadata.header_checksum,
+        if (metadata.checksum_valid) "OK" else "MISMATCH",
+    }) catch "CHECKSUM  ???";
+    line_count += 1;
+    lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "TIMING    {s}", .{if (machine.palMode()) "PAL 50HZ" else "NTSC 60HZ"}) catch "TIMING    ???";
+    line_count += 1;
+
+    if (game_lookup) |info| {
+        lines[line_count] = std.fmt.bufPrint(&line_bufs[line_count], "KNOWN AS  {s}", .{info.title}) catch "KNOWN AS  ???";
+        line_count += 1;
+    }
+
+    const title = "GAME INFO";
+    const footer = "[ESC] OR [I] CLOSE";
+    var max_width = overlayTextWidth(title, scale);
+    max_width = @max(max_width, overlayTextWidth(footer, scale));
+    for (lines[0..line_count]) |line| max_width = @max(max_width, overlayTextWidth(line, scale));
+
+    const total_rows: f32 = 3.0 + @as(f32, @floatFromInt(line_count));
+    const stw: f32 = @floatFromInt(viewport.w);
+    const sth: f32 = @floatFromInt(viewport.h);
+    const panel_w = @min(max_width + padding * 2.0, stw);
+    const panel_h = @min(padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * total_rows, sth);
+    const panel = zsdl3.FRect{
+        .x = @max(0.0, (stw - panel_w) * 0.5),
+        .y = @max(0.0, (sth - panel_h) * 0.5),
+        .w = panel_w,
+        .h = panel_h,
+    };
+
+    try renderOverlayPanel(renderer, panel, UiColors.panel_primary, heading_color, scale);
+
+    try drawOverlayText(
+        renderer,
+        panel.x + (panel.w - overlayTextWidth(title, scale)) * 0.5,
+        panel.y + padding,
+        scale,
+        UiColors.orange,
+        title,
+    );
+
+    const text_x = panel.x + padding;
+    var y = panel.y + padding + 14.0 * scale;
+
+    for (lines[0..line_count]) |line| {
+        try drawOverlayText(renderer, text_x, y, scale, value_color, line);
+        y += line_height;
+    }
+
+    y += line_height * 0.5;
+    try drawOverlayText(renderer, text_x, y, scale, UiColors.text_muted, footer);
+}
+
 fn renderSettingsOverlay(
     renderer: *zsdl3.Renderer,
     viewport: zsdl3.Rect,
@@ -2297,6 +2409,7 @@ fn renderSettingsOverlay(
             frontend_config.video_scale_mode,
             fullscreenEnabled(window),
             current_audio_mode,
+            frontend_config.psg_volume,
             machine.bus.io.controller_types,
             ui.overlay == .performance_hud,
             frontend_config.font_face,
@@ -2321,7 +2434,7 @@ fn renderSettingsOverlay(
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
 
-    const row_count: usize = 32;
+    const row_count: usize = 33;
     const stw: f32 = @floatFromInt(viewport.w);
     const sth: f32 = @floatFromInt(viewport.h);
     const settings_w = @min(max_width + padding * 2.0, stw);
@@ -2363,7 +2476,7 @@ fn renderSettingsOverlay(
     const normal_color = UiColors.text_primary;
 
     // Render settings entries grouped by section
-    // action_lines[]: 0=aspect, 1=scale, 2=fullscreen, 3=audio, 4=ctrl_p1, 5=ctrl_p2, 6=perf, 7=font_face, 8=close
+    // action_lines[]: 0=aspect, 1=scale, 2=fullscreen, 3=audio_mode, 4=psg_vol, 5=ctrl_p1, 6=ctrl_p2, 7=perf, 8=font_face, 9=close
     const actionColor = struct {
         fn f(cur: SettingsMenuAction, target: SettingsMenuAction, sel: zsdl3.Color, norm: zsdl3.Color) zsdl3.Color {
             return if (cur == target) sel else norm;
@@ -2386,19 +2499,21 @@ fn renderSettingsOverlay(
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .audio_render_mode, selected_color, normal_color), action_lines[3]);
     y += line_height;
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .psg_volume, selected_color, normal_color), action_lines[4]);
+    y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, audio_output_line);
     y += line_height * 2.0;
 
     try drawOverlayText(renderer, text_x, y, scale, heading_color, "INPUT");
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p1_type, selected_color, normal_color), action_lines[4]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p1_type, selected_color, normal_color), action_lines[5]);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p2_type, selected_color, normal_color), action_lines[5]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .controller_p2_type, selected_color, normal_color), action_lines[6]);
     y += line_height * 2.0;
 
     try drawOverlayText(renderer, text_x, y, scale, heading_color, heading_system);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .performance_hud, selected_color, normal_color), action_lines[6]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .performance_hud, selected_color, normal_color), action_lines[7]);
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, timing_line);
     y += line_height;
@@ -2409,10 +2524,10 @@ fn renderSettingsOverlay(
 
     try drawOverlayText(renderer, text_x, y, scale, heading_color, "UI");
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .font_face, selected_color, normal_color), action_lines[7]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .font_face, selected_color, normal_color), action_lines[8]);
     y += line_height * 2.0;
 
-    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[8]);
+    try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[9]);
 }
 
 fn renderFrontendOverlay(
@@ -2441,6 +2556,10 @@ fn renderFrontendOverlay(
 
     const viewport = try zsdl3.getRenderViewport(renderer);
     try zsdl3.setRenderDrawBlendMode(renderer, .blend);
+    if (ui.overlay.shouldDimBackdrop()) {
+        try zsdl3.setRenderDrawColor(renderer, .{ .r = 0, .g = 0, .b = 0, .a = 0x80 });
+        try zsdl3.renderFillRect(renderer, .{ .x = 0, .y = 0, .w = @floatFromInt(viewport.w), .h = @floatFromInt(viewport.h) });
+    }
     if (show_status_bar) {
         const rom_name = std.fs.path.basename(current_rom_path.?);
         try renderStatusBar(renderer, viewport, rom_name, persistent_state_slot, machine.palMode());
@@ -2450,6 +2569,7 @@ fn renderFrontendOverlay(
     }
     switch (ui.overlay) {
         .none, .debugger, .performance_hud => {},
+        .game_info => try renderGameInfoOverlay(renderer, viewport, machine),
         .dialog => try renderDialogOverlay(renderer, viewport),
         .keyboard_editor => try renderKeyboardEditorOverlay(renderer, viewport, editor, bindings, frontend_frame_number, config_path),
         .settings => try renderSettingsOverlay(renderer, viewport, ui, settings, frontend_config, machine, window, audio_enabled, current_audio_mode, config_path),
@@ -2603,6 +2723,7 @@ pub fn main() !void {
     const current_audio_queue_ms = if (cli.audio_queue_ms_overridden) cli.audio_queue_ms else frontend_config.audio_queue_ms;
     if (audio) |*a| {
         a.output.setRenderMode(current_audio_mode);
+        a.output.setPsgVolume(frontend_config.psg_volume);
         a.setQueueBudgetMs(current_audio_queue_ms);
     }
     if (current_audio_mode != .normal) {
@@ -3088,6 +3209,9 @@ pub fn main() !void {
                         pressed,
                         .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter },
                     )) {
+                        continue;
+                    }
+                    if (handleGameInfoKey(&frontend_ui, scancode, pressed)) {
                         continue;
                     }
                     if (handlePauseOverlayKey(

@@ -448,6 +448,7 @@ pub const AudioOutput = struct {
     dc_right: DcBlocker = DcBlocker.init(output_rate),
     board_lpf: BoardOutputLpf = BoardOutputLpf.init(),
     render_mode: RenderMode = .normal,
+    psg_volume_percent: u8 = 150,
     total_overflow_events: u64 = 0,
     last_overflow_events: u32 = 0,
     ym_internal_master_remainder: u16 = 0,
@@ -1186,6 +1187,14 @@ pub const AudioOutput = struct {
         return sample;
     }
 
+    fn runtimePsgMixGain(self: *const AudioOutput) f32 {
+        return psg_base_mix_gain * (@as(f32, @floatFromInt(self.psg_volume_percent)) / fm_preamp_percent);
+    }
+
+    pub fn setPsgVolume(self: *AudioOutput, percent: u8) void {
+        self.psg_volume_percent = @min(percent, 200);
+    }
+
     fn mixSources(self: *const AudioOutput, ym: [2]f32, psg: [2]f32) [2]f32 {
         var l: f32 = 0.0;
         var r: f32 = 0.0;
@@ -1196,8 +1205,9 @@ pub const AudioOutput = struct {
         }
 
         if (self.render_mode != .ym_only) {
-            l += psg[0] * psg_mix_gain;
-            r += psg[1] * psg_mix_gain;
+            const gain = self.runtimePsgMixGain();
+            l += psg[0] * gain;
+            r += psg[1] * gain;
         }
 
         return .{ l, r };
@@ -1376,10 +1386,12 @@ pub const AudioOutput = struct {
 
     pub fn reset(self: *AudioOutput) void {
         const render_mode = self.render_mode;
+        const psg_vol = self.psg_volume_percent;
         const timing_is_pal = self.timing_is_pal;
         self.* = .{};
         self.psg = Psg.powerOn();
         self.render_mode = render_mode;
+        self.psg_volume_percent = psg_vol;
         if (timing_is_pal) {
             self.setTimingMode(true);
         }
@@ -2262,6 +2274,42 @@ test "default board mix applies the reference PSG preamp ratio" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.25) + 0.5 * psg_mix_gain, mixed[0], 0.000001);
     try std.testing.expectApproxEqAbs(@as(f32, -0.125) + 0.5 * psg_mix_gain, mixed[1], 0.000001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.5), psg_mix_gain / psg_base_mix_gain, 0.000001);
+}
+
+test "default psg volume matches compile-time preamp" {
+    var output = AudioOutput.init();
+    try std.testing.expectEqual(@as(u8, 150), output.psg_volume_percent);
+    const mixed = output.mixSources(.{ 0.0, 0.0 }, .{ 1.0, 1.0 });
+    try std.testing.expectApproxEqAbs(psg_mix_gain, mixed[0], 0.000001);
+}
+
+test "psg volume at zero silences psg in mix" {
+    var output = AudioOutput.init();
+    output.setPsgVolume(0);
+    const mixed = output.mixSources(.{ 0.5, 0.5 }, .{ 1.0, 1.0 });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), mixed[0], 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), mixed[1], 0.000001);
+}
+
+test "psg volume at 200 doubles gain relative to default base" {
+    var output = AudioOutput.init();
+    output.setPsgVolume(200);
+    const mixed = output.mixSources(.{ 0.0, 0.0 }, .{ 1.0, 1.0 });
+    const expected = psg_base_mix_gain * 2.0;
+    try std.testing.expectApproxEqAbs(expected, mixed[0], 0.000001);
+}
+
+test "psg volume survives reset" {
+    var output = AudioOutput.init();
+    output.setPsgVolume(80);
+    output.reset();
+    try std.testing.expectEqual(@as(u8, 80), output.psg_volume_percent);
+}
+
+test "setPsgVolume clamps to 200" {
+    var output = AudioOutput.init();
+    output.setPsgVolume(255);
+    try std.testing.expectEqual(@as(u8, 200), output.psg_volume_percent);
 }
 
 test "master offsets account for pending start remainders when converting to native frames" {

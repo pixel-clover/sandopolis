@@ -17,6 +17,7 @@ pub const Overlay = enum {
     save_manager,
     dialog,
     keyboard_editor,
+    game_info,
     debugger,
     performance_hud,
 
@@ -24,7 +25,7 @@ pub const Overlay = enum {
     pub fn pausesEmulation(self: Overlay) bool {
         return switch (self) {
             .none, .performance_hud => false,
-            .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .debugger => true,
+            .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info, .debugger => true,
         };
     }
 
@@ -33,6 +34,14 @@ pub const Overlay = enum {
         return switch (self) {
             .pause, .help => true,
             else => false,
+        };
+    }
+
+    /// Returns true for modal overlays that should dim the game framebuffer.
+    pub fn shouldDimBackdrop(self: Overlay) bool {
+        return switch (self) {
+            .none, .debugger, .performance_hud => false,
+            .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info => true,
         };
     }
 };
@@ -88,6 +97,17 @@ pub const FrontendUi = struct {
 
     pub fn closeHelp(self: *FrontendUi) void {
         if (self.overlay != .help) return;
+        self.overlay = self.parent_overlay;
+        self.parent_overlay = .none;
+    }
+
+    pub fn openGameInfo(self: *FrontendUi) void {
+        self.parent_overlay = self.overlay;
+        self.overlay = .game_info;
+    }
+
+    pub fn closeGameInfo(self: *FrontendUi) void {
+        if (self.overlay != .game_info) return;
         self.overlay = self.parent_overlay;
         self.parent_overlay = .none;
     }
@@ -188,6 +208,7 @@ pub const SettingsMenuAction = enum {
     video_scale_mode,
     fullscreen,
     audio_render_mode,
+    psg_volume,
     controller_p1_type,
     controller_p2_type,
     performance_hud,
@@ -200,6 +221,7 @@ pub const settings_menu_actions = [_]SettingsMenuAction{
     .video_scale_mode,
     .fullscreen,
     .audio_render_mode,
+    .psg_volume,
     .controller_p1_type,
     .controller_p2_type,
     .performance_hud,
@@ -327,6 +349,7 @@ pub fn formatSettingsActionLine(
     scale_mode: VideoScaleMode,
     fullscreen: bool,
     audio_mode: AudioOutput.RenderMode,
+    psg_volume: u8,
     controller_types: [2]ControllerType,
     performance_hud: bool,
     font_face: FontFace,
@@ -337,6 +360,7 @@ pub fn formatSettingsActionLine(
         .video_scale_mode => std.fmt.bufPrint(buffer, "{s}SCALING {s}", .{ prefix, scale_mode.label() }),
         .fullscreen => std.fmt.bufPrint(buffer, "{s}FULLSCREEN {s}", .{ prefix, if (fullscreen) "ON" else "OFF" }),
         .audio_render_mode => std.fmt.bufPrint(buffer, "{s}AUDIO MODE {s}", .{ prefix, audio_mode.label() }),
+        .psg_volume => std.fmt.bufPrint(buffer, "{s}PSG VOLUME {d}%", .{ prefix, psg_volume }),
         .controller_p1_type => std.fmt.bufPrint(buffer, "{s}P1 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[0]) }),
         .controller_p2_type => std.fmt.bufPrint(buffer, "{s}P2 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[1]) }),
         .performance_hud => std.fmt.bufPrint(buffer, "{s}PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
@@ -397,7 +421,7 @@ test "only one overlay active at a time" {
 
 test "emulationPaused for each overlay" {
     var ui = FrontendUi{};
-    const pausing = [_]Overlay{ .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .debugger };
+    const pausing = [_]Overlay{ .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info, .debugger };
     for (pausing) |o| {
         ui.overlay = o;
         try std.testing.expect(ui.emulationPaused());
@@ -512,4 +536,30 @@ test "openHelp from none returns to none on close" {
     try std.testing.expectEqual(Overlay.help, ui.overlay);
     ui.closeHelp();
     try std.testing.expectEqual(Overlay.none, ui.overlay);
+}
+
+test "game_info overlay pauses emulation and dims backdrop" {
+    try std.testing.expect(Overlay.game_info.pausesEmulation());
+    try std.testing.expect(Overlay.game_info.shouldDimBackdrop());
+    try std.testing.expect(!Overlay.game_info.showsStatusBar());
+}
+
+test "openGameInfo from pause returns to pause on close" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    ui.openGameInfo();
+    try std.testing.expectEqual(Overlay.game_info, ui.overlay);
+    ui.closeGameInfo();
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+}
+
+test "shouldDimBackdrop for each overlay" {
+    const dimming = [_]Overlay{ .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info };
+    for (dimming) |o| {
+        try std.testing.expect(o.shouldDimBackdrop());
+    }
+    const non_dimming = [_]Overlay{ .none, .debugger, .performance_hud };
+    for (non_dimming) |o| {
+        try std.testing.expect(!o.shouldDimBackdrop());
+    }
 }

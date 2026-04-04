@@ -144,6 +144,7 @@ pub const pause_left_sections = [_]MenuSection{
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "INPUT EDITOR" } },
             .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERFORMANCE HUD" } },
+            .{ .text = "[I] GAME INFO" },
             .{ .hotkey = .{ .action = .toggle_help, .label = "HELP" } },
         },
     },
