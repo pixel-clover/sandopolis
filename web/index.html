@@ -121,6 +121,39 @@
     border-radius: 3px; padding: 1px 5px; color: var(--text); font-size: 0.7rem;
   }
 
+  /* Help overlay */
+  #help-overlay {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(0,0,0,0.7);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #help-overlay.hidden { display: none; }
+  .help-panel {
+    background: var(--bg-panel); border: 2px solid var(--text-heading);
+    border-radius: 8px; padding: 20px 28px; max-width: 560px; width: 90%;
+    max-height: 80vh; overflow-y: auto;
+  }
+  .help-panel h3 {
+    color: var(--text-accent); font-size: 1rem; margin-bottom: 14px; text-align: center;
+  }
+  .help-panel h4 { color: var(--text-heading); font-size: 0.78rem; margin: 10px 0 6px; }
+  .help-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; }
+  .help-row { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 3px; }
+  .help-row .key {
+    display: inline-block; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 3px; padding: 1px 5px; color: var(--text); font-size: 0.7rem;
+    min-width: 2.5em; text-align: center;
+  }
+  #help-close {
+    display: block; margin: 16px auto 0;
+    background: var(--bg); color: var(--text-accent); border: 1px solid var(--text-accent);
+    border-radius: 4px; padding: 6px 24px; font-family: inherit;
+    font-size: 0.8rem; cursor: pointer;
+  }
+  #help-close:hover { background: color-mix(in srgb, var(--text-accent) 12%, var(--bg)); }
+
+  @media (max-width: 500px) { .help-columns { grid-template-columns: 1fr; } }
+
   footer { margin-top: auto; padding-top: 16px; font-size: 0.75rem; color: var(--text-muted); }
   footer a { color: var(--text-link); text-decoration: none; }
   footer a:hover { color: var(--text-accent); }
@@ -202,20 +235,40 @@
 
 <div id="toast"></div>
 
-<div class="controls">
-  <div class="section-title">CONTROLS</div>
-  <div><span class="key">Arrows</span> D-Pad</div>
-  <div><span class="key">Enter</span> Start</div>
-  <div><span class="key">Z</span> A &nbsp; <span class="key">X</span> B &nbsp; <span class="key">C</span> C</div>
-  <div><span class="key">A</span> X &nbsp; <span class="key">S</span> Y &nbsp; <span class="key">D</span> Z</div>
-  <div class="section-title">HOTKEYS</div>
-  <div><span class="key">F5</span> Quick Save &nbsp; <span class="key">F8</span> Quick Load</div>
-  <div><span class="key">F6</span> Slot Save &nbsp; <span class="key">F9</span> Slot Load</div>
-  <div><span class="key">F11</span> Fullscreen</div>
+<div id="help-overlay" class="hidden">
+  <div class="help-panel">
+    <h3>SANDOPOLIS WEB HELP</h3>
+    <div class="help-columns">
+      <div>
+        <h4>CONTROLS</h4>
+        <div class="help-row"><span class="key">Arrow Keys</span> D-Pad</div>
+        <div class="help-row"><span class="key">Enter</span> Start</div>
+        <div class="help-row"><span class="key">Z</span> A Button</div>
+        <div class="help-row"><span class="key">X</span> B Button</div>
+        <div class="help-row"><span class="key">C</span> C Button</div>
+        <div class="help-row"><span class="key">A</span> X Button</div>
+        <div class="help-row"><span class="key">S</span> Y Button</div>
+        <div class="help-row"><span class="key">D</span> Z Button</div>
+      </div>
+      <div>
+        <h4>HOTKEYS</h4>
+        <div class="help-row"><span class="key">F5</span> Quick Save</div>
+        <div class="help-row"><span class="key">F8</span> Quick Load</div>
+        <div class="help-row"><span class="key">F6</span> Save to Slot</div>
+        <div class="help-row"><span class="key">F9</span> Load from Slot</div>
+        <div class="help-row"><span class="key">F11</span> Fullscreen</div>
+        <div class="help-row"><span class="key">F1</span> Help</div>
+        <h4>ABOUT</h4>
+        <div class="help-row">Sandopolis is a Sega Genesis / Mega Drive emulator built with Zig and compiled to WebAssembly.</div>
+        <div class="help-row">Save states persist in your browser via IndexedDB.</div>
+      </div>
+    </div>
+    <button id="help-close">CLOSE</button>
+  </div>
 </div>
 
 <footer>
-  <a href="https://pixel-clover.github.io/sandopolis/">Sandopolis Documentation</a>
+  <a href="#" id="help-link">Sandopolis Web Help</a>
 </footer>
 
 <script src="sandopolis.js"></script>
