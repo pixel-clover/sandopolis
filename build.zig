@@ -421,4 +421,32 @@ pub fn build(b: *std.Build) void {
     test_step_all.dependOn(&integration_run.step);
     test_step_all.dependOn(&regression_run.step);
     test_step_all.dependOn(&property_run.step);
+
+    // WebAssembly build for browser deployment
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .wasi,
+        .cpu_features_add = std.Target.wasm.featureSet(&.{.exception_handling}),
+    });
+    const wasm_exe = b.addExecutable(.{
+        .name = "sandopolis",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    wasm_exe.entry = .disabled;
+    wasm_exe.rdynamic = true;
+    addExternalCpuCores(wasm_exe, b, cpu_deps);
+    wasm_exe.addCSourceFiles(.{
+        .files = &.{"src/wasm_stubs.c"},
+        .flags = &.{"-std=c11"},
+    });
+    const wasm_install = b.addInstallArtifact(wasm_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "web" } },
+        .dest_sub_path = "sandopolis.wasm",
+    });
+    const wasm_step = b.step("wasm", "Build WebAssembly module for browser deployment");
+    wasm_step.dependOn(&wasm_install.step);
 }

@@ -206,6 +206,8 @@ pub fn render(
     const panel_y = margin;
 
     ui.renderPanel(renderer, .{ .x = panel_x, .y = panel_y, .w = panel_w, .h = panel_h }, ui.Colors.panel_primary, ui.Colors.blue, scale) catch {};
+    ui.setClipRect(renderer, .{ .x = panel_x, .y = panel_y, .w = panel_w, .h = panel_h }) catch {};
+    defer ui.clearClipRect(renderer) catch {};
 
     const content_x = panel_x + padding;
     const content_w = panel_w - padding * 2;

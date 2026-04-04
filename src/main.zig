@@ -2204,6 +2204,8 @@ fn renderSaveManagerOverlay(
         UiColors.orange,
         scale,
     );
+    try ui_render.setClipRect(renderer, panel);
+    defer ui_render.clearClipRect(renderer) catch {};
 
     try drawOverlayText(
         renderer,
@@ -2354,6 +2356,8 @@ fn renderGameInfoOverlay(
     };
 
     try renderOverlayPanel(renderer, panel, UiColors.panel_primary, heading_color, scale);
+    try ui_render.setClipRect(renderer, panel);
+    defer ui_render.clearClipRect(renderer) catch {};
 
     try drawOverlayText(
         renderer,
@@ -2453,6 +2457,8 @@ fn renderSettingsOverlay(
         UiColors.orange,
         scale,
     );
+    try ui_render.setClipRect(renderer, panel);
+    defer ui_render.clearClipRect(renderer) catch {};
 
     try drawOverlayText(
         renderer,
@@ -5553,6 +5559,76 @@ test "output path format matches expected pattern" {
 
     const bmp_name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.bmp", .{@as(u32, 123)}) catch unreachable;
     try std.testing.expectEqualStrings("sandopolis_123.bmp", bmp_name);
+}
+
+test "handleGameInfoKey opens from pause and closes with escape" {
+    var ui = FrontendUi{ .overlay = .pause };
+    // Game info key should not handle input when not in game_info overlay
+    try std.testing.expect(!handleGameInfoKey(&ui, .i, true));
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+
+    // Open game info from pause menu via the pause handler
+    ui.openGameInfo();
+    try std.testing.expectEqual(Overlay.game_info, ui.overlay);
+
+    // Game info key handler should consume all presses
+    try std.testing.expect(handleGameInfoKey(&ui, .a, true));
+    try std.testing.expectEqual(Overlay.game_info, ui.overlay);
+
+    // Escape closes back to pause
+    try std.testing.expect(handleGameInfoKey(&ui, .escape, true));
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+}
+
+test "handleGameInfoKey closes with i key" {
+    var ui = FrontendUi{ .overlay = .pause };
+    ui.openGameInfo();
+    try std.testing.expect(handleGameInfoKey(&ui, .i, true));
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+}
+
+test "frontend config parses psg_volume" {
+    const contents =
+        \\psg_volume = 80
+    ;
+    const config = try FrontendConfig.parseContents(contents);
+    try std.testing.expectEqual(@as(u8, 80), config.psg_volume);
+}
+
+test "frontend config psg_volume defaults to 150" {
+    const config = FrontendConfig{};
+    try std.testing.expectEqual(@as(u8, 150), config.psg_volume);
+}
+
+test "frontend config psg_volume clamps to 200" {
+    const contents =
+        \\psg_volume = 255
+    ;
+    const config = try FrontendConfig.parseContents(contents);
+    try std.testing.expectEqual(@as(u8, 200), config.psg_volume);
+}
+
+test "pause overlay key opens game info with i" {
+    const allocator = std.testing.allocator;
+    const rom = [_]u8{0} ** 0x400;
+    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer machine.deinit(allocator);
+    var ui = FrontendUi{ .overlay = .pause };
+    var save_manager = SaveManagerState{};
+    var settings = SettingsMenuState{};
+
+    try std.testing.expect(handlePauseOverlayKey(
+        &ui,
+        &save_manager,
+        &settings,
+        allocator,
+        &machine,
+        null,
+        .i,
+        true,
+        .{},
+    ));
+    try std.testing.expectEqual(Overlay.game_info, ui.overlay);
 }
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;

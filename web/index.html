@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandopolis - Sega Genesis Emulator</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0D1117;
+    color: #E6EDF3;
+    font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 24px 16px;
+  }
+
+  h1 {
+    color: #F7A41D;
+    font-size: 2rem;
+    letter-spacing: 0.15em;
+    margin-bottom: 4px;
+  }
+
+  .subtitle {
+    color: #8B949E;
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+  }
+
+  #drop-zone {
+    border: 2px dashed #5B8DBE;
+    border-radius: 8px;
+    padding: 20px 32px;
+    text-align: center;
+    cursor: pointer;
+    margin-bottom: 16px;
+    transition: border-color 0.2s, background 0.2s;
+    max-width: 660px;
+    width: 100%;
+  }
+
+  #drop-zone:hover, #drop-zone.drag-over {
+    border-color: #F7A41D;
+    background: rgba(247, 164, 29, 0.06);
+  }
+
+  #drop-zone label {
+    color: #6EB8D4;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+
+  #rom-input { display: none; }
+
+  #screen-container {
+    position: relative;
+    background: #000;
+    border: 2px solid #5B8DBE;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+
+  #screen {
+    display: block;
+    width: 640px;
+    height: 480px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  #status {
+    color: #8B949E;
+    font-size: 0.8rem;
+    margin-bottom: 20px;
+    text-align: center;
+  }
+
+  .controls {
+    max-width: 660px;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 24px;
+    font-size: 0.78rem;
+    color: #8B949E;
+    margin-bottom: 24px;
+  }
+
+  .controls .section-title {
+    color: #6EB8D4;
+    font-weight: bold;
+    grid-column: span 2;
+    margin-top: 4px;
+  }
+
+  .controls .key {
+    display: inline-block;
+    background: #161B22;
+    border: 1px solid #30363D;
+    border-radius: 3px;
+    padding: 1px 6px;
+    color: #E6EDF3;
+    font-size: 0.75rem;
+  }
+
+  footer {
+    margin-top: auto;
+    padding-top: 24px;
+    font-size: 0.75rem;
+    color: #8B949E;
+  }
+
+  footer a {
+    color: #5B8DBE;
+    text-decoration: none;
+  }
+
+  footer a:hover {
+    color: #F7A41D;
+  }
+
+  @media (max-width: 700px) {
+    #screen { width: 100%; height: auto; aspect-ratio: 4/3; }
+    .controls { grid-template-columns: 1fr; }
+    .controls .section-title { grid-column: 1; }
+  }
+</style>
+</head>
+<body>
+
+<h1>SANDOPOLIS</h1>
+<p class="subtitle">Sega Genesis / Mega Drive Emulator</p>
+
+<div id="drop-zone">
+  <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
+  <input type="file" id="rom-input" accept=".bin,.md,.smd,.gen">
+</div>
+
+<div id="screen-container">
+  <canvas id="screen" width="320" height="224"></canvas>
+</div>
+
+<p id="status">Loading emulator...</p>
+
+<div class="controls">
+  <div class="section-title">CONTROLS</div>
+  <div><span class="key">Arrow Keys</span> D-Pad</div>
+  <div><span class="key">Enter</span> Start</div>
+  <div><span class="key">Z</span> A Button</div>
+  <div><span class="key">X</span> B Button</div>
+  <div><span class="key">C</span> C Button</div>
+  <div><span class="key">A</span> X Button</div>
+  <div><span class="key">S</span> Y Button</div>
+  <div><span class="key">D</span> Z Button</div>
+</div>
+
+<footer>
+  <a href="https://pixel-clover.github.io/sandopolis/">Sandopolis Documentation</a> | Audio not yet supported in web build
+</footer>
+
+<script src="sandopolis.js"></script>
+</body>
+</html>
