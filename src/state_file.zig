@@ -226,7 +226,7 @@ pub fn pathForMachineSlot(allocator: std.mem.Allocator, machine: *const Machine,
     return pathForSlot(allocator, default_path, normalized);
 }
 
-pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
+fn writeStateData(writer: anytype, machine: *const Machine) !void {
     const rom = machine.bus.romBytes();
     const cartridge_ram = machine.bus.cartridgeRamBytes();
     const save_path = machine.bus.persistentSavePath();
@@ -235,13 +235,6 @@ pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
     const cartridge_ram_len: u32 = @intCast(if (cartridge_ram) |bytes| bytes.len else 0);
     const save_path_len: u32 = @intCast(if (save_path) |bytes| bytes.len else 0);
     const source_path_len: u32 = @intCast(if (source_path) |bytes| bytes.len else 0);
-
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-
-    var buffer: [4096]u8 = undefined;
-    var file_writer = file.writer(&buffer);
-    const writer = &file_writer.interface;
 
     try writeValue(writer, Header{
         .magic = save_state_magic,
@@ -258,17 +251,26 @@ pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
     if (cartridge_ram) |bytes| try writer.writeAll(bytes);
     if (save_path) |bytes| try writer.writeAll(bytes);
     if (source_path) |bytes| try writer.writeAll(bytes);
-    try writer.flush();
 }
 
-pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
-    var file = try std.fs.cwd().openFile(path, .{});
+pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
+    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
 
     var buffer: [4096]u8 = undefined;
-    var file_reader = file.reader(&buffer);
-    const reader = &file_reader.interface;
+    var file_writer = file.writer(&buffer);
+    try writeStateData(&file_writer.interface, machine);
+    try file_writer.interface.flush();
+}
 
+pub fn saveToBuffer(allocator: std.mem.Allocator, machine: *const Machine) ![]u8 {
+    var list = std.ArrayList(u8).empty;
+    errdefer list.deinit(allocator);
+    try writeStateData(list.writer(allocator).any(), machine);
+    return list.toOwnedSlice(allocator);
+}
+
+fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
     const header = try readValue(reader, Header);
     if (!std.mem.eql(u8, &header.magic, &save_state_magic)) return error.InvalidSaveState;
     if (header.version != save_state_version) return error.UnsupportedSaveStateVersion;
@@ -304,6 +306,50 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
 
     return machine;
 }
+
+pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
+    var file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    var buffer: [4096]u8 = undefined;
+    var file_reader = file.reader(&buffer);
+    return readStateData(allocator, &file_reader.interface);
+}
+
+pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine {
+    var fbs = std.io.fixedBufferStream(bytes);
+    var reader = SliceReader{ .fbs = &fbs };
+    return readStateData(allocator, &reader);
+}
+
+const SliceReader = struct {
+    fbs: *std.io.FixedBufferStream([]const u8),
+
+    pub fn takeByte(self: *SliceReader) !u8 {
+        if (self.fbs.pos >= self.fbs.buffer.len) return error.EndOfStream;
+        const byte = self.fbs.buffer[self.fbs.pos];
+        self.fbs.pos += 1;
+        return byte;
+    }
+
+    pub fn takeInt(self: *SliceReader, comptime T: type, endian: std.builtin.Endian) !T {
+        var buf: [@divExact(@typeInfo(T).int.bits, 8)]u8 = undefined;
+        self.readSliceAll(&buf) catch return error.EndOfStream;
+        return std.mem.readInt(T, &buf, endian);
+    }
+
+    pub fn readSliceAll(self: *SliceReader, dest: []u8) !void {
+        const end = self.fbs.pos + dest.len;
+        if (end > self.fbs.buffer.len) return error.EndOfStream;
+        @memcpy(dest, self.fbs.buffer[self.fbs.pos..end]);
+        self.fbs.pos = end;
+    }
+
+    pub fn writeAll(_: *SliceReader, _: []const u8) !void {}
+    pub fn writeByte(_: *SliceReader, _: u8) !void {}
+    pub fn writeInt(_: *SliceReader, comptime _: type, _: anytype, _: std.builtin.Endian) !void {}
+    pub fn flush(_: *SliceReader) !void {}
+};
 
 fn makeRomWithSramHeader(
     allocator: std.mem.Allocator,
@@ -365,6 +411,32 @@ test "default state path derives from ROM source path, numbered slots, and fallb
 
     try testing.expectEqual(@as(u8, 2), nextPersistentStateSlot(1));
     try testing.expectEqual(@as(u8, 1), nextPersistentStateSlot(persistent_state_slot_count));
+}
+
+test "save-state buffers round-trip machine state" {
+    const allocator = testing.allocator;
+
+    const rom = try makeRomWithSramHeader(allocator, 0x4000, 0xF8, 0x200001, 0x203FFF);
+    defer allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom);
+    defer machine.deinit(allocator);
+
+    machine.bus.rom[0] = 0xAB;
+    machine.bus.ram[0x100] = 0xCD;
+    machine.cpu.core.pc = 0x0000_5678;
+
+    const buf = try saveToBuffer(allocator, &machine);
+    defer allocator.free(buf);
+
+    try testing.expect(buf.len > 0);
+
+    var restored = try loadFromBuffer(allocator, buf);
+    defer restored.deinit(allocator);
+
+    try testing.expectEqual(@as(u8, 0xAB), restored.bus.rom[0]);
+    try testing.expectEqual(@as(u8, 0xCD), restored.bus.ram[0x100]);
+    try testing.expectEqual(@as(u32, 0x0000_5678), @as(u32, restored.cpu.core.pc));
 }
 
 test "save-state files round-trip machine state" {

@@ -9,6 +9,7 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/pixel-clover/sandopolis/tests.yml?label=tests&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-007ec6?label=license&style=flat&labelColor=282c34&logo=open-source-initiative)](https://github.com/pixel-clover/sandopolis/blob/main/LICENSE)
 [![Zig Version](https://img.shields.io/badge/Zig-0.15.2-orange?logo=zig&labelColor=282c34)](https://ziglang.org/download/)
+[![Play](https://img.shields.io/badge/web-play-007ec6?label=web&style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 
 A Sega Genesis/Mega Drive emulator written in Zig and C
@@ -17,7 +18,8 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 
 ---
 
-**Download the latest release from [here](https://github.com/pixel-clover/sandopolis/releases).**
+**Download the latest release from [here](https://github.com/pixel-clover/sandopolis/releases)
+or [run Sandopolis in your browser](https://pixel-clover.github.io/sandopolis/).**
 
 Footage of Sandopolis running a few games:
 

@@ -67,7 +67,7 @@ Quick examples:
 - `roms/`: local ROMs for manual testing only; this directory may be absent.
 - `tools/`: developer-only utilities that are not part of the shipped emulator runtime.
 - `external/`: optional checked-out third-party source trees used for developer tooling or reference comparison, not default runtime dependencies.
-- `web/`: browser frontend for the WebAssembly build (HTML, JavaScript, and compiled `.wasm` binary).
+- `web/`: browser frontend for the WebAssembly build (HTML, JavaScript, AudioWorklet, and compiled `.wasm` binary).
 - `tmp/`: scratch/reference material only; do not treat it as the Sandopolis source, and it may be missing.
 - `build.zig.zon`: source dependencies only. Avoid adding checked-in platform binary packages when an upstream source dependency is available.
 
