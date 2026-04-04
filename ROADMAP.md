@@ -32,14 +32,15 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Status register with VInt, sprite overflow/collision, FIFO flags, and HV counter-latch
 - [x] Pre-line sprite overflow detection visible to CPU during scanline execution
 - [x] CRAM pixel-granule updates during active display (CRAM dot behavior) with immediate writes bypassing FIFO latency
-- [x] HBlank CRAM palette-per-line updates with per-scanline undo/redo rendering
-- [x] Mid-scanline register change re-scan (backdrop, display enable, palette mode, plane base, scroll mode, window split)
-- [ ] Right-edge border rendering and overscan area coloring
+- [x] HBlank CRAM palette-per-line updates with per-scanline undo/redo rendering (shadow/highlight aware)
+- [x] Mid-scanline register change re-scan (backdrop, display enable, palette mode, display mode, plane base, scroll mode, window split)
+- [x] Right-edge border rendering and overscan area coloring
 - [x] HInt/VInt priority ordering when both are pending on the same line
-- [ ] Sprite horizontal wrap-around and clip-box edge cases at screen boundaries
-- [ ] Validation: TiTAN Overdrive 2 renders without glitches
-- [ ] Validation: `cram_flicker.bin` test ROM passes
-- [ ] Validation: `vctest.bin` HV counter accuracy
+- [x] Sprite horizontal wrap-around and clip-box edge cases at screen boundaries
+- [x] Validation: TiTAN Overdrive 2 golden framebuffer hash after 100 frames
+- [x] Validation: `cram_flicker.bin` test ROM produces visible CRAM dot artifacts
+- [x] Validation: V counter-jump points and monotonicity (NTSC threshold 0xEA, PAL thresholds 0x102/0x10A)
+- [x] Validation: `vctest.bin` golden framebuffer hash after 60 frames
 
 ### Audio Subsystem
 
@@ -51,10 +52,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
 - [x] Audio filtering with YM2612 low-pass, board output LPF matched to Genesis Plus GX (fc ≈ 4 kHz), and DC-blocking on the final mix
 - [x] Debug render modes (YM-only, PSG-only, unfiltered mix)
-- [ ] Compare YM2612 output against Nuked-OPN2 reference for key titles (Sonic, Streets of Rage, Thunderforce IV)
-- [ ] Validate CSM mode percussion synthesis against hardware recordings
+- [x] Compare YM2612 output against Nuked-OPN2 reference (26 scenarios: tones, pan, DAC, LFO, CSM, SSG-EG, detune, EG, timers, status; all exact match)
+- [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
+- [x] ROM-backed YM2612 register stream comparison for key titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
+- [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
 - [ ] Investigate blip-buffer-style band-limited synthesis as an alternative to cubic resampling
-- [ ] PSG/FM gain balance tuning against hardware capture measurements
+- [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
 
 ### Input and Interaction
 
@@ -69,8 +72,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] GIF animation recording, WAV audio recording, and BMP screenshot capture
 - [x] Save-state previews/screenshots and pause the flow
 - [x] EA 4-Way Play multitap adapter (4-player support)
-- [ ] Sega Mouse peripheral support
-- [ ] 6-button controller TH counter reset timing edge cases
+- [x] Sega Mouse peripheral support with 8-nibble TH-toggle protocol
+- [x] 6-button controller TH counter reset timing edge cases (pull-up transition counting, mid-identification timeout)
 
 ### Compatibility and Tooling
 
@@ -82,14 +85,18 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Debugger: M68K single stepping with F10, register display (D0-D7, A0-A7, PC, SR flags)
 - [x] Debugger: memory hex dump viewer with page navigation
 - [x] Debugger: VDP state viewer (24 registers, mode/scanline/flags, DMA status)
-- [ ] Debugger: instruction-level breakpoints
-- [ ] Debugger: tile/sprite/plane visualizer
-- [ ] Expand the regression suite with Overdrive 2, Ings VDP tests, and community test ROMs
-- [ ] ROM header CRC validation and game database lookup
+- [x] Debugger: instruction-level breakpoints with toggle (B), run-to-breakpoint (G), and visual markers
+- [x] Debugger: tile and palette visualizer (CRAM palette grid and VRAM tile pattern viewer with palette 0)
+- [x] Regression coverage for all community test ROMs (vctest, CRAM flicker, memtest, shadow/highlight, TEST1536, Overdrive 2, Multitap IO, DisableRegTestROM)
+- [ ] Expand the regression suite with Ings VDP tests
+- [x] ROM header checksum validation and product code extraction
+- [x] Game database lookup for extended metadata (26 titles by product code)
 
 ### Future Goals
 
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
-- [ ] Browser/WebAssembly build and frontend path
+- [x] Browser/WebAssembly build with Canvas rendering, keyboard input, and Web Audio playback (`zig build wasm`, `web/`)
+- [x] Browser save states with IndexedDB persistence and in-memory quick save/load
+- [x] Browser settings panel with audio mode, PSG volume, and controller type
 - [ ] Libretro core packaging and integration

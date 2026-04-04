@@ -113,6 +113,11 @@ struct Jgz80Handle {
     uint8_t instruction_bank_access_index;
     uint8_t instruction_context_valid;
     bool audio_op_trace_enabled;
+    Jgz80InstructionTraceEntry instruction_trace[32768];
+    uint16_t instruction_trace_write_index;
+    uint16_t instruction_trace_read_index;
+    uint16_t instruction_trace_count;
+    bool instruction_trace_enabled;
 };
 
 static uint8_t peek_mapped_byte_no_side_effects(Jgz80Handle *h, uint16_t addr) {
@@ -1544,6 +1549,17 @@ uint32_t jgz80_step_one(Jgz80Handle *handle) {
     const uint32_t instruction_end_master_offset = instruction_start_master_offset + cycles * 15u;
     flush_instruction_audio_writes(handle, instruction_end_master_offset);
     advance_ym_to_master_offset(handle, instruction_end_master_offset);
+
+    if (handle->instruction_trace_enabled && handle->instruction_trace_count < 32768u) {
+        Jgz80InstructionTraceEntry *entry = &handle->instruction_trace[handle->instruction_trace_write_index];
+        entry->master_offset = instruction_start_master_offset;
+        entry->pc = handle->instruction_pc;
+        entry->z80_cycles = (uint8_t)(cycles & 0xFFu);
+        entry->opcode = peek_mapped_byte_no_side_effects(handle, handle->instruction_pc);
+        handle->instruction_trace_write_index = (handle->instruction_trace_write_index + 1u) % 32768u;
+        handle->instruction_trace_count++;
+    }
+
     return cycles;
 }
 
@@ -1850,4 +1866,33 @@ void jgz80_write_reset(Jgz80Handle *handle, uint16_t val) {
         handle->reset_line = false;
         handle->bus_ack = handle->bus_req;
     }
+}
+
+void jgz80_set_instruction_trace_enabled(Jgz80Handle *handle, uint8_t enabled) {
+    if (!handle) return;
+    handle->instruction_trace_enabled = enabled != 0u;
+}
+
+void jgz80_clear_instruction_trace(Jgz80Handle *handle) {
+    if (!handle) return;
+    handle->instruction_trace_write_index = 0u;
+    handle->instruction_trace_read_index = 0u;
+    handle->instruction_trace_count = 0u;
+}
+
+uint16_t jgz80_peek_instruction_trace_count(const Jgz80Handle *handle) {
+    if (!handle) return 0u;
+    return handle->instruction_trace_count;
+}
+
+uint16_t jgz80_take_instruction_trace(Jgz80Handle *handle, Jgz80InstructionTraceEntry *dest, uint16_t max_events) {
+    if (!handle || !dest) return 0u;
+    uint16_t taken = 0u;
+    while (taken < max_events && handle->instruction_trace_count > 0u) {
+        dest[taken] = handle->instruction_trace[handle->instruction_trace_read_index];
+        handle->instruction_trace_read_index = (handle->instruction_trace_read_index + 1u) % 32768u;
+        handle->instruction_trace_count--;
+        taken++;
+    }
+    return taken;
 }

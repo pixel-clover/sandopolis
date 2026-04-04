@@ -144,6 +144,7 @@ pub const pause_left_sections = [_]MenuSection{
         .items = &[_]OverlayLine{
             .{ .hotkey = .{ .action = .open_keyboard_editor, .label = "INPUT EDITOR" } },
             .{ .hotkey = .{ .action = .toggle_performance_hud, .label = "PERFORMANCE HUD" } },
+            .{ .text = "[I] GAME INFO" },
             .{ .hotkey = .{ .action = .toggle_help, .label = "HELP" } },
         },
     },
@@ -427,6 +428,23 @@ pub fn renderPanel(
     });
 }
 
+/// Set the renderer clip rect to a panel's bounds (FRect -> integer Rect).
+/// All subsequent draws will be clipped to this rectangle.
+pub fn setClipRect(renderer: *zsdl3.Renderer, rect: zsdl3.FRect) !void {
+    const clip = zsdl3.Rect{
+        .x = @intFromFloat(rect.x),
+        .y = @intFromFloat(rect.y),
+        .w = @intFromFloat(rect.w),
+        .h = @intFromFloat(rect.h),
+    };
+    try zsdl3.setRenderClipRect(renderer, &clip);
+}
+
+/// Clear the renderer clip rect, allowing draws to the full viewport.
+pub fn clearClipRect(renderer: *zsdl3.Renderer) !void {
+    try zsdl3.setRenderClipRect(renderer, null);
+}
+
 /// Format an overlay line for display
 pub fn formatOverlayLine(
     buffer: []u8,
@@ -532,6 +550,8 @@ pub fn renderTwoColumnOverlay(
     };
 
     try renderPanel(renderer, panel, Colors.panel_primary, border_color, scale);
+    try setClipRect(renderer, panel);
+    defer clearClipRect(renderer) catch {};
 
     // Draw title centered
     try drawText(
@@ -694,6 +714,8 @@ pub fn renderDialogOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect) !voi
         Colors.blue,
         scale,
     );
+    try setClipRect(renderer, panel);
+    defer clearClipRect(renderer) catch {};
 
     try drawText(
         renderer,
@@ -831,6 +853,8 @@ pub fn renderHomeOverlay(
         Colors.orange,
         scale,
     );
+    try setClipRect(renderer, panel);
+    defer clearClipRect(renderer) catch {};
 
     try drawText(
         renderer,
@@ -901,6 +925,8 @@ pub fn renderKeyboardEditorOverlay(
         Colors.orange,
         scale,
     );
+    try setClipRect(renderer, panel);
+    defer clearClipRect(renderer) catch {};
 
     try drawText(
         renderer,

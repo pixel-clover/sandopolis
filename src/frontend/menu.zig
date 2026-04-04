@@ -7,45 +7,109 @@ pub const VideoAspectMode = config.VideoAspectMode;
 pub const VideoScaleMode = config.VideoScaleMode;
 pub const FontFace = config.FontFace;
 
+// All possible UI overlay states. Only one overlay is active at a time.
+pub const Overlay = enum {
+    none,
+    home,
+    pause,
+    help,
+    settings,
+    save_manager,
+    dialog,
+    keyboard_editor,
+    game_info,
+    debugger,
+    performance_hud,
+
+    /// Returns true when the active overlay should pause emulation.
+    pub fn pausesEmulation(self: Overlay) bool {
+        return switch (self) {
+            .none, .performance_hud => false,
+            .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info, .debugger => true,
+        };
+    }
+
+    /// Returns true for overlays that show the status bar (ROM name, slot, region).
+    pub fn showsStatusBar(self: Overlay) bool {
+        return switch (self) {
+            .pause, .help => true,
+            else => false,
+        };
+    }
+
+    /// Returns true for modal overlays that should dim the game framebuffer.
+    pub fn shouldDimBackdrop(self: Overlay) bool {
+        return switch (self) {
+            .none, .debugger, .performance_hud => false,
+            .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info => true,
+        };
+    }
+};
+
 // Frontend UI visibility state
 pub const FrontendUi = struct {
-    paused: bool = false,
-    show_home: bool = false,
-    show_save_manager: bool = false,
-    show_settings: bool = false,
-    show_help: bool = false,
-    dialog_active: bool = false,
-    show_keyboard_editor: bool = false,
-    show_performance_hud: bool = false,
-    show_debugger: bool = false,
-    delete_confirm_pending: bool = false, // Waiting for delete confirmation
+    overlay: Overlay = .none,
+    /// Tracks the overlay that was active before opening a child overlay
+    /// (help, settings, save_manager), so closing returns to the correct
+    /// screen (home, pause, or none).
+    parent_overlay: Overlay = .none,
+    delete_confirm_pending: bool = false,
 
     pub fn emulationPaused(self: *const FrontendUi) bool {
-        return self.paused or self.show_home or self.show_save_manager or self.show_settings or self.show_help or self.dialog_active or self.show_keyboard_editor;
+        return self.overlay.pausesEmulation();
+    }
+
+    pub fn showsStatusBar(self: *const FrontendUi) bool {
+        return self.overlay.showsStatusBar();
     }
 
     pub fn closeSaveManager(self: *FrontendUi) void {
-        self.show_save_manager = false;
+        if (self.overlay == .save_manager) {
+            self.overlay = self.parent_overlay;
+            self.parent_overlay = .none;
+        }
         self.delete_confirm_pending = false;
     }
 
     pub fn closeSettings(self: *FrontendUi) void {
-        self.show_settings = false;
+        if (self.overlay == .settings) {
+            self.overlay = self.parent_overlay;
+            self.parent_overlay = .none;
+        }
     }
 
     pub fn resumeGame(self: *FrontendUi) void {
-        self.paused = false;
-        self.show_save_manager = false;
-        self.show_settings = false;
-        self.show_help = false;
+        self.overlay = .none;
+        self.parent_overlay = .none;
         self.delete_confirm_pending = false;
     }
 
     pub fn openSettings(self: *FrontendUi, settings: *SettingsMenuState) void {
-        self.show_settings = true;
-        self.show_save_manager = false;
-        self.show_help = false;
+        self.parent_overlay = self.overlay;
+        self.overlay = .settings;
         settings.clamp();
+    }
+
+    pub fn openHelp(self: *FrontendUi) void {
+        self.parent_overlay = self.overlay;
+        self.overlay = .help;
+    }
+
+    pub fn closeHelp(self: *FrontendUi) void {
+        if (self.overlay != .help) return;
+        self.overlay = self.parent_overlay;
+        self.parent_overlay = .none;
+    }
+
+    pub fn openGameInfo(self: *FrontendUi) void {
+        self.parent_overlay = self.overlay;
+        self.overlay = .game_info;
+    }
+
+    pub fn closeGameInfo(self: *FrontendUi) void {
+        if (self.overlay != .game_info) return;
+        self.overlay = self.parent_overlay;
+        self.parent_overlay = .none;
     }
 
     pub fn cancelDeleteConfirm(self: *FrontendUi) void {
@@ -144,6 +208,7 @@ pub const SettingsMenuAction = enum {
     video_scale_mode,
     fullscreen,
     audio_render_mode,
+    psg_volume,
     controller_p1_type,
     controller_p2_type,
     performance_hud,
@@ -156,6 +221,7 @@ pub const settings_menu_actions = [_]SettingsMenuAction{
     .video_scale_mode,
     .fullscreen,
     .audio_render_mode,
+    .psg_volume,
     .controller_p1_type,
     .controller_p2_type,
     .performance_hud,
@@ -252,6 +318,7 @@ fn controllerTypeLabel(ct: ControllerType) []const u8 {
         .three_button => "3-BUTTON",
         .six_button => "6-BUTTON",
         .ea_4way_play => "4-WAY PLAY",
+        .sega_mouse => "SEGA MOUSE",
     };
 }
 
@@ -259,15 +326,17 @@ pub fn nextControllerType(ct: ControllerType) ControllerType {
     return switch (ct) {
         .three_button => .six_button,
         .six_button => .ea_4way_play,
-        .ea_4way_play => .three_button,
+        .ea_4way_play => .sega_mouse,
+        .sega_mouse => .three_button,
     };
 }
 
 pub fn prevControllerType(ct: ControllerType) ControllerType {
     return switch (ct) {
-        .three_button => .ea_4way_play,
+        .three_button => .sega_mouse,
         .six_button => .three_button,
         .ea_4way_play => .six_button,
+        .sega_mouse => .ea_4way_play,
     };
 }
 
@@ -280,6 +349,7 @@ pub fn formatSettingsActionLine(
     scale_mode: VideoScaleMode,
     fullscreen: bool,
     audio_mode: AudioOutput.RenderMode,
+    psg_volume: u8,
     controller_types: [2]ControllerType,
     performance_hud: bool,
     font_face: FontFace,
@@ -290,6 +360,7 @@ pub fn formatSettingsActionLine(
         .video_scale_mode => std.fmt.bufPrint(buffer, "{s}SCALING {s}", .{ prefix, scale_mode.label() }),
         .fullscreen => std.fmt.bufPrint(buffer, "{s}FULLSCREEN {s}", .{ prefix, if (fullscreen) "ON" else "OFF" }),
         .audio_render_mode => std.fmt.bufPrint(buffer, "{s}AUDIO MODE {s}", .{ prefix, audio_mode.label() }),
+        .psg_volume => std.fmt.bufPrint(buffer, "{s}PSG VOLUME {d}%", .{ prefix, psg_volume }),
         .controller_p1_type => std.fmt.bufPrint(buffer, "{s}P1 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[0]) }),
         .controller_p2_type => std.fmt.bufPrint(buffer, "{s}P2 CONTROLLER {s}", .{ prefix, controllerTypeLabel(controller_types[1]) }),
         .performance_hud => std.fmt.bufPrint(buffer, "{s}PERF HUD {s}", .{ prefix, if (performance_hud) "ON" else "OFF" }),
@@ -323,9 +394,172 @@ pub fn activateHomeMenuSelection(
             break :blk .none;
         },
         .show_help => blk: {
-            ui.show_help = true;
+            ui.openHelp();
             break :blk .none;
         },
         .quit => .quit,
     };
+}
+
+// --- Unit tests ---
+
+test "overlay default is none" {
+    const ui = FrontendUi{};
+    try std.testing.expectEqual(Overlay.none, ui.overlay);
+    try std.testing.expect(!ui.emulationPaused());
+}
+
+test "only one overlay active at a time" {
+    var ui = FrontendUi{};
+    ui.overlay = .debugger;
+    try std.testing.expectEqual(Overlay.debugger, ui.overlay);
+
+    ui.overlay = .performance_hud;
+    try std.testing.expectEqual(Overlay.performance_hud, ui.overlay);
+    try std.testing.expect(ui.overlay != .debugger);
+}
+
+test "emulationPaused for each overlay" {
+    var ui = FrontendUi{};
+    const pausing = [_]Overlay{ .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info, .debugger };
+    for (pausing) |o| {
+        ui.overlay = o;
+        try std.testing.expect(ui.emulationPaused());
+    }
+    const non_pausing = [_]Overlay{ .none, .performance_hud };
+    for (non_pausing) |o| {
+        ui.overlay = o;
+        try std.testing.expect(!ui.emulationPaused());
+    }
+}
+
+test "status bar shown only for pause and help" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    try std.testing.expect(ui.showsStatusBar());
+    ui.overlay = .help;
+    try std.testing.expect(ui.showsStatusBar());
+    ui.overlay = .settings;
+    try std.testing.expect(!ui.showsStatusBar());
+    ui.overlay = .debugger;
+    try std.testing.expect(!ui.showsStatusBar());
+    ui.overlay = .none;
+    try std.testing.expect(!ui.showsStatusBar());
+}
+
+test "resumeGame returns to none" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    ui.delete_confirm_pending = true;
+    ui.resumeGame();
+    try std.testing.expectEqual(Overlay.none, ui.overlay);
+    try std.testing.expect(!ui.delete_confirm_pending);
+}
+
+test "closeSaveManager returns to parent overlay" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    // Simulate opening save manager from pause
+    ui.parent_overlay = ui.overlay;
+    ui.overlay = .save_manager;
+    ui.delete_confirm_pending = true;
+    ui.closeSaveManager();
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+    try std.testing.expect(!ui.delete_confirm_pending);
+}
+
+test "closeSettings returns to parent overlay" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    var settings = SettingsMenuState{};
+    ui.openSettings(&settings);
+    ui.closeSettings();
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+}
+
+test "closeSettings from home returns to home" {
+    var ui = FrontendUi{};
+    ui.overlay = .home;
+    var settings = SettingsMenuState{};
+    ui.openSettings(&settings);
+    try std.testing.expectEqual(Overlay.settings, ui.overlay);
+    ui.closeSettings();
+    try std.testing.expectEqual(Overlay.home, ui.overlay);
+}
+
+test "openSettings transitions overlay and clamps" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    var settings = SettingsMenuState{ .selected_index = 999 };
+    ui.openSettings(&settings);
+    try std.testing.expectEqual(Overlay.settings, ui.overlay);
+    try std.testing.expect(settings.selected_index < SettingsMenuState.itemCount());
+}
+
+test "opening debugger closes performance hud" {
+    var ui = FrontendUi{};
+    ui.overlay = .performance_hud;
+    ui.overlay = .debugger;
+    try std.testing.expectEqual(Overlay.debugger, ui.overlay);
+    try std.testing.expect(ui.emulationPaused());
+}
+
+test "opening performance hud closes debugger" {
+    var ui = FrontendUi{};
+    ui.overlay = .debugger;
+    ui.overlay = .performance_hud;
+    try std.testing.expectEqual(Overlay.performance_hud, ui.overlay);
+    try std.testing.expect(!ui.emulationPaused());
+}
+
+test "openHelp from pause returns to pause on close" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    ui.openHelp();
+    try std.testing.expectEqual(Overlay.help, ui.overlay);
+    ui.closeHelp();
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+}
+
+test "openHelp from home returns to home on close" {
+    var ui = FrontendUi{};
+    ui.overlay = .home;
+    ui.openHelp();
+    try std.testing.expectEqual(Overlay.help, ui.overlay);
+    ui.closeHelp();
+    try std.testing.expectEqual(Overlay.home, ui.overlay);
+}
+
+test "openHelp from none returns to none on close" {
+    var ui = FrontendUi{};
+    ui.openHelp();
+    try std.testing.expectEqual(Overlay.help, ui.overlay);
+    ui.closeHelp();
+    try std.testing.expectEqual(Overlay.none, ui.overlay);
+}
+
+test "game_info overlay pauses emulation and dims backdrop" {
+    try std.testing.expect(Overlay.game_info.pausesEmulation());
+    try std.testing.expect(Overlay.game_info.shouldDimBackdrop());
+    try std.testing.expect(!Overlay.game_info.showsStatusBar());
+}
+
+test "openGameInfo from pause returns to pause on close" {
+    var ui = FrontendUi{};
+    ui.overlay = .pause;
+    ui.openGameInfo();
+    try std.testing.expectEqual(Overlay.game_info, ui.overlay);
+    ui.closeGameInfo();
+    try std.testing.expectEqual(Overlay.pause, ui.overlay);
+}
+
+test "shouldDimBackdrop for each overlay" {
+    const dimming = [_]Overlay{ .home, .pause, .help, .settings, .save_manager, .dialog, .keyboard_editor, .game_info };
+    for (dimming) |o| {
+        try std.testing.expect(o.shouldDimBackdrop());
+    }
+    const non_dimming = [_]Overlay{ .none, .debugger, .performance_hud };
+    for (non_dimming) |o| {
+        try std.testing.expect(!o.shouldDimBackdrop());
+    }
 }

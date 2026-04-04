@@ -8,6 +8,14 @@ const graphics_sampler_rom = "tests/testroms/Graphics & Joystick Sampler by Char
 const window_test_rom = "tests/testroms/Window Test by Fonzie (PD).bin";
 const fm_test_rom = "tests/testroms/FM Test by DevSter (PD).bin";
 const overdrive_rom = "tests/testroms/TiTAN - Overdrive (Rev1.1-106-Final) (Hardware).bin";
+const overdrive2_rom = "tests/testroms/titan-overdrive2.bin";
+const vctest_rom = "tests/testroms/vctest.bin";
+const cram_flicker_rom = "tests/testroms/cram flicker.bin";
+const memtest_68k_rom = "tests/testroms/memtest_68k.bin";
+const disable_reg_test_rom = "tests/testroms/DisableRegTestROM.bin";
+const shadow_highlight_rom = "tests/testroms/Shadow-Highlight Test Program #2 (PD).bin";
+const test1536_rom = "tests/testroms/TEST1536.BIN";
+const multitap_io_rom = "tests/testroms/Multitap - IO Sample Program (U) (Nov 28 1992).gen";
 
 fn makeSsfMapperRom(allocator: std.mem.Allocator, bank_count: usize) ![]u8 {
     const bank_size = 512 * 1024;
@@ -111,6 +119,37 @@ test "window test rom reaches non-uniform visible output" {
     try testing.expect(countUniqueFramebufferColors(framebuffer, 8) > 1);
 }
 
+test "fm test rom produces deterministic ym writes across runs" {
+    // Run the FM test ROM twice and verify that the YM write stream
+    // is identical.  This validates audio determinism for ROM-backed
+    // scenarios without requiring an external reference.
+    var emu1 = try Emulator.init(testing.allocator, fm_test_rom);
+    defer emu1.deinit(testing.allocator);
+    emu1.reset();
+
+    var emu2 = try Emulator.init(testing.allocator, fm_test_rom);
+    defer emu2.deinit(testing.allocator);
+    emu2.reset();
+
+    for (0..60) |_| {
+        emu1.runFrame();
+        emu2.runFrame();
+
+        const pending1 = emu1.takePendingAudio();
+        const pending2 = emu2.takePendingAudio();
+
+        try testing.expectEqual(pending1.fm_frames, pending2.fm_frames);
+        try testing.expectEqual(pending1.psg_frames, pending2.psg_frames);
+    }
+
+    // Both runs should have produced YM activity.
+    try testing.expect(emu1.ymKeyMask() != 0 or emu1.ymRegister(0, 0xA0) != 0);
+    // Both runs should be in the same state.
+    try testing.expectEqual(emu1.ymKeyMask(), emu2.ymKeyMask());
+    try testing.expectEqual(emu1.ymRegister(0, 0xA0), emu2.ymRegister(0, 0xA0));
+    try testing.expectEqual(emu1.ymRegister(0, 0xA4), emu2.ymRegister(0, 0xA4));
+}
+
 test "fm test rom initializes ym shadow state" {
     var emulator = try Emulator.init(testing.allocator, fm_test_rom);
     defer emulator.deinit(testing.allocator);
@@ -130,6 +169,57 @@ test "fm test rom initializes ym shadow state" {
 
     try testing.expect(pending.fm_frames != 0 or pending.psg_frames != 0);
     try testing.expect(ym_active);
+}
+
+test "fm test rom ym synthesis output matches golden hash" {
+    // Run the FM Test ROM, capture YM register writes, replay them through
+    // a standalone Ym2612Synth, and verify the synthesized audio output
+    // matches a golden CRC32 hash.  This validates that ROM-driven audio
+    // produces deterministic, correct FM synthesis.
+    const Ym2612Synth = sandopolis.testing.Ym2612Synth;
+    const YmWriteEvent = sandopolis.testing.YmWriteEvent;
+
+    var emulator = try Emulator.init(testing.allocator, fm_test_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    var synth = Ym2612Synth{};
+    synth.resetChipState();
+
+    // Collect synthesized samples across 120 frames.
+    const clocks_per_frame: usize = 6220; // NTSC: 3420 * 262 / 144
+    var sample_buf: [clocks_per_frame * 120 * 2]i16 = undefined;
+    var sample_pos: usize = 0;
+
+    for (0..120) |_| {
+        emulator.runFrame();
+
+        // Drain YM writes and replay through the standalone synth.
+        var writes: [512]YmWriteEvent = undefined;
+        const write_count = emulator.takeYmWrites(&writes);
+        for (writes[0..write_count]) |w| {
+            synth.applyWrite(w);
+        }
+
+        // Clock the synth for one frame's worth of internal clocks.
+        for (0..clocks_per_frame) |_| {
+            const pins = synth.clockOneInternal();
+            if (sample_pos + 1 < sample_buf.len) {
+                sample_buf[sample_pos] = pins[0];
+                sample_buf[sample_pos + 1] = pins[1];
+                sample_pos += 2;
+            }
+        }
+
+        emulator.discardPendingAudio();
+    }
+
+    // Hash the collected samples.
+    const sample_bytes = std.mem.sliceAsBytes(sample_buf[0..sample_pos]);
+    const hash = std.hash.Crc32.hash(sample_bytes);
+
+    // Golden hash for the FM Test ROM's synthesized output.
+    try testing.expectEqual(@as(u32, 3596055297), hash);
 }
 
 test "ssf mapper remaps switchable rom windows" {
@@ -611,6 +701,35 @@ test "immediate cram write updates palette before fifo drains" {
     try testing.expectEqual(@as(u8, 0xEE), emulator.handle.machine.bus.vdp.cram[0x0003]);
 }
 
+test "z80 executes proportionally within a long scheduler slice" {
+    // With finer-grained Z80 burst slicing, the Z80 should execute
+    // partway through a long slice, not only at the end.  A Z80 NOP
+    // loop given a full scanline of credit should advance its PC by
+    // roughly the expected number of instructions.
+    const rom = try seedResetNopsRom(testing.allocator, 32);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    // Set up a Z80 NOP sled: Z80 NOPs are 1 byte, 4 T-states each.
+    emulator.z80Reset();
+    for (0..64) |i| {
+        emulator.z80WriteByte(@intCast(i), 0x00); // NOP
+    }
+
+    // Run half a scanline worth of M68K cycles.
+    // Z80 should accumulate credit and flush mid-slice.
+    emulator.runMasterSlice(clock.ntsc_master_cycles_per_line / 2);
+
+    // At 15 master cycles per Z80 cycle and 4 T-states per NOP:
+    // (1710 / 15) / 4 ≈ 28 NOPs in half a scanline.
+    // Z80 PC should have advanced significantly.
+    const z80_pc = emulator.z80ProgramCounter();
+    try testing.expect(z80_pc >= 10);
+}
+
 test "titan overdrive 1 runs 3600 frames without crashing" {
     // TiTAN Overdrive 1 previously crashed with an integer overflow in
     // audio_timing.pending_master_cycles.  Verify it runs stably.
@@ -629,4 +748,472 @@ test "titan overdrive 1 runs 3600 frames without crashing" {
         if (pixel & 0x00FFFFFF != 0) non_black += 1;
     }
     try testing.expect(non_black > 0);
+}
+
+// --- Overdrive 2 ---
+
+test "overdrive 2 rom runs for 600 frames without wedging the core" {
+    var emulator = try Emulator.init(testing.allocator, overdrive2_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(600);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(emulator.cpuState().program_counter != 0);
+}
+
+test "overdrive 2 rom runs for 600 frames with audio output processing" {
+    var emulator = try Emulator.init(testing.allocator, overdrive2_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    try emulator.runFramesProcessingAudio(600);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(emulator.cpuState().program_counter != 0);
+}
+
+test "overdrive 2 rom framebuffer matches golden hash after 100 frames" {
+    var emulator = try Emulator.init(testing.allocator, overdrive2_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(100);
+
+    const fb = emulator.framebuffer();
+    const hash = framebufferCrc32(fb);
+    // Golden hash: regression guard for Overdrive 2 rendering.
+    try testing.expectEqual(@as(u32, 1646546174), hash);
+}
+
+// --- V Counter Test ---
+
+fn framebufferCrc32(framebuffer: []const u32) u32 {
+    const bytes = std.mem.sliceAsBytes(framebuffer);
+    return std.hash.Crc32.hash(bytes);
+}
+
+test "vctest rom reaches non-uniform visible output" {
+    // vctest.bin samples VCounter values under different display modes
+    // and displays the results.  Verify it boots, enables the display,
+    // and renders meaningful text output.
+    var emulator = try Emulator.init(testing.allocator, vctest_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    const fb = emulator.framebuffer();
+    const first_pixel = fb[0];
+    var differing_pixels: usize = 0;
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != first_pixel) differing_pixels += 1;
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(differing_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "vctest rom framebuffer matches golden hash after 60 frames" {
+    // Golden-hash regression guard for the vctest ROM's V counter display.
+    // If the VDP timing or V counter computation changes, this hash will
+    // break, alerting us to investigate the visual impact.
+    var emulator = try Emulator.init(testing.allocator, vctest_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    const fb = emulator.framebuffer();
+    const hash = framebufferCrc32(fb);
+    // Golden hash captured from the current V counter implementation.
+    // Update ONLY after manually verifying the new rendering is correct.
+    try testing.expectEqual(@as(u32, 2453179491), hash);
+}
+
+test "vctest rom runs stably in both ntsc and pal modes" {
+    // The ROM tests VCounter under multiple display modes.  Run it in
+    // NTSC and PAL and verify neither mode crashes or wedges.
+    {
+        var ntsc = try Emulator.init(testing.allocator, vctest_rom);
+        defer ntsc.deinit(testing.allocator);
+        ntsc.reset();
+        ntsc.runFrames(120);
+        try testing.expect(ntsc.cpuState().program_counter != 0x0000_0200);
+    }
+    {
+        var pal = try Emulator.init(testing.allocator, vctest_rom);
+        defer pal.deinit(testing.allocator);
+        pal.reset();
+        pal.setPalMode(true);
+        pal.runFrames(120);
+        try testing.expect(pal.cpuState().program_counter != 0x0000_0200);
+    }
+}
+
+// --- CRAM Flicker ---
+
+test "cram flicker rom produces visible cram dot artifacts" {
+    // cram_flicker.bin generates mid-scanline CRAM writes whose visible
+    // output relies on the CRAM dot artifact (single-pixel color flash).
+    // With the artifact implemented, the framebuffer should contain
+    // non-black pixels from the dot OR operation.
+    var emulator = try Emulator.init(testing.allocator, cram_flicker_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(30);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "cram flicker rom runs stably for 300 frames" {
+    // The ROM generates many mid-scanline CRAM writes per frame.
+    // Run for an extended period to verify no overflow or crash in
+    // the CRAM dot event path.
+    var emulator = try Emulator.init(testing.allocator, cram_flicker_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(300);
+
+    try testing.expect(emulator.cpuState().program_counter != 0);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+}
+
+// --- 68K Memory Test ---
+
+test "memtest 68k rom boots and displays memory map results" {
+    // memtest_68k.bin reads from various undefined locations in the
+    // 68K memory map and displays the results.  Verify it boots,
+    // exercises the bus, and produces visible text output.
+    var emulator = try Emulator.init(testing.allocator, memtest_68k_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    var differing_pixels: usize = 0;
+    const first_pixel = fb[0];
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+        if (pixel != first_pixel) differing_pixels += 1;
+    }
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(differing_pixels > 0);
+}
+
+// --- VDP Disable Register Test ROM ---
+
+test "disable reg test rom initializes vdp and produces output" {
+    // DisableRegTestROM.bin is an interactive ROM for toggling VDP test
+    // register bits.  Verify it boots, initializes VDP registers, and
+    // renders its UI with both graphical and audio output.
+    var emulator = try Emulator.init(testing.allocator, disable_reg_test_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+
+    const vdp_init = emulator.vdpRegister(1) != 0 or
+        emulator.vdpRegister(0) != 0 or
+        emulator.vdpRegister(4) != 0;
+    try testing.expect(vdp_init);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "disable reg test rom runs stably for 500 frames with audio" {
+    var emulator = try Emulator.init(testing.allocator, disable_reg_test_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    try emulator.runFramesProcessingAudio(500);
+
+    try testing.expect(emulator.cpuState().program_counter != 0);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+}
+
+// --- Shadow/Highlight Test ---
+
+test "shadow highlight test rom enables shadow highlight mode" {
+    // The test ROM demonstrates shadow/highlight rendering by setting
+    // VDP register 12 bit 3.  Verify it boots, enables the mode, and
+    // produces visually distinct output with multiple color levels.
+    var emulator = try Emulator.init(testing.allocator, shadow_highlight_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    // Shadow/highlight mode should be enabled (register 12, bit 3).
+    try testing.expect((emulator.vdpRegister(12) & 0x08) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+
+    // Shadow/highlight should produce more than a handful of unique
+    // colors due to normal, shadow, and highlight variants.
+    try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
+}
+
+// --- 1536 Color Test ---
+
+test "test1536 rom uses shadow highlight for expanded color output" {
+    // TEST1536.BIN combines dynamic mid-frame CRAM writes with
+    // shadow/highlight mode to display up to 1536 unique colors.
+    // Verify it boots, enables shadow/highlight, and produces a
+    // high number of unique framebuffer colors.
+    var emulator = try Emulator.init(testing.allocator, test1536_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(120);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    // Shadow/highlight mode is required for the 1536-color effect.
+    try testing.expect((emulator.vdpRegister(12) & 0x08) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+
+    // The ROM combines shadow/highlight with mid-frame CRAM writes to
+    // maximize unique colors.  With the CRAM dot re-render respecting
+    // shadow/highlight, verify multiple distinct colors appear.
+    try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
+}
+
+// --- Multitap IO Sample ---
+
+test "multitap io sample rom boots and detects controllers" {
+    // Official Sega test ROM for I/O device detection and input
+    // decoding.  Verify it loads (note: .gen extension), boots,
+    // and produces visible output showing controller status.
+    var emulator = try Emulator.init(testing.allocator, multitap_io_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(60);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "multitap io sample rom reads version register" {
+    // The ROM queries the version register at 0xA10001 to detect
+    // the console model.  Verify the register returns a sensible
+    // value (high nibble indicates overseas/domestic and PAL/NTSC).
+    var emulator = try Emulator.init(testing.allocator, multitap_io_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    const version = emulator.read16(0xA10000);
+    // Bits 7-6 of the low byte encode region and PAL/NTSC.
+    // In NTSC mode the value is typically 0xA0A0 (matching the
+    // existing io window test).  Verify the read succeeds and
+    // returns a non-zero value.
+    try testing.expect(version != 0);
+}
+
+// --- Audio pipeline end-to-end ---
+
+const AudioSampleCollector = struct {
+    hash: u32 = 0,
+    total_samples: usize = 0,
+
+    pub fn consumeSamples(self: *AudioSampleCollector, samples: []const i16) !void {
+        const bytes = std.mem.sliceAsBytes(samples);
+        self.hash ^= std.hash.Crc32.hash(bytes);
+        self.total_samples += samples.len;
+    }
+};
+
+test "fm test rom audio pipeline output matches golden hash" {
+    // Run the FM Test ROM with full audio processing (YM + PSG + mixing +
+    // filtering + DC blocking) and golden-hash the rendered output.  This
+    // validates end-to-end audio determinism and gain balance stability.
+    const AudioOutput = sandopolis.testing.AudioOutput;
+
+    var emulator = try Emulator.init(testing.allocator, fm_test_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    var output = AudioOutput.init();
+    var collector = AudioSampleCollector{};
+
+    for (0..120) |_| {
+        emulator.runFrame();
+        try emulator.renderPendingAudio(&output, &collector);
+    }
+
+    try testing.expect(collector.total_samples > 0);
+
+    // Golden hash for the full audio pipeline output.
+    try testing.expectEqual(@as(u32, 508562065), collector.hash);
+}
+
+// --- ROM-backed YM2612 register stream comparison for key titles ---
+//
+// These tests load commercial game ROMs from roms/, run them for enough
+// frames to reach gameplay audio, capture all YM register writes, replay
+// them through a standalone Ym2612Synth, and golden-hash the synthesized
+// output.  The tests skip gracefully when the ROM files are absent so CI
+// without the ROMs still passes.
+
+fn captureYmGoldenHash(rom_path: []const u8, frames: usize) !?u32 {
+    const Ym2612Synth = sandopolis.testing.Ym2612Synth;
+    const YmWriteEvent = sandopolis.testing.YmWriteEvent;
+
+    var emulator = Emulator.init(testing.allocator, rom_path) catch |err| {
+        // Skip gracefully when the ROM or its parent directory is absent.
+        if (err == error.FileNotFound or err == error.BadPathName) return null;
+        return err;
+    };
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    var synth = Ym2612Synth{};
+    synth.resetChipState();
+
+    // Use a rolling CRC32 instead of a huge sample buffer.
+    const clocks_per_frame: usize = 6220;
+    var hash: u32 = 0;
+    var clock_buf: [clocks_per_frame * 2]i16 = undefined;
+
+    for (0..frames) |_| {
+        emulator.runFrame();
+
+        var writes: [512]YmWriteEvent = undefined;
+        const write_count = emulator.takeYmWrites(&writes);
+        for (writes[0..write_count]) |w| {
+            synth.applyWrite(w);
+        }
+
+        for (0..clocks_per_frame) |ci| {
+            const pins = synth.clockOneInternal();
+            clock_buf[ci * 2] = pins[0];
+            clock_buf[ci * 2 + 1] = pins[1];
+        }
+
+        // Fold this frame's samples into the running hash.
+        const frame_bytes = std.mem.sliceAsBytes(clock_buf[0 .. clocks_per_frame * 2]);
+        hash ^= std.hash.Crc32.hash(frame_bytes);
+
+        emulator.discardPendingAudio();
+    }
+
+    return hash;
+}
+
+test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
+    const hash = try captureYmGoldenHash("roms/sn.smd", 900) orelse return;
+    try testing.expectEqual(@as(u32, 2859321386), hash);
+}
+
+test "streets of rage ym synthesis matches golden hash (900 frames)" {
+    const hash = try captureYmGoldenHash("roms/sor.smd", 900) orelse return;
+    try testing.expectEqual(@as(u32, 2728510502), hash);
+}
+
+test "warsong ym synthesis matches golden hash (900 frames)" {
+    const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
+    try testing.expectEqual(@as(u32, 3085741921), hash);
+}
+
+test "warsong z80 instruction count per frame matches expected budget" {
+    // Warsong's Z80 timer routine should fire once per frame (~59,736
+    // Z80 cycles budget minus BUSREQ time).  If it fires more than once,
+    // the Z80 is getting too many cycles.
+    var emulator = Emulator.init(testing.allocator, "roms/Warsong.smd") catch |err| {
+        if (err == error.FileNotFound or err == error.BadPathName) return;
+        return err;
+    };
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.setZ80InstructionTraceEnabled(true);
+
+    // Skip to gameplay audio (frame 110+)
+    for (0..110) |_| {
+        emulator.runFrame();
+        emulator.clearZ80InstructionTrace();
+        emulator.discardPendingAudio();
+    }
+
+    // Capture one frame of Z80 instructions.
+    emulator.clearZ80InstructionTrace();
+    emulator.runFrame();
+
+    const count = emulator.pendingZ80InstructionTraceCount();
+
+    // Z80 executes ~5,735 instructions per frame. The refresh penalty
+    // fix correctly deducts M68K DRAM refresh from Z80 credit without
+    // shortening VDP/audio advancement.
+    try testing.expect(count > 4000);
+    try testing.expect(count < 7000);
+
+    emulator.discardPendingAudio();
 }

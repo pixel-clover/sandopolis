@@ -1,4 +1,4 @@
-name: Publish Documentation
+name: Publish Sandopolis Web
 
 on:
   workflow_dispatch:
@@ -16,37 +16,32 @@ permissions:
   contents: write
 
 jobs:
-  deploy-docs:
+  deploy-web:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
 
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: '0.15.2'
 
-      - name: Sync Python dependencies
-        run: uv sync --frozen
+      - name: Build WebAssembly module
+        run: zig build wasm
 
-      - name: Install system dependencies
+      - name: Prepare publish directory
         run: |
-          sudo apt-get update
-          sudo apt-get install -y make
-
-      - name: Generate documentation
-        run: make docs
+          mkdir -p ./publish
+          cp ./web/index.html ./web/sandopolis.js ./publish/
+          cp ./zig-out/web/sandopolis.wasm ./publish/
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
+          publish_dir: ./publish
           publish_branch: gh-pages
           user_name: ${{ github.actor }}
           user_email: ${{ github.actor }}@users.noreply.github.com
-          commit_message: "docs: Deploy documentation from ${{ github.sha }} by ${{ github.actor }}"
+          commit_message: "web: Deploy Sandopolis Web from ${{ github.sha }}"

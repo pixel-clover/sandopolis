@@ -312,8 +312,48 @@ test "cpu formats current instruction with the built-in disassembler" {
     try testing.expect(std.mem.indexOf(u8, text, "NOP") != null);
 }
 
+test "public API exposes ROM checksum validation and product code" {
+    // Build a ROM with a known program and correct checksum.
+    const program = [_]u8{ 0x4E, 0x71, 0x60, 0xFE }; // NOP, BRA.S -2
+    const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &program);
+    defer testing.allocator.free(rom);
 
+    // Write a product code into the header.
+    @memcpy(rom[0x183..0x18B], "T-123456");
 
+    // Compute correct checksum and write it.
+    var checksum: u16 = 0;
+    var offset: usize = 0x200;
+    while (offset + 1 < rom.len) : (offset += 2) {
+        checksum +%= (@as(u16, rom[offset]) << 8) | rom[offset + 1];
+    }
+    rom[0x18E] = @intCast((checksum >> 8) & 0xFF);
+    rom[0x18F] = @intCast(checksum & 0xFF);
 
+    var machine = try Machine.initFromRomBytes(testing.allocator, rom);
+    defer machine.deinit(testing.allocator);
 
+    const metadata = machine.romMetadata();
+    try testing.expect(metadata.checksum_valid);
+    try testing.expectEqual(checksum, metadata.header_checksum);
+    try testing.expectEqual(checksum, metadata.computed_checksum);
+    try testing.expect(metadata.product_code != null);
+    try testing.expectEqualStrings("T-123456", metadata.product_code.?);
+}
 
+test "public API detects checksum mismatch for corrupted ROMs" {
+    const rom = try makeGenesisRom(testing.allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{ 0x4E, 0x71 });
+    defer testing.allocator.free(rom);
+
+    // Set a wrong checksum.
+    rom[0x18E] = 0xDE;
+    rom[0x18F] = 0xAD;
+
+    var machine = try Machine.initFromRomBytes(testing.allocator, rom);
+    defer machine.deinit(testing.allocator);
+
+    const metadata = machine.romMetadata();
+    try testing.expect(!metadata.checksum_valid);
+    try testing.expectEqual(@as(u16, 0xDEAD), metadata.header_checksum);
+    try testing.expect(metadata.computed_checksum != 0xDEAD);
+}

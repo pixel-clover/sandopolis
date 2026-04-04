@@ -1535,6 +1535,53 @@ pub fn shouldHaltCpu(self: *const Vdp) bool {
     return self.dma_active and !self.dma_fill and !self.dma_copy;
 }
 
+/// Returns the master cycles until the next VDP refresh slot boundary
+/// from the current transfer phase position.  During refresh slots the
+/// VDP does not use the 68K bus, so the CPU can execute.  Returns 0 if
+/// the current position is already inside a refresh slot.
+pub fn masterCyclesToNextRefreshSlot(self: *const Vdp) u32 {
+    const phase = currentTransferPhase(self);
+    const lmc = normalizeTransferLineMasterCycle(phase.line_master_cycle);
+    const slot_count = transferSlotCount(self);
+
+    // Walk slots from the current position to find the next refresh slot.
+    var slot_idx: u16 = 0;
+    while (slot_idx < slot_count) : (slot_idx += 1) {
+        const slot_start = transferSlotStartMasterCycles(self, slot_idx);
+        const slot_end = transferSlotEndMasterCycles(self, slot_idx);
+        if (slot_end <= lmc) continue;
+
+        if (transferSlotIsRefresh(self, slot_idx)) {
+            // This refresh slot is at or ahead of us.
+            if (slot_start <= lmc) return 0; // already inside a refresh slot
+            return slot_start - lmc;
+        }
+    }
+
+    // No refresh slot remaining on this line; distance to end of line
+    // where the next line's first refresh slot will be reached.
+    return clock.ntsc_master_cycles_per_line - lmc;
+}
+
+/// Returns the duration of the current or next refresh slot in master cycles.
+pub fn refreshSlotDurationMasterCycles(self: *const Vdp) u32 {
+    const phase = currentTransferPhase(self);
+    const lmc = normalizeTransferLineMasterCycle(phase.line_master_cycle);
+    const slot_count = transferSlotCount(self);
+
+    var slot_idx: u16 = 0;
+    while (slot_idx < slot_count) : (slot_idx += 1) {
+        const slot_end = transferSlotEndMasterCycles(self, slot_idx);
+        if (slot_end <= lmc) continue;
+
+        if (transferSlotIsRefresh(self, slot_idx)) {
+            const slot_start = transferSlotStartMasterCycles(self, slot_idx);
+            return slot_end - slot_start;
+        }
+    }
+    return 0;
+}
+
 pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
     if (self.dma_active and !self.dma_fill and !self.dma_copy) return 0;
     return self.pending_port_write_delay_master_cycles;

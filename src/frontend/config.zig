@@ -185,6 +185,7 @@ pub const FrontendConfig = struct {
     font_face: FontFace = .jbm_regular,
     audio_render_mode: AudioOutput.RenderMode = .normal,
     audio_queue_ms: u16 = AudioOutput.default_queue_budget_ms,
+    psg_volume: u8 = 150,
 
     pub fn parseContents(contents: []const u8) !FrontendConfig {
         var config = FrontendConfig{};
@@ -211,6 +212,9 @@ pub const FrontendConfig = struct {
             } else if (std.ascii.eqlIgnoreCase(lhs, "audio_queue_ms") or std.ascii.eqlIgnoreCase(lhs, "audio.queue_ms")) {
                 const parsed = std.fmt.parseUnsigned(u16, rhs, 10) catch config.audio_queue_ms;
                 config.audio_queue_ms = AudioOutput.clampQueueBudgetMs(parsed);
+            } else if (std.ascii.eqlIgnoreCase(lhs, "psg_volume")) {
+                const parsed = std.fmt.parseUnsigned(u8, rhs, 10) catch config.psg_volume;
+                config.psg_volume = @min(parsed, 200);
             } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
                 config.appendRecentRom(rhs);
             }
@@ -240,6 +244,7 @@ pub const FrontendConfig = struct {
         try writer.print("font_face = {s}\n", .{self.font_face.name()});
         try writer.print("audio_mode = {s}\n", .{self.audio_render_mode.name()});
         try writer.print("audio_queue_ms = {d}\n", .{self.audio_queue_ms});
+        try writer.print("psg_volume = {d}\n", .{self.psg_volume});
         for (self.recent_roms[0..self.recent_rom_count]) |path| {
             try writer.print("recent_rom = {s}\n", .{path.slice()});
         }

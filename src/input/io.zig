@@ -10,6 +10,7 @@ pub const Io = struct {
         three_button,
         six_button,
         ea_4way_play,
+        sega_mouse,
     };
 
     data: [3]u8,
@@ -24,6 +25,13 @@ pub const Io = struct {
     controller_th: [2]bool,
     controller_types: [2]ControllerType,
     version_is_overseas: bool,
+    mouse_phase: [2]u3,
+    mouse_cycle_active: [2]bool,
+    mouse_buttons: [2]u4,
+    mouse_dx: [2]u8,
+    mouse_dy: [2]u8,
+    mouse_sign_x: [2]u1,
+    mouse_sign_y: [2]u1,
 
     pub fn init() Io {
         return Io{
@@ -38,6 +46,13 @@ pub const Io = struct {
             .controller_th = [_]bool{true} ** 2,
             .controller_types = [_]ControllerType{.six_button} ** 2,
             .version_is_overseas = true,
+            .mouse_phase = [_]u3{7} ** 2,
+            .mouse_cycle_active = [_]bool{false} ** 2,
+            .mouse_buttons = [_]u4{0} ** 2,
+            .mouse_dx = [_]u8{0} ** 2,
+            .mouse_dy = [_]u8{0} ** 2,
+            .mouse_sign_x = [_]u1{0} ** 2,
+            .mouse_sign_y = [_]u1{0} ** 2,
         };
     }
 
@@ -124,6 +139,10 @@ pub const Io = struct {
     }
 
     fn readData(self: *const Io, port: usize) u8 {
+        if (self.controller_types[port] == .sega_mouse) {
+            return self.readMouseData(port);
+        }
+
         const pad_idx = self.effectivePadIndex(port);
         var controller_byte: u8 = switch (self.controllerState(port)) {
             .th_high => @as(u8, @truncate(self.pad[pad_idx] & 0x3F)),
@@ -142,6 +161,30 @@ pub const Io = struct {
 
         const outputs_byte = self.data[port] & (self.ctrl[port] | 0x80);
         return controller_byte | outputs_byte;
+    }
+
+    fn readMouseData(self: *const Io, port: usize) u8 {
+        // Sega Mouse protocol: 8 nibbles read via TH toggling.
+        // Phase 0 (TH high): 0x0 (ID high)
+        // Phase 1 (TH low):  0xB (ID low)
+        // Phase 2 (TH high): YO, XO, YS, XS (overflow/sign)
+        // Phase 3 (TH low):  Start, Middle, Right, Left (buttons)
+        // Phase 4 (TH high): X delta high nibble
+        // Phase 5 (TH low):  X delta low nibble
+        // Phase 6 (TH high): Y delta high nibble
+        // Phase 7 (TH low):  Y delta low nibble
+        const nibble: u8 = switch (self.mouse_phase[port]) {
+            0 => 0x00,
+            1 => 0x0B,
+            2 => (@as(u8, self.mouse_sign_y[port]) << 1) | @as(u8, self.mouse_sign_x[port]),
+            3 => self.mouse_buttons[port],
+            4 => (self.mouse_dx[port] >> 4) & 0x0F,
+            5 => self.mouse_dx[port] & 0x0F,
+            6 => (self.mouse_dy[port] >> 4) & 0x0F,
+            7 => self.mouse_dy[port] & 0x0F,
+        };
+        const th_bit_val = @as(u8, @intFromBool(self.controller_th[port])) << th_bit;
+        return nibble | th_bit_val;
     }
 
     fn buttonBit(pad: u16, button: u16, output_bit: u3) u8 {
@@ -174,25 +217,50 @@ pub const Io = struct {
 
     fn writeCtrl(self: *Io, port: usize, value: u8) void {
         self.ctrl[port] = value;
-        self.maybeSetTh(port);
+        self.maybeSetTh(port, false);
         self.cycles_until_th_high[port] = if ((value & (1 << th_bit)) == 0) th_high_delay_m68k_cycles else 0;
     }
 
     fn writeData(self: *Io, port: usize, value: u8) void {
         self.data[port] = value;
-        self.maybeSetTh(port);
+        self.maybeSetTh(port, true);
     }
 
-    fn maybeSetTh(self: *Io, port: usize) void {
+    fn maybeSetTh(self: *Io, port: usize, from_data_write: bool) void {
         if ((self.ctrl[port] & (1 << th_bit)) == 0) {
             return;
         } else {
             const th = (self.data[port] & (1 << th_bit)) != 0;
-            if (!self.controller_th[port] and th) {
-                self.th_flip_count[port] +%= 1;
-                self.flip_reset_counter[port] = six_button_timeout_m68k_cycles;
+            if (self.controller_th[port] != th) {
+                // Advance the mouse read phase only on data-port TH transitions,
+                // not on CTRL register configuration changes.
+                if (from_data_write and self.controller_types[port] == .sega_mouse) {
+                    self.advanceMousePhase(port);
+                }
+                if (!self.controller_th[port] and th) {
+                    self.th_flip_count[port] +%= 1;
+                    self.flip_reset_counter[port] = six_button_timeout_m68k_cycles;
+                }
             }
             self.controller_th[port] = th;
+        }
+    }
+
+    fn advanceMousePhase(self: *Io, port: usize) void {
+        if (self.mouse_phase[port] == 7) {
+            // Completed a full read cycle; consume deltas and reset phase.
+            // Only clear deltas if we actually went through a complete protocol
+            // cycle (not the initial power-on state where phase starts at 7).
+            if (self.mouse_cycle_active[port]) {
+                self.mouse_dx[port] = 0;
+                self.mouse_dy[port] = 0;
+                self.mouse_sign_x[port] = 0;
+                self.mouse_sign_y[port] = 0;
+            }
+            self.mouse_cycle_active[port] = true;
+            self.mouse_phase[port] = 0;
+        } else {
+            self.mouse_phase[port] +%= 1;
         }
     }
 
@@ -206,6 +274,12 @@ pub const Io = struct {
             if (self.cycles_until_th_high[port] != 0) {
                 self.cycles_until_th_high[port] = self.cycles_until_th_high[port] -| m68k_cycles;
                 if (self.cycles_until_th_high[port] == 0) {
+                    // The pull-up drives TH high.  If TH was low, this is a
+                    // low→high transition that the 6-button controller counts.
+                    if (!self.controller_th[port]) {
+                        self.th_flip_count[port] +%= 1;
+                        self.flip_reset_counter[port] = six_button_timeout_m68k_cycles;
+                    }
                     self.controller_th[port] = true;
                 }
             }
@@ -227,6 +301,37 @@ pub const Io = struct {
 
     pub fn getControllerType(self: *const Io, port: usize) ControllerType {
         return self.controller_types[port];
+    }
+
+    pub const MouseButton = struct {
+        pub const left: u4 = 1 << 0;
+        pub const right: u4 = 1 << 1;
+        pub const middle: u4 = 1 << 2;
+        pub const start: u4 = 1 << 3;
+    };
+
+    pub fn setMouseButton(self: *Io, port: usize, button: u4, pressed: bool) void {
+        if (port >= 2) return;
+        if (pressed) {
+            self.mouse_buttons[port] |= button;
+        } else {
+            self.mouse_buttons[port] &= ~button;
+        }
+    }
+
+    pub fn setMouseDelta(self: *Io, port: usize, dx: i16, dy: i16) void {
+        if (port >= 2) return;
+        // Clamp to 8-bit magnitude and record sign bits.
+        const abs_x: u8 = if (dx < 0)
+            if (dx <= -256) 0xFF else @intCast(@as(u16, @bitCast(-dx)))
+        else if (dx >= 256) 0xFF else @intCast(@as(u16, @bitCast(dx)));
+        const abs_y: u8 = if (dy < 0)
+            if (dy <= -256) 0xFF else @intCast(@as(u16, @bitCast(-dy)))
+        else if (dy >= 256) 0xFF else @intCast(@as(u16, @bitCast(dy)));
+        self.mouse_dx[port] = abs_x;
+        self.mouse_dy[port] = abs_y;
+        self.mouse_sign_x[port] = if (dx < 0) 1 else 0;
+        self.mouse_sign_y[port] = if (dy < 0) 1 else 0;
     }
 
     pub const Button = struct {
@@ -351,6 +456,234 @@ test "ea 4-way play multiplexes four controllers via port 2 th" {
     // In TH-high format: bit 5 = C button (active low)
     try testing.expect((c_high & 0x20) == 0); // C pressed on player C
     try testing.expect((a_high & 0x20) != 0); // C not pressed on player A
+}
+
+test "six-button timeout mid-identification reverts to standard three-button reads" {
+    // If the timeout fires while the flip counter is between 0 and 3
+    // (mid-identification), subsequent reads should return standard
+    // three-button data, not six-button identification nibbles.
+    var io = Io.init();
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.Z, true);
+
+    // Two TH low→high transitions: flip count = 2
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    try testing.expectEqual(@as(u2, 2), io.th_flip_count[0]);
+
+    // Timeout fires → counter resets to 0
+    io.tick(Io.six_button_timeout_m68k_cycles);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+
+    // TH high read should now return standard three-button format
+    // (not the six-button identification state).  Z button should NOT
+    // appear since we're back in standard mode.
+    io.write(0x03, 0x40);
+    const high_byte = io.read(0x03);
+    try testing.expectEqual(@as(u8, 0x7F), high_byte);
+}
+
+test "six-button identification wraps through multiple consecutive cycles" {
+    // After a full identification cycle (flip count wraps 3→0), a
+    // second complete cycle should also expose the extra buttons.
+    var io = Io.init();
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.Z, true);
+
+    // First full cycle: 3 TH low→high transitions
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // flip_count = 3, TH high → six-button state
+    try testing.expectEqual(@as(u8, 0x7E), io.read(0x03));
+
+    // Complete the wrap: one more low→high transition → flip_count wraps to 0
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+
+    // Standard TH-high read again (flip count 0)
+    try testing.expectEqual(@as(u8, 0x7F), io.read(0x03));
+
+    // Second full cycle
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // Should expose six-button data again
+    try testing.expectEqual(@as(u8, 0x7E), io.read(0x03));
+}
+
+test "th pull-up from ctrl de-assertion increments six-button flip counter" {
+    // When CTRL bit 6 is cleared (TH becomes input), the controller
+    // pulls TH high after 30 M68K cycles.  This pull-up transition
+    // should increment the flip counter, matching real hardware.
+    var io = Io.init();
+    io.write(0x09, 0x40); // TH output
+    io.setButton(0, Io.Button.Z, true);
+
+    // Set TH low via DATA register
+    io.write(0x03, 0x00);
+    try testing.expect(!io.controller_th[0]);
+
+    // Clear CTRL TH output → TH becomes input, will pull high after delay
+    io.write(0x09, 0x00);
+    io.tick(Io.th_high_delay_m68k_cycles);
+    try testing.expect(io.controller_th[0]);
+    // The pull-up should have incremented the flip counter
+    try testing.expectEqual(@as(u2, 1), io.th_flip_count[0]);
+}
+
+test "six-button timeout resets counter and subsequent identification works" {
+    // After a timeout resets the counter, a fresh identification
+    // sequence should work normally.
+    var io = Io.init();
+    io.write(0x09, 0x40);
+    io.setButton(0, Io.Button.X, true);
+
+    // Partial identification
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // Timeout
+    io.tick(Io.six_button_timeout_m68k_cycles);
+    try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
+
+    // Fresh full identification cycle
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    io.write(0x03, 0x40);
+
+    // Should reach six-button state (flip count 3, TH high)
+    const byte = io.read(0x03);
+    // X button (bit 2) should be visible in six-button mode
+    try testing.expectEqual(@as(u8, 0), byte & 0x04);
+}
+
+test "sega mouse returns identification nibbles on first two TH transitions" {
+    var io = Io.init();
+    io.setControllerType(0, .sega_mouse);
+    io.write(0x09, 0x40); // port 1 CTRL = TH output
+
+    // TH high: should read 0x00 in low nibble (mouse ID high)
+    io.write(0x03, 0x40);
+    try testing.expectEqual(@as(u8, 0x00), io.read(0x03) & 0x0F);
+
+    // TH low: should read 0x0B in low nibble (mouse ID low)
+    io.write(0x03, 0x00);
+    try testing.expectEqual(@as(u8, 0x0B), io.read(0x03) & 0x0F);
+}
+
+test "sega mouse reports button state on the fourth nibble" {
+    var io = Io.init();
+    io.setControllerType(0, .sega_mouse);
+    io.write(0x09, 0x40);
+
+    io.setMouseButton(0, Io.MouseButton.left, true);
+    io.setMouseButton(0, Io.MouseButton.right, true);
+
+    // Phase 0 (TH high): ID high nibble 0x0
+    io.write(0x03, 0x40);
+    // Phase 1 (TH low): ID low nibble 0xB
+    io.write(0x03, 0x00);
+    // Phase 2 (TH high): overflow/sign nibble (no movement = 0x0)
+    io.write(0x03, 0x40);
+    // Phase 3 (TH low): button nibble: Start=3, Middle=2, Right=1, Left=0
+    io.write(0x03, 0x00);
+
+    // Left (bit 0) and Right (bit 1) pressed → bits 0 and 1 set
+    const buttons = io.read(0x03) & 0x0F;
+    try testing.expectEqual(@as(u8, 0x03), buttons);
+}
+
+test "sega mouse reports movement deltas in the last four nibbles" {
+    var io = Io.init();
+    io.setControllerType(0, .sega_mouse);
+    io.write(0x09, 0x40);
+
+    // Queue a movement of X=+0x1A, Y=-0x05
+    io.setMouseDelta(0, 0x1A, @as(i16, @bitCast(@as(u16, 0xFFFB)))); // Y = -5
+
+    // Phase 0-1: identification
+    io.write(0x03, 0x40);
+    io.write(0x03, 0x00);
+    // Phase 2 (TH high): overflow/sign nibble
+    // Y sign = 1 (negative), X sign = 0 (positive) → bits: YO=0, XO=0, YS=1, XS=0 = 0x02
+    io.write(0x03, 0x40);
+    try testing.expectEqual(@as(u8, 0x02), io.read(0x03) & 0x0F);
+    // Phase 3 (TH low): buttons (none pressed = 0x0)
+    io.write(0x03, 0x00);
+    // Phase 4 (TH high): X high nibble (0x1A >> 4 = 0x1)
+    io.write(0x03, 0x40);
+    try testing.expectEqual(@as(u8, 0x01), io.read(0x03) & 0x0F);
+    // Phase 5 (TH low): X low nibble (0x1A & 0xF = 0xA)
+    io.write(0x03, 0x00);
+    try testing.expectEqual(@as(u8, 0x0A), io.read(0x03) & 0x0F);
+    // Phase 6 (TH high): Y high nibble (|-5| = 5, 0x05 >> 4 = 0x0)
+    io.write(0x03, 0x40);
+    try testing.expectEqual(@as(u8, 0x00), io.read(0x03) & 0x0F);
+    // Phase 7 (TH low): Y low nibble (0x05 & 0xF = 0x5)
+    io.write(0x03, 0x00);
+    try testing.expectEqual(@as(u8, 0x05), io.read(0x03) & 0x0F);
+}
+
+test "sega mouse resets read phase after a complete 8-nibble cycle" {
+    var io = Io.init();
+    io.setControllerType(0, .sega_mouse);
+    io.write(0x09, 0x40);
+
+    // Complete one full 8-nibble read cycle
+    io.write(0x03, 0x40); // phase 0
+    io.write(0x03, 0x00); // phase 1
+    io.write(0x03, 0x40); // phase 2
+    io.write(0x03, 0x00); // phase 3
+    io.write(0x03, 0x40); // phase 4
+    io.write(0x03, 0x00); // phase 5
+    io.write(0x03, 0x40); // phase 6
+    io.write(0x03, 0x00); // phase 7
+
+    // Next cycle should restart with identification
+    io.write(0x03, 0x40); // phase 0 again
+    try testing.expectEqual(@as(u8, 0x00), io.read(0x03) & 0x0F);
+    io.write(0x03, 0x00); // phase 1 again
+    try testing.expectEqual(@as(u8, 0x0B), io.read(0x03) & 0x0F);
+}
+
+test "sega mouse deltas are consumed after a complete read cycle" {
+    var io = Io.init();
+    io.setControllerType(0, .sega_mouse);
+    io.write(0x09, 0x40);
+
+    io.setMouseDelta(0, 0x10, 0x20);
+
+    // Complete one full read cycle
+    for (0..4) |_| {
+        io.write(0x03, 0x40);
+        io.write(0x03, 0x00);
+    }
+
+    // After completing the cycle, deltas should be cleared.
+    // Start a new cycle and check movement nibbles are zero.
+    io.write(0x03, 0x40); // phase 0
+    io.write(0x03, 0x00); // phase 1
+    io.write(0x03, 0x40); // phase 2: sign/overflow
+    try testing.expectEqual(@as(u8, 0x00), io.read(0x03) & 0x0F);
+    io.write(0x03, 0x00); // phase 3: buttons
+    io.write(0x03, 0x40); // phase 4: X high
+    try testing.expectEqual(@as(u8, 0x00), io.read(0x03) & 0x0F);
 }
 
 test "serial and tx registers keep hardware defaults and serial control masks low status bits" {

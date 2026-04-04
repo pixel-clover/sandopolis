@@ -533,6 +533,14 @@ pub const Bus = struct {
         return self.vdp.nextTransferStepMasterCycles();
     }
 
+    pub fn dmaRefreshGapMasterCycles(self: *Bus) u32 {
+        return self.vdp.masterCyclesToNextRefreshSlot();
+    }
+
+    pub fn dmaRefreshSlotDuration(self: *Bus) u32 {
+        return self.vdp.refreshSlotDurationMasterCycles();
+    }
+
     pub fn recordRefreshCycles(self: *Bus, m68k_cycles: u32, ppc: u32) void {
         self.timing_state.applyRefreshPenalty(m68k_cycles, ppc);
     }
@@ -823,7 +831,10 @@ test "mid-instruction z80 stall flush is charged against later master slices" {
     try testing.expect(timing_state.z80_master_credit < 0);
 }
 
-test "z80 reset release aligns the first instruction to the current z80 phase" {
+test "z80 reset release aligns to next 15-cycle boundary before first instruction" {
+    // GPGX rounds Z80 start to the next 15-cycle boundary on reset
+    // release.  The Z80 cannot execute until a full 15-cycle window
+    // elapses after the release point.
     var bus = try Bus.init(testing.allocator, null);
     defer bus.deinit(testing.allocator);
 
@@ -834,8 +845,12 @@ test "z80 reset release aligns the first instruction to the current z80 phase" {
     try testing.expectEqual(@as(u16, 0x0000), bus.z80.getPc());
 
     bus.write16(0x00A1_1200, 0x0100);
+    // After release, 1 master cycle is not enough (alignment rounds up).
     bus.stepMasterAndFlush(1);
+    try testing.expectEqual(@as(u16, 0x0000), bus.z80.getPc());
 
+    // After a full 15-cycle window from the release point, the Z80 executes.
+    bus.stepMasterAndFlush(clock.z80_divider);
     try testing.expectEqual(@as(u16, 0x0001), bus.z80.getPc());
 }
 

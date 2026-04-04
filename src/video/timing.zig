@@ -705,3 +705,107 @@ test "H40 line transitions rephase VDP transfer timing" {
     fresh_hblank.setHBlank(true);
     try testing.expectEqual(fresh_hblank.nextTransferStepMasterCycles(), vdp.nextTransferStepMasterCycles());
 }
+
+test "NTSC V counter jumps from 0xEA to 0xE5 after the threshold" {
+    // In NTSC non-interlace mode, the V counter counts 0x00-0xEA, then
+    // the next scanline maps to 0xE5 (wrapping via (scanline - 262) & 0x1FF).
+    // This is the documented NTSC V counter jump behavior.
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81; // H40
+    vdp.line_master_cycle = 0; // early in the line (before HInt boundary)
+
+    // Scanline 0xEA (234) should produce V counter 0xEA.
+    vdp.scanline = 0xEA;
+    try testing.expectEqual(@as(u8, 0xEA), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    // Scanline 0xEB (235) exceeds the threshold 0xEA, so the counter wraps:
+    // (235 - 262) & 0x1FF = (-27) & 0x1FF = 0x1E5, truncated to 0xE5.
+    vdp.scanline = 0xEB;
+    try testing.expectEqual(@as(u8, 0xE5), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    // Scanline 261 (last line) wraps to: (261 - 262) & 0x1FF = 0x1FF, truncated to 0xFF.
+    vdp.scanline = 261;
+    try testing.expectEqual(@as(u8, 0xFF), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "PAL V counter wraps after the 0x102 threshold" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81; // H40
+    vdp.pal_mode = true;
+    vdp.line_master_cycle = 0;
+
+    // In PAL mode with 224-line display (reg[1] bit 3 = 0),
+    // V counter threshold is 0x102.
+    vdp.regs[1] = 0x40; // display enable, no 30-row mode
+
+    // Scanline 0x102 (258) is at the threshold.
+    vdp.scanline = 0x102;
+    try testing.expectEqual(@as(u8, 0x02), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    // Scanline 0x103 (259) exceeds threshold and wraps:
+    // (259 - 313) & 0x1FF = (-54) & 0x1FF = 0x1CA, truncated to 0xCA.
+    vdp.scanline = 0x103;
+    try testing.expectEqual(@as(u8, 0xCA), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    // Last PAL scanline (312) wraps to:
+    // (312 - 313) & 0x1FF = 0x1FF, truncated to 0xFF.
+    vdp.scanline = 312;
+    try testing.expectEqual(@as(u8, 0xFF), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "PAL 240-line V counter uses the 0x10A threshold" {
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81; // H40
+    vdp.pal_mode = true;
+    vdp.regs[1] = 0x48; // display enable + 30-row mode (bit 3)
+    vdp.line_master_cycle = 0;
+
+    // With 30-row mode, PAL threshold is 0x10A instead of 0x102.
+    vdp.scanline = 0x10A;
+    try testing.expectEqual(@as(u8, 0x0A), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    // Scanline 0x10B (267) exceeds threshold:
+    // (267 - 313) & 0x1FF = (-46) & 0x1FF = 0x1D2, truncated to 0xD2.
+    vdp.scanline = 0x10B;
+    try testing.expectEqual(@as(u8, 0xD2), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "NTSC V counter 0x00-0xDF covers the visible area" {
+    // The visible area is 224 lines (0x00-0xDF). Lines 0xE0-0xFF are VBlank.
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.line_master_cycle = 0;
+
+    // First visible line.
+    vdp.scanline = 0;
+    try testing.expectEqual(@as(u8, 0x00), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    // Last visible line (223).
+    vdp.scanline = 223;
+    try testing.expectEqual(@as(u8, 0xDF), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+
+    // First VBlank line (224) has V counter 0xE0.
+    vdp.scanline = 224;
+    try testing.expectEqual(@as(u8, 0xE0), @as(u8, @truncate(vdp.readHVCounter() >> 8)));
+}
+
+test "V counter is monotonic through the visible area" {
+    // Walk all 224 visible scanlines and verify the V counter is strictly
+    // increasing from 0x00 to 0xDF.
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81;
+    vdp.line_master_cycle = 0;
+
+    var prev: u8 = 0;
+    for (0..clock.ntsc_visible_lines) |line| {
+        vdp.scanline = @intCast(line);
+        const v = @as(u8, @truncate(vdp.readHVCounter() >> 8));
+        if (line == 0) {
+            try testing.expectEqual(@as(u8, 0x00), v);
+        } else {
+            try testing.expectEqual(prev + 1, v);
+        }
+        prev = v;
+    }
+    try testing.expectEqual(@as(u8, 0xDF), prev);
+}

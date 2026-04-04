@@ -480,6 +480,8 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
         ui.Colors.blue,
         scale,
     );
+    try ui.setClipRect(renderer, panel);
+    defer ui.clearClipRect(renderer) catch {};
 
     try ui.drawText(
         renderer,
