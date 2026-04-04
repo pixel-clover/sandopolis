@@ -228,6 +228,51 @@
             aspect-ratio: 320/224;
         }
 
+        /* CRT bezel overlay */
+        #screen-container.crt-bezel::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: url(img/crt-bezel.png) center/100% 100% no-repeat;
+            pointer-events: none;
+            z-index: 1;
+            opacity: 0.6;
+        }
+
+        /* CRT scanlines */
+        #screen-container.crt-scanlines::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: repeating-linear-gradient(0deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 3px);
+            pointer-events: none;
+            z-index: 2;
+            mix-blend-mode: multiply;
+        }
+
+        #screen-container.crt-scanlines #screen {
+            filter: contrast(1.04) brightness(1.02);
+        }
+
+        /* Genesis button icons in help */
+        .genesis-btn {
+            display: inline-block;
+            width: 22px;
+            height: 22px;
+            vertical-align: middle;
+            image-rendering: auto;
+            margin: 0 1px;
+        }
+
+        .genesis-layout {
+            display: block;
+            width: 80px;
+            height: auto;
+            margin: 6px auto 4px;
+            image-rendering: auto;
+            opacity: 0.85;
+        }
+
         /* Action bar */
         .action-bar {
             display: flex;
@@ -705,6 +750,11 @@
             <option value="1">6-Button</option>
             <option value="0">3-Button</option>
         </select>
+        <label>Screen</label>
+        <select id="screen-style">
+            <option value="clean">Clean</option>
+            <option value="crt">CRT Effect</option>
+        </select>
     </div>
 </div>
 
@@ -721,9 +771,10 @@
                 <div class="help-row">[Z] A &nbsp;[X] B &nbsp;[C] C</div>
                 <div class="help-row">[A] X &nbsp;[S] Y &nbsp;[D] Z</div>
                 <h4>GAMEPAD</h4>
-                <div class="help-row">Standard controllers supported (2 players).</div>
-                <div class="help-row">(X) A &nbsp;(A) B &nbsp;(B) C &nbsp;(Y) Y</div>
-                <div class="help-row">(LB) X &nbsp;(RB) Z &nbsp;(Start) Start</div>
+                <img src="img/6button.png" alt="Genesis 6-button" class="genesis-layout">
+                <div class="help-row">(X) <img src="img/a.png" class="genesis-btn" alt="A"> &nbsp;(A) <img src="img/b.png" class="genesis-btn" alt="B"> &nbsp;(B) <img src="img/c.png" class="genesis-btn" alt="C"></div>
+                <div class="help-row">(LB) <img src="img/x.png" class="genesis-btn" alt="X"> &nbsp;(RB) <img src="img/z.png" class="genesis-btn" alt="Z"> &nbsp;(Y) <img src="img/y.png" class="genesis-btn" alt="Y"></div>
+                <div class="help-row">(Start) <img src="img/start.png" class="genesis-btn" alt="Start"> &nbsp;(D-Pad) Movement</div>
             </div>
             <div>
                 <h4>HOTKEYS</h4>

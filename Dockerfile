@@ -8,6 +8,7 @@ RUN zig build wasm
 FROM nginx:alpine
 
 COPY web/index.html web/sandopolis.js web/audio-worklet.js /usr/share/nginx/html/
+COPY web/img/ /usr/share/nginx/html/img/
 COPY --from=build /src/zig-out/web/sandopolis.wasm /usr/share/nginx/html/
 
 EXPOSE 80

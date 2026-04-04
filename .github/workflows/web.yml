@@ -32,8 +32,9 @@ jobs:
 
       - name: Prepare publish directory
         run: |
-          mkdir -p ./publish
-          cp ./web/index.html ./web/sandopolis.js ./publish/
+          mkdir -p ./publish/img
+          cp ./web/index.html ./web/sandopolis.js ./web/audio-worklet.js ./publish/
+          cp -r ./web/img/* ./publish/img/
           cp ./zig-out/web/sandopolis.wasm ./publish/
 
       - name: Deploy to GitHub Pages

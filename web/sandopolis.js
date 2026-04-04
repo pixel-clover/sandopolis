@@ -114,6 +114,7 @@ async function init() {
     document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
+    document.getElementById("screen-style").addEventListener("change", onScreenStyleChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
     document.getElementById("btn-quick-save").addEventListener("click", quickSave);
     document.getElementById("btn-quick-load").addEventListener("click", quickLoad);
@@ -203,6 +204,7 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
+        if (saved.screenStyle !== undefined) document.getElementById("screen-style").value = saved.screenStyle;
         if (saved.theme) applyTheme(saved.theme);
     } catch (_) {
     }
@@ -210,6 +212,7 @@ function loadSettings() {
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
     document.getElementById("master-volume-label").textContent = masterVolume + "%";
     applyAspectMode();
+    applyScreenStyle();
 }
 
 function saveSettings() {
@@ -221,6 +224,7 @@ function saveSettings() {
         slot: currentSlot,
         aspectMode,
         masterVolume,
+        screenStyle: document.getElementById("screen-style").value,
         theme: document.documentElement.getAttribute("data-theme") || "light",
     }));
 }
@@ -259,6 +263,22 @@ function applyAspectMode() {
     const c = document.getElementById("screen");
     c.classList.remove("aspect-fit", "aspect-stretch", "aspect-native");
     c.classList.add("aspect-" + aspectMode);
+}
+
+// Screen style
+
+function onScreenStyleChange() {
+    applyScreenStyle();
+    saveSettings();
+}
+
+function applyScreenStyle() {
+    const container = document.getElementById("screen-container");
+    const style = document.getElementById("screen-style").value;
+    container.classList.remove("crt-bezel", "crt-scanlines");
+    if (style === "crt") {
+        container.classList.add("crt-bezel", "crt-scanlines");
+    }
 }
 
 // Theme
