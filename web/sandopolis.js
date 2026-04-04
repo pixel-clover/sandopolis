@@ -17,6 +17,9 @@ let db = null;
 let currentRomName = "";
 let currentSlot = 1;
 
+// Display
+let aspectMode = "fit"; // "fit" (4:3), "stretch", "native"
+
 const KEY_MAP = {
     ArrowUp:    "Up",
     ArrowDown:  "Down",
@@ -36,6 +39,7 @@ const HOTKEYS = {
     F8: "quickLoad",
     F6: "save",
     F9: "load",
+    F11: "fullscreen",
 };
 
 async function init() {
@@ -96,6 +100,8 @@ async function init() {
     document.getElementById("audio-mode").addEventListener("change", onAudioModeChange);
     document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
+    document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
+    document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
     document.getElementById("btn-quick-save").addEventListener("click", quickSave);
     document.getElementById("btn-quick-load").addEventListener("click", quickLoad);
     document.getElementById("btn-save").addEventListener("click", persistentSave);
@@ -104,6 +110,10 @@ async function init() {
     document.getElementById("settings-toggle").addEventListener("click", () => {
         document.getElementById("settings-panel").classList.toggle("hidden");
     });
+    document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
+
+    // Fullscreen change handler
+    document.addEventListener("fullscreenchange", onFullscreenChange);
 
     loadSettings();
     db = await openDB();
@@ -149,9 +159,12 @@ function loadSettings() {
         if (saved.psgVolume !== undefined) document.getElementById("psg-volume").value = saved.psgVolume;
         if (saved.controllerType !== undefined) document.getElementById("controller-type").value = saved.controllerType;
         if (saved.slot !== undefined) { currentSlot = saved.slot; document.getElementById("slot-select").value = saved.slot; }
+        if (saved.aspectMode !== undefined) { aspectMode = saved.aspectMode; document.getElementById("aspect-mode").value = saved.aspectMode; }
+        if (saved.theme) applyTheme(saved.theme);
     } catch (_) {}
     updateAudioToggleLabel();
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
+    applyAspectMode();
 }
 
 function saveSettings() {
@@ -161,6 +174,8 @@ function saveSettings() {
         psgVolume: document.getElementById("psg-volume").value,
         controllerType: document.getElementById("controller-type").value,
         slot: currentSlot,
+        aspectMode,
+        theme: document.documentElement.getAttribute("data-theme") || "dark",
     }));
 }
 
@@ -179,6 +194,51 @@ function onPsgVolumeChange() {
 }
 function onControllerTypeChange() { applySettings(); saveSettings(); }
 
+function onAspectModeChange() {
+    aspectMode = document.getElementById("aspect-mode").value;
+    applyAspectMode();
+    saveSettings();
+}
+
+function applyAspectMode() {
+    const c = document.getElementById("screen");
+    c.classList.remove("aspect-fit", "aspect-stretch", "aspect-native");
+    c.classList.add("aspect-" + aspectMode);
+}
+
+// Theme
+
+function toggleTheme() {
+    const current = document.documentElement.getAttribute("data-theme") || "dark";
+    applyTheme(current === "dark" ? "light" : "dark");
+    saveSettings();
+}
+
+function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    document.getElementById("theme-toggle").textContent = theme === "dark" ? "LIGHT" : "DARK";
+}
+
+// Fullscreen
+
+function toggleFullscreen() {
+    const container = document.getElementById("screen-container");
+    if (document.fullscreenElement) {
+        document.exitFullscreen();
+    } else {
+        container.requestFullscreen().catch(() => {});
+    }
+}
+
+function onFullscreenChange() {
+    const container = document.getElementById("screen-container");
+    if (document.fullscreenElement) {
+        container.classList.add("fullscreen");
+    } else {
+        container.classList.remove("fullscreen");
+    }
+}
+
 function toggleAudio() {
     audioEnabled = !audioEnabled;
     updateAudioToggleLabel();
@@ -192,14 +252,19 @@ function updateAudioToggleLabel() {
     document.getElementById("audio-toggle").textContent = audioEnabled ? "AUDIO ON" : "AUDIO OFF";
 }
 
-// Audio
+// Audio (Firefox-compatible: no outputChannelCount, handle mono fallback)
 
 async function initAudio() {
     if (audioCtx) return;
     try {
         audioCtx = new AudioContext({ sampleRate: 48000 });
         await audioCtx.audioWorklet.addModule("audio-worklet.js");
-        audioNode = new AudioWorkletNode(audioCtx, "sandopolis-audio", { outputChannelCount: [2] });
+        audioNode = new AudioWorkletNode(audioCtx, "sandopolis-audio", {
+            numberOfOutputs: 1,
+            channelCount: 2,
+            channelCountMode: "explicit",
+            channelInterpretation: "speakers",
+        });
         audioNode.connect(audioCtx.destination);
         if (!audioEnabled) audioCtx.suspend();
     } catch (err) {
@@ -294,6 +359,11 @@ async function loadRom(file) {
     currentRomName = file.name;
     applySettings();
 
+    // Resume AudioContext on user gesture (required by browsers)
+    if (audioCtx && audioCtx.state === "suspended" && audioEnabled) {
+        audioCtx.resume();
+    }
+
     const isPal = e.sandopolis_is_pal(emu);
     setStatus(`Playing: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
 
@@ -341,7 +411,7 @@ async function loadRom(file) {
 function onKeyDown(ev) {
     if (HOTKEYS[ev.key]) {
         ev.preventDefault();
-        ({ quickSave, quickLoad, save: persistentSave, load: persistentLoad })[HOTKEYS[ev.key]]();
+        ({ quickSave, quickLoad, save: persistentSave, load: persistentLoad, fullscreen: toggleFullscreen })[HOTKEYS[ev.key]]();
         return;
     }
     if (!emu) return;

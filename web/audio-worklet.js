@@ -1,5 +1,6 @@
 // AudioWorklet processor for Sandopolis emulator audio.
 // Receives i16 stereo PCM samples from the main thread and plays them back.
+// Compatible with Chrome, Firefox, and Safari.
 
 class SandopolisAudioProcessor extends AudioWorkletProcessor {
     constructor() {
@@ -15,7 +16,7 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
             const samples = e.data; // Int16Array, stereo interleaved
             const len = samples.length;
             for (let i = 0; i < len; i++) {
-                if (this.count >= this.bufferSize) break; // Drop if full
+                if (this.count >= this.bufferSize) break;
                 this.buffer[this.writePos] = samples[i] / 32768.0;
                 this.writePos = (this.writePos + 1) % this.bufferSize;
                 this.count++;
@@ -23,22 +24,26 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
         };
     }
 
-    process(inputs, outputs) {
-        const outL = outputs[0][0];
-        const outR = outputs[0][1];
-        if (!outL || !outR) return true;
+    process(_inputs, outputs) {
+        const output = outputs[0];
+        // Handle both stereo (2 channels) and mono (1 channel) output configs.
+        const outL = output[0];
+        if (!outL) return true;
+        const outR = output.length > 1 ? output[1] : null;
+        const frames = outL.length;
 
-        const frames = outL.length; // Usually 128
         for (let i = 0; i < frames; i++) {
             if (this.count >= 2) {
-                outL[i] = this.buffer[this.readPos];
+                const l = this.buffer[this.readPos];
                 this.readPos = (this.readPos + 1) % this.bufferSize;
-                outR[i] = this.buffer[this.readPos];
+                const r = this.buffer[this.readPos];
                 this.readPos = (this.readPos + 1) % this.bufferSize;
                 this.count -= 2;
+                outL[i] = l;
+                if (outR) outR[i] = r; else outL[i] = (l + r) * 0.5;
             } else {
                 outL[i] = 0;
-                outR[i] = 0;
+                if (outR) outR[i] = 0;
             }
         }
         return true;

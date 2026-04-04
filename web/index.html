@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,109 +7,126 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
-  body {
-    background: #0D1117;
-    color: #E6EDF3;
-    font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    min-height: 100vh;
-    padding: 24px 16px;
+  /* Color tokens */
+  :root[data-theme="dark"] {
+    --bg: #0D1117; --bg-panel: #161B22; --bg-input: #0D1117;
+    --border: #30363D; --border-accent: #5B8DBE;
+    --text: #E6EDF3; --text-muted: #8B949E; --text-accent: #F7A41D; --text-link: #5B8DBE; --text-heading: #6EB8D4;
+    --toast-bg: #161B22; --toast-border: #F7A41D; --toast-text: #F7A41D;
+    --screen-bg: #000;
+  }
+  :root[data-theme="light"] {
+    --bg: #F6F8FA; --bg-panel: #FFFFFF; --bg-input: #F6F8FA;
+    --border: #D0D7DE; --border-accent: #0969DA;
+    --text: #1F2328; --text-muted: #656D76; --text-accent: #CF5E1A; --text-link: #0969DA; --text-heading: #0550AE;
+    --toast-bg: #FFFFFF; --toast-border: #CF5E1A; --toast-text: #CF5E1A;
+    --screen-bg: #1F2328;
   }
 
-  h1 { color: #F7A41D; font-size: 2rem; letter-spacing: 0.15em; margin-bottom: 4px; }
-  .subtitle { color: #8B949E; font-size: 0.85rem; margin-bottom: 16px; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; padding: 24px 16px;
+  }
+
+  h1 { color: var(--text-accent); font-size: 2rem; letter-spacing: 0.15em; margin-bottom: 4px; }
+  .subtitle { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 16px; }
 
   #drop-zone {
-    border: 2px dashed #5B8DBE;
-    border-radius: 8px;
-    padding: 16px 32px;
-    text-align: center;
-    cursor: pointer;
-    margin-bottom: 12px;
-    transition: border-color 0.2s, background 0.2s;
+    border: 2px dashed var(--border-accent); border-radius: 8px;
+    padding: 16px 32px; text-align: center; cursor: pointer;
+    margin-bottom: 12px; transition: border-color 0.2s, background 0.2s;
     max-width: 660px; width: 100%;
   }
   #drop-zone:hover, #drop-zone.drag-over {
-    border-color: #F7A41D; background: rgba(247,164,29,0.06);
+    border-color: var(--text-accent); background: color-mix(in srgb, var(--text-accent) 6%, transparent);
   }
-  #drop-zone label { color: #6EB8D4; cursor: pointer; font-size: 0.9rem; }
+  #drop-zone label { color: var(--text-heading); cursor: pointer; font-size: 0.9rem; }
   #rom-input { display: none; }
 
   .toolbar {
-    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
     justify-content: center; margin-bottom: 8px; max-width: 660px;
   }
   .toolbar button, .toolbar select {
-    background: #161B22; color: #E6EDF3; border: 1px solid #30363D;
+    background: var(--bg-panel); color: var(--text); border: 1px solid var(--border);
     border-radius: 4px; padding: 4px 10px; font-family: inherit;
-    font-size: 0.75rem; cursor: pointer;
+    font-size: 0.72rem; cursor: pointer;
   }
-  .toolbar button:hover { border-color: #F7A41D; }
-  .toolbar .sep { width: 1px; height: 20px; background: #30363D; }
+  .toolbar button:hover { border-color: var(--text-accent); }
+  .toolbar .sep { width: 1px; height: 20px; background: var(--border); }
 
   #screen-container {
     position: relative;
-    background: #000; border: 2px solid #5B8DBE;
+    background: var(--screen-bg); border: 2px solid var(--border-accent);
     border-radius: 4px; overflow: hidden; margin-bottom: 8px;
   }
-  #screen {
-    display: block; width: 640px; height: 480px;
-    image-rendering: pixelated; image-rendering: crisp-edges;
+  #screen-container.fullscreen {
+    display: flex; align-items: center; justify-content: center;
+    background: #000;
   }
+  #screen-container.fullscreen #screen {
+    width: auto; height: 100vh; max-width: 100vw;
+  }
+
+  /* Aspect ratio modes */
+  #screen { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #screen.aspect-fit { width: 640px; height: 480px; }
+  #screen.aspect-stretch { width: 640px; height: 400px; }
+  #screen.aspect-native { width: 640px; height: 448px; }
 
   #toast {
     position: fixed; top: 20px; right: 20px;
-    background: #161B22; border: 1px solid #F7A41D;
+    background: var(--toast-bg); border: 1px solid var(--toast-border);
     border-radius: 4px; padding: 8px 16px;
-    font-size: 0.8rem; color: #F7A41D;
+    font-size: 0.8rem; color: var(--toast-text);
     opacity: 0; transition: opacity 0.3s;
     pointer-events: none; z-index: 100;
   }
   #toast.visible { opacity: 1; }
 
-  #status { color: #8B949E; font-size: 0.8rem; margin-bottom: 12px; text-align: center; }
+  #status { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 12px; text-align: center; }
 
   #settings-panel {
     max-width: 660px; width: 100%;
-    background: #161B22; border: 1px solid #30363D;
+    background: var(--bg-panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 12px 16px; margin-bottom: 16px;
   }
   #settings-panel.hidden { display: none; }
-  #settings-panel h3 { color: #6EB8D4; font-size: 0.8rem; margin-bottom: 8px; }
+  #settings-panel h3 { color: var(--text-heading); font-size: 0.8rem; margin-bottom: 8px; }
 
   .settings-grid {
     display: grid; grid-template-columns: 1fr 1fr;
     gap: 6px 16px; font-size: 0.78rem; align-items: center;
   }
-  .settings-grid label { color: #8B949E; }
+  .settings-grid label { color: var(--text-muted); }
   .settings-grid select, .settings-grid input[type=range] {
-    background: #0D1117; color: #E6EDF3; border: 1px solid #30363D;
+    background: var(--bg-input); color: var(--text); border: 1px solid var(--border);
     border-radius: 3px; padding: 2px 6px; font-family: inherit; font-size: 0.75rem;
     width: 100%;
   }
   .volume-row { display: flex; align-items: center; gap: 6px; }
   .volume-row input { flex: 1; }
-  .volume-row span { color: #8B949E; font-size: 0.7rem; min-width: 3.5em; text-align: right; }
+  .volume-row span { color: var(--text-muted); font-size: 0.7rem; min-width: 3.5em; text-align: right; }
 
   .controls {
     max-width: 660px; width: 100%;
     display: grid; grid-template-columns: 1fr 1fr;
-    gap: 4px 24px; font-size: 0.75rem; color: #8B949E; margin-bottom: 16px;
+    gap: 4px 24px; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 16px;
   }
-  .controls .section-title { color: #6EB8D4; font-weight: bold; grid-column: span 2; margin-top: 4px; }
+  .controls .section-title { color: var(--text-heading); font-weight: bold; grid-column: span 2; margin-top: 4px; }
   .controls .key {
-    display: inline-block; background: #161B22; border: 1px solid #30363D;
-    border-radius: 3px; padding: 1px 5px; color: #E6EDF3; font-size: 0.7rem;
+    display: inline-block; background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 3px; padding: 1px 5px; color: var(--text); font-size: 0.7rem;
   }
 
-  footer { margin-top: auto; padding-top: 16px; font-size: 0.75rem; color: #8B949E; }
-  footer a { color: #5B8DBE; text-decoration: none; }
-  footer a:hover { color: #F7A41D; }
+  footer { margin-top: auto; padding-top: 16px; font-size: 0.75rem; color: var(--text-muted); }
+  footer a { color: var(--text-link); text-decoration: none; }
+  footer a:hover { color: var(--text-accent); }
 
   @media (max-width: 700px) {
-    #screen { width: 100%; height: auto; aspect-ratio: 4/3; }
+    #screen.aspect-fit, #screen.aspect-stretch, #screen.aspect-native { width: 100%; height: auto; aspect-ratio: 4/3; }
     .controls { grid-template-columns: 1fr; }
     .controls .section-title { grid-column: 1; }
     .settings-grid { grid-template-columns: 1fr; }
@@ -128,24 +145,33 @@
 
 <div class="toolbar">
   <button id="audio-toggle">AUDIO ON</button>
+  <button id="btn-fullscreen">FULLSCREEN</button>
   <div class="sep"></div>
-  <button id="btn-quick-save">QUICK SAVE</button>
-  <button id="btn-quick-load">QUICK LOAD</button>
+  <button id="btn-quick-save">SAVE</button>
+  <button id="btn-quick-load">LOAD</button>
   <div class="sep"></div>
-  <button id="btn-save">SAVE</button>
-  <button id="btn-load">LOAD</button>
+  <button id="btn-save">SLOT SAVE</button>
+  <button id="btn-load">SLOT LOAD</button>
   <select id="slot-select">
-    <option value="1">SLOT 1</option>
-    <option value="2">SLOT 2</option>
-    <option value="3">SLOT 3</option>
+    <option value="1">1</option>
+    <option value="2">2</option>
+    <option value="3">3</option>
   </select>
   <div class="sep"></div>
   <button id="settings-toggle">SETTINGS</button>
+  <button id="theme-toggle">LIGHT</button>
 </div>
 
 <div id="settings-panel" class="hidden">
   <h3>SETTINGS</h3>
   <div class="settings-grid">
+    <label>Aspect Ratio</label>
+    <select id="aspect-mode">
+      <option value="fit">4:3 Fit</option>
+      <option value="stretch">Stretch</option>
+      <option value="native">Native (320x224)</option>
+    </select>
+
     <label>Audio Mode</label>
     <select id="audio-mode">
       <option value="0">Normal</option>
@@ -169,7 +195,7 @@
 </div>
 
 <div id="screen-container">
-  <canvas id="screen" width="320" height="224"></canvas>
+  <canvas id="screen" class="aspect-fit" width="320" height="224"></canvas>
 </div>
 
 <p id="status">Loading emulator...</p>
@@ -182,9 +208,10 @@
   <div><span class="key">Enter</span> Start</div>
   <div><span class="key">Z</span> A &nbsp; <span class="key">X</span> B &nbsp; <span class="key">C</span> C</div>
   <div><span class="key">A</span> X &nbsp; <span class="key">S</span> Y &nbsp; <span class="key">D</span> Z</div>
-  <div class="section-title">SAVE STATES</div>
+  <div class="section-title">HOTKEYS</div>
   <div><span class="key">F5</span> Quick Save &nbsp; <span class="key">F8</span> Quick Load</div>
-  <div><span class="key">F6</span> Save Slot &nbsp; <span class="key">F9</span> Load Slot</div>
+  <div><span class="key">F6</span> Slot Save &nbsp; <span class="key">F9</span> Slot Load</div>
+  <div><span class="key">F11</span> Fullscreen</div>
 </div>
 
 <footer>
