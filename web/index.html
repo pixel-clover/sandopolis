@@ -23,48 +23,50 @@
             --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.2);
         }
 
+        /* Dark: Genesis blue-black + Zig orange */
         :root[data-theme="dark"] {
-            --bg: #0D1117;
-            --bg-panel: #161B22;
-            --bg-input: #0D1117;
-            --bg-btn-hover: #1C2129;
-            --border: #30363D;
-            --border-accent: #5B8DBE;
-            --text: #E6EDF3;
-            --text-muted: #8B949E;
+            --bg: #0A0E1A;
+            --bg-panel: #111730;
+            --bg-input: #0A0E1A;
+            --bg-btn-hover: #1A2244;
+            --border: #2A3050;
+            --border-accent: #3366CC;
+            --text: #E0E4EF;
+            --text-muted: #7A82A0;
             --text-accent: #F7A41D;
-            --text-link: #5B8DBE;
-            --text-heading: #6EB8D4;
-            --toast-bg: #161B22;
+            --text-link: #5B8ECC;
+            --text-heading: #4A90D9;
+            --toast-bg: #111730;
             --toast-border: #F7A41D;
             --toast-text: #F7A41D;
             --screen-bg: #000;
-            --group-bg: #12161C;
-            --error-bg: rgba(220, 50, 47, 0.1);
+            --group-bg: #0D1225;
+            --error-bg: rgba(220, 50, 47, 0.12);
             --error-border: #DC322F;
-            --overlay-bg: rgba(0, 0, 0, 0.75);
+            --overlay-bg: rgba(5, 8, 20, 0.8);
         }
 
+        /* Light: warm white + Genesis blue + Zig orange */
         :root[data-theme="light"] {
-            --bg: #F6F8FA;
+            --bg: #F5F6FA;
             --bg-panel: #FFFFFF;
-            --bg-input: #F6F8FA;
-            --bg-btn-hover: #EEF1F5;
-            --border: #D0D7DE;
-            --border-accent: #0969DA;
-            --text: #1F2328;
-            --text-muted: #656D76;
-            --text-accent: #CF5E1A;
-            --text-link: #0969DA;
-            --text-heading: #0550AE;
+            --bg-input: #F0F1F8;
+            --bg-btn-hover: #E8EAF2;
+            --border: #C8CCE0;
+            --border-accent: #2856A8;
+            --text: #1A1E30;
+            --text-muted: #5A6080;
+            --text-accent: #D4820E;
+            --text-link: #2856A8;
+            --text-heading: #1E3A7A;
             --toast-bg: #FFFFFF;
-            --toast-border: #CF5E1A;
-            --toast-text: #CF5E1A;
-            --screen-bg: #1F2328;
-            --group-bg: #F0F2F4;
+            --toast-border: #D4820E;
+            --toast-text: #D4820E;
+            --screen-bg: #101428;
+            --group-bg: #ECEEF6;
             --error-bg: rgba(220, 50, 47, 0.08);
             --error-border: #DC322F;
-            --overlay-bg: rgba(0, 0, 0, 0.5);
+            --overlay-bg: rgba(10, 14, 26, 0.5);
         }
 
         body {
@@ -770,22 +772,17 @@
                 <div class="help-row">[Enter] Start</div>
                 <div class="help-row">[Z] A &nbsp;[X] B &nbsp;[C] C</div>
                 <div class="help-row">[A] X &nbsp;[S] Y &nbsp;[D] Z</div>
+                <h4>HOTKEYS</h4>
+                <div class="help-row">[F5] Quick Save &nbsp;[F8] Quick Load</div>
+                <div class="help-row">[F6] Slot Save &nbsp;[F9] Slot Load</div>
+                <div class="help-row">[F11] Fullscreen &nbsp;[F1] Help</div>
+            </div>
+            <div>
                 <h4>GAMEPAD</h4>
                 <img src="img/6button.png" alt="Genesis 6-button" class="genesis-layout">
                 <div class="help-row">(X) <img src="img/a.png" class="genesis-btn" alt="A"> &nbsp;(A) <img src="img/b.png" class="genesis-btn" alt="B"> &nbsp;(B) <img src="img/c.png" class="genesis-btn" alt="C"></div>
                 <div class="help-row">(LB) <img src="img/x.png" class="genesis-btn" alt="X"> &nbsp;(RB) <img src="img/z.png" class="genesis-btn" alt="Z"> &nbsp;(Y) <img src="img/y.png" class="genesis-btn" alt="Y"></div>
                 <div class="help-row">(Start) <img src="img/start.png" class="genesis-btn" alt="Start"> &nbsp;(D-Pad) Movement</div>
-            </div>
-            <div>
-                <h4>HOTKEYS</h4>
-                <div class="help-row">[F5] Quick Save &nbsp;[F8] Quick Load</div>
-                <div class="help-row">[F6] Slot Save &nbsp;[F9] Slot Load</div>
-                <div class="help-row">[F11] Fullscreen &nbsp;[F1] Help</div>
-                <h4>ABOUT</h4>
-                <div class="help-row">Sandopolis is a Sega Genesis / Mega Drive emulator built with Zig and compiled to
-                    WebAssembly.
-                </div>
-                <div class="help-row">Save states persist in your browser via IndexedDB.</div>
             </div>
         </div>
         <button id="help-close">CLOSE</button>
@@ -793,7 +790,7 @@
 </div>
 
 <footer>
-    <a href="#" id="help-link">Sandopolis Web Help</a>
+    <a href="https://github.com/pixel-clover/sandopolis" id="help-link">Sandopolis on GitHub</a>
 </footer>
 
 <script src="sandopolis.js"></script>

@@ -128,10 +128,6 @@ async function init() {
     });
     document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
     document.getElementById("help-btn").addEventListener("click", toggleHelp);
-    document.getElementById("help-link").addEventListener("click", (ev) => {
-        ev.preventDefault();
-        toggleHelp();
-    });
     document.getElementById("help-close").addEventListener("click", toggleHelp);
     document.getElementById("help-overlay").addEventListener("click", (ev) => {
         if (ev.target === ev.currentTarget) toggleHelp();
