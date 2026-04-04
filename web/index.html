@@ -210,27 +210,27 @@
             box-shadow: var(--shadow-md);
             transition: box-shadow var(--transition-fast);
             margin-bottom: 6px;
+            width: min(100%, 640px);
         }
 
         #screen {
             display: block;
             image-rendering: pixelated;
             image-rendering: crisp-edges;
+            width: 100%;
+            height: auto;
         }
 
         #screen.aspect-fit {
-            width: 640px;
-            height: 480px;
+            aspect-ratio: 4 / 3;
         }
 
         #screen.aspect-stretch {
-            width: 640px;
-            height: 400px;
+            aspect-ratio: 8 / 5;
         }
 
         #screen.aspect-native {
-            width: 640px;
-            height: 448px;
+            aspect-ratio: 320 / 224;
         }
 
         #screen-container.fullscreen {
@@ -239,25 +239,26 @@
             justify-content: center;
             background: #000;
             border-radius: 0;
-        }
-
-        #screen-container.fullscreen #screen.aspect-fit {
-            width: auto;
-            height: 100vh;
-            max-width: 100vw;
-            aspect-ratio: 4/3;
-        }
-
-        #screen-container.fullscreen #screen.aspect-stretch {
             width: 100vw;
             height: 100vh;
         }
 
+        #screen-container.fullscreen #screen.aspect-fit {
+            aspect-ratio: 4/3;
+        }
+
+        #screen-container.fullscreen #screen.aspect-stretch {
+            width: 100%;
+            height: 100%;
+        }
+
         #screen-container.fullscreen #screen.aspect-native {
-            width: auto;
-            height: 100vh;
-            max-width: 100vw;
             aspect-ratio: 320/224;
+        }
+
+        #screen-container.fullscreen #screen {
+            max-width: 100vw;
+            max-height: 100vh;
         }
 
         /* CRT bezel overlay */
@@ -865,15 +866,25 @@
 
         /* Responsive */
         @media (max-width: 700px) {
-            #screen.aspect-fit, #screen.aspect-stretch, #screen.aspect-native {
-                width: 100%;
-                height: auto;
-                aspect-ratio: 4/3;
+            body {
+                padding-left: 12px;
+                padding-right: 12px;
             }
 
             .action-bar {
-                justify-content: center;
+                justify-content: flex-start;
                 gap: 6px;
+                padding: 6px;
+            }
+
+            #screen-container {
+                width: 100%;
+            }
+
+            #screen.aspect-fit,
+            #screen.aspect-stretch,
+            #screen.aspect-native {
+                width: 100%;
             }
 
             .settings-grid {
@@ -886,6 +897,11 @@
         }
 
         @media (max-width: 500px) {
+            #drop-zone {
+                padding-left: 16px;
+                padding-right: 16px;
+            }
+
             .help-columns {
                 grid-template-columns: 1fr;
             }
@@ -896,6 +912,10 @@
 
             .btn-group {
                 padding: 4px;
+            }
+
+            .action-bar {
+                gap: 4px;
             }
         }
     </style>
