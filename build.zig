@@ -433,7 +433,10 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/wasm.zig"),
             .target = wasm_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "build_options", .module = build_options.createModule() },
+            },
         }),
     });
     wasm_exe.entry = .disabled;

@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
 const Machine = @import("machine.zig").Machine;
 const Vdp = @import("video/vdp.zig").Vdp;
 const Io = @import("input/io.zig").Io;
@@ -6,6 +8,8 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const state_file = @import("state_file.zig");
 
 const allocator = std.heap.wasm_allocator;
+const version_cstr = std.fmt.comptimePrint("{s}", .{build_options.version});
+const build_label_cstr = std.fmt.comptimePrint("Zig {s} + WebAssembly", .{builtin.zig_version_string});
 
 pub const std_options: std.Options = .{
     .log_level = .err,
@@ -160,6 +164,32 @@ export fn sandopolis_set_psg_volume(emu: *WasmEmulator, percent: u8) void {
 
 export fn sandopolis_get_psg_volume(emu: *const WasmEmulator) u8 {
     return emu.audio.psg_volume_percent;
+}
+
+// About metadata
+
+export fn sandopolis_version_ptr() [*:0]const u8 {
+    return version_cstr.ptr;
+}
+
+export fn sandopolis_version_len() usize {
+    return version_cstr.len;
+}
+
+export fn sandopolis_build_label_ptr() [*:0]const u8 {
+    return build_label_cstr.ptr;
+}
+
+export fn sandopolis_build_label_len() usize {
+    return build_label_cstr.len;
+}
+
+export fn sandopolis_audio_sample_rate() u32 {
+    return AudioOutput.output_rate;
+}
+
+export fn sandopolis_video_width() u32 {
+    return @intCast(Vdp.framebuffer_width);
 }
 
 // Settings

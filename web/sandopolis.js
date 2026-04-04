@@ -18,6 +18,7 @@ let masterVolume = 70;
 let db = null;
 let currentRomName = "";
 let currentSlot = 1;
+const textDecoder = new TextDecoder();
 
 // Display
 let aspectMode = "fit"; // "fit" (4:3), "stretch", "native"
@@ -114,7 +115,6 @@ async function init() {
     document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
-    document.getElementById("screen-style").addEventListener("change", onScreenStyleChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
     document.getElementById("btn-quick-save").addEventListener("click", quickSave);
     document.getElementById("btn-quick-load").addEventListener("click", quickLoad);
@@ -153,7 +153,7 @@ async function init() {
 
     loadSettings();
     db = await openDB();
-    setStatus("Ready. Load a ROM to start.");
+    setStatus("We are ready. Load a ROM to start playing!");
 }
 
 // IndexedDB
@@ -206,7 +206,6 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
-        if (saved.screenStyle !== undefined) document.getElementById("screen-style").value = saved.screenStyle;
         if (saved.theme) applyTheme(saved.theme);
     } catch (_) {
     }
@@ -214,7 +213,6 @@ function loadSettings() {
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
     document.getElementById("master-volume-label").textContent = masterVolume + "%";
     applyAspectMode();
-    applyScreenStyle();
 }
 
 function saveSettings() {
@@ -226,7 +224,6 @@ function saveSettings() {
         slot: currentSlot,
         aspectMode,
         masterVolume,
-        screenStyle: document.getElementById("screen-style").value,
         theme: document.documentElement.getAttribute("data-theme") || "light",
     }));
 }
@@ -267,22 +264,6 @@ function applyAspectMode() {
     c.classList.add("aspect-" + aspectMode);
 }
 
-// Screen style
-
-function onScreenStyleChange() {
-    applyScreenStyle();
-    saveSettings();
-}
-
-function applyScreenStyle() {
-    const container = document.getElementById("screen-container");
-    const style = document.getElementById("screen-style").value;
-    container.classList.remove("crt-bezel", "crt-scanlines");
-    if (style === "crt") {
-        container.classList.add("crt-bezel", "crt-scanlines");
-    }
-}
-
 // Theme
 
 function toggleTheme() {
@@ -296,28 +277,66 @@ function applyTheme(theme) {
     document.getElementById("theme-toggle").textContent = theme === "dark" ? "Light" : "Dark";
 }
 
+function readWasmString(ptrFn, lenFn) {
+    if (!wasm) return "--";
+    const e = wasm.instance.exports;
+    const ptr = ptrFn(e);
+    const len = lenFn(e);
+    return textDecoder.decode(new Uint8Array(e.memory.buffer, ptr, len));
+}
+
+function updateAboutInfo() {
+    const versionEl = document.getElementById("about-version");
+    const buildEl = document.getElementById("about-build");
+    const audioEl = document.getElementById("about-audio");
+    const videoEl = document.getElementById("about-video");
+    if (!wasm) {
+        versionEl.textContent = "--";
+        buildEl.textContent = "--";
+        audioEl.textContent = "--";
+        videoEl.textContent = "--";
+        return;
+    }
+
+    const e = wasm.instance.exports;
+    versionEl.textContent = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
+    buildEl.textContent = readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len());
+    audioEl.textContent = `YM2612 + SN76489 at ${Math.round(e.sandopolis_audio_sample_rate() / 1000)} kHz`;
+
+    const width = e.sandopolis_video_width();
+    const height = emu ? e.sandopolis_screen_height(emu) : 224;
+    videoEl.textContent = `${width}x${height} ARGB Canvas`;
+}
+
 // Help overlay
 
 let helpOpen = false;
 let wasRunningBeforeHelp = false;
+
+function pauseForOverlay() {
+    if (!running) return;
+    running = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    if (audioCtx) audioCtx.suspend();
+}
+
+function resumeAfterOverlay() {
+    if (wasRunningBeforeHelp && emu) {
+        running = true;
+        resumeFrame();
+        if (audioCtx && audioEnabled) audioCtx.resume();
+    }
+}
 
 function toggleHelp() {
     const overlay = document.getElementById("help-overlay");
     if (helpOpen) {
         overlay.classList.remove("visible");
         helpOpen = false;
-        if (wasRunningBeforeHelp && emu) {
-            running = true;
-            resumeFrame();
-            if (audioCtx && audioEnabled) audioCtx.resume();
-        }
+        resumeAfterOverlay();
     } else {
         wasRunningBeforeHelp = running;
-        if (running) {
-            running = false;
-            if (rafId) cancelAnimationFrame(rafId);
-            if (audioCtx) audioCtx.suspend();
-        }
+        pauseForOverlay();
         overlay.classList.add("visible");
         helpOpen = true;
     }
@@ -366,16 +385,21 @@ function updatePerf() {
 let aboutOpen = false;
 
 function toggleAbout() {
-    aboutOpen = !aboutOpen;
     const overlay = document.getElementById("about-overlay");
     if (aboutOpen) {
+        overlay.classList.remove("visible");
+        aboutOpen = false;
+        resumeAfterOverlay();
+    } else {
+        wasRunningBeforeHelp = running;
+        pauseForOverlay();
+        updateAboutInfo();
         if (wasm) {
             const bytes = wasm.instance.exports.memory.buffer.byteLength;
             document.getElementById("about-wasm-size").textContent = (bytes / 1048576).toFixed(1) + " MB";
         }
         overlay.classList.add("visible");
-    } else {
-        overlay.classList.remove("visible");
+        aboutOpen = true;
     }
 }
 
@@ -528,6 +552,10 @@ async function loadRom(file) {
         document.getElementById("help-overlay").classList.remove("visible");
         helpOpen = false;
     }
+    if (aboutOpen) {
+        document.getElementById("about-overlay").classList.remove("visible");
+        aboutOpen = false;
+    }
 
     const e = wasm.instance.exports;
     if (emu) {
@@ -564,6 +592,7 @@ async function loadRom(file) {
 
     const isPal = e.sandopolis_is_pal(emu);
     setStatus(`Playing: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    if (aboutOpen) updateAboutInfo();
 
     running = true;
     frameInterval = 1000 / (isPal ? 50 : 60);
