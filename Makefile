@@ -97,6 +97,8 @@ wasm: ## Build the WebAssembly module
 web: wasm ## Build WASM and assemble the web directory for deployment
 	@echo "Assembling web deployment..."
 	cp $(BUILD_DIR)/web/sandopolis.wasm web/sandopolis.wasm
+	mkdir -p web/img
+	cp docs/assets/overlays/crt/*.png docs/assets/overlays/genesis/*.png web/img/
 
 web-serve: web ## Build and serve the web emulator locally
 	@echo "Serving Sandopolis web emulator locally"

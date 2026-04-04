@@ -6,7 +6,9 @@ roms
 external
 tests
 site
-docs
+docs/assets/gif
+docs/assets/img
+docs/*.md
 zig-out
 .zig-cache
 *.md

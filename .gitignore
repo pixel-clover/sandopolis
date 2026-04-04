@@ -108,3 +108,5 @@ sandopolis_*.cfg
 sandopolis_*.bmp
 test_sandopolis.cfg
 CLAUDE.md
+web/img/
+web/sandopolis.wasm
