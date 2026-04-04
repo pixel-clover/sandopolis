@@ -18,8 +18,8 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 
 ---
 
-**Download the latest release from [here](https://github.com/pixel-clover/sandopolis/releases)
-or [run Sandopolis in your browser](https://pixel-clover.github.io/sandopolis/).**
+**Download the latest pre-built binaries of Sandopolis from [here](https://github.com/pixel-clover/sandopolis/releases)
+or [run it in your browser](https://pixel-clover.github.io/sandopolis/).**
 
 Footage of Sandopolis running a few games:
 
@@ -58,7 +58,7 @@ See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
 #### Download the Latest Release
 
-You can download the latest pre-build binaries from the project's [releases page](https://github.com/pixel-clover/sandopolis/releases).
+You can download the latest pre-build binaries from the project's [release page](https://github.com/pixel-clover/sandopolis/releases).
 
 #### Build Sandopolis from Source
 
