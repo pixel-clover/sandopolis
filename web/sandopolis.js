@@ -129,6 +129,12 @@ async function init() {
     document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
     document.getElementById("help-btn").addEventListener("click", toggleHelp);
     document.getElementById("help-close").addEventListener("click", toggleHelp);
+    document.getElementById("perf-toggle").addEventListener("click", togglePerf);
+    document.getElementById("about-btn").addEventListener("click", toggleAbout);
+    document.getElementById("about-close").addEventListener("click", toggleAbout);
+    document.getElementById("about-overlay").addEventListener("click", (ev) => {
+        if (ev.target === ev.currentTarget) toggleAbout();
+    });
     document.getElementById("help-overlay").addEventListener("click", (ev) => {
         if (ev.target === ev.currentTarget) toggleHelp();
     });
@@ -136,9 +142,9 @@ async function init() {
 
     // Close help on Escape
     document.addEventListener("keydown", (ev) => {
-        if (ev.key === "Escape" && helpOpen) {
-            toggleHelp();
-            ev.preventDefault();
+        if (ev.key === "Escape") {
+            if (helpOpen) { toggleHelp(); ev.preventDefault(); }
+            else if (aboutOpen) { toggleAbout(); ev.preventDefault(); }
         }
     });
 
@@ -314,6 +320,62 @@ function toggleHelp() {
         }
         overlay.classList.add("visible");
         helpOpen = true;
+    }
+}
+
+// Performance HUD
+
+let perfVisible = false;
+let perfInterval = null;
+
+function togglePerf() {
+    perfVisible = !perfVisible;
+    const hud = document.getElementById("perf-hud");
+    if (perfVisible) {
+        hud.classList.remove("hidden");
+        perfInterval = setInterval(updatePerf, 500);
+    } else {
+        hud.classList.add("hidden");
+        if (perfInterval) { clearInterval(perfInterval); perfInterval = null; }
+    }
+}
+
+function updatePerf() {
+    const fps = document.getElementById("fps-display").textContent || "--";
+    document.getElementById("perf-fps").textContent = fps;
+    const fpsNum = parseInt(fps);
+    document.getElementById("perf-frame-ms").textContent = fpsNum > 0 ? (1000 / fpsNum).toFixed(1) + " ms" : "--";
+    if (wasm) {
+        const bytes = wasm.instance.exports.memory.buffer.byteLength;
+        document.getElementById("perf-wasm-mem").textContent = (bytes / 1048576).toFixed(1) + " MB";
+    }
+    if (performance.memory) {
+        document.getElementById("perf-js-heap").textContent = (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + " MB";
+    } else {
+        document.getElementById("perf-js-heap").textContent = "N/A";
+    }
+    if (audioCtx && audioNode) {
+        document.getElementById("perf-audio").textContent = audioCtx.state + " " + masterVolume + "%";
+    } else {
+        document.getElementById("perf-audio").textContent = "OFF";
+    }
+}
+
+// About modal
+
+let aboutOpen = false;
+
+function toggleAbout() {
+    aboutOpen = !aboutOpen;
+    const overlay = document.getElementById("about-overlay");
+    if (aboutOpen) {
+        if (wasm) {
+            const bytes = wasm.instance.exports.memory.buffer.byteLength;
+            document.getElementById("about-wasm-size").textContent = (bytes / 1048576).toFixed(1) + " MB";
+        }
+        overlay.classList.add("visible");
+    } else {
+        overlay.classList.remove("visible");
     }
 }
 

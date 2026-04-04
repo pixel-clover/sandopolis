@@ -599,6 +599,132 @@
             background: var(--text-muted);
         }
 
+        /* Performance HUD */
+        #perf-hud {
+            position: fixed;
+            top: 50px;
+            left: 10px;
+            z-index: 40;
+            background: rgba(10, 14, 26, 0.88);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 6px 10px;
+            font-size: 0.62rem;
+            color: #8CB4E0;
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            min-width: 140px;
+        }
+
+        #perf-hud.hidden {
+            display: none;
+        }
+
+        .perf-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 1px 0;
+        }
+
+        .perf-row span:first-child {
+            color: #5A7AAA;
+        }
+
+        .perf-row span:last-child {
+            color: #B8D4F0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* About modal */
+        #about-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: var(--overlay-bg);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity var(--transition-normal);
+        }
+
+        #about-overlay.visible {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .about-content {
+            text-align: center;
+        }
+
+        .about-title {
+            color: var(--text-accent);
+            font-size: 1.1rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 2px;
+        }
+
+        .about-subtitle {
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            margin-bottom: 14px;
+        }
+
+        .about-info {
+            text-align: left;
+            margin: 0 auto 14px;
+            max-width: 280px;
+        }
+
+        .about-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72rem;
+            padding: 3px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .about-row span:first-child {
+            color: var(--text-muted);
+        }
+
+        .about-row span:last-child {
+            color: var(--text);
+        }
+
+        .about-link {
+            margin: 10px 0 4px;
+            font-size: 0.72rem;
+        }
+
+        .about-link a {
+            color: var(--text-link);
+            text-decoration: none;
+        }
+
+        .about-link a:hover {
+            color: var(--text-accent);
+        }
+
+        .about-credits {
+            color: var(--text-muted);
+            font-size: 0.62rem;
+            margin-top: 4px;
+        }
+
+        .about-credits a {
+            color: var(--text-muted);
+            text-decoration: none;
+        }
+
+        .about-credits a:hover {
+            color: var(--text-link);
+        }
+
         /* Footer */
         footer {
             margin-top: auto;
@@ -715,10 +841,17 @@
         <button id="btn-load">Load</button>
     </div>
     <span class="spacer"></span>
-    <button id="btn-fullscreen">Fullscreen</button>
-    <button id="settings-toggle">Settings</button>
-    <button id="theme-toggle">Dark</button>
-    <button id="help-btn">Help</button>
+    <div class="btn-group">
+        <span class="btn-group-label">View</span>
+        <button id="btn-fullscreen" title="Fullscreen [F11]">Fullscreen</button>
+        <button id="settings-toggle" title="Settings">Settings</button>
+    </div>
+    <div class="btn-group">
+        <button id="perf-toggle" title="Performance">Perf</button>
+        <button id="about-btn" title="About Sandopolis">About</button>
+        <button id="help-btn" title="Help [F1]">Help</button>
+        <button id="theme-toggle" title="Toggle theme">Dark</button>
+    </div>
 </div>
 
 <div class="status-bar">
@@ -789,8 +922,39 @@
     </div>
 </div>
 
+<!-- Performance HUD -->
+<div id="perf-hud" class="hidden">
+    <div class="perf-row"><span>FPS</span><span id="perf-fps">--</span></div>
+    <div class="perf-row"><span>Frame</span><span id="perf-frame-ms">--</span></div>
+    <div class="perf-row"><span>WASM Mem</span><span id="perf-wasm-mem">--</span></div>
+    <div class="perf-row"><span>JS Heap</span><span id="perf-js-heap">--</span></div>
+    <div class="perf-row"><span>Audio Buf</span><span id="perf-audio">--</span></div>
+</div>
+
+<!-- About modal -->
+<div id="about-overlay">
+    <div class="help-panel">
+        <h3>ABOUT SANDOPOLIS</h3>
+        <div class="about-content">
+            <p class="about-title">Sandopolis</p>
+            <p class="about-subtitle">Sega Genesis / Mega Drive Emulator</p>
+            <div class="about-info">
+                <div class="about-row"><span>Version</span><span>0.1.0-alpha.5</span></div>
+                <div class="about-row"><span>Build</span><span>Zig 0.15.2 + WebAssembly</span></div>
+                <div class="about-row"><span>Audio</span><span>YM2612 + SN76489 at 48 kHz</span></div>
+                <div class="about-row"><span>Video</span><span>320x224 ARGB Canvas</span></div>
+                <div class="about-row"><span>License</span><span>MIT</span></div>
+                <div class="about-row"><span>WASM Size</span><span id="about-wasm-size">--</span></div>
+            </div>
+            <p class="about-link"><a href="https://github.com/pixel-clover/sandopolis">github.com/pixel-clover/sandopolis</a></p>
+            <p class="about-credits">Overlay assets: <a href="https://github.com/libretro/common-overlays">libretro/common-overlays</a> (CC BY 4.0)</p>
+        </div>
+        <button id="about-close">CLOSE</button>
+    </div>
+</div>
+
 <footer>
-    <a href="https://github.com/pixel-clover/sandopolis" id="help-link">Sandopolis on GitHub</a>
+    <a href="https://github.com/pixel-clover/sandopolis">Sandopolis on GitHub</a>
 </footer>
 
 <script src="sandopolis.js"></script>
