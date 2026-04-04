@@ -187,6 +187,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });

@@ -13,6 +13,7 @@ const rom_paths_mod = @import("rom_paths.zig");
 const state_file = @import("state_file.zig");
 const video_fifo = @import("video/fifo.zig");
 const video_timing = @import("video/timing.zig");
+const wasm = @import("wasm.zig");
 
 comptime {
     _ = audio_output;
@@ -30,4 +31,5 @@ comptime {
     _ = state_file;
     _ = video_fifo;
     _ = video_timing;
+    _ = wasm;
 }
