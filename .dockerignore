@@ -1,0 +1,11 @@
+.git
+.github
+.idea
+tmp
+roms
+*.md
+.gitignore
+.dockerignore
+.editorconfig
+LICENSE
+pyproject.toml

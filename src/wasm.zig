@@ -225,11 +225,10 @@ export fn sandopolis_free_save_buffer(emu: *WasmEmulator) void {
 }
 
 export fn sandopolis_load_state(emu: *WasmEmulator, ptr: [*]const u8, len: usize) bool {
-    var new_machine = state_file.loadFromBuffer(allocator, ptr[0..len]) catch return false;
+    const new_machine = state_file.loadFromBuffer(allocator, ptr[0..len]) catch return false;
     emu.machine.deinit(allocator);
     emu.machine = new_machine;
     emu.audio.reset();
-    _ = &new_machine;
     return true;
 }
 
