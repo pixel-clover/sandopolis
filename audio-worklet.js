@@ -11,8 +11,16 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
         this.readPos = 0;
         this.writePos = 0;
         this.count = 0;
+        // Fade state for smooth underrun handling (avoids pops/clicks).
+        this.fadeGain = 1.0;
+        this.underrunFrames = 0;
 
         this.port.onmessage = (e) => {
+            if (e.data === "query-level") {
+                // Report buffer fill level to the main thread for sync.
+                this.port.postMessage({ type: "level", count: this.count, capacity: this.bufferSize });
+                return;
+            }
             const samples = e.data; // Int16Array, stereo interleaved
             const len = samples.length;
             for (let i = 0; i < len; i++) {
@@ -26,7 +34,6 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
 
     process(_inputs, outputs) {
         const output = outputs[0];
-        // Handle both stereo (2 channels) and mono (1 channel) output configs.
         const outL = output[0];
         if (!outL) return true;
         const outR = output.length > 1 ? output[1] : null;
@@ -39,11 +46,23 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
                 const r = this.buffer[this.readPos];
                 this.readPos = (this.readPos + 1) % this.bufferSize;
                 this.count -= 2;
-                outL[i] = l;
-                if (outR) outR[i] = r; else outL[i] = (l + r) * 0.5;
+
+                // Recover from underrun: fade back in over 64 samples.
+                if (this.fadeGain < 1.0) {
+                    this.fadeGain = Math.min(1.0, this.fadeGain + 1.0 / 64.0);
+                }
+                this.underrunFrames = 0;
+
+                outL[i] = l * this.fadeGain;
+                if (outR) outR[i] = r * this.fadeGain; else outL[i] = (l + r) * 0.5 * this.fadeGain;
             } else {
+                // Underrun: fade out to silence to avoid a hard click.
+                if (this.fadeGain > 0.0) {
+                    this.fadeGain = Math.max(0.0, this.fadeGain - 1.0 / 32.0);
+                }
                 outL[i] = 0;
                 if (outR) outR[i] = 0;
+                this.underrunFrames++;
             }
         }
         return true;
