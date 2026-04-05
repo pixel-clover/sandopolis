@@ -453,4 +453,22 @@ pub fn build(b: *std.Build) void {
     });
     const wasm_step = b.step("wasm", "Build WebAssembly module for browser deployment");
     wasm_step.dependOn(&wasm_install.step);
+
+    // Libretro core (shared library)
+    const libretro_lib = b.addLibrary(.{
+        .name = "sandopolis_libretro",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/libretro.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = build_options.createModule() },
+            },
+        }),
+    });
+    addExternalCpuCores(libretro_lib, b, cpu_deps);
+    const libretro_install = b.addInstallArtifact(libretro_lib, .{});
+    const libretro_step = b.step("libretro", "Build Libretro core shared library");
+    libretro_step.dependOn(&libretro_install.step);
 }
