@@ -17,7 +17,7 @@ pub const MemoryInterface = struct {
     projectedDmaWaitMasterCyclesFn: *const fn (?*anyopaque, u32) u32,
     setCpuRuntimeStateFn: *const fn (?*anyopaque, runtime_state.RuntimeState) void,
     clearCpuRuntimeStateFn: *const fn (?*anyopaque) void,
-    notifyBusAccessFn: *const fn (?*anyopaque, u32) void,
+    notifyBusAccessFn: *const fn (?*anyopaque, u32, u32) void,
 
     pub fn bind(comptime Context: type, ctx: *Context) MemoryInterface {
         return .{
@@ -107,9 +107,9 @@ pub const MemoryInterface = struct {
                 }
             }.call,
             .notifyBusAccessFn = struct {
-                fn call(raw_ctx: ?*anyopaque, delta_master_cycles: u32) void {
+                fn call(raw_ctx: ?*anyopaque, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
                     const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
-                    self.notifyBusAccess(delta_master_cycles);
+                    self.notifyBusAccess(delta_master_cycles, elapsed_instruction_master);
                 }
             }.call,
         };
@@ -171,8 +171,8 @@ pub const MemoryInterface = struct {
         self.clearCpuRuntimeStateFn(self.ctx);
     }
 
-    pub fn notifyBusAccess(self: *const MemoryInterface, delta_master_cycles: u32) void {
-        self.notifyBusAccessFn(self.ctx, delta_master_cycles);
+    pub fn notifyBusAccess(self: *const MemoryInterface, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
+        self.notifyBusAccessFn(self.ctx, delta_master_cycles, elapsed_instruction_master);
     }
 };
 
@@ -254,7 +254,7 @@ test "memory interface bind forwards reads writes waits and runtime hooks" {
             self.runtime.clear();
         }
 
-        fn notifyBusAccess(_: *@This(), _: u32) void {}
+        fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
     };
 
     var probe = Probe{};

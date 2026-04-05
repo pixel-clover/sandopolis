@@ -140,10 +140,10 @@ pub const Bus = struct {
         self.ensureZ80HostWindow();
     }
 
-    fn notifySubInstructionBusAccess(ctx: ?*anyopaque, delta_master_cycles: u32) void {
+    fn notifySubInstructionBusAccess(ctx: ?*anyopaque, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
         var timing = self.z80TimingView();
-        timing.runZ80Early(delta_master_cycles);
+        timing.runZ80Early(delta_master_cycles, elapsed_instruction_master);
     }
 
     fn cpuMemoryView(self: *Bus) cpu_memory.View {
@@ -500,9 +500,9 @@ pub const Bus = struct {
         memory.clearCpuRuntimeState();
     }
 
-    pub fn notifyBusAccess(self: *Bus, delta_master_cycles: u32) void {
+    pub fn notifyBusAccess(self: *Bus, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
         var memory = self.cpuMemoryView();
-        memory.notifyBusAccess(delta_master_cycles);
+        memory.notifyBusAccess(delta_master_cycles, elapsed_instruction_master);
     }
 
     pub fn setM68kSoundWriteTraceEnabled(self: *Bus, enabled: bool) void {
@@ -721,7 +721,7 @@ const ControlWriteTimingProbe = struct {
         self.runtime.clear();
     }
 
-    pub fn notifyBusAccess(_: *@This(), _: u32) void {}
+    pub fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
 };
 
 fn writeBe16(bytes: []u8, offset: usize, value: u16) void {

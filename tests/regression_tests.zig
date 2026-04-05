@@ -1112,7 +1112,7 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expect(collector.total_samples > 0);
 
     // Golden hash for the full audio pipeline output.
-    try testing.expectEqual(@as(u32, 1120342466), collector.hash);
+    try testing.expectEqual(@as(u32, 2457337590), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1180,7 +1180,7 @@ test "streets of rage ym synthesis matches golden hash (900 frames)" {
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 3085741921), hash);
+    try testing.expectEqual(@as(u32, 4027639577), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {

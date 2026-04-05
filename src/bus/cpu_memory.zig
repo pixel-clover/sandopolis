@@ -25,7 +25,7 @@ pub const View = struct {
     ensure_z80_host_window_ctx: ?*anyopaque,
     ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
     notify_bus_access_ctx: ?*anyopaque,
-    notify_bus_access_fn: *const fn (?*anyopaque, u32) void,
+    notify_bus_access_fn: *const fn (?*anyopaque, u32, u32) void,
 
     pub fn init(
         cartridge: *Cartridge,
@@ -42,7 +42,7 @@ pub const View = struct {
         ensure_z80_host_window_ctx: ?*anyopaque,
         ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
         notify_bus_access_ctx: ?*anyopaque,
-        notify_bus_access_fn: *const fn (?*anyopaque, u32) void,
+        notify_bus_access_fn: *const fn (?*anyopaque, u32, u32) void,
     ) View {
         return .{
             .cartridge = cartridge,
@@ -67,8 +67,8 @@ pub const View = struct {
         self.ensure_z80_host_window_fn(self.ensure_z80_host_window_ctx);
     }
 
-    pub fn notifyBusAccess(self: *View, delta_master_cycles: u32) void {
-        self.notify_bus_access_fn(self.notify_bus_access_ctx, delta_master_cycles);
+    pub fn notifyBusAccess(self: *View, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
+        self.notify_bus_access_fn(self.notify_bus_access_ctx, delta_master_cycles, elapsed_instruction_master);
     }
 
     fn currentCpuAccessAudioMasterOffset(self: *const View) u32 {
@@ -420,7 +420,7 @@ pub const View = struct {
 
 const TestHooks = struct {
     fn ensureZ80HostWindow(_: ?*anyopaque) void {}
-    fn notifyBusAccess(_: ?*anyopaque, _: u32) void {}
+    fn notifyBusAccess(_: ?*anyopaque, _: u32, _: u32) void {}
 };
 
 const TestRuntimeCtx = struct {

@@ -954,17 +954,13 @@ const Opn2Core = struct {
         var inc: i16 = 0;
 
         if (kon_event) {
-            const sustain_level_zero = self.sl[slot] == 0;
+            // Key-on always enters attack state, matching the Nuked OPN2
+            // reference (ym3438.c:638).  The attack→decay transition
+            // happens naturally when level reaches 0 on the next clock.
+            next_state = .attack;
             if (self.eg_ratemax) {
                 next_level = 0;
-                next_state = if (sustain_level_zero) .sustain else .decay;
-            } else if (level == 0) {
-                next_state = if (sustain_level_zero) .sustain else .decay;
-            } else {
-                next_state = .attack;
-            }
-
-            if (next_state == .attack and current_state == .attack and self.eg_inc != 0 and nkon != 0) {
+            } else if (current_state == .attack and level != 0 and self.eg_inc != 0 and nkon != 0) {
                 inc = (@as(i16, ~level) << @intCast(self.eg_inc)) >> 5;
             }
         } else {
@@ -1221,6 +1217,13 @@ pub const Ym2612Synth = struct {
         };
     }
 
+    /// Return the accumulated sample as raw integers scaled by 11, matching
+    /// the reference Nuked OPN2 wrapper output format.  This is the value
+    /// that should be fed directly into the blip buffer.
+    pub fn finishAccumulatedSampleRaw(_: *Ym2612Synth, sum_left: i32, sum_right: i32) [2]i32 {
+        return .{ sum_left * 11, sum_right * 11 };
+    }
+
     fn enqueueWrite(self: *Ym2612Synth, event: YmWriteEvent) void {
         if (self.pending_write_count == self.pending_writes.len) {
             std.mem.copyForwards(YmWriteEvent, self.pending_writes[0 .. self.pending_writes.len - 1], self.pending_writes[1..]);
@@ -1450,7 +1453,7 @@ test "ym native sample drains exactly one frame of internal writes" {
     try std.testing.expectEqual(@as(usize, 1), synth.pending_write_count);
 }
 
-test "ym key on at minimal attenuation enters sustain immediately when sl is zero" {
+test "ym key on always enters attack state even when level is zero" {
     var core = Opn2Core{};
     const slot: usize = 0;
     core.cycles = (slot + 2) % 24;
@@ -1461,10 +1464,12 @@ test "ym key on at minimal attenuation enters sustain immediately when sl is zer
     core.envelopeAdsr();
 
     try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.sustain)), core.eg_state[slot]);
+    // Key-on always enters attack, matching Nuked OPN2 (ym3438.c:638).
+    // The attack→decay transition happens on the next clock when level==0.
+    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.attack)), core.eg_state[slot]);
 }
 
-test "ym key on with maximal attack bypasses attack and enters decay" {
+test "ym key on with ratemax enters attack state with instant level zero" {
     var core = Opn2Core{};
     const slot: usize = 0;
     core.cycles = (slot + 2) % 24;
@@ -1475,8 +1480,10 @@ test "ym key on with maximal attack bypasses attack and enters decay" {
 
     core.envelopeAdsr();
 
+    // Level goes to 0 (instant attack), but state is attack, not decay.
+    // The decay transition happens on the next clock.
     try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.decay)), core.eg_state[slot]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.attack)), core.eg_state[slot]);
 }
 
 test "ym lfo reset state matches disabled waveform defaults" {

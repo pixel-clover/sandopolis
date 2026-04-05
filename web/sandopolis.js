@@ -478,6 +478,9 @@ async function initAudio() {
     if (audioCtx) return;
     try {
         audioCtx = new AudioContext({sampleRate: 48000});
+        if (audioCtx.sampleRate !== 48000) {
+            console.warn("Audio: requested 48kHz but got " + audioCtx.sampleRate + "Hz; browser will resample");
+        }
         await audioCtx.audioWorklet.addModule("audio-worklet.js");
         audioNode = new AudioWorkletNode(audioCtx, "sandopolis-audio", {
             numberOfOutputs: 1,
@@ -485,6 +488,12 @@ async function initAudio() {
             channelCountMode: "explicit",
             channelInterpretation: "speakers",
         });
+        audioNode.port.onmessage = (e) => {
+            if (e.data && e.data.type === "level") {
+                audioBufferLevel = e.data.count;
+                audioBufferCapacity = e.data.capacity;
+            }
+        };
         gainNode = audioCtx.createGain();
         gainNode.gain.value = masterVolume / 100;
         audioNode.connect(gainNode);
@@ -507,6 +516,8 @@ function renderAudio() {
     // Re-read memory.buffer after render call (may have grown via memory.grow)
     const samples = new Int16Array(e.memory.buffer, bufPtr, sampleCount);
     audioNode.port.postMessage(samples.slice());
+    // Query buffer level for adaptive frame pacing.
+    audioNode.port.postMessage("query-level");
 }
 
 // Save/Load
@@ -623,18 +634,35 @@ async function loadRom(file) {
     if (aboutOpen) updateAboutInfo();
 
     running = true;
-    frameInterval = 1000 / (isPal ? 50 : 60);
+    // Use precise Genesis frame rates to avoid audio drift.
+    // NTSC: 53693175 / (262*3420) = 59.9227 fps
+    // PAL:  53203424 / (313*3420) = 49.7015 fps
+    frameInterval = isPal ? (1000 / 49.7015) : (1000 / 59.9227);
     lastFrameTime = performance.now();
     rafId = requestAnimationFrame(frameLoop);
 }
 
 let frameInterval = 1000 / 60;
 let lastFrameTime = 0;
+// Audio buffer level feedback from the AudioWorklet.
+let audioBufferLevel = 0;
+let audioBufferCapacity = 1;
 
 function frameLoop(now) {
     if (!running) return;
     rafId = requestAnimationFrame(frameLoop);
-    if (now - lastFrameTime < frameInterval * 0.8) return;
+
+    // Adaptive frame pacing: if the audio buffer is getting low, run
+    // the emulator slightly faster by shortening the frame gate. If
+    // it's getting full, slow down. This keeps audio and video in sync
+    // despite the ~0.1% mismatch between Genesis and display refresh.
+    let paceMultiplier = 0.8;
+    if (audioBufferCapacity > 0) {
+        const fill = audioBufferLevel / audioBufferCapacity;
+        if (fill < 0.1) paceMultiplier = 0.5;       // starving: run faster
+        else if (fill > 0.6) paceMultiplier = 0.95;  // full: slow down
+    }
+    if (now - lastFrameTime < frameInterval * paceMultiplier) return;
     lastFrameTime = now;
 
     const e = wasm.instance.exports;

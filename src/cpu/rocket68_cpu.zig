@@ -386,7 +386,7 @@ pub const Cpu = struct {
             if (elapsed > self.sub_instruction_advanced_master) {
                 const delta = elapsed - self.sub_instruction_advanced_master;
                 if (delta >= clock.z80_divider) {
-                    memory.notifyBusAccess(delta);
+                    memory.notifyBusAccess(delta, elapsed);
                     self.sub_instruction_advanced_master = elapsed;
                 }
             }
@@ -614,7 +614,7 @@ test "rocket68 cpu instruction trace records stepped instructions when enabled" 
         }
         pub fn setCpuRuntimeState(_: *@This(), _: runtime_state.RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
-        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
     };
 
     var probe = Probe{};
@@ -682,7 +682,7 @@ test "noteBusAccessWait calls notifyBusAccess for slow bus but not z80 control" 
         pub fn setCpuRuntimeState(_: *@This(), _: runtime_state.RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
 
-        pub fn notifyBusAccess(self: *@This(), delta: u32) void {
+        pub fn notifyBusAccess(self: *@This(), delta: u32, _: u32) void {
             self.notify_count += 1;
             self.last_notify_delta = delta;
         }

@@ -68,14 +68,26 @@ const AudioInit = struct {
         self.syncRecordedPlayback(wav_recorder);
         if (self.queueHasRoom()) {
             try self.pushPending(pending, z80, is_pal, wav_recorder);
-        } else {
+        } else if (self.queueIsSeverelyBacklogged()) {
+            // Only hard-clear on severe backlog (2x budget) to avoid
+            // accumulating unbounded latency after long stalls.
             try self.recoverBackloggedQueue(pending, z80, is_pal, wav_recorder);
+        } else {
+            // Mild backlog: skip this frame's audio and let the queue
+            // drain naturally.  This avoids the pop/click from a hard
+            // clear while still recovering within a few frames.
+            try self.output.discardPending(pending, z80, is_pal);
         }
     }
 
     fn queueHasRoom(self: *const AudioInit) bool {
         const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return false;
         return !queueIsBackloggedForBudget(@intCast(queued_bytes), self.queueBudgetBytes());
+    }
+
+    fn queueIsSeverelyBacklogged(self: *const AudioInit) bool {
+        const queued_bytes = zsdl3.getAudioStreamQueued(self.stream) catch return true;
+        return queued_bytes >= self.queueBudgetBytes() * 2;
     }
 
     fn recoverBackloggedQueue(self: *AudioInit, pending: PendingAudioFrames, z80: anytype, is_pal: bool, wav_recorder: ?*WavRecorder) !void {
