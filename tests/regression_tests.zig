@@ -347,7 +347,6 @@ test "frame scheduler stalls cpu while vdp dma owns the bus" {
     try testing.expect(emulator.vdpShouldHaltCpu());
 }
 
-
 test "frame scheduler does not stall cpu for pending vdp fifo writes" {
     const rom = try seedResetNopsRom(testing.allocator, 2);
     defer testing.allocator.free(rom);

@@ -59,6 +59,7 @@ Quick examples:
 - `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
 - `src/wasm.zig`: WebAssembly export layer wrapping the Machine API for browser deployment.
 - `src/wasm_stubs.c`: minimal C stubs (setjmp/longjmp and main) needed for WASM builds.
+- `src/libretro.zig`: Libretro core shared library wrapping the Machine API for RetroArch and other Libretro frontends.
 - `src/`: remaining core emulator modules (`machine.zig`, `cli.zig`, `performance_profile.zig`, `rom_metadata.zig`, `state_file.zig`, etc.).
 - `tests/`: non-unit suites only:
     - `integration_tests.zig`

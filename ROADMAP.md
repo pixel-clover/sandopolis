@@ -104,4 +104,4 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser gamepad support with standard and raw mapping fallback (2 players)
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
-- [ ] Libretro core packaging and integration
+- [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)

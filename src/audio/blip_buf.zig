@@ -11,7 +11,6 @@ const testing = std.testing;
 /// sinc kernel so that the output is correctly band-limited at the target
 /// sample rate.  A built-in single-pole high-pass (bass_shift = 9) removes
 /// DC during readout, matching the original C implementation.
-
 const pre_shift: u6 = 32;
 const time_bits: u6 = pre_shift + 20;
 const time_unit: u64 = @as(u64, 1) << time_bits;
