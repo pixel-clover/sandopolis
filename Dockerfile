@@ -1,7 +1,30 @@
-FROM ghcr.io/ziglang/zig:0.15.2 AS build
+FROM debian:trixie-slim AS build
+
+ARG TARGETARCH
 
 WORKDIR /src
-COPY build.zig build.zig.zon ./
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY build.zig.zon ./
+
+RUN set -eux; \
+    zig_version="$(sed -n 's/.*\.minimum_zig_version = "\(.*\)",/\1/p' build.zig.zon)"; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) zig_arch="x86_64" ;; \
+        arm64) zig_arch="aarch64" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fL "https://ziglang.org/download/${zig_version}/zig-${zig_arch}-linux-${zig_version}.tar.xz" -o /tmp/zig.tar.xz; \
+    mkdir -p /opt/zig; \
+    tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; \
+    ln -s /opt/zig/zig /usr/local/bin/zig
+
+COPY build.zig ./
 COPY src/ src/
 RUN zig build wasm
 
