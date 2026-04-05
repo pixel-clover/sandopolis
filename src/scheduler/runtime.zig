@@ -194,6 +194,12 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
         pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
             return 0;
         }
+        pub fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
+            return 0;
+        }
         pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
             return 0;
         }
@@ -290,6 +296,12 @@ test "scheduler cpu bind forwards instruction stepping through memory" {
         pub fn write16(_: *@This(), _: u32, _: u16) void {}
         pub fn write32(_: *@This(), _: u32, _: u32) void {}
         pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
+            return 0;
+        }
+        pub fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
             return 0;
         }
         pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {

@@ -398,6 +398,14 @@ pub const Bus = struct {
         self.ensureZ80HostWindow();
     }
 
+    pub fn shouldHaltCpu(self: *const Bus) bool {
+        return self.vdp.shouldHaltCpu();
+    }
+
+    pub fn projectedDmaWaitMasterCycles(self: *const Bus, elapsed: u32) u32 {
+        return self.vdp.projectedMasterCyclesToNextRefreshSlot(elapsed);
+    }
+
     pub fn cpuMemory(self: *Bus) MemoryInterface {
         return MemoryInterface.bind(Bus, self);
     }
@@ -682,6 +690,14 @@ const ControlWriteTimingProbe = struct {
     }
 
     pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
+        return 0;
+    }
+
+    pub fn shouldHaltCpu(_: *const @This()) bool {
+        return false;
+    }
+
+    pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
         return 0;
     }
 

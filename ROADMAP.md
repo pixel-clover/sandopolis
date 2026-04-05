@@ -100,7 +100,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [ ] 32X subsystem support
 - [x] Browser/WebAssembly build with Canvas rendering, keyboard input, and Web Audio playback (`zig build wasm`, `web/`)
 - [x] Browser save states with IndexedDB persistence and in-memory quick save/load
-- [x] Browser settings panel with audio mode, PSG volume, controller type, aspect ratio, and CRT screen effect
+- [x] Browser settings panel with audio mode, PSG volume, 3-band equalizer, controller type, aspect ratio, and CRT screen effect
 - [x] Browser gamepad support with standard and raw mapping fallback (2 players)
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)

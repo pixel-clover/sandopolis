@@ -516,6 +516,7 @@ pub const Vdp = struct {
     pub const dataPortReadWaitMasterCycles = fifo_mod.dataPortReadWaitMasterCycles;
     pub const shouldHaltCpu = fifo_mod.shouldHaltCpu;
     pub const masterCyclesToNextRefreshSlot = fifo_mod.masterCyclesToNextRefreshSlot;
+    pub const projectedMasterCyclesToNextRefreshSlot = fifo_mod.projectedMasterCyclesToNextRefreshSlot;
     pub const refreshSlotDurationMasterCycles = fifo_mod.refreshSlotDurationMasterCycles;
     pub const controlPortWriteWaitMasterCycles = fifo_mod.controlPortWriteWaitMasterCycles;
 
