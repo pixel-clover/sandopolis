@@ -1005,6 +1005,22 @@
             <input id="psg-volume" max="200" min="0" step="10" type="range" value="150">
             <span id="psg-volume-label">150%</span>
         </div>
+        <label><input id="eq-enabled" type="checkbox"> Equalizer</label>
+        <div class="volume-row">
+            <span class="eq-label">Low</span>
+            <input id="eq-low" max="200" min="0" step="5" type="range" value="100">
+            <span id="eq-low-label">100%</span>
+        </div>
+        <div class="volume-row">
+            <span class="eq-label">Mid</span>
+            <input id="eq-mid" max="200" min="0" step="5" type="range" value="100">
+            <span id="eq-mid-label">100%</span>
+        </div>
+        <div class="volume-row">
+            <span class="eq-label">High</span>
+            <input id="eq-high" max="200" min="0" step="5" type="range" value="100">
+            <span id="eq-high-label">100%</span>
+        </div>
         <label>Controller</label>
         <select id="controller-type">
             <option value="1">6-Button</option>
