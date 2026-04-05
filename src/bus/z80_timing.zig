@@ -289,6 +289,17 @@ pub const View = struct {
 
         const threshold = @as(i64, clock.z80_divider);
 
+        // The Z80 burst replays instructions that should have executed
+        // during the slice.  Track a running master-clock offset so each
+        // instruction's audio events get timestamps that reflect their
+        // actual position within the audio window, not just the end.
+        const credit_at_start = self.state.z80_master_credit;
+        const window_end = self.audio_timing.pending_master_cycles;
+        const burst_base: u32 = if (credit_at_start > 0 and window_end >= @as(u32, @intCast(credit_at_start)))
+            window_end - @as(u32, @intCast(credit_at_start))
+        else
+            window_end;
+
         while (self.state.z80_master_credit >= threshold) {
             // DMA halt check — Z80 bus access may have triggered DMA.
             if (self.state.z80_dma_halted) {
@@ -323,7 +334,12 @@ pub const View = struct {
                 continue;
             }
 
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+            // Compute the current Z80 instruction's position within the
+            // audio window based on how much credit has been consumed.
+            const consumed_credit = credit_at_start - self.state.z80_master_credit;
+            const current_offset = burst_base + @as(u32, @intCast(@max(consumed_credit, 0)));
+            self.z80.setAudioMasterOffset(current_offset);
+
             const instruction_cycles = self.z80.stepInstruction();
             if (instruction_cycles == 0) break;
             if (self.active_execution_counters) |counters| counters.z80_instructions += 1;
