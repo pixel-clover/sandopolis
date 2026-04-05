@@ -25,7 +25,7 @@ pub const ChipType = enum {
 const operator_reg_offsets = [_]u8{ 0x00, 0x08, 0x04, 0x0C };
 const internal_clock_master_cycles: u16 = @as(u16, clock.m68k_divider) * 6;
 const internal_clocks_per_sample: usize = clock.fm_master_cycles_per_sample / internal_clock_master_cycles;
-// Genesis Plus GX's Nuked wrapper sums 24 internal clocks and writes
+// The Nuked OPN2 wrapper sums 24 internal clocks and writes
 // `ym3438_sample * 11` into the FM buffer. Normalize against 16-bit PCM so the
 // Sandopolis output wrapper uses the same amplitude basis.
 const ym_output_scale: f32 = 11.0 / 32767.0;
@@ -295,6 +295,10 @@ const Opn2Core = struct {
     mode_kon_operator: [4]u8 = .{ 0, 0, 0, 0 },
     dacen: u8 = 0,
     dacdata: u16 = 0,
+    // When true, use the YM2612 (discrete) output path with *3
+    // amplification and sign-extension fallback.  When false, use the
+    // YM3438 (integrated) output path matching the reference emulator.
+    ym2612_output_mode: bool = false,
     mode_kon: [24]u8 = [_]u8{0} ** 24,
     mode_csm: u8 = 0,
     mode_kon_csm: u8 = 0,
@@ -741,17 +745,27 @@ const Opn2Core = struct {
         self.mol = 0;
         self.mor = 0;
 
-        const out_enabled = test_dac or ((slot & 0x03) == 0x03);
-        var sign = out >> 8;
-        if (out >= 0) {
-            out += 1;
-            sign += 1;
+        if (self.ym2612_output_mode) {
+            // YM2612 (discrete) output path: sign extension fallback,
+            // output at slot phase 3, and *3 amplification.
+            const out_enabled = test_dac or ((slot & 0x03) == 0x03);
+            var sign = out >> 8;
+            if (out >= 0) {
+                out += 1;
+                sign += 1;
+            }
+            self.mol = if (self.ch_lock_l != 0 and out_enabled) out else sign;
+            self.mor = if (self.ch_lock_r != 0 and out_enabled) out else sign;
+            self.mol *= 3;
+            self.mor *= 3;
+        } else {
+            // YM3438 (integrated) output path: no sign extension fallback,
+            // output at slot phases 1-3, and no amplification.  This matches
+            // the reference emulator's default mode.
+            const out_enabled = test_dac or ((slot & 0x03) != 0x00);
+            if (self.ch_lock_l != 0 and out_enabled) self.mol = out;
+            if (self.ch_lock_r != 0 and out_enabled) self.mor = out;
         }
-
-        self.mol = if (self.ch_lock_l != 0 and out_enabled) out else sign;
-        self.mor = if (self.ch_lock_r != 0 and out_enabled) out else sign;
-        self.mol *= 3;
-        self.mor *= 3;
     }
 
     fn channelGenerate(self: *Opn2Core) void {
@@ -997,8 +1011,8 @@ const Opn2Core = struct {
 
         // SSG-EG: Force level to MAX on Key OFF if inverted level >= 0x200.
         // This must happen regardless of current state (including attack phase).
-        // See Genesis-Plus-GX changelog 11-05-2021: "fixed potential issue with
-        // SSG-EG inverted attenuation level on Key OFF"
+        // Fix for SSG-EG inverted attenuation level on Key OFF (2021-11-05):
+        // force level to MAX when inverted level >= 0x200.
         if (koff_event and self.eg_ssg_enable[slot] != 0 and eg_off) {
             next_state = .release;
             next_level = 0x03FF;
@@ -1217,11 +1231,12 @@ pub const Ym2612Synth = struct {
         };
     }
 
-    /// Return the accumulated sample as raw integers scaled by 11, matching
-    /// the reference Nuked OPN2 wrapper output format.  This is the value
-    /// that should be fed directly into the blip buffer.
+    /// Return the accumulated sample scaled for the blip buffer.  The Nuked
+    /// OPN2 core accumulates 24 internal clock outputs that are roughly 1/3.4
+    /// of the sample-based YM2612 core's direct output.  Scale by 4 (nearest clean
+    /// integer) to approximately match the reference emulator's output level.
     pub fn finishAccumulatedSampleRaw(_: *Ym2612Synth, sum_left: i32, sum_right: i32) [2]i32 {
-        return .{ sum_left * 11, sum_right * 11 };
+        return .{ sum_left * 4, sum_right * 4 };
     }
 
     fn enqueueWrite(self: *Ym2612Synth, event: YmWriteEvent) void {
@@ -1824,7 +1839,7 @@ test "ym ssg-eg repeat type latches repeat when the envelope wraps" {
 test "ym ssg-eg key off during attack forces level to max when inverted level exceeds threshold" {
     // This test validates the fix for the SSG-EG key-off bug where inverted attenuation
     // level >= 0x200 should be forced to MAX (0x3FF) regardless of current envelope state.
-    // See Genesis-Plus-GX changelog 11-05-2021.
+    // SSG-EG key-off fix (2021-11-05).
     var core = Opn2Core{};
 
     const slot = 0;
@@ -1876,8 +1891,23 @@ test "ym dac output appears when enabled" {
     try std.testing.expect(enabled_energy > disabled_energy);
 }
 
-test "ym channel output uses gated sample and muted-phase sign leakage" {
+test "ym3438 channel output does not apply sign leakage or amplification" {
     var core = Opn2Core{};
+    core.cycles = 3; // out_en = ((3 & 3) != 0) = true
+    core.ch_lock = 32;
+    core.ch_lock_l = 1;
+    core.ch_lock_r = 0;
+
+    core.channelOutput();
+
+    // YM3438 mode (default): no *3, no sign fallback
+    try std.testing.expectEqual(@as(i16, 32), core.mol);
+    try std.testing.expectEqual(@as(i16, 0), core.mor);
+}
+
+test "ym2612 channel output uses gated sample with sign leakage and amplification" {
+    var core = Opn2Core{};
+    core.ym2612_output_mode = true;
     core.cycles = 3;
     core.ch_lock = 32;
     core.ch_lock_l = 1;
@@ -1885,12 +1915,14 @@ test "ym channel output uses gated sample and muted-phase sign leakage" {
 
     core.channelOutput();
 
+    // YM2612 mode: out=(32+1)=33, sign=1, mol=33*3=99, mor=1*3=3
     try std.testing.expectEqual(@as(i16, 99), core.mol);
     try std.testing.expectEqual(@as(i16, 3), core.mor);
 }
 
-test "ym channel output keeps negative samples free of extra ladder shaping" {
+test "ym2612 channel output keeps negative samples free of extra ladder shaping" {
     var core = Opn2Core{};
+    core.ym2612_output_mode = true;
     core.cycles = 3;
     core.ch_lock = -32;
     core.ch_lock_l = 1;
@@ -1902,17 +1934,18 @@ test "ym channel output keeps negative samples free of extra ladder shaping" {
     try std.testing.expectEqual(@as(i16, -3), core.mor);
 }
 
-test "ym channel output leaks only sign when the mux phase is inactive" {
+test "ym3438 channel output is zero when mux phase is inactive at slot 0" {
     var core = Opn2Core{};
-    core.cycles = 2;
+    core.cycles = 0; // out_en = ((0 & 3) != 0) = false
     core.ch_lock = 32;
     core.ch_lock_l = 1;
     core.ch_lock_r = 1;
 
     core.channelOutput();
 
-    try std.testing.expectEqual(@as(i16, 3), core.mol);
-    try std.testing.expectEqual(@as(i16, 3), core.mor);
+    // YM3438: slot 0 has out_en = false, mol/mor stay 0
+    try std.testing.expectEqual(@as(i16, 0), core.mol);
+    try std.testing.expectEqual(@as(i16, 0), core.mor);
 }
 
 test "ym fmGenerate tolerates fully attenuated levels" {

@@ -104,10 +104,10 @@ pub const View = struct {
     }
 
     /// M68K wait-state penalty when Z80 accesses the 68K bus.
-    /// Genesis Plus GX uses: m68k.cycles += (((Z80.cycles % 7) + 72) / 7) * 7
+    /// The M68K wait-state formula is: m68k.cycles += (((Z80.cycles % 7) + 72) / 7) * 7
     /// which resolves to 70-77 master cycles depending on Z80 phase alignment.
-    /// We approximate this using the Z80's master-clock phase modulo the M68K
-    /// divider, matching GPGX's per-access result.
+    /// We compute this using the Z80's master-clock phase modulo the M68K
+    /// divider, matching the per-access result.
     fn z80ContentionM68kWaitMasterCycles(self: *const View) u32 {
         const z80_phase_in_m68k = @as(u32, self.state.z80_master_phase) % clock.m68k_divider;
         return ((z80_phase_in_m68k + 72) / clock.m68k_divider) * clock.m68k_divider;
@@ -128,7 +128,7 @@ pub const View = struct {
         }
 
         // Z80 stalls for 3 Z80 cycles (45 master cycles) per bank access,
-        // matching GPGX's `Z80.cycles += (3 * 15)`.  The previous value of
+        // matching the expected `Z80.cycles += (3 * 15)`.  The previous value of
         // 49/50 (alternating) was 4-5 master cycles too high per access,
         // which caused GEMS DAC playback to fall behind its timing budget.
         self.state.z80_wait_master_cycles = 3 * clock.z80_divider;
@@ -178,7 +178,7 @@ pub const View = struct {
             return;
         }
 
-        // Align to the next Z80 cycle boundary, matching GPGX's
+        // Align to the next Z80 cycle boundary using
         // ((cycles + 14) / 15) * 15 rounding.  The Z80 loses 0-14
         // master cycles per BUSREQ/RESET release.  This keeps sound
         // driver timing (especially GEMS DAC playback) in sync.
@@ -242,7 +242,7 @@ pub const View = struct {
 
     /// Advance VDP/audio/I/O and accumulate Z80 credit, deferring Z80
     /// instruction execution until flushDeferredZ80() is called.  This
-    /// matches GPGX's per-line burst model where the Z80 runs after the
+    /// matches the per-line burst model where the Z80 runs after the
     /// M68K has finished its scanline work, avoiding race conditions in
     /// Z80 drivers (like SOR's GEMS) that depend on M68K shared-RAM
     /// writes being visible before the Z80 reads them.
@@ -566,10 +566,10 @@ test "z80 timing carries instruction overshoot across stepMaster slices" {
 }
 
 test "z80 timing aligns to next 15-cycle boundary on control-line release" {
-    // GPGX rounds Z80.cycles up to the next 15-cycle boundary when
+    // Z80.cycles is rounded up to the next 15-cycle boundary when
     // BUSREQ or RESET is released: Z80.cycles = ((cycles+14)/15)*15.
     // This means the Z80 loses 0-14 cycles per release event. Sandopolis
-    // must match this to keep Z80 sound driver timing in sync with GPGX.
+    // must match this to keep Z80 sound driver timing in sync.
     const testing = std.testing;
 
     const TestHooks = struct {
@@ -607,7 +607,7 @@ test "z80 timing aligns to next 15-cycle boundary on control-line release" {
     z80.setResetLineAsserted(false);
     view.noteZ80RunnableStateTransition(was_can_run);
 
-    // With GPGX-style alignment, phase=14 rounds up to 15, so the Z80
+    // With 15-cycle alignment, phase=14 rounds up to 15, so the Z80
     // gets 0 initial credit.  One more master cycle is not enough to
     // reach a full 15-cycle Z80 instruction.
     view.stepMasterAndFlush(1);

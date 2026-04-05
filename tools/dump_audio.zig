@@ -7,16 +7,16 @@ const c = @cImport({
     @cInclude("libretro.h");
 });
 
-const default_gpgx_core_path = "tmp/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
+const default_reference_core_path = "tmp/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
 const default_frames: usize = 600;
 
 const Backend = enum {
     sandopolis,
-    gpgx,
+    reference,
 
     fn parse(value: []const u8) error{InvalidBackend}!Backend {
         if (std.mem.eql(u8, value, "sandopolis")) return .sandopolis;
-        if (std.mem.eql(u8, value, "gpgx")) return .gpgx;
+        if (std.mem.eql(u8, value, "reference")) return .reference;
         return error.InvalidBackend;
     }
 };
@@ -43,7 +43,7 @@ const Config = struct {
     frames: usize = default_frames,
     skip_frames: usize = 0,
     mode: CaptureMode = .normal,
-    gpgx_core_path: []const u8 = default_gpgx_core_path,
+    reference_core_path: []const u8 = default_reference_core_path,
 };
 
 const WavSink = struct {
@@ -54,7 +54,7 @@ const WavSink = struct {
     }
 };
 
-const GpgxApi = struct {
+const ReferenceApi = struct {
     lib: std.DynLib,
     retro_set_environment: *const fn (c.retro_environment_t) callconv(.c) void,
     retro_set_video_refresh: *const fn (c.retro_video_refresh_t) callconv(.c) void,
@@ -69,7 +69,7 @@ const GpgxApi = struct {
     retro_unload_game: *const fn () callconv(.c) void,
     retro_run: *const fn () callconv(.c) void,
 
-    fn open(path: []const u8) !GpgxApi {
+    fn open(path: []const u8) !ReferenceApi {
         var lib = try std.DynLib.open(path);
         errdefer lib.close();
 
@@ -90,7 +90,7 @@ const GpgxApi = struct {
         };
     }
 
-    fn close(self: *GpgxApi) void {
+    fn close(self: *ReferenceApi) void {
         self.lib.close();
     }
 };
@@ -99,7 +99,7 @@ fn lookup(lib: *std.DynLib, comptime T: type, symbol_name: [:0]const u8) !T {
     return lib.lookup(T, symbol_name) orelse error.MissingSymbol;
 }
 
-const GpgxFrontend = struct {
+const ReferenceFrontend = struct {
     recorder: ?*WavRecorder = null,
     system_dir_z: [:0]const u8,
     save_dir_z: [:0]const u8,
@@ -107,9 +107,9 @@ const GpgxFrontend = struct {
     write_failed: bool = false,
 };
 
-var active_gpgx_frontend: ?*GpgxFrontend = null;
+var active_reference_frontend: ?*ReferenceFrontend = null;
 
-fn gpgxVariableValue(frontend: *const GpgxFrontend, key: []const u8) ?[*:0]const u8 {
+fn referenceVariableValue(frontend: *const ReferenceFrontend, key: []const u8) ?[*:0]const u8 {
     if (std.mem.eql(u8, key, "genesis_plus_gx_ym2612")) {
         return "nuked (ym2612)";
     }
@@ -137,8 +137,8 @@ fn gpgxVariableValue(frontend: *const GpgxFrontend, key: []const u8) ?[*:0]const
     return null;
 }
 
-fn gpgxEnvironmentCallback(cmd: c_uint, data: ?*anyopaque) callconv(.c) bool {
-    const frontend = active_gpgx_frontend orelse return false;
+fn referenceEnvironmentCallback(cmd: c_uint, data: ?*anyopaque) callconv(.c) bool {
+    const frontend = active_reference_frontend orelse return false;
 
     switch (cmd) {
         c.RETRO_ENVIRONMENT_SET_PIXEL_FORMAT,
@@ -169,7 +169,7 @@ fn gpgxEnvironmentCallback(cmd: c_uint, data: ?*anyopaque) callconv(.c) bool {
             const variable: *c.struct_retro_variable = @ptrCast(@alignCast(data.?));
             if (variable.key == null) return false;
             const key = std.mem.span(variable.key);
-            variable.value = gpgxVariableValue(frontend, key);
+            variable.value = referenceVariableValue(frontend, key);
             return variable.value != null;
         },
         c.RETRO_ENVIRONMENT_GET_GAME_INFO_EXT,
@@ -181,12 +181,12 @@ fn gpgxEnvironmentCallback(cmd: c_uint, data: ?*anyopaque) callconv(.c) bool {
     }
 }
 
-fn gpgxVideoRefreshCallback(_: ?*const anyopaque, _: c_uint, _: c_uint, _: usize) callconv(.c) void {}
+fn referenceVideoRefreshCallback(_: ?*const anyopaque, _: c_uint, _: c_uint, _: usize) callconv(.c) void {}
 
-fn gpgxAudioSampleCallback(_: i16, _: i16) callconv(.c) void {}
+fn referenceAudioSampleCallback(_: i16, _: i16) callconv(.c) void {}
 
-fn gpgxAudioBatchCallback(data: [*c]const i16, frames: usize) callconv(.c) usize {
-    if (active_gpgx_frontend) |frontend| {
+fn referenceAudioBatchCallback(data: [*c]const i16, frames: usize) callconv(.c) usize {
+    if (active_reference_frontend) |frontend| {
         if (frontend.recorder) |recorder| {
             const sample_ptr: [*]const i16 = @ptrCast(data);
             const samples = sample_ptr[0 .. frames * AudioOutput.channels];
@@ -198,9 +198,9 @@ fn gpgxAudioBatchCallback(data: [*c]const i16, frames: usize) callconv(.c) usize
     return frames;
 }
 
-fn gpgxInputPollCallback() callconv(.c) void {}
+fn referenceInputPollCallback() callconv(.c) void {}
 
-fn gpgxInputStateCallback(_: c_uint, _: c_uint, _: c_uint, _: c_uint) callconv(.c) i16 {
+fn referenceInputStateCallback(_: c_uint, _: c_uint, _: c_uint, _: c_uint) callconv(.c) i16 {
     return 0;
 }
 
@@ -212,11 +212,11 @@ pub fn main() !void {
     const config = try parseArgs(allocator);
     defer allocator.free(config.rom_path);
     defer allocator.free(config.out_path);
-    defer allocator.free(config.gpgx_core_path);
+    defer allocator.free(config.reference_core_path);
 
     switch (config.backend) {
         .sandopolis => try dumpSandopolis(allocator, config),
-        .gpgx => try dumpGpgx(allocator, config),
+        .reference => try dumpReference(allocator, config),
     }
 }
 
@@ -266,13 +266,13 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
         .frames = frames,
         .skip_frames = skip_frames,
         .mode = mode,
-        .gpgx_core_path = try allocator.dupe(u8, default_gpgx_core_path),
+        .reference_core_path = try allocator.dupe(u8, default_reference_core_path),
     };
 }
 
 fn usageError() error{InvalidArgs} {
     std.debug.print(
-        "Usage: zig build dump-audio -- <sandopolis|gpgx> <rom-path> <wav-path> [frames] [--skip frames] [--mode normal|ym-only|psg-only|unfiltered-mix]\n",
+        "Usage: zig build dump-audio -- <sandopolis|reference> <rom-path> <wav-path> [frames] [--skip frames] [--mode normal|ym-only|psg-only|unfiltered-mix]\n",
         .{},
     );
     return error.InvalidArgs;
@@ -359,8 +359,8 @@ fn dumpSandopolis(allocator: std.mem.Allocator, config: Config) !void {
     std.debug.print("\n", .{});
 }
 
-fn dumpGpgx(allocator: std.mem.Allocator, config: Config) !void {
-    var api = try GpgxApi.open(config.gpgx_core_path);
+fn dumpReference(allocator: std.mem.Allocator, config: Config) !void {
+    var api = try ReferenceApi.open(config.reference_core_path);
     defer api.close();
 
     const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
@@ -370,20 +370,20 @@ fn dumpGpgx(allocator: std.mem.Allocator, config: Config) !void {
     const rom_path_z = try allocator.dupeZ(u8, config.rom_path);
     defer allocator.free(rom_path_z);
 
-    var frontend = GpgxFrontend{
+    var frontend = ReferenceFrontend{
         .system_dir_z = cwd_z,
         .save_dir_z = cwd_z,
         .mode = config.mode,
     };
-    active_gpgx_frontend = &frontend;
-    defer active_gpgx_frontend = null;
+    active_reference_frontend = &frontend;
+    defer active_reference_frontend = null;
 
-    api.retro_set_environment(gpgxEnvironmentCallback);
-    api.retro_set_video_refresh(gpgxVideoRefreshCallback);
-    api.retro_set_audio_sample(gpgxAudioSampleCallback);
-    api.retro_set_audio_sample_batch(gpgxAudioBatchCallback);
-    api.retro_set_input_poll(gpgxInputPollCallback);
-    api.retro_set_input_state(gpgxInputStateCallback);
+    api.retro_set_environment(referenceEnvironmentCallback);
+    api.retro_set_video_refresh(referenceVideoRefreshCallback);
+    api.retro_set_audio_sample(referenceAudioSampleCallback);
+    api.retro_set_audio_sample_batch(referenceAudioBatchCallback);
+    api.retro_set_input_poll(referenceInputPollCallback);
+    api.retro_set_input_state(referenceInputStateCallback);
     api.retro_init();
     defer api.retro_deinit();
 
@@ -418,7 +418,7 @@ fn dumpGpgx(allocator: std.mem.Allocator, config: Config) !void {
     }
 
     std.debug.print(
-        "gpgx: wrote {d} frames to {s} ({d:.2}s @ {d} Hz)\n",
+        "reference: wrote {d} frames to {s} ({d:.2}s @ {d} Hz)\n",
         .{
             recorder.sample_count,
             config.out_path,

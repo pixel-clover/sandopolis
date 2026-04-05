@@ -316,7 +316,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         dump_audio_run.addArgs(args);
     }
-    const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or Genesis Plus GX");
+    const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or a reference libretro core");
     dump_audio_step.dependOn(&dump_audio_run.step);
 
     const trace_sound_boot = b.addExecutable(.{
@@ -376,7 +376,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         trace_ym_writes_run.addArgs(args);
     }
-    const trace_ym_writes_step = b.step("trace-ym-writes", "Dump decoded YM register writes from Sandopolis or Genesis Plus GX");
+    const trace_ym_writes_step = b.step("trace-ym-writes", "Dump decoded YM register writes from Sandopolis or a reference libretro core");
     trace_ym_writes_step.dependOn(&trace_ym_writes_run.step);
 
     const trace_z80_audio_ops = b.addExecutable(.{

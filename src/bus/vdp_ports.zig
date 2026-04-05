@@ -16,7 +16,7 @@ fn readStatus(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeStat
     const opcode = runtime.currentOpcode();
     // On real hardware, undefined VDP status bits (15:10) return the
     // instruction prefetch word, not the last value on the data bus.
-    // Genesis Plus GX reads from m68k.pc for these bits.
+    // On real hardware, the undefined status bits return the prefetch word.
     const status = vdp.readControlAdjusted(opcode) | (opcode & 0xFC00);
     open_bus.* = status;
     // readControlAdjusted() already cleared vint_pending/sprite flags in the VDP.
@@ -47,10 +47,10 @@ pub fn readByte(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeSt
             return splitWordByte(word, address);
         },
         0x04, 0x05, 0x06, 0x07 => return splitWordByte(readStatus(vdp, open_bus, runtime), address),
-        // HVC counter mirrors: GPGX masks with (address & 0xFD) so 0x0A/0x0B
-        // map to 0x08/0x09 and 0x0E/0x0F map to 0x0C/0x0D.
+        // HVC counter mirrors: masking with (address & 0xFD) maps 0x0A/0x0B
+        // to 0x08/0x09 and 0x0E/0x0F to 0x0C/0x0D.
         0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F => return splitWordByte(readHVCounter(vdp, open_bus, runtime), address),
-        // Unused ports return instruction prefetch (open bus), matching GPGX.
+        // Unused ports return instruction prefetch (open bus).
         0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F => return splitWordByte(runtime.currentOpcode(), address),
         // PSG / test register / invalid ports (0x10-0x17): on real hardware
         // these cause a lockup (no /DTACK). Return prefetch as a safe fallback.

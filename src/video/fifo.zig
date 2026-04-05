@@ -1244,8 +1244,8 @@ pub fn writeData(self: *Vdp, value: u16) void {
 
     self.pending_command = false;
 
-    // Apply CRAM writes immediately at M68K write time, matching GPGX's
-    // vdp_bus_w() behavior.  The FIFO entry is still created for timing
+    // Apply CRAM writes immediately at M68K write time.  The FIFO entry
+    // is still created for timing
     // (M68K wait cycles) but the actual CRAM update happens NOW so that
     // mid-scanline palette changes take effect at the correct pixel.
     var entry = makeWriteFifoEntry(self, value, dma_fifo_latency_slots);
@@ -1317,7 +1317,7 @@ fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopa
         entry.cram_already_applied = true;
     }
     // DMA source wraps within a 128K window (bits 0-16), preserving the
-    // upper address from reg[23].  GPGX: source = (reg[23] << 17) | (source & 0x1FFFF)
+    // upper address from reg[23]: source = (reg[23] << 17) | (source & 0x1FFFF)
     const next_src = self.dma_source_addr +% 2;
     self.dma_source_addr = (self.dma_source_addr & 0xFFFE0000) | (next_src & 0x1FFFF);
     self.dma_remaining -= 1;
@@ -1605,7 +1605,7 @@ pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
 pub fn writeControl(self: *Vdp, value: u16) void {
     // VDP register writes (8xxx pattern) are always processed immediately,
     // even during active DMA.  Only the second word of a 2-word command
-    // is cached during 68K-bus DMA, matching GPGX (vdp_68k_ctrl_w).
+    // is cached during 68K-bus DMA, matching hardware behavior.
     if (!self.pending_command and (value & 0xE000) == 0x8000) {
         // Register write — never buffered
     } else if (shouldBufferPortWrite(self)) {
@@ -1681,8 +1681,8 @@ pub fn writeControl(self: *Vdp, value: u16) void {
                 self.dma_active = true;
                 self.dma_start_delay_slots = 0;
             }
-            // Do NOT clear the FIFO when DMA starts.  GPGX only resets the
-            // FIFO at VDP hard reset, not on DMA activation.  Clearing here
+            // Do NOT clear the FIFO when DMA starts.  The FIFO is only
+            // reset at VDP hard reset, not on DMA activation.  Clearing here
             // would drop any pending data port writes that are still in the
             // pipeline, corrupting VRAM (e.g. Warsong's stats panel tiles).
         }

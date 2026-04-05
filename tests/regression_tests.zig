@@ -219,7 +219,7 @@ test "fm test rom ym synthesis output matches golden hash" {
     const hash = std.hash.Crc32.hash(sample_bytes);
 
     // Golden hash for the FM Test ROM's synthesized output.
-    try testing.expectEqual(@as(u32, 3596055297), hash);
+    try testing.expectEqual(@as(u32, 1264492399), hash);
 }
 
 test "ssf mapper remaps switchable rom windows" {
@@ -1112,7 +1112,7 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expect(collector.total_samples > 0);
 
     // Golden hash for the full audio pipeline output.
-    try testing.expectEqual(@as(u32, 2457337590), collector.hash);
+    try testing.expectEqual(@as(u32, 3630579156), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1170,17 +1170,17 @@ fn captureYmGoldenHash(rom_path: []const u8, frames: usize) !?u32 {
 
 test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sn.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 2859321386), hash);
+    try testing.expectEqual(@as(u32, 4193231261), hash);
 }
 
 test "streets of rage ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sor.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 2728510502), hash);
+    try testing.expectEqual(@as(u32, 73816007), hash);
 }
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 4027639577), hash);
+    try testing.expectEqual(@as(u32, 799676357), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {

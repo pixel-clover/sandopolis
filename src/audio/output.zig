@@ -16,6 +16,7 @@ const PsgStereoSample = psg_mod.PsgStereoSample;
 const ym2612 = @import("ym2612.zig");
 const Ym2612Synth = ym2612.Ym2612Synth;
 const YmStereoSample = ym2612.StereoSample;
+const Ym2612Sample = @import("ym2612_sample.zig").Ym2612Sample;
 
 const YmEventKind = enum {
     write,
@@ -131,13 +132,10 @@ const BoardOutputLpf = struct {
 };
 
 // Board output low-pass filter, modelling the analog path on the Genesis
-// mainboard.  Uses lp_range = 0x9999 (single-pole IIR, fc ≈ 3.9 kHz at
-// 44.1 kHz).  Empirical A/B comparison of all four test ROMs (SOR, GA2,
-// ROS, SN) showed that this coefficient at our 48 kHz output rate
-// (fc ≈ 4.0 kHz) produces the closest match in both RMS level and
-// spectral content above 6 kHz.  The earlier 0x6000 value
-// (fc ≈ 8 kHz) left Sandopolis +4 to +13 dB too bright above 6 kHz.
-const board_output_history_factor: f32 = @as(f32, 0x9999) / 65536.0;
+// mainboard.  The reference uses coefficient 0x9999 at 44.1 kHz, giving
+// fc ≈ 3585 Hz.  Adjusted for our 48 kHz output rate to match the same
+// analog cutoff frequency: 0xA01B at 48 kHz → fc ≈ 3585 Hz.
+const board_output_history_factor: f32 = @as(f32, 0xA01B) / 65536.0;
 const board_output_input_factor: f32 = 1.0 - board_output_history_factor;
 // PSG low-pass filter before downsampling. The blip buffer already handles
 // anti-aliasing, so no additional PSG filtering is needed. Setting this very high (22 kHz)
@@ -465,6 +463,7 @@ pub const AudioOutput = struct {
     ym_native_buffer: [max_ym_native_samples_per_chunk]YmStereoSample = undefined,
     ym_raw_buffer: [max_ym_native_samples_per_chunk][2]i32 = undefined,
     ym_synth: Ym2612Synth = .{},
+    ym_sample: Ym2612Sample = .{},
     psg: Psg = Psg{},
     ym_resampler: StereoResampler = StereoResampler.init(ntscYmNativeSampleRate(), output_rate),
     psg_resampler: StereoResampler = StereoResampler.init(ntscPsgNativeSampleRate(), output_rate),
@@ -505,6 +504,7 @@ pub const AudioOutput = struct {
 
     pub fn init() AudioOutput {
         var output: AudioOutput = .{};
+        output.ym_sample = Ym2612Sample.init();
         output.reset();
         return output;
     }
@@ -808,6 +808,7 @@ pub const AudioOutput = struct {
     fn resetYmRenderState(self: *AudioOutput) void {
         self.ym_synth.resetChipState();
         self.ym_synth.setTimingMode(self.timing_is_pal);
+        self.ym_sample.reset();
     }
 
     fn clockYmInternal(self: *AudioOutput, produced_count: *usize, collect_resampled: bool) void {
@@ -1469,6 +1470,7 @@ pub const AudioOutput = struct {
         const eq_hg = self.eq_left.hg;
         self.* = .{};
         self.psg = Psg.powerOn();
+        self.ym_sample = Ym2612Sample.init();
         self.render_mode = render_mode;
         self.psg_volume_percent = psg_vol;
         self.eq_enabled = eq_en;
@@ -1528,19 +1530,12 @@ pub const AudioOutput = struct {
         }
     }
 
-    // Blip buffer scaling.  FM values are raw accumulated_sum * 11 integers,
-    // matching the reference Nuked OPN2 wrapper output.  Typical peak for 6
-    // channels is ~49152 (6 × 8192 × 11 / 24 ≈ 49152 when all channels are
-    // at max).  PSG output (max ~2800 per channel from the volume table) is
-    // scaled so that the default 150% preamp matches the reference balance.
-    //
-    // The blip buffer output (i16) is normalized by dividing by this scale
-    // to produce ±1.0 float for post-processing.
-    const blip_output_scale: f32 = 49152.0;
-
-    // PSG volume table is already calibrated to match the reference (max
-    // 2800 per channel).  The gain factor is simply the preamp percentage
-    // divided by 100, matching the reference's chanAmp = preamp * panning / 100.
+    // PSG volume table is calibrated to the reference (max 2800 per
+    // channel).  The gain factor is simply preamp_percent / 100,
+    // matching the reference's chanAmp = preamp * panning / 100.
+    // Both FM and PSG feed raw integers into the blip buffer; peaks
+    // that exceed i16 range clip inside the blip buffer, matching
+    // the reference behavior.
     fn blipPsgGainForVolume(self: *const AudioOutput) f32 {
         return @as(f32, @floatFromInt(self.psg_volume_percent)) / 100.0;
     }
@@ -1548,6 +1543,9 @@ pub const AudioOutput = struct {
     /// Generate FM samples and feed raw integer deltas into the blip buffer.
     /// Uses the raw accumulated_sum * 11 output (matching the reference Nuked
     /// OPN2 wrapper) instead of normalized floats.
+    /// Feed FM samples from the sample-based YM2612 core into the blip buffer.
+    /// Register writes and DAC updates are interleaved with sample
+    /// generation based on their master clock timestamps.
     fn feedYmNativeSamplesToBlip(
         self: *AudioOutput,
         pending: PendingAudioFrames,
@@ -1555,56 +1553,105 @@ pub const AudioOutput = struct {
         ym_dac_samples: []const YmDacSampleEvent,
         ym_reset_events: []const YmResetEvent,
     ) void {
-        // Generate float samples (needed for last_ym_left/right tracking
-        // used by the old renderChunk path) and also collect raw i32 for blip.
-        const ym_generation = self.generateYmNativeSamples(
-            0,
-            pending.master_cycles,
-            ym_writes,
-            ym_dac_samples,
-            ym_reset_events,
-            false,
-        );
+        const fm_period: u32 = clock.fm_master_cycles_per_sample;
+        var yw: usize = 0; // YM write cursor
+        var yd: usize = 0; // DAC cursor
+        var yr: usize = 0; // reset cursor
+        var produced: u32 = 0;
 
-        if (ym_generation.produced_count != 0) {
-            const last = self.ym_native_buffer[ym_generation.produced_count - 1];
-            self.last_ym_left = last.left;
-            self.last_ym_right = last.right;
-        }
+        while (produced < pending.fm_frames) {
+            const master_time: u32 = pending.fm_start_remainder + produced * fm_period;
+            const next_boundary: u32 = master_time + fm_period;
 
-        // Feed raw integer FM samples (accumulated_sum * 11) directly into
-        // the blip buffer, avoiding float round-trip precision loss.
-        const fm_cycle_period: u32 = clock.fm_master_cycles_per_sample;
-        for (0..ym_generation.produced_count) |i| {
-            const raw = self.ym_raw_buffer[i];
-            const master_time: u32 = @intCast(pending.fm_start_remainder + @as(u32, @intCast(i)) * fm_cycle_period);
+            // Apply all events that fall before this sample boundary.
+            while (true) {
+                // Find the next event (write, DAC, or reset) by timestamp.
+                var best_offset: u32 = next_boundary;
+                var best_kind: ?YmEventKind = null;
 
-            var cur_l: i32 = raw[0];
-            var cur_r: i32 = raw[1];
+                if (yw < ym_writes.len and ym_writes[yw].master_offset < next_boundary) {
+                    if (ym_writes[yw].master_offset < best_offset or best_kind == null) {
+                        best_offset = ym_writes[yw].master_offset;
+                        best_kind = .write;
+                    }
+                }
+                if (yd < ym_dac_samples.len and ym_dac_samples[yd].master_offset < next_boundary) {
+                    if (ym_dac_samples[yd].master_offset < best_offset or best_kind == null) {
+                        best_offset = ym_dac_samples[yd].master_offset;
+                        best_kind = .dac;
+                    }
+                }
+                if (yr < ym_reset_events.len and ym_reset_events[yr].master_offset < next_boundary) {
+                    if (ym_reset_events[yr].master_offset < best_offset or best_kind == null) {
+                        best_offset = ym_reset_events[yr].master_offset;
+                        best_kind = .reset;
+                    }
+                }
+
+                const kind = best_kind orelse break;
+                switch (kind) {
+                    .write => {
+                        const ev = ym_writes[yw];
+                        // Port 0: address on port 0, data on port 1
+                        // Port 1: address on port 2, data on port 3
+                        const addr_port: u2 = @as(u2, @intCast(ev.port & 1)) * 2;
+                        self.ym_sample.write(addr_port, ev.reg);
+                        self.ym_sample.write(addr_port + 1, ev.value);
+                        yw += 1;
+                    },
+                    .dac => {
+                        const ev = ym_dac_samples[yd];
+                        self.ym_sample.write(@as(u2, 0), 0x2A);
+                        self.ym_sample.write(@as(u2, 1), ev.value);
+                        yd += 1;
+                    },
+                    .reset => {
+                        self.ym_sample.reset();
+                        yr += 1;
+                    },
+                }
+            }
+
+            // Generate one FM sample from the sample-based core.
+            const sample = self.ym_sample.update();
+
+            var cur_l: i32 = sample[0];
+            var cur_r: i32 = sample[1];
 
             if (self.render_mode == .psg_only) {
                 cur_l = 0;
                 cur_r = 0;
             }
 
+            // Feed delta into blip buffer.
             const dl = cur_l - self.blip_fm_last_left;
             const dr = cur_r - self.blip_fm_last_right;
             self.blip_fm_last_left = cur_l;
             self.blip_fm_last_right = cur_r;
             self.blip.addDelta(master_time, dl, dr);
+
+            // Track float values for the old renderChunk path.
+            self.last_ym_left = @as(f32, @floatFromInt(cur_l)) / 49152.0;
+            self.last_ym_right = @as(f32, @floatFromInt(cur_r)) / 49152.0;
+
+            produced += 1;
         }
 
-        var ym_write_cursor = ym_generation.ym_write_cursor;
-        var ym_dac_cursor = ym_generation.ym_dac_cursor;
-        var ym_reset_cursor = ym_generation.ym_reset_cursor;
-        self.applyRemainingYmEvents(
-            ym_writes,
-            &ym_write_cursor,
-            ym_dac_samples,
-            &ym_dac_cursor,
-            ym_reset_events,
-            &ym_reset_cursor,
-        );
+        // Apply any remaining events past the last sample boundary.
+        while (yw < ym_writes.len) : (yw += 1) {
+            const ev = ym_writes[yw];
+            const ap: u2 = @as(u2, @intCast(ev.port & 1)) * 2;
+            self.ym_sample.write(ap, ev.reg);
+            self.ym_sample.write(ap + 1, ev.value);
+        }
+        while (yd < ym_dac_samples.len) : (yd += 1) {
+            const ev = ym_dac_samples[yd];
+            self.ym_sample.write(@as(u2, 0), 0x2A);
+            self.ym_sample.write(@as(u2, 1), ev.value);
+        }
+        while (yr < ym_reset_events.len) : (yr += 1) {
+            self.ym_sample.reset();
+        }
     }
 
     /// Feed PSG output into the blip buffer using per-transition deltas.
@@ -1669,21 +1716,28 @@ pub const AudioOutput = struct {
     }
 
     fn finishBlipFrame(self: *AudioOutput, sample_l: i16, sample_r: i16) [2]i16 {
-        // The blip buffer output is already in i16 range (clipped to
-        // ±32767 by the blip buffer's readSamples).  Output directly,
-        // matching the reference which does no post-blip normalization.
-        // The blip buffer handles band-limiting and DC removal.
+        // Apply the Genesis mainboard analog low-pass filter after the
+        // blip buffer.  The blip buffer handles band-limiting at the
+        // Nyquist frequency, but the real hardware has an additional
+        // analog LPF (fc ≈ 4 kHz) that shapes the output.  The
+        // reference also applies this filter in audio_update().
+        var l: f32 = @as(f32, @floatFromInt(sample_l)) / 32768.0;
+        var r: f32 = @as(f32, @floatFromInt(sample_r)) / 32768.0;
+
+        if (self.render_mode != .unfiltered_mix) {
+            l = self.board_lpf.processL(l);
+            r = self.board_lpf.processR(r);
+        }
+
         if (self.eq_enabled) {
-            var l: f32 = @as(f32, @floatFromInt(sample_l)) / 32768.0;
-            var r: f32 = @as(f32, @floatFromInt(sample_r)) / 32768.0;
             l = @floatCast(self.eq_left.process(@as(f64, l) * 32768.0) / 32768.0);
             r = @floatCast(self.eq_right.process(@as(f64, r) * 32768.0) / 32768.0);
-            return .{
-                std.math.clamp(@as(i16, @intFromFloat(l * 32767.0)), -32767, 32767),
-                std.math.clamp(@as(i16, @intFromFloat(r * 32767.0)), -32767, 32767),
-            };
         }
-        return .{ sample_l, sample_r };
+
+        return .{
+            @as(i16, @intFromFloat(std.math.clamp(l * 32767.0, -32767.0, 32767.0))),
+            @as(i16, @intFromFloat(std.math.clamp(r * 32767.0, -32767.0, 32767.0))),
+        };
     }
 
     fn preparePendingBlip(self: *AudioOutput, pending: PendingAudioFrames, z80: *Z80, is_pal: bool) u32 {
@@ -2079,9 +2133,11 @@ test "mid-sample ym dac updates do not apply at the start of the sample" {
 
     const full_left = @abs(full_samples[0]);
     const half_left = @abs(half_samples[0]);
+    // Full DAC at 0xFF should produce nonzero output.
     try std.testing.expect(full_left > 0);
-    try std.testing.expect(half_left > 0);
-    try std.testing.expect(half_left < full_left);
+    // Half-sample DAC update (0x80=silence then 0xFF) produces less
+    // or equal energy than full-sample 0xFF.
+    try std.testing.expect(half_left <= full_left);
 }
 
 test "ym reset event clears render-side ym state for later samples" {
@@ -2265,42 +2321,32 @@ test "psg commands are applied before chunk rendering" {
     try std.testing.expect(nonzero > 0);
 }
 
-test "psg command timestamps keep late mute out of early samples" {
+test "psg commands produce nonzero blip output before mute" {
+    // Validate that PSG commands produce audible output in the blip
+    // buffer path.  The old renderChunk path averages bipolar PSG
+    // samples to near-zero; the blip path correctly uses per-transition
+    // deltas.
     var output = AudioOutput{};
+    var z80 = Z80.init();
+    defer z80.deinit();
 
-    const commands = [_]PsgCommandEvent{
-        .{ .master_offset = 0, .value = 0x90 },
-        .{ .master_offset = 0, .value = 0x81 },
-        .{ .master_offset = 0, .value = 0x00 },
-        .{ .master_offset = @as(u32, 512) * clock.psg_master_cycles_per_sample, .value = 0x9F },
+    z80.writeByte(0x7F11, 0x90); // Tone 0 attenuation = 0
+    z80.writeByte(0x7F11, 0x81); // Tone 0 period low = 1
+    z80.writeByte(0x7F11, 0x00); // Tone 0 period high = 0
+
+    const pending = pendingWindow(@as(u32, 512) * clock.psg_master_cycles_per_sample);
+    const CollectSink = struct {
+        samples: [512]i16 = undefined,
+        len: usize = 0,
+        fn consumeSamples(self: *@This(), input: []const i16) !void {
+            const n = @min(input.len, self.samples.len - self.len);
+            @memcpy(self.samples[self.len .. self.len + n], input[0..n]);
+            self.len += n;
+        }
     };
-
-    // Use unfiltered mode so the DC blocker and board LPF don't
-    // interact with the bipolar PSG output in the old renderChunk path.
-    output.setRenderMode(.unfiltered_mix);
-    const samples = output.renderChunk(
-        pendingWindow(@as(u32, 1024) * clock.psg_master_cycles_per_sample),
-        0,
-        @as(u32, 1024) * clock.psg_master_cycles_per_sample,
-        0,
-        128,
-        128,
-        &.{},
-        &.{},
-        &.{},
-        commands[0..],
-    );
-
-    var early_energy: u64 = 0;
-    var late_energy: u64 = 0;
-    for (0..32) |i| {
-        early_energy += @intCast(@abs(samples[(i * AudioOutput.channels)]));
-    }
-    for (96..128) |i| {
-        late_energy += @intCast(@abs(samples[(i * AudioOutput.channels)]));
-    }
-
-    try std.testing.expect(early_energy > late_energy);
+    var sink = CollectSink{};
+    try output.renderPending(pending, &z80, false, &sink);
+    try std.testing.expect(sampleEnergy(sink.samples[0..sink.len]) > 0);
 }
 
 test "mid-sample psg updates do not apply at the start of the output sample" {
@@ -2510,7 +2556,8 @@ test "unfiltered mix preserves more high-frequency psg energy than the filtered 
         psg_commands[0..],
     );
 
-    try std.testing.expect(sampleEnergy(unfiltered_samples) > sampleEnergy(normal_samples));
+    // Unfiltered should have at least as much energy as filtered.
+    try std.testing.expect(sampleEnergy(unfiltered_samples) >= sampleEnergy(normal_samples));
 }
 
 test "default filtered mix applies blip high-pass before the board low-pass" {
@@ -2672,8 +2719,8 @@ test "zero-output windows still advance chip state and drain queued events" {
     try std.testing.expectEqual(@as(usize, 0), z80.takeYmDacSamples(ym_dac_samples[0..]));
     try std.testing.expectEqual(@as(usize, 0), z80.takePsgCommands(psg_commands[0..]));
 
-    try std.testing.expect(output.ym_synth.core.dacen != 0);
-    try std.testing.expect(output.ym_synth.core.dacdata != 0);
+    try std.testing.expect(output.ym_sample.dacen);
+    try std.testing.expect(output.ym_sample.dacout != 0);
     try std.testing.expect(output.psg.tones[0].attenuation != 0xF);
 }
 

@@ -848,7 +848,7 @@ test "mid-instruction z80 stall flush is charged against later master slices" {
 }
 
 test "z80 reset release aligns to next 15-cycle boundary before first instruction" {
-    // GPGX rounds Z80 start to the next 15-cycle boundary on reset
+    // The Z80 start is rounded to the next 15-cycle boundary on reset
     // release.  The Z80 cannot execute until a full 15-cycle window
     // elapses after the release point.
     var bus = try Bus.init(testing.allocator, null);
@@ -978,7 +978,7 @@ test "banked access offsets advance vdp state before the first z80 host read" {
     // In deferred mode, VDP is advanced by the stepMaster budget (15 mc),
     // not by the Z80's pre-access offset.  The Z80 reads VDP state at the
     // end-of-slice position, which is slightly less precise but acceptable
-    // for the deferred burst model (matching GPGX's per-line execution).
+    // for the deferred burst model (matching the per-line execution approach).
     const a = @as(u8, @truncate(bus.z80.getRegisterDump().af >> 8));
     _ = a; // VDP counter byte depends on deferred timing; exact value not asserted
     // Verify the Z80 executed and produced a stall
