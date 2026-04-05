@@ -16,8 +16,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Coarse-grain 68K/Z80 bus arbitration with wait-state delays for Z80 window access
 - [x] Per-access wait cycle tracking for the VDP FIFO and the Z80 window within multi-access instructions
 - [x] Sub-instruction Z80 timing advancement during 68K multi-access instructions
-- [x] Deferred Z80 burst execution per scheduler slice, matching GPGX's per-line model
-- [x] Z80 bank-access stall and M68K contention aligned with GPGX cycle counts
+- [x] Deferred Z80 burst execution per scheduler slice, matching the per-line model
+- [x] Z80 bank-access stall and M68K contention aligned with expected cycle counts
 - [ ] Dynamic arbitration during VDP DMA with shared bus windows
 
 ### Video Display Processor
@@ -46,17 +46,19 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 - [x] Audio timing with master-clock accumulation and rate conversion
 - [x] Output pipeline with timestamped event application, cubic hermite resampling, stereo mixing, and SDL3 playback
+- [x] Band-limited sample buffer (blip_buf) ported to Zig for use as an alternative resampler
+- [x] Add a 3-band parametric equalizer (low/mid/high gain), available as an optional post-processing stage
 - [x] SN76489 PSG with chip-accurate emulation, stereo panning, reachable from both Z80 and M68K paths
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM
   tables
 - [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
-- [x] Audio filtering with YM2612 low-pass, board output LPF matched to Genesis Plus GX (fc ≈ 4 kHz), and DC-blocking on the final mix
+- [x] Audio filtering with YM2612 low-pass, board output LPF (fc ≈ 4 kHz), and DC-blocking on the final mix
 - [x] Debug render modes (YM-only, PSG-only, unfiltered mix)
 - [x] Compare YM2612 output against Nuked-OPN2 reference (26 scenarios: tones, pan, DAC, LFO, CSM, SSG-EG, detune, EG, timers, status; all exact match)
 - [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
 - [x] ROM-backed YM2612 register stream comparison for key titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
 - [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
-- [ ] Investigate blip-buffer-style band-limited synthesis as an alternative to cubic resampling
+- [ ] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
 - [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
 
 ### Input and Interaction
