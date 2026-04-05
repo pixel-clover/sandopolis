@@ -104,8 +104,7 @@ Quick examples:
 - The PSG is reachable from both the Z80 (address `0x7F11`) and the M68K (VDP port `0xC00011`). Both paths must push timestamped events through the
   Z80 bridge.
 - Keep frontend concerns separate from emulation concerns.
-- Preserve MIT-license boundaries. Treat external emulator repos and AGPL code as references unless licensing has been reviewed explicitly.
-- `external/Nuked-OPN2` is an optional LGPL developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the
+- `external/Nuked-OPN2` is an optional developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the
   default `sandopolis`, `check`, `test`, or release build paths.
 
 ## Workflow
