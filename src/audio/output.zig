@@ -1522,10 +1522,15 @@ pub const AudioOutput = struct {
         }
     }
 
-    // Blip buffer integer scaling: FM float [-1,1] maps to [-21000,21000].
-    // PSG i16 is scaled by (psg_mix_gain * 21000 / 32768) ≈ 0.328.
-    // The combined peak is ~21000 + ~5500 = ~26500, safely within i16 range.
-    const blip_fm_scale: f32 = 21000.0;
+    // Blip buffer integer scaling.  The sinc kernel produces a steady-state
+    // output equal to the delta magnitude, with ~9% Gibbs overshoot on sharp
+    // transitions.  FM and PSG contributions must stay within i16 range
+    // (±32767) after integration:
+    //   FM peak (with overshoot) ≈ fm_scale * 1.09
+    //   PSG peak ≈ fm_scale * psg_base_mix_gain * (psg_volume/100) * (max_psg/32768) * 1.09
+    // With fm_scale=14000: FM_peak≈15260, PSG_peak≈2520, total≈17780.
+    // This leaves ample headroom below 32767 for combined peaks.
+    const blip_fm_scale: f32 = 14000.0;
     const blip_psg_scale: f32 = blip_fm_scale * psg_base_mix_gain;
 
     fn blipPsgScaleForVolume(self: *const AudioOutput) f32 {
@@ -1631,11 +1636,12 @@ pub const AudioOutput = struct {
     }
 
     fn finishBlipFrame(self: *AudioOutput, sample_l: i16, sample_r: i16) [2]i16 {
-        // Convert blip i16 output to float, then apply board LPF, EQ,
-        // and soft saturation.  The blip buffer already applies a DC-blocking
-        // high-pass, so skip the separate DcBlocker.
-        var l: f32 = @as(f32, @floatFromInt(sample_l)) / 32768.0;
-        var r: f32 = @as(f32, @floatFromInt(sample_r)) / 32768.0;
+        // Convert blip i16 output to float.  Normalize by the FM scale
+        // (not by 32768) so that full-amplitude FM output maps to ±1.0,
+        // matching the signal level of the old resampler pipeline.  The
+        // blip buffer already applies DC-blocking high-pass.
+        var l: f32 = @as(f32, @floatFromInt(sample_l)) / blip_fm_scale;
+        var r: f32 = @as(f32, @floatFromInt(sample_r)) / blip_fm_scale;
 
         if (self.render_mode != .unfiltered_mix) {
             l = self.board_lpf.processL(l);
@@ -3153,4 +3159,29 @@ test "blip delta tracking resets on audio output reset" {
     output.reset();
     try std.testing.expectEqual(@as(i32, 0), output.blip_fm_last_left);
     try std.testing.expectEqual(@as(i32, 0), output.blip_psg_last_right);
+}
+
+test "blip fm scale does not clip at full amplitude" {
+    // A full-swing FM step (delta = 2 * blip_fm_scale) should produce
+    // blip buffer output within i16 range after sinc interpolation,
+    // including ~9% Gibbs overshoot.
+    const blip_buf_mod = @import("blip_buf.zig");
+    var buf = blip_buf_mod.BlipBuf(4800){};
+    buf.setRates(53693175.0, 48000.0);
+
+    // Worst case: full positive step then full negative step.
+    const scale: i32 = @intFromFloat(AudioOutput.blip_fm_scale);
+    buf.addDelta(0, scale * 2, scale * 2);
+    buf.addDelta(500, -scale * 2, -scale * 2);
+    buf.endFrame(1000);
+
+    var out: [100]i16 = undefined;
+    const read = buf.readSamples(out[0..], buf.samplesAvail());
+
+    // Verify no samples hit the clamp boundary (±32767).
+    var clipped = false;
+    for (out[0 .. read * 2]) |s| {
+        if (s == 32767 or s == -32768) clipped = true;
+    }
+    try std.testing.expect(!clipped);
 }
