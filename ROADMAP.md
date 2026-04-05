@@ -58,7 +58,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
 - [x] ROM-backed YM2612 register stream comparison for key titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
 - [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
-- [ ] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
+- [x] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
 - [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
 
 ### Input and Interaction

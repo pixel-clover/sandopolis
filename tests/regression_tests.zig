@@ -1112,7 +1112,7 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expect(collector.total_samples > 0);
 
     // Golden hash for the full audio pipeline output.
-    try testing.expectEqual(@as(u32, 508562065), collector.hash);
+    try testing.expectEqual(@as(u32, 2572811106), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
