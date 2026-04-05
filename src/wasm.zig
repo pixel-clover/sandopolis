@@ -176,6 +176,30 @@ export fn sandopolis_get_psg_volume(emu: *const WasmEmulator) u8 {
     return emu.audio.psg_volume_percent;
 }
 
+export fn sandopolis_set_eq_enabled(emu: *WasmEmulator, enabled: u8) void {
+    emu.audio.setEqEnabled(enabled != 0);
+}
+
+export fn sandopolis_get_eq_enabled(emu: *const WasmEmulator) u8 {
+    return if (emu.audio.eq_enabled) 1 else 0;
+}
+
+export fn sandopolis_set_eq_gains(emu: *WasmEmulator, low: f64, mid: f64, high: f64) void {
+    emu.audio.setEqGains(low, mid, high);
+}
+
+export fn sandopolis_get_eq_low(emu: *const WasmEmulator) f64 {
+    return emu.audio.eq_left.lg;
+}
+
+export fn sandopolis_get_eq_mid(emu: *const WasmEmulator) f64 {
+    return emu.audio.eq_left.mg;
+}
+
+export fn sandopolis_get_eq_high(emu: *const WasmEmulator) f64 {
+    return emu.audio.eq_left.hg;
+}
+
 // About metadata
 
 export fn sandopolis_version_ptr() [*:0]const u8 {

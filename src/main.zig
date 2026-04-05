@@ -2730,6 +2730,12 @@ pub fn main() !void {
     if (audio) |*a| {
         a.output.setRenderMode(current_audio_mode);
         a.output.setPsgVolume(frontend_config.psg_volume);
+        a.output.setEqEnabled(frontend_config.eq_enabled);
+        a.output.setEqGains(
+            @as(f64, @floatFromInt(frontend_config.eq_low)) / 100.0,
+            @as(f64, @floatFromInt(frontend_config.eq_mid)) / 100.0,
+            @as(f64, @floatFromInt(frontend_config.eq_high)) / 100.0,
+        );
         a.setQueueBudgetMs(current_audio_queue_ms);
     }
     if (current_audio_mode != .normal) {

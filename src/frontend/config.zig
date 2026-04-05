@@ -186,6 +186,10 @@ pub const FrontendConfig = struct {
     audio_render_mode: AudioOutput.RenderMode = .normal,
     audio_queue_ms: u16 = AudioOutput.default_queue_budget_ms,
     psg_volume: u8 = 150,
+    eq_enabled: bool = false,
+    eq_low: u8 = 100,
+    eq_mid: u8 = 100,
+    eq_high: u8 = 100,
 
     pub fn parseContents(contents: []const u8) !FrontendConfig {
         var config = FrontendConfig{};
@@ -215,6 +219,14 @@ pub const FrontendConfig = struct {
             } else if (std.ascii.eqlIgnoreCase(lhs, "psg_volume")) {
                 const parsed = std.fmt.parseUnsigned(u8, rhs, 10) catch config.psg_volume;
                 config.psg_volume = @min(parsed, 200);
+            } else if (std.ascii.eqlIgnoreCase(lhs, "eq_enabled")) {
+                config.eq_enabled = std.ascii.eqlIgnoreCase(rhs, "true") or std.mem.eql(u8, rhs, "1");
+            } else if (std.ascii.eqlIgnoreCase(lhs, "eq_low")) {
+                config.eq_low = std.fmt.parseUnsigned(u8, rhs, 10) catch config.eq_low;
+            } else if (std.ascii.eqlIgnoreCase(lhs, "eq_mid")) {
+                config.eq_mid = std.fmt.parseUnsigned(u8, rhs, 10) catch config.eq_mid;
+            } else if (std.ascii.eqlIgnoreCase(lhs, "eq_high")) {
+                config.eq_high = std.fmt.parseUnsigned(u8, rhs, 10) catch config.eq_high;
             } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
                 config.appendRecentRom(rhs);
             }
@@ -245,6 +257,10 @@ pub const FrontendConfig = struct {
         try writer.print("audio_mode = {s}\n", .{self.audio_render_mode.name()});
         try writer.print("audio_queue_ms = {d}\n", .{self.audio_queue_ms});
         try writer.print("psg_volume = {d}\n", .{self.psg_volume});
+        try writer.print("eq_enabled = {s}\n", .{if (self.eq_enabled) "true" else "false"});
+        try writer.print("eq_low = {d}\n", .{self.eq_low});
+        try writer.print("eq_mid = {d}\n", .{self.eq_mid});
+        try writer.print("eq_high = {d}\n", .{self.eq_high});
         for (self.recent_roms[0..self.recent_rom_count]) |path| {
             try writer.print("recent_rom = {s}\n", .{path.slice()});
         }

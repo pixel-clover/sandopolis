@@ -597,6 +597,12 @@ test "rocket68 cpu instruction trace records stepped instructions when enabled" 
         pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
             return 0;
         }
+        pub fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
+            return 0;
+        }
         pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
             return 0;
         }
@@ -656,6 +662,12 @@ test "noteBusAccessWait calls notifyBusAccess for slow bus but not z80 control" 
         pub fn write16(_: *@This(), _: u32, _: u16) void {}
         pub fn write32(_: *@This(), _: u32, _: u32) void {}
         pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
+            return 0;
+        }
+        pub fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
             return 0;
         }
         pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {

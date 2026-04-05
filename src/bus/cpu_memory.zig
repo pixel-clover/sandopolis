@@ -141,6 +141,14 @@ pub const View = struct {
         return clock.m68kCyclesToMaster(1);
     }
 
+    pub fn shouldHaltCpu(self: *const View) bool {
+        return self.vdp.shouldHaltCpu();
+    }
+
+    pub fn projectedDmaWaitMasterCycles(self: *const View, elapsed: u32) u32 {
+        return self.vdp.projectedMasterCyclesToNextRefreshSlot(elapsed);
+    }
+
     pub fn m68kAccessWaitMasterCycles(self: *View, address: u32, size_bytes: u8) u32 {
         var wait = self.singleM68kAccessWaitMasterCycles(address);
         if (size_bytes >= 4) {

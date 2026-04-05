@@ -347,6 +347,7 @@ test "frame scheduler stalls cpu while vdp dma owns the bus" {
     try testing.expect(emulator.vdpShouldHaltCpu());
 }
 
+
 test "frame scheduler does not stall cpu for pending vdp fifo writes" {
     const rom = try seedResetNopsRom(testing.allocator, 2);
     defer testing.allocator.free(rom);
@@ -1112,7 +1113,7 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expect(collector.total_samples > 0);
 
     // Golden hash for the full audio pipeline output.
-    try testing.expectEqual(@as(u32, 508562065), collector.hash);
+    try testing.expectEqual(@as(u32, 2572811106), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---

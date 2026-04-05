@@ -1535,6 +1535,17 @@ pub fn shouldHaltCpu(self: *const Vdp) bool {
     return self.dma_active and !self.dma_fill and !self.dma_copy;
 }
 
+/// Returns the master cycles until the next VDP refresh slot boundary,
+/// projected forward by `offset` master cycles from the current transfer
+/// phase position.  Returns 0 if the projected position is inside a
+/// refresh slot.
+pub fn projectedMasterCyclesToNextRefreshSlot(self: *const Vdp, offset: u32) u32 {
+    const phase = currentTransferPhase(self);
+    const raw_lmc = normalizeTransferLineMasterCycle(phase.line_master_cycle) + @as(u16, @intCast(@min(offset, clock.ntsc_master_cycles_per_line)));
+    const lmc = if (raw_lmc >= clock.ntsc_master_cycles_per_line) raw_lmc - clock.ntsc_master_cycles_per_line else raw_lmc;
+    return masterCyclesToNextRefreshSlotAtLmc(self, lmc);
+}
+
 /// Returns the master cycles until the next VDP refresh slot boundary
 /// from the current transfer phase position.  During refresh slots the
 /// VDP does not use the 68K bus, so the CPU can execute.  Returns 0 if
@@ -1542,6 +1553,10 @@ pub fn shouldHaltCpu(self: *const Vdp) bool {
 pub fn masterCyclesToNextRefreshSlot(self: *const Vdp) u32 {
     const phase = currentTransferPhase(self);
     const lmc = normalizeTransferLineMasterCycle(phase.line_master_cycle);
+    return masterCyclesToNextRefreshSlotAtLmc(self, lmc);
+}
+
+fn masterCyclesToNextRefreshSlotAtLmc(self: *const Vdp, lmc: u16) u32 {
     const slot_count = transferSlotCount(self);
 
     // Walk slots from the current position to find the next refresh slot.

@@ -113,6 +113,10 @@ async function init() {
     document.getElementById("master-volume").addEventListener("input", onMasterVolumeChange);
     document.getElementById("audio-mode").addEventListener("change", onAudioModeChange);
     document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
+    document.getElementById("eq-enabled").addEventListener("change", onEqChange);
+    document.getElementById("eq-low").addEventListener("input", onEqChange);
+    document.getElementById("eq-mid").addEventListener("input", onEqChange);
+    document.getElementById("eq-high").addEventListener("input", onEqChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
@@ -193,6 +197,10 @@ function loadSettings() {
         if (saved.audioEnabled !== undefined) audioEnabled = saved.audioEnabled;
         if (saved.audioMode !== undefined) document.getElementById("audio-mode").value = saved.audioMode;
         if (saved.psgVolume !== undefined) document.getElementById("psg-volume").value = saved.psgVolume;
+        if (saved.eqEnabled !== undefined) document.getElementById("eq-enabled").checked = saved.eqEnabled;
+        if (saved.eqLow !== undefined) document.getElementById("eq-low").value = saved.eqLow;
+        if (saved.eqMid !== undefined) document.getElementById("eq-mid").value = saved.eqMid;
+        if (saved.eqHigh !== undefined) document.getElementById("eq-high").value = saved.eqHigh;
         if (saved.controllerType !== undefined) document.getElementById("controller-type").value = saved.controllerType;
         if (saved.slot !== undefined) {
             currentSlot = saved.slot;
@@ -211,6 +219,9 @@ function loadSettings() {
     }
     updateAudioToggleLabel();
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
+    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
+    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
+    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
     document.getElementById("master-volume-label").textContent = masterVolume + "%";
     applyAspectMode();
 }
@@ -220,6 +231,10 @@ function saveSettings() {
         audioEnabled,
         audioMode: document.getElementById("audio-mode").value,
         psgVolume: document.getElementById("psg-volume").value,
+        eqEnabled: document.getElementById("eq-enabled").checked,
+        eqLow: document.getElementById("eq-low").value,
+        eqMid: document.getElementById("eq-mid").value,
+        eqHigh: document.getElementById("eq-high").value,
         controllerType: document.getElementById("controller-type").value,
         slot: currentSlot,
         aspectMode,
@@ -233,6 +248,11 @@ function applySettings() {
     const e = wasm.instance.exports;
     e.sandopolis_set_audio_mode(emu, parseInt(document.getElementById("audio-mode").value));
     e.sandopolis_set_psg_volume(emu, parseInt(document.getElementById("psg-volume").value));
+    e.sandopolis_set_eq_enabled(emu, document.getElementById("eq-enabled").checked ? 1 : 0);
+    e.sandopolis_set_eq_gains(emu,
+        parseInt(document.getElementById("eq-low").value) / 100,
+        parseInt(document.getElementById("eq-mid").value) / 100,
+        parseInt(document.getElementById("eq-high").value) / 100);
     e.sandopolis_set_controller_type(emu, 0, parseInt(document.getElementById("controller-type").value));
 }
 
@@ -243,6 +263,14 @@ function onAudioModeChange() {
 
 function onPsgVolumeChange() {
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
+    applySettings();
+    saveSettings();
+}
+
+function onEqChange() {
+    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
+    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
+    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
     applySettings();
     saveSettings();
 }

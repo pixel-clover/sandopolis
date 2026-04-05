@@ -58,7 +58,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
 - [x] ROM-backed YM2612 register stream comparison for key titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
 - [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
-- [ ] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
+- [x] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
 - [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
 
 ### Input and Interaction
@@ -100,7 +100,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [ ] 32X subsystem support
 - [x] Browser/WebAssembly build with Canvas rendering, keyboard input, and Web Audio playback (`zig build wasm`, `web/`)
 - [x] Browser save states with IndexedDB persistence and in-memory quick save/load
-- [x] Browser settings panel with audio mode, PSG volume, controller type, aspect ratio, and CRT screen effect
+- [x] Browser settings panel with audio mode, PSG volume, 3-band equalizer, controller type, aspect ratio, and CRT screen effect
 - [x] Browser gamepad support with standard and raw mapping fallback (2 players)
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
