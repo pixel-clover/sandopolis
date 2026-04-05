@@ -51,10 +51,13 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] SN76489 PSG with chip-accurate emulation, stereo panning, reachable from both Z80 and M68K paths
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM
   tables
+- [x] Sample-based YM2612 Zig core (`ym2612_sample.zig`) as runtime FM engine, output levels matching reference within 2%
 - [x] YM2612 DAC ladder effect modeling with discrete/integrated/enhanced chip types
-- [x] Audio filtering with YM2612 low-pass, board output LPF (fc ≈ 4 kHz), and DC-blocking on the final mix
+- [x] SN76489 PSG bipolar output with reference-matched volume table (max 2800, 2 dB steps)
+- [x] Audio filtering with board analog LPF (fc ≈ 3585 Hz, coefficient adjusted for 48 kHz output) and blip-buffer DC-blocking
 - [x] Debug render modes (YM-only, PSG-only, unfiltered mix)
-- [x] Compare YM2612 output against Nuked-OPN2 reference (26 scenarios: tones, pan, DAC, LFO, CSM, SSG-EG, detune, EG, timers, status; all exact match)
+- [x] Compare YM2612 output against Nuked-OPN2 reference (26 scenarios: tones, pan, DAC, LFO, CSM, SSG-EG, detune, EG, timers, status; all exact
+  match)
 - [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
 - [x] ROM-backed YM2612 register stream comparison for key titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
 - [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
@@ -89,7 +92,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Debugger: VDP state viewer (24 registers, mode/scanline/flags, DMA status)
 - [x] Debugger: instruction-level breakpoints with toggle (B), run-to-breakpoint (G), and visual markers
 - [x] Debugger: tile and palette visualizer (CRAM palette grid and VRAM tile pattern viewer with palette 0)
-- [x] Regression coverage for all community test ROMs (vctest, CRAM flicker, memtest, shadow/highlight, TEST1536, Overdrive 2, Multitap IO, DisableRegTestROM)
+- [x] Regression coverage for all community test ROMs (vctest, CRAM flicker, memtest, shadow/highlight, TEST1536, Overdrive 2, Multitap IO,
+  DisableRegTestROM)
 - [ ] Expand the regression suite with Ings VDP tests
 - [x] ROM header checksum validation and product code extraction
 - [x] Game database lookup for extended metadata (26 titles by product code)

@@ -50,8 +50,8 @@ Quick examples:
 - `src/bus/`: cartridge loading/persistence, memory map, open-bus behavior, Z80 arbitration, and VDP/audio timing coordination.
 - `src/scheduler/`: frame/master-clock scheduling.
 - `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
-- `src/audio/`: YM2612 FM synthesizer, SN76489 PSG emulation, rate conversion, DC-blocking filters, blip-buffer band-limited resampler, 3-band parametric
-  equalizer, and the output mixing pipeline.
+- `src/audio/`: sample-based YM2612 FM synthesizer (`ym2612_sample.zig`, runtime), cycle-accurate Nuked OPN2 core (`ym2612.zig`, validation), SN76489
+  PSG with bipolar output, blip-buffer band-limited resampler, board analog LPF, 3-band parametric equalizer, and the output mixing pipeline.
 - `src/input/`: controller I/O and configurable input mapping.
 - `src/recording/`: GIF animation recording with LZW compression and crash-safe output, WAV audio recording, and BMP screenshot capture.
 - `src/video/`: VDP and video timing/rendering logic.
@@ -139,7 +139,8 @@ Additional validation when relevant:
 Audio investigation workflow:
 
 - Prefer `-Doptimize=ReleaseSafe` for ROM-backed audio investigation unless you specifically need `Debug`.
-- Start cross-emulator FM investigation with `zig build trace-ym-writes -- ...` to compare Sandopolis YM register streams against a reference emulator.
+- Start cross-emulator FM investigation with `zig build trace-ym-writes -- ...` to compare Sandopolis YM register streams against a reference
+  emulator.
 - If ROM-backed YM output diverges but the raw YM core already matches reference scenarios, use `zig build trace-z80-audio-ops -- ...` to inspect the
   executed Z80 audio-mapped write order before changing `ym2612.zig`.
 
