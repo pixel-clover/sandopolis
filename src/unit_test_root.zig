@@ -1,3 +1,5 @@
+const audio_blip_buf = @import("audio/blip_buf.zig");
+const audio_eq = @import("audio/eq.zig");
 const audio_output = @import("audio/output.zig");
 const audio_psg = @import("audio/psg.zig");
 const audio_timing = @import("audio/timing.zig");
@@ -16,6 +18,8 @@ const video_timing = @import("video/timing.zig");
 const wasm = @import("wasm.zig");
 
 comptime {
+    _ = audio_blip_buf;
+    _ = audio_eq;
     _ = audio_output;
     _ = audio_psg;
     _ = audio_timing;

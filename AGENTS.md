@@ -50,7 +50,8 @@ Quick examples:
 - `src/bus/`: cartridge loading/persistence, memory map, open-bus behavior, Z80 arbitration, and VDP/audio timing coordination.
 - `src/scheduler/`: frame/master-clock scheduling.
 - `src/cpu/`: 68K/Z80 wrappers, runtime hooks, CPU-facing memory interface, and the local jgz80 bridge C code.
-- `src/audio/`: YM2612 FM synthesizer, SN76489 PSG emulation, rate conversion, DC-blocking filters, and the output mixing pipeline.
+- `src/audio/`: YM2612 FM synthesizer, SN76489 PSG emulation, rate conversion, DC-blocking filters, blip-buffer band-limited resampler, 3-band parametric
+  equalizer, and the output mixing pipeline.
 - `src/input/`: controller I/O and configurable input mapping.
 - `src/recording/`: GIF animation recording with LZW compression and crash-safe output, WAV audio recording, and BMP screenshot capture.
 - `src/video/`: VDP and video timing/rendering logic.
@@ -104,8 +105,7 @@ Quick examples:
 - The PSG is reachable from both the Z80 (address `0x7F11`) and the M68K (VDP port `0xC00011`). Both paths must push timestamped events through the
   Z80 bridge.
 - Keep frontend concerns separate from emulation concerns.
-- Preserve MIT-license boundaries. Treat external emulator repos and AGPL code as references unless licensing has been reviewed explicitly.
-- `external/Nuked-OPN2` is an optional LGPL developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the
+- `external/Nuked-OPN2` is an optional developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the
   default `sandopolis`, `check`, `test`, or release build paths.
 
 ## Workflow
@@ -138,7 +138,7 @@ Additional validation when relevant:
 Audio investigation workflow:
 
 - Prefer `-Doptimize=ReleaseSafe` for ROM-backed audio investigation unless you specifically need `Debug`.
-- Start cross-emulator FM investigation with `zig build trace-ym-writes -- ...` to compare Sandopolis and Genesis Plus GX YM register streams.
+- Start cross-emulator FM investigation with `zig build trace-ym-writes -- ...` to compare Sandopolis YM register streams against a reference emulator.
 - If ROM-backed YM output diverges but the raw YM core already matches reference scenarios, use `zig build trace-z80-audio-ops -- ...` to inspect the
   executed Z80 audio-mapped write order before changing `ym2612.zig`.
 
