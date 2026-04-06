@@ -230,89 +230,78 @@ const lfo_pm_output: [56][8]u8 = .{
 const ml_table: [16]u32 = .{ 1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30 };
 
 // --- LFO PM table (128*8*32 = 32768 entries, built at init time) ---
-// This is a global computed at init time.
-var lfo_pm_table: [128 * 8 * 32]i32 = [_]i32{0} ** (128 * 8 * 32);
+// All tables computed at comptime for deterministic results across platforms.
 
-// --- tl_tab and sin_tab (computed at init time) ---
-var tl_tab: [TL_TAB_LEN]i32 = [_]i32{0} ** TL_TAB_LEN;
-var sin_tab: [SIN_LEN]u32 = [_]u32{0} ** SIN_LEN;
-
-var global_tables_initialized: bool = false;
-
-fn initGlobalTables() void {
-    if (global_tables_initialized) return;
-
-    // Build Linear Power Table
+const tl_tab: [TL_TAB_LEN]i32 = blk: {
+    @setEvalBranchQuota(200000);
+    var tab = [_]i32{0} ** TL_TAB_LEN;
     for (0..TL_RES_LEN) |xi| {
         const x: f64 = @floatFromInt(xi);
         var m: f64 = @as(f64, 65536.0) / math.pow(f64, 2.0, (x + 1.0) * (ENV_STEP / 4.0) / 8.0);
         m = @floor(m);
-
         var n: i32 = @intFromFloat(m);
-        n >>= 4; // 12 bits
+        n >>= 4;
         if (n & 1 != 0) {
             n = (n >> 1) + 1;
         } else {
             n = n >> 1;
         }
-        n <<= 2; // 13 bits (as in real chip)
-
-        tl_tab[xi * 2 + 0] = n;
-        tl_tab[xi * 2 + 1] = -n;
-
+        n <<= 2;
+        tab[xi * 2 + 0] = n;
+        tab[xi * 2 + 1] = -n;
         for (1..13) |ii| {
-            tl_tab[xi * 2 + 0 + ii * 2 * TL_RES_LEN] = tl_tab[xi * 2 + 0] >> @intCast(ii);
-            tl_tab[xi * 2 + 1 + ii * 2 * TL_RES_LEN] = -tl_tab[xi * 2 + 0 + ii * 2 * TL_RES_LEN];
+            tab[xi * 2 + 0 + ii * 2 * TL_RES_LEN] = tab[xi * 2 + 0] >> @intCast(ii);
+            tab[xi * 2 + 1 + ii * 2 * TL_RES_LEN] = -tab[xi * 2 + 0 + ii * 2 * TL_RES_LEN];
         }
     }
+    break :blk tab;
+};
 
-    // Build Logarithmic Sinus table
+const sin_tab: [SIN_LEN]u32 = blk: {
+    @setEvalBranchQuota(200000);
+    var tab = [_]u32{0} ** SIN_LEN;
     for (0..SIN_LEN) |ii| {
         const i_f: f64 = @floatFromInt(ii);
         const m_val: f64 = @sin(((i_f * 2.0) + 1.0) * math.pi / @as(f64, @floatFromInt(SIN_LEN)));
-
-        var o: f64 = undefined;
-        if (m_val > 0.0) {
-            o = 8.0 * @log(1.0 / m_val) / @log(2.0);
-        } else {
-            o = 8.0 * @log(-1.0 / m_val) / @log(2.0);
-        }
-
+        var o: f64 = if (m_val > 0.0)
+            8.0 * @log(1.0 / m_val) / @log(2.0)
+        else
+            8.0 * @log(-1.0 / m_val) / @log(2.0);
         o = o / (ENV_STEP / 4.0);
-
         var n: i32 = @intFromFloat(2.0 * o);
         if (n & 1 != 0) {
             n = (n >> 1) + 1;
         } else {
             n = n >> 1;
         }
-
         const sign_bit: u32 = if (m_val >= 0.0) 0 else 1;
-        sin_tab[ii] = @as(u32, @intCast(n)) * 2 + sign_bit;
+        tab[ii] = @as(u32, @intCast(n)) * 2 + sign_bit;
     }
+    break :blk tab;
+};
 
-    // Build LFO PM modulation table
-    for (0..8) |i_depth| { // 8 PM depths
-        for (0..128) |fnum| { // 7 bits meaningful of F-NUMBER
+const lfo_pm_table: [128 * 8 * 32]i32 = blk: {
+    @setEvalBranchQuota(200000);
+    var tab = [_]i32{0} ** (128 * 8 * 32);
+    for (0..8) |i_depth| {
+        for (0..128) |fnum| {
             for (0..8) |step| {
                 var value: i32 = 0;
-                for (0..7) |bit_tmp| { // 7 bits
+                for (0..7) |bit_tmp| {
                     if (fnum & (@as(usize, 1) << @intCast(bit_tmp)) != 0) {
                         const offset_fnum_bit = bit_tmp * 8;
                         value += @as(i32, lfo_pm_output[offset_fnum_bit + i_depth][step]);
                     }
                 }
-                // 32 steps for LFO PM (sinus)
-                lfo_pm_table[(fnum * 32 * 8) + (i_depth * 32) + step + 0] = value;
-                lfo_pm_table[(fnum * 32 * 8) + (i_depth * 32) + (step ^ 7) + 8] = value;
-                lfo_pm_table[(fnum * 32 * 8) + (i_depth * 32) + step + 16] = -value;
-                lfo_pm_table[(fnum * 32 * 8) + (i_depth * 32) + (step ^ 7) + 24] = -value;
+                tab[(fnum * 32 * 8) + (i_depth * 32) + step + 0] = value;
+                tab[(fnum * 32 * 8) + (i_depth * 32) + (step ^ 7) + 8] = value;
+                tab[(fnum * 32 * 8) + (i_depth * 32) + step + 16] = -value;
+                tab[(fnum * 32 * 8) + (i_depth * 32) + (step ^ 7) + 24] = -value;
             }
         }
     }
-
-    global_tables_initialized = true;
-}
+    break :blk tab;
+};
 
 // --- Data Structures ---
 
@@ -455,7 +444,6 @@ pub const Ym2612Sample = struct {
     // ----- Public API -----
 
     pub fn init() Ym2612Sample {
-        initGlobalTables();
         var self = Ym2612Sample{};
         self.buildDetuneTables();
         self.buildDefaultOpMask();

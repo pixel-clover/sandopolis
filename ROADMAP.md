@@ -59,7 +59,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Compare YM2612 output against Nuked-OPN2 reference (26 scenarios: tones, pan, DAC, LFO, CSM, SSG-EG, detune, EG, timers, status; all exact
   match)
 - [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
-- [x] ROM-backed YM2612 register stream comparison for key titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
+- [x] ROM-backed YM2612 register stream comparison for a few titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
 - [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
 - [x] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
 - [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
@@ -94,14 +94,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Debugger: tile and palette visualizer (CRAM palette grid and VRAM tile pattern viewer with palette 0)
 - [x] Regression coverage for all community test ROMs (vctest, CRAM flicker, memtest, shadow/highlight, TEST1536, Overdrive 2, Multitap IO,
   DisableRegTestROM)
-- [ ] Expand the regression suite with Ings VDP tests
 - [x] ROM header checksum validation and product code extraction
 - [x] Game database lookup for extended metadata (26 titles by product code)
+- [ ] Expand the regression suite with Ings VDP tests
 
 ### Future Goals
 
-- [ ] Sega CD subsystem support
-- [ ] 32X subsystem support
 - [x] Browser/WebAssembly build with Canvas rendering, keyboard input, and Web Audio playback (`zig build wasm`, `web/`)
 - [x] Browser save states with IndexedDB persistence and in-memory quick save/load
 - [x] Browser settings panel with audio mode, PSG volume, 3-band equalizer, controller type, aspect ratio, and CRT screen effect
@@ -109,3 +107,6 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
+- [ ] Sega CD subsystem support
+- [ ] 32X subsystem support
+- [ ] Sega Master System support
