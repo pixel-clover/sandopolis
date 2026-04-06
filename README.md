@@ -58,7 +58,19 @@ See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
 #### Download the Latest Release
 
+##### Desktop
+
 You can download the latest pre-build binaries from the project's [release page](https://github.com/pixel-clover/sandopolis/releases).
+
+##### Web
+
+You can download and use the latest pre-built Docker image for the web version of Sandopolis from the GitHub Container Registry:
+
+```bash
+docker run -d -p 8085:80 --rm ghcr.io/pixel-clover/sandopolis-web:latest
+```
+
+Then open http://localhost:8085 in your browser.
 
 #### Build Sandopolis from Source
 
