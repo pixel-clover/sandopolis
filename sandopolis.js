@@ -147,8 +147,13 @@ async function init() {
     // Close help on Escape
     document.addEventListener("keydown", (ev) => {
         if (ev.key === "Escape") {
-            if (helpOpen) { toggleHelp(); ev.preventDefault(); }
-            else if (aboutOpen) { toggleAbout(); ev.preventDefault(); }
+            if (helpOpen) {
+                toggleHelp();
+                ev.preventDefault();
+            } else if (aboutOpen) {
+                toggleAbout();
+                ev.preventDefault();
+            }
         }
     });
 
@@ -327,8 +332,11 @@ function updateAboutInfo() {
     }
 
     const e = wasm.instance.exports;
-    versionEl.textContent = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
-    buildEl.textContent = readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len());
+    const ver = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
+    const gitRef = readWasmString(() => e.sandopolis_git_hash_ptr(), () => e.sandopolis_git_hash_len());
+    const time = readWasmString(() => e.sandopolis_build_time_ptr(), () => e.sandopolis_build_time_len());
+    versionEl.textContent = `${ver} (${gitRef})`;
+    buildEl.textContent = `${readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len())} · ${time}`;
     audioEl.textContent = `YM2612 + SN76489 at ${Math.round(e.sandopolis_audio_sample_rate() / 1000)} kHz`;
 
     const width = e.sandopolis_video_width();
@@ -383,7 +391,10 @@ function togglePerf() {
         perfInterval = setInterval(updatePerf, 500);
     } else {
         hud.classList.add("hidden");
-        if (perfInterval) { clearInterval(perfInterval); perfInterval = null; }
+        if (perfInterval) {
+            clearInterval(perfInterval);
+            perfInterval = null;
+        }
     }
 }
 
@@ -630,13 +641,13 @@ async function loadRom(file) {
     }
 
     const isPal = e.sandopolis_is_pal(emu);
-    setStatus(`Playing: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    setStatus(`Playing now: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
 
     running = true;
     // Use precise Genesis frame rates to avoid audio drift.
     // NTSC: 53693175 / (262*3420) = 59.9227 fps
-    // PAL:  53203424 / (313*3420) = 49.7015 fps
+    // PAL: 53203424 / (313*3420) = 49.7015 fps
     frameInterval = isPal ? (1000 / 49.7015) : (1000 / 59.9227);
     lastFrameTime = performance.now();
     rafId = requestAnimationFrame(frameLoop);

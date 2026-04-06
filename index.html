@@ -277,7 +277,7 @@
             content: "";
             position: absolute;
             inset: 0;
-            background: repeating-linear-gradient(0deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 3px);
+            background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.12) 0px, rgba(0, 0, 0, 0.12) 1px, transparent 1px, transparent 3px);
             pointer-events: none;
             z-index: 2;
             mix-blend-mode: multiply;
@@ -974,8 +974,8 @@
     </div>
     <div class="btn-group tone-info">
         <span class="btn-group-label">Info</span>
-        <button id="about-btn" title="About Sandopolis">About</button>
         <button id="help-btn" title="Help [F1]">Help</button>
+        <button id="about-btn" title="About Sandopolis">About</button>
     </div>
 </div>
 
@@ -1048,10 +1048,16 @@
             </div>
             <div>
                 <h4>GAMEPAD</h4>
-                <img src="img/6button.png" alt="Genesis 6-button" class="genesis-layout">
-                <div class="help-row">(X) <img src="img/a.png" class="genesis-btn" alt="A"> &nbsp;(A) <img src="img/b.png" class="genesis-btn" alt="B"> &nbsp;(B) <img src="img/c.png" class="genesis-btn" alt="C"></div>
-                <div class="help-row">(LB) <img src="img/x.png" class="genesis-btn" alt="X"> &nbsp;(RB) <img src="img/z.png" class="genesis-btn" alt="Z"> &nbsp;(Y) <img src="img/y.png" class="genesis-btn" alt="Y"></div>
-                <div class="help-row">(Start) <img src="img/start.png" class="genesis-btn" alt="Start"> &nbsp;(D-Pad) Movement</div>
+                <img alt="Genesis 6-button" class="genesis-layout" src="img/6button.png">
+                <div class="help-row">(X) <img alt="A" class="genesis-btn" src="img/a.png"> &nbsp;(A) <img
+                    alt="B" class="genesis-btn" src="img/b.png"> &nbsp;(B) <img alt="C" class="genesis-btn"
+                                                                                src="img/c.png"></div>
+                <div class="help-row">(LB) <img alt="X" class="genesis-btn" src="img/x.png"> &nbsp;(RB) <img
+                    alt="Z" class="genesis-btn" src="img/z.png"> &nbsp;(Y) <img alt="Y" class="genesis-btn"
+                                                                                src="img/y.png"></div>
+                <div class="help-row">(Start) <img alt="Start" class="genesis-btn" src="img/start.png"> &nbsp;(D-Pad)
+                    Movement
+                </div>
             </div>
         </div>
         <button id="help-close">CLOSE</button>
@@ -1059,7 +1065,7 @@
 </div>
 
 <!-- Performance HUD -->
-<div id="perf-hud" class="hidden">
+<div class="hidden" id="perf-hud">
     <div class="perf-row"><span>FPS</span><span id="perf-fps">--</span></div>
     <div class="perf-row"><span>Frame</span><span id="perf-frame-ms">--</span></div>
     <div class="perf-row"><span>WASM Mem</span><span id="perf-wasm-mem">--</span></div>
@@ -1080,7 +1086,8 @@
                 <div class="about-row"><span>License</span><span>MIT</span></div>
                 <div class="about-row"><span>WASM Size</span><span id="about-wasm-size">--</span></div>
             </div>
-            <p class="about-link"><a href="https://github.com/pixel-clover/sandopolis">github.com/pixel-clover/sandopolis</a></p>
+            <p class="about-link"><a href="https://github.com/pixel-clover/sandopolis">github.com/pixel-clover/sandopolis</a>
+            </p>
         </div>
         <button id="about-close">CLOSE</button>
     </div>

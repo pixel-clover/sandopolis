@@ -18,7 +18,7 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
         this.port.onmessage = (e) => {
             if (e.data === "query-level") {
                 // Report buffer fill level to the main thread for sync.
-                this.port.postMessage({ type: "level", count: this.count, capacity: this.bufferSize });
+                this.port.postMessage({type: "level", count: this.count, capacity: this.bufferSize});
                 return;
             }
             const samples = e.data; // Int16Array, stereo interleaved
