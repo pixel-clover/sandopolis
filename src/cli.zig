@@ -21,6 +21,7 @@ pub const Config = struct {
     timing_mode: TimingModeOption = .auto,
     config_path: ?[]const u8 = null,
     should_run: bool = false,
+    show_version: bool = false,
 };
 
 fn exec(ctx: chilli.CommandContext) !void {
@@ -28,7 +29,7 @@ fn exec(ctx: chilli.CommandContext) !void {
 
     const show_version = try ctx.getFlag("version", bool);
     if (show_version) {
-        try std.fs.File.stdout().writeAll(version_summary ++ "\n");
+        config.show_version = true;
         return;
     }
 

@@ -2612,6 +2612,10 @@ pub fn main() !void {
     const root_cmd = try createCliCommand(allocator);
     defer root_cmd.deinit();
     try root_cmd.run(&cli_config);
+    if (cli_config.show_version) {
+        try std.fs.File.stdout().writeAll(cli_module.version_summary ++ "\n");
+        return;
+    }
     if (!cli_config.should_run) return;
 
     const cli = cli_config;
@@ -5355,6 +5359,7 @@ test "cli parser accepts config override" {
 test "cli parser accepts version flag without starting the emulator" {
     const result = try runCliTest(&.{"--version"});
     defer result.deinit();
+    try std.testing.expect(result.config.show_version);
     try std.testing.expect(!result.config.should_run);
 }
 

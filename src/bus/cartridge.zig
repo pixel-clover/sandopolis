@@ -9,16 +9,31 @@ fn looksLikeGenesis(rom: []const u8) bool {
 
 fn deinterleaveSmdPayload(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
     const block_size: usize = 16 * 1024;
-    if (payload.len % block_size != 0) return error.InvalidSmd;
+    if (payload.len < block_size) return error.InvalidSmd;
 
-    var out = try allocator.alloc(u8, payload.len);
+    const full_blocks = payload.len / block_size;
+    const remainder = payload.len % block_size;
+    const out_len = full_blocks * block_size + (if (remainder > 0) block_size else 0);
+
+    var out = try allocator.alloc(u8, out_len);
     var i: usize = 0;
-    while (i < payload.len) : (i += block_size) {
+    while (i < full_blocks * block_size) : (i += block_size) {
         const block = payload[i .. i + block_size];
         var j: usize = 0;
         while (j < block_size / 2) : (j += 1) {
             out[i + j * 2] = block[j];
             out[i + j * 2 + 1] = block[j + (block_size / 2)];
+        }
+    }
+
+    // Deinterleave the last partial block by zero-padding it to a full block.
+    if (remainder > 0) {
+        var padded: [16 * 1024]u8 = [_]u8{0} ** (16 * 1024);
+        @memcpy(padded[0..remainder], payload[i .. i + remainder]);
+        var j: usize = 0;
+        while (j < block_size / 2) : (j += 1) {
+            out[i + j * 2] = padded[j];
+            out[i + j * 2 + 1] = padded[j + (block_size / 2)];
         }
     }
 
@@ -46,6 +61,9 @@ fn normalizeRomBytes(allocator: std.mem.Allocator, raw: []u8) []u8 {
         allocator.free(tmp);
     } else |_| {}
 
+    if (raw.len >= 0x200) {
+        std.debug.print("WARNING: ROM does not contain a valid Genesis header (no \"SEGA\" at offset 0x100). The file may be corrupt or in an unsupported format.\n", .{});
+    }
     return raw;
 }
 
@@ -762,6 +780,42 @@ test "cartridge initFromRomBytes deinterleaves smd payloads" {
     defer cartridge.deinit(std.testing.allocator);
 
     try std.testing.expectEqualSlices(u8, genesis_rom, cartridge.romBytes());
+    try std.testing.expectEqualStrings("SEGA", cartridge.romBytes()[0x100..0x104]);
+}
+
+test "cartridge initFromRomBytes deinterleaves smd with partial last block" {
+    // Create a Genesis ROM whose size is NOT a multiple of 16K.
+    // After prepending a 512-byte SMD header, the total file size becomes
+    // a multiple of 16K even though the payload is not.  This is a common
+    // layout for real-world SMD dumps.
+    const rom_size: usize = 64 * 16384; // 1 MB, exactly 64 blocks
+    const genesis_rom = try makeBasicGenesisRom(std.testing.allocator, rom_size);
+    defer std.testing.allocator.free(genesis_rom);
+
+    // Build the interleaved payload for the full ROM.
+    const block_size: usize = 16384;
+    var smd_full = try std.testing.allocator.alloc(u8, 512 + rom_size);
+    defer std.testing.allocator.free(smd_full);
+    @memset(smd_full[0..512], 0);
+    var i: usize = 0;
+    while (i < rom_size) : (i += block_size) {
+        const block = genesis_rom[i .. i + block_size];
+        const payload = smd_full[512 + i .. 512 + i + block_size];
+        var j: usize = 0;
+        while (j < block_size / 2) : (j += 1) {
+            payload[j] = block[j * 2];
+            payload[j + (block_size / 2)] = block[j * 2 + 1];
+        }
+    }
+
+    // Truncate the file to exactly rom_size bytes (drop the last 512
+    // bytes of SMD data so that the payload after the header is short).
+    const smd_truncated = try std.testing.allocator.dupe(u8, smd_full[0..rom_size]);
+    defer std.testing.allocator.free(smd_truncated);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, smd_truncated);
+    defer cartridge.deinit(std.testing.allocator);
+
     try std.testing.expectEqualStrings("SEGA", cartridge.romBytes()[0x100..0x104]);
 }
 
