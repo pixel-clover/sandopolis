@@ -633,13 +633,13 @@ async function loadRom(file) {
     }
 
     const isPal = e.sandopolis_is_pal(emu);
-    setStatus(`Playing: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    setStatus(`Playing now: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
 
     running = true;
     // Use precise Genesis frame rates to avoid audio drift.
     // NTSC: 53693175 / (262*3420) = 59.9227 fps
-    // PAL:  53203424 / (313*3420) = 49.7015 fps
+    // PAL: 53203424 / (313*3420) = 49.7015 fps
     frameInterval = isPal ? (1000 / 49.7015) : (1000 / 59.9227);
     lastFrameTime = performance.now();
     rafId = requestAnimationFrame(frameLoop);
