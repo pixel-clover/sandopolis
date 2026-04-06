@@ -41,7 +41,7 @@ pub fn layerOrder(source_id: u8, high_pri: bool) u8 {
 fn paletteColorWord(self: *const Vdp, index: u8) u16 {
     const offset = @as(usize, index & 0x3F) * 2;
     const val_hi = self.cram[offset];
-    const val_lo = self.cram[offset + 1];
+    const val_lo = self.cram[offset +% 1];
     var color = (@as(u16, val_hi) << 8) | val_lo;
 
     // With palette mode disabled, only the lowest bit of each Mode 5 channel is visible.
@@ -57,6 +57,23 @@ fn isPlaneDependentReg(reg: u8) bool {
         2, 4, 11, 12, 13, 16, 17, 18 => true,
         else => false,
     };
+}
+
+fn sortCramDotEvents(events: []Vdp.CramDotEvent) void {
+    if (events.len < 2) return;
+
+    var si: usize = 1;
+    while (si < events.len) : (si += 1) {
+        const key = events[si];
+        var j = si;
+        while (j != 0) {
+            const prev = j - 1;
+            if (events[prev].pixel_x <= key.pixel_x) break;
+            events[j] = events[prev];
+            j = prev;
+        }
+        events[j] = key;
+    }
 }
 
 fn windowBaseAddress(self: *const Vdp) u32 {
@@ -155,7 +172,7 @@ pub fn readHScroll(self: *const Vdp, table_base: u16, line: u16, plane_a: bool) 
 pub fn readVScroll(self: *const Vdp, plane_a: bool) i32 {
     const offset: u16 = if (plane_a) 0 else 2;
     const hi = self.vsram[offset];
-    const lo = self.vsram[offset + 1];
+    const lo = self.vsram[offset +% 1];
     const raw = (@as(u16, hi) << 8) | lo;
     return @as(i16, @bitCast(raw & 0x07FF));
 }
@@ -163,10 +180,10 @@ pub fn readVScroll(self: *const Vdp, plane_a: bool) i32 {
 fn readVScrollColumnRaw(self: *const Vdp, column_pair: u16, plane_a: bool) ?u16 {
     const base_offset = @as(u16, if (plane_a) 0 else 2);
     const offset = column_pair * 4 + base_offset;
-    if (offset + 1 >= self.vsram.len) return null;
+    if (offset +% 1 >= self.vsram.len) return null;
 
     const hi = self.vsram[offset];
-    const lo = self.vsram[offset + 1];
+    const lo = self.vsram[offset +% 1];
     return ((@as(u16, hi) << 8) | lo) & 0x07FF;
 }
 
@@ -341,66 +358,51 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
 
     renderSpritesToBuffer(self, line, tile_h, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode);
 
-    // Segmented output pass: apply register changes at the correct pixel positions.
-    // This handles mid-line backdrop color, display enable, palette mode, display
-    // mode (H32/H40), and shadow/highlight toggles.
+    // Output pass: apply register changes at the correct pixel positions and
+    // render each visible pixel with the current register state.
     {
-        var event_cursor: u8 = 0;
-        var seg_start: u16 = 0;
-        while (seg_start < max_rendered_x) {
-            // Current mode's screen width determines the output bound.
-            var cur_w = self.screenWidth();
-
-            // Find next segment boundary
-            var seg_end = @min(cur_w, max_rendered_x);
-            while (event_cursor < reg_change_count) {
+        var event_cursor: usize = 0;
+        const output_w = @min(max_rendered_x, Vdp.framebuffer_width);
+        for (0..output_w) |x| {
+            const x_px: u16 = @intCast(x);
+            while (event_cursor < reg_change_count and reg_change_events[event_cursor].pixel_x <= x_px) {
                 const evt = reg_change_events[event_cursor];
-                if (evt.pixel_x > seg_start) {
-                    seg_end = @min(seg_end, evt.pixel_x);
-                    break;
-                }
-                // Apply register changes at or before seg_start
                 self.regs[evt.reg] = evt.new_value;
                 event_cursor += 1;
             }
-            // Recompute after applying events (reg 12 may have changed).
-            cur_w = self.screenWidth();
-            seg_end = @min(seg_end, cur_w);
+
+            const cur_w = self.screenWidth();
+            if (x_px >= cur_w) continue;
 
             const display_on = self.isDisplayEnabled();
             const seg_backdrop_idx = self.regs[7] & 0x3F;
             const seg_sh = self.isShadowHighlightEnabled();
-
-            for (@as(usize, seg_start)..@as(usize, seg_end)) |x| {
-                const pal_idx = pixel_buf[x];
-                if (!display_on) {
-                    self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
-                } else if (seg_sh) {
-                    if (pal_idx == 0) {
-                        self.framebuffer[line_start + x] = getPaletteColorShadow(self, seg_backdrop_idx);
-                    } else {
-                        self.framebuffer[line_start + x] = switch (sh_buf[x]) {
-                            SH_SHADOW => getPaletteColorShadow(self, pal_idx),
-                            SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
-                            else => getPaletteColor(self, pal_idx),
-                        };
-                    }
+            const pal_idx = pixel_buf[x];
+            if (!display_on) {
+                self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
+            } else if (seg_sh) {
+                if (pal_idx == 0) {
+                    self.framebuffer[line_start + x] = getPaletteColorShadow(self, seg_backdrop_idx);
                 } else {
-                    if (pal_idx == 0) {
-                        self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
-                    } else {
-                        self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
-                    }
+                    self.framebuffer[line_start + x] = switch (sh_buf[x]) {
+                        SH_SHADOW => getPaletteColorShadow(self, pal_idx),
+                        SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
+                        else => getPaletteColor(self, pal_idx),
+                    };
+                }
+            } else {
+                if (pal_idx == 0) {
+                    self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
+                } else {
+                    self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
                 }
             }
+        }
 
-            // When switching to a narrower mode (H40→H32), skip past any
-            // remaining pixels beyond the new width to prevent stalling.
-            if (seg_end == cur_w and cur_w < max_rendered_x and event_cursor >= reg_change_count) {
-                seg_start = max_rendered_x;
-            } else {
-                seg_start = seg_end;
-            }
+        while (event_cursor < reg_change_count) {
+            const evt = reg_change_events[event_cursor];
+            self.regs[evt.reg] = evt.new_value;
+            event_cursor += 1;
         }
     }
 
@@ -436,17 +438,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         // Sort events by pixel_x using insertion sort (small N).
         var sorted: [Vdp.max_cram_dot_events]Vdp.CramDotEvent = undefined;
         @memcpy(sorted[0..cram_dot_count], cram_dot_events[0..cram_dot_count]);
-        {
-            var si: usize = 1;
-            while (si < @as(usize, cram_dot_count)) : (si += 1) {
-                const key = sorted[si];
-                var j: usize = si;
-                while (j > 0 and sorted[j - 1].pixel_x > key.pixel_x) : (j -= 1) {
-                    sorted[j] = sorted[j - 1];
-                }
-                sorted[j] = key;
-            }
-        }
+        sortCramDotEvents(sorted[0..cram_dot_count]);
 
         // Undo events in reverse to get start-of-line CRAM.
         {
@@ -455,7 +447,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                 ui -= 1;
                 const ev = cram_dot_events[ui]; // use original order for undo
                 self.cram[ev.cram_addr] = ev.old_hi;
-                self.cram[ev.cram_addr + 1] = ev.old_lo;
+                self.cram[ev.cram_addr +% 1] = ev.old_lo;
             }
         }
 
@@ -482,7 +474,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                 const ev = sorted[ev_idx];
                 const masked = ev.written_word & 0x0EEE;
                 self.cram[ev.cram_addr] = @intCast((masked >> 8) & 0xFF);
-                self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
+                self.cram[ev.cram_addr +% 1] = @intCast(masked & 0xFF);
                 ev_idx += 1;
             }
 
@@ -528,7 +520,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
                 const ev = sorted[ev_idx];
                 const masked = ev.written_word & 0x0EEE;
                 self.cram[ev.cram_addr] = @intCast((masked >> 8) & 0xFF);
-                self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
+                self.cram[ev.cram_addr +% 1] = @intCast(masked & 0xFF);
                 ev_idx += 1;
             }
         }
@@ -539,7 +531,7 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             const ev = sorted[ev_idx];
             const masked = ev.written_word & 0x0EEE;
             self.cram[ev.cram_addr] = @intCast((masked >> 8) & 0xFF);
-            self.cram[ev.cram_addr + 1] = @intCast(masked & 0xFF);
+            self.cram[ev.cram_addr +% 1] = @intCast(masked & 0xFF);
             ev_idx += 1;
         }
     }
@@ -589,7 +581,7 @@ fn renderPlaneToBuffer(
         const table_index = (@as(u32, tile_row % plane_height_tiles) * @as(u32, plane_width_tiles)) + @as(u32, tile_col % plane_width_tiles);
         const entry_addr: u16 = @intCast((plane_base + (table_index * 2)) & 0xFFFF);
         const entry_hi = self.vramReadByte(entry_addr);
-        const entry_lo = self.vramReadByte(entry_addr + 1);
+        const entry_lo = self.vramReadByte(entry_addr +% 1);
         const entry = (@as(u16, entry_hi) << 8) | entry_lo;
 
         const pattern_idx = entry & 0x07FF;
@@ -645,7 +637,7 @@ fn renderWindowToBuffer(
         const table_index = tile_row * win_width + tile_col;
         const entry_addr: u16 = @intCast((win_base + table_index * 2) & 0xFFFF);
         const entry_hi = self.vramReadByte(entry_addr);
-        const entry_lo = self.vramReadByte(entry_addr + 1);
+        const entry_lo = self.vramReadByte(entry_addr +% 1);
         const entry = (@as(u16, entry_hi) << 8) | entry_lo;
 
         const pattern_idx = entry & 0x07FF;
@@ -1299,4 +1291,45 @@ test "palette mode off masks mode 5 CRAM channel bits" {
 
     try std.testing.expect(masked.getPaletteColor(0) != unmasked.getPaletteColor(0));
     try std.testing.expectEqual(reference.getPaletteColor(0), masked.getPaletteColor(0));
+}
+
+test "cram dot event sort orders pixel positions without underflow" {
+    var events = [_]Vdp.CramDotEvent{
+        .{ .pixel_x = 120, .cram_addr = 0, .old_hi = 0, .old_lo = 0, .written_word = 0 },
+        .{ .pixel_x = 12, .cram_addr = 0, .old_hi = 0, .old_lo = 0, .written_word = 0 },
+        .{ .pixel_x = 12, .cram_addr = 0, .old_hi = 0, .old_lo = 0, .written_word = 0 },
+        .{ .pixel_x = 0, .cram_addr = 0, .old_hi = 0, .old_lo = 0, .written_word = 0 },
+    };
+
+    sortCramDotEvents(events[0..]);
+
+    try std.testing.expectEqual(@as(u16, 0), events[0].pixel_x);
+    try std.testing.expectEqual(@as(u16, 12), events[1].pixel_x);
+    try std.testing.expectEqual(@as(u16, 12), events[2].pixel_x);
+    try std.testing.expectEqual(@as(u16, 120), events[3].pixel_x);
+}
+
+test "render scanline handles more than 255 register events" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x04; // palette mode enabled
+    vdp.regs[1] = 0x44; // display enable
+    vdp.regs[12] = 0x01; // H40
+    vdp.regs[7] = 0x00; // backdrop color 0
+    vdp.cram[0] = 0x00;
+    vdp.cram[1] = 0x0E; // red backdrop
+
+    for (0..256) |i| {
+        vdp.reg_change_events[i] = .{
+            .pixel_x = 0,
+            .reg = 7,
+            .old_value = 0x00,
+            .new_value = 0x00,
+        };
+    }
+    vdp.reg_change_event_count = 256;
+
+    vdp.renderScanline(0);
+
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[0]);
+    try std.testing.expectEqual(@as(u16, 0), vdp.reg_change_event_count);
 }
