@@ -147,8 +147,13 @@ async function init() {
     // Close help on Escape
     document.addEventListener("keydown", (ev) => {
         if (ev.key === "Escape") {
-            if (helpOpen) { toggleHelp(); ev.preventDefault(); }
-            else if (aboutOpen) { toggleAbout(); ev.preventDefault(); }
+            if (helpOpen) {
+                toggleHelp();
+                ev.preventDefault();
+            } else if (aboutOpen) {
+                toggleAbout();
+                ev.preventDefault();
+            }
         }
     });
 
@@ -386,7 +391,10 @@ function togglePerf() {
         perfInterval = setInterval(updatePerf, 500);
     } else {
         hud.classList.add("hidden");
-        if (perfInterval) { clearInterval(perfInterval); perfInterval = null; }
+        if (perfInterval) {
+            clearInterval(perfInterval);
+            perfInterval = null;
+        }
     }
 }
 
