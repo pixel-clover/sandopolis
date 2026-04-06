@@ -168,8 +168,8 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
 
 Sandopolis implementation logic was checked with the following implementations for finding errors and verifying correctness:
 
-* [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
 * [Genesis-Plus-GX](https://github.com/ekeeke/Genesis-Plus-GX)
+* [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
 * [clownmdemu-core](https://github.com/Clownacy/clownmdemu-core)
 * [kiwi](https://github.com/drx/kiwi)
 * [jgenesis](https://github.com/jsgroth/jgenesis/tree/master/backend/genesis-core)

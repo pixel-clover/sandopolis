@@ -263,8 +263,17 @@ pub const View = struct {
         // Advance VDP, audio, I/O, and phase tracking for all remaining.
         self.advanceNonZ80Master(remaining);
 
-        // Accumulate Z80 credit only if Z80 can execute.
-        if (self.state.z80_cached_can_run and !self.state.z80_dma_halted) {
+        // Re-evaluate DMA halt: it may have cleared during
+        // advanceNonZ80Master (VDP transfer progression).
+        if (self.state.z80_dma_halted and !self.vdp.shouldHaltCpu()) {
+            self.state.z80_dma_halted = false;
+        }
+
+        // Accumulate Z80 credit when the Z80 can run.  Credit
+        // accumulates even during DMA because the Z80 continues
+        // executing from local RAM and I/O; only bus-window accesses
+        // are blocked.
+        if (self.state.z80_cached_can_run) {
             // Consume any pending bank-access wait from the Z80 budget.
             if (self.state.z80_wait_master_cycles != 0) {
                 const stalled = @min(remaining, self.state.z80_wait_master_cycles);
@@ -272,12 +281,6 @@ pub const View = struct {
                 remaining -= stalled;
             }
             self.state.z80_master_credit += @intCast(remaining);
-        } else if (self.state.z80_dma_halted) {
-            // Re-evaluate DMA halt: it may have cleared during
-            // advanceNonZ80Master (VDP transfer progression).
-            if (!self.vdp.shouldHaltCpu()) {
-                self.state.z80_dma_halted = false;
-            }
         }
     }
 
@@ -617,4 +620,76 @@ test "z80 timing aligns to next 15-cycle boundary on control-line release" {
     // should have enough credit for one instruction.
     view.stepMasterAndFlush(14);
     try testing.expectEqual(@as(u16, 0x0001), z80.getPc());
+}
+
+test "z80 accumulates credit during 68k-to-vdp dma" {
+    // On real hardware, the Z80 runs at its own clock rate during DMA.
+    // Only bus-window accesses (0x8000-0xFFFF) are blocked; local RAM
+    // and I/O (YM2612, PSG) remain accessible.  The Z80 must continue
+    // accumulating credit during DMA so it does not fall behind.
+    const testing = std.testing;
+
+    const TestHooks = struct {
+        fn ensureZ80HostWindow(_: ?*anyopaque) void {}
+
+        fn dmaReadWord(_: ?*anyopaque, _: u32) u16 {
+            return 0xABCD;
+        }
+    };
+
+    var vdp = Vdp.init();
+    var z80 = Z80.init();
+    defer z80.deinit();
+    var audio_timing: AudioTiming = .{};
+    var io = Io.init();
+    var state: State = .{};
+
+    var view = View.init(
+        &vdp,
+        &z80,
+        &audio_timing,
+        &io,
+        &state,
+        null,
+        null,
+        TestHooks.ensureZ80HostWindow,
+        null,
+        TestHooks.dmaReadWord,
+    );
+
+    z80.reset();
+    z80.writeByte(0x0000, 0x00); // NOP
+    z80.writeByte(0x0001, 0x00); // NOP
+    view.refreshZ80CanRunCache();
+
+    // Activate a 68K-to-VDP DMA that halts the M68K.
+    vdp.regs[12] = 0x81;
+    vdp.regs[15] = 2;
+    vdp.code = 0x1;
+    vdp.addr = 0x0000;
+    vdp.dma_active = true;
+    vdp.dma_fill = false;
+    vdp.dma_copy = false;
+    vdp.dma_source_addr = 0x00E0_0000;
+    vdp.dma_length = 100;
+    vdp.dma_remaining = 100;
+    vdp.dma_start_delay_slots = 0;
+
+    // Step 60 master cycles while DMA is active.
+    // Z80 credit must accumulate even though shouldHaltCpu() is true.
+    view.stepMaster(60);
+    try testing.expect(state.z80_master_credit >= 60);
+
+    // Now simulate Z80 hitting the 68K bus window during DMA.
+    // This stalls the Z80 for the bus access, but should NOT prevent
+    // credit accumulation for subsequent non-bus-window cycles.
+    view.recordZ80M68kBusAccess(0);
+
+    const credit_after_access = state.z80_master_credit;
+
+    // Step another 60 master cycles.  Credit should continue
+    // accumulating because the Z80 can still execute local
+    // instructions; only bus-window accesses are blocked.
+    view.stepMaster(60);
+    try testing.expect(state.z80_master_credit > credit_after_access);
 }
