@@ -3684,15 +3684,17 @@ pub fn main() !void {
         const draw_start = std.time.Instant.now() catch frame_timer;
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
+        const active_width = machine.framebufferWidth();
         const source_rect = zsdl3.FRect{
             .x = 0,
             .y = 0,
-            .w = @floatFromInt(Vdp.framebuffer_width),
+            .w = @floatFromInt(active_width),
             .h = @floatFromInt(framebuffer_height),
         };
         const viewport = try zsdl3.getRenderViewport(renderer);
         const dest_rect = computeVideoDestinationRect(
             viewport,
+            active_width,
             framebuffer_height,
             frontend_config.video_aspect_mode,
             frontend_config.video_scale_mode,
@@ -4926,19 +4928,19 @@ test "settings menu wraps and audio render mode cycles" {
 test "video destination rect honors aspect and integer scaling" {
     const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 };
 
-    const stretch = computeVideoDestinationRect(viewport, 224, .stretch, .fit);
+    const stretch = computeVideoDestinationRect(viewport, 320, 224, .stretch, .fit);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), stretch.x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), stretch.y, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1280.0), stretch.w, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 720.0), stretch.h, 0.001);
 
-    const four_three = computeVideoDestinationRect(viewport, 224, .four_three, .fit);
+    const four_three = computeVideoDestinationRect(viewport, 320, 224, .four_three, .fit);
     try std.testing.expectApproxEqAbs(@as(f32, 160.0), four_three.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), four_three.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 960.0), four_three.w, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 720.0), four_three.h, 0.01);
 
-    const integer_scaled = computeVideoDestinationRect(viewport, 224, .square_pixels, .whole_pixels);
+    const integer_scaled = computeVideoDestinationRect(viewport, 320, 224, .square_pixels, .whole_pixels);
     try std.testing.expectApproxEqAbs(@as(f32, 160.0), integer_scaled.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 24.0), integer_scaled.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 960.0), integer_scaled.w, 0.01);

@@ -292,6 +292,10 @@ pub const Emulator = struct {
         return self.handle.machine.framebuffer();
     }
 
+    pub fn framebufferWidth(self: *const Emulator) u16 {
+        return self.handle.machine.framebufferWidth();
+    }
+
     pub fn setButton(self: *Emulator, port: usize, button: u16, pressed: bool) void {
         self.handle.machine.bus.io.setButton(port, button, pressed);
     }

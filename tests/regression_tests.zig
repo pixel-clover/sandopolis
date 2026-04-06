@@ -1220,6 +1220,20 @@ test "warsong z80 instruction count per frame matches expected budget" {
 
 // --- Commercial ROM boot checks ---
 
+test "golden axe h32 framebuffer is cropped to 256 active pixels" {
+    // Golden Axe runs in H32 mode (256 pixels wide). The framebuffer is
+    // always 320 pixels, but framebufferWidth() should return the active
+    // display width so the frontend can crop the source rect.
+    var emulator = Emulator.init(testing.allocator, "roms/Golden Axe.smd") catch |err| {
+        if (err == error.FileNotFound or err == error.BadPathName) return;
+        return err;
+    };
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+    emulator.runFramesDiscardingAudio(120);
+    try testing.expectEqual(@as(u16, 256), emulator.framebufferWidth());
+}
+
 test "golden axe boots and produces visible output" {
     var emulator = Emulator.init(testing.allocator, "roms/Golden Axe.smd") catch |err| {
         if (err == error.FileNotFound or err == error.BadPathName) return;
