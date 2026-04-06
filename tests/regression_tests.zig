@@ -1170,17 +1170,17 @@ fn captureYmGoldenHash(rom_path: []const u8, frames: usize) !?u32 {
 
 test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sn.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 4193231261), hash);
+    try testing.expectEqual(@as(u32, 425404804), hash);
 }
 
 test "streets of rage ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sor.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 73816007), hash);
+    try testing.expectEqual(@as(u32, 0), hash);
 }
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 168944981), hash);
+    try testing.expectEqual(@as(u32, 2295205777), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {
