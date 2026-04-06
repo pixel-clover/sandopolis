@@ -327,8 +327,11 @@ function updateAboutInfo() {
     }
 
     const e = wasm.instance.exports;
-    versionEl.textContent = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
-    buildEl.textContent = readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len());
+    const ver = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
+    const gitRef = readWasmString(() => e.sandopolis_git_hash_ptr(), () => e.sandopolis_git_hash_len());
+    const time = readWasmString(() => e.sandopolis_build_time_ptr(), () => e.sandopolis_build_time_len());
+    versionEl.textContent = `${ver} (${gitRef})`;
+    buildEl.textContent = `${readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len())} · ${time}`;
     audioEl.textContent = `YM2612 + SN76489 at ${Math.round(e.sandopolis_audio_sample_rate() / 1000)} kHz`;
 
     const width = e.sandopolis_video_width();

@@ -128,6 +128,16 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 
+    // Git branch, commit hash (first 5 chars), and build timestamp.
+    const git_branch = b.run(&.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
+    build_options.addOption([]const u8, "git_branch", std.mem.trim(u8, git_branch, "\n\r "));
+
+    const git_hash = b.run(&.{ "git", "rev-parse", "--short=5", "HEAD" });
+    build_options.addOption([]const u8, "git_hash", std.mem.trim(u8, git_hash, "\n\r "));
+
+    const build_time = b.run(&.{ "date", "-u", "+%Y-%m-%d %H:%M UTC" });
+    build_options.addOption([]const u8, "build_time", std.mem.trim(u8, build_time, "\n\r "));
+
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "sandopolis",

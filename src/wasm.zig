@@ -12,7 +12,9 @@ const allocator: std.mem.Allocator = if (builtin.target.cpu.arch == .wasm32)
 else
     std.heap.page_allocator;
 const version_cstr = std.fmt.comptimePrint("{s}", .{build_options.version});
-const build_label_cstr = std.fmt.comptimePrint("Zig {s} + WebAssembly", .{builtin.zig_version_string});
+const build_label_cstr = std.fmt.comptimePrint("Zig {s}", .{builtin.zig_version_string});
+const git_ref_cstr = std.fmt.comptimePrint("{s}@{s}", .{ build_options.git_branch, build_options.git_hash });
+const build_time_cstr = std.fmt.comptimePrint("{s}", .{build_options.build_time});
 
 pub const std_options: std.Options = .{
     .log_level = .err,
@@ -216,6 +218,22 @@ export fn sandopolis_build_label_ptr() [*:0]const u8 {
 
 export fn sandopolis_build_label_len() usize {
     return build_label_cstr.len;
+}
+
+export fn sandopolis_git_hash_ptr() [*:0]const u8 {
+    return git_ref_cstr.ptr;
+}
+
+export fn sandopolis_git_hash_len() usize {
+    return git_ref_cstr.len;
+}
+
+export fn sandopolis_build_time_ptr() [*:0]const u8 {
+    return build_time_cstr.ptr;
+}
+
+export fn sandopolis_build_time_len() usize {
+    return build_time_cstr.len;
 }
 
 export fn sandopolis_audio_sample_rate() u32 {
