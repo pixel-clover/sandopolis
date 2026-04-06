@@ -5351,7 +5351,7 @@ test "cli parser accepts config override" {
 }
 
 test "cli parser accepts version flag without starting the emulator" {
-    const result = try runCliTest(&.{ "--version" });
+    const result = try runCliTest(&.{"--version"});
     defer result.deinit();
     try std.testing.expect(!result.config.should_run);
 }

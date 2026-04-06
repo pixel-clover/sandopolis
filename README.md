@@ -119,7 +119,6 @@ Example output:
 
 ```
 A Sega Genesis/Mega Drive emulator written in Zig and C
-Version: 0.1.0-alpha.4
 
 Usage:
   sandopolis [flags] [rom_file]
@@ -132,7 +131,7 @@ Flags:
       --audio-mode      Audio render mode: normal, ym-only, psg-only, unfiltered-mix [String] (default: "")
       --audio-queue-ms  Audio queue budget in milliseconds (40-150) before backlog recovery [String] (default: "")
       --renderer        SDL render driver override (e.g. software, opengl) [String] (default: "")
-      --config          Path to config file (default: sandopolis.cfg in current directory) [String] (default: "")
+      --config          Path to the unified config file (default: SANDOPOLIS_CONFIG, platform app data, or ./sandopolis.cfg) [String] (default: "")
       --pal             Force PAL/50Hz timing and version bits [Bool] (default: false)
       --ntsc            Force NTSC/60Hz timing and version bits [Bool] (default: false)
       --version         Print version information and exit [Bool] (default: false)

@@ -1217,3 +1217,54 @@ test "warsong z80 instruction count per frame matches expected budget" {
 
     emulator.discardPendingAudio();
 }
+
+// --- Commercial ROM boot checks ---
+
+test "golden axe boots and produces visible output" {
+    var emulator = Emulator.init(testing.allocator, "roms/Golden Axe.smd") catch |err| {
+        if (err == error.FileNotFound or err == error.BadPathName) return;
+        return err;
+    };
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(120);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
+}
+
+test "castlevania bloodlines boots and produces visible output" {
+    var emulator = Emulator.init(testing.allocator, "roms/Castlevania - Bloodlines.smd") catch |err| {
+        if (err == error.FileNotFound or err == error.BadPathName) return;
+        return err;
+    };
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    // Run past the Konami logo, then press Start to advance.
+    emulator.runFramesDiscardingAudio(120);
+    emulator.setButton(0, 0x80, true); // Start
+    emulator.runFramesDiscardingAudio(10);
+    emulator.setButton(0, 0x80, false);
+    emulator.runFramesDiscardingAudio(180);
+
+    try testing.expect(emulator.cpuState().program_counter != 0x0000_0200);
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+
+    const fb = emulator.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect(non_black_pixels > 0);
+    try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
+}

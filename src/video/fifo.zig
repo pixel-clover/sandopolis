@@ -1308,14 +1308,14 @@ fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopa
     const word = read_word(read_ctx, self.dma_source_addr);
     var entry = makeWriteFifoEntry(self, word, dma_fifo_latency_slots);
     // Apply DMA-to-CRAM immediately, same as data port CRAM writes.
-        if ((self.code & 0xF) == 0x3) {
-            const cram_idx: u8 = @intCast(self.addr & 0x7E);
-            self.recordCramDot(self.transfer_line_master_cycle, cram_idx, word);
-            const masked = word & 0x0EEE;
-            self.cram[cram_idx] = @intCast((masked >> 8) & 0xFF);
-            self.cram[cram_idx +% 1] = @intCast(masked & 0xFF);
-            entry.cram_already_applied = true;
-        }
+    if ((self.code & 0xF) == 0x3) {
+        const cram_idx: u8 = @intCast(self.addr & 0x7E);
+        self.recordCramDot(self.transfer_line_master_cycle, cram_idx, word);
+        const masked = word & 0x0EEE;
+        self.cram[cram_idx] = @intCast((masked >> 8) & 0xFF);
+        self.cram[cram_idx +% 1] = @intCast(masked & 0xFF);
+        entry.cram_already_applied = true;
+    }
     // DMA source wraps within a 128K window (bits 0-16), preserving the
     // upper address from reg[23]: source = (reg[23] << 17) | (source & 0x1FFFF)
     const next_src = self.dma_source_addr +% 2;
