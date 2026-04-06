@@ -5343,6 +5343,19 @@ test "cli parser accepts renderer override before rom path" {
     try std.testing.expect(!result.config.audio_queue_ms_overridden);
 }
 
+test "cli parser accepts config override" {
+    const result = try runCliTest(&.{ "--config=custom/sandopolis.cfg", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqualStrings("custom/sandopolis.cfg", result.config.config_path.?);
+}
+
+test "cli parser accepts version flag without starting the emulator" {
+    const result = try runCliTest(&.{ "--version" });
+    defer result.deinit();
+    try std.testing.expect(!result.config.should_run);
+}
+
 test "cli parser accepts pal timing override" {
     const result = try runCliTest(&.{ "--pal", "roms/test.bin" });
     defer result.deinit();

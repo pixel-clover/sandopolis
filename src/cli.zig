@@ -21,6 +21,12 @@ pub const Config = struct {
 fn exec(ctx: chilli.CommandContext) !void {
     const config: *Config = ctx.getContextData(Config).?;
 
+    const show_version = try ctx.getFlag("version", bool);
+    if (show_version) {
+        try std.fs.File.stdout().writeAll("sandopolis " ++ build_options.version ++ "\n");
+        return;
+    }
+
     // Positional: ROM path — dupe via app_allocator so it outlives
     // the process-arg memory that chilli frees when run() returns.
     const rom_arg = try ctx.getArg("rom_file", []const u8);
@@ -66,7 +72,6 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     var cmd = try chilli.Command.init(allocator, .{
         .name = "sandopolis",
         .description = "A Sega Genesis/Mega Drive emulator written in Zig and C",
-        .version = build_options.version,
         .exec = exec,
     });
 
@@ -90,7 +95,7 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     });
     try cmd.addFlag(.{
         .name = "config",
-        .description = "Path to config file (default: sandopolis.cfg in current directory)",
+        .description = "Path to the unified config file (default: SANDOPOLIS_CONFIG, platform app data, or ./sandopolis.cfg)",
         .type = .String,
         .default_value = .{ .String = "" },
     });
@@ -103,6 +108,12 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     try cmd.addFlag(.{
         .name = "ntsc",
         .description = "Force NTSC/60Hz timing and version bits",
+        .type = .Bool,
+        .default_value = .{ .Bool = false },
+    });
+    try cmd.addFlag(.{
+        .name = "version",
+        .description = "Print version information and exit",
         .type = .Bool,
         .default_value = .{ .Bool = false },
     });
