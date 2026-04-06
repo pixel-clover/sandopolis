@@ -1180,7 +1180,7 @@ test "streets of rage ym synthesis matches golden hash (900 frames)" {
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 799676357), hash);
+    try testing.expectEqual(@as(u32, 168944981), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {

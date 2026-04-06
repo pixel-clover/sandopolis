@@ -284,6 +284,7 @@ export fn retro_unserialize(data: ?*const anyopaque, size: usize) callconv(.c) b
     c_state.machine = restored;
     c_state.machine.rebindRuntimePointers();
     c_state.machine.clearPendingAudioTransferState();
+    c_state.audio.syncYmStateFromZ80(&c_state.machine.bus.z80);
     _ = &restored;
     return true;
 }

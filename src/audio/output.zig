@@ -289,6 +289,99 @@ pub const AudioOutput = struct {
         }
     }
 
+    /// Rebuild the sample-based YM2612 core's state from the Z80
+    /// bridge's register shadow.  Call this after loading a save state
+    /// so the FM synthesis matches the restored machine state.
+    pub fn syncYmStateFromZ80(self: *AudioOutput, z80: *const Z80) void {
+        self.ym_sample.reset();
+
+        // Replay all YM registers from the shadow into the sample core.
+        // Register order matters: write frequency/operator params before
+        // key-on, and mode registers before channel registers.
+        for (0..2) |port| {
+            const p: u1 = @intCast(port);
+            const addr_port: u2 = @as(u2, p) * 2;
+
+            // Mode registers (0x20-0x2F) — only port 0
+            if (port == 0) {
+                // LFO
+                self.ym_sample.write(addr_port, 0x22);
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, 0x22));
+                // Timer A
+                self.ym_sample.write(addr_port, 0x24);
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, 0x24));
+                self.ym_sample.write(addr_port, 0x25);
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, 0x25));
+                // Timer B
+                self.ym_sample.write(addr_port, 0x26);
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, 0x26));
+                // Mode/timer control
+                self.ym_sample.write(addr_port, 0x27);
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, 0x27));
+                // DAC data and enable
+                self.ym_sample.write(addr_port, 0x2A);
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, 0x2A));
+                self.ym_sample.write(addr_port, 0x2B);
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, 0x2B));
+            }
+
+            // Operator registers (0x30-0x8F)
+            var reg: u16 = 0x30;
+            while (reg <= 0x8F) : (reg += 1) {
+                self.ym_sample.write(addr_port, @intCast(reg));
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(reg)));
+            }
+
+            // SSG-EG (0x90-0x9F)
+            reg = 0x90;
+            while (reg <= 0x9F) : (reg += 1) {
+                self.ym_sample.write(addr_port, @intCast(reg));
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(reg)));
+            }
+
+            // Frequency (0xA0-0xAF) — write high byte first (latch)
+            var ch: u16 = 0;
+            while (ch < 3) : (ch += 1) {
+                self.ym_sample.write(addr_port, @intCast(0xA4 + ch));
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(0xA4 + ch)));
+                self.ym_sample.write(addr_port, @intCast(0xA0 + ch));
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(0xA0 + ch)));
+            }
+
+            // Ch3 special mode frequencies (0xA8-0xAE)
+            if (port == 0) {
+                ch = 0;
+                while (ch < 3) : (ch += 1) {
+                    self.ym_sample.write(addr_port, @intCast(0xAC + ch));
+                    self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(0xAC + ch)));
+                    self.ym_sample.write(addr_port, @intCast(0xA8 + ch));
+                    self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(0xA8 + ch)));
+                }
+            }
+
+            // Algorithm/feedback (0xB0-0xB2) and pan/LFO sensitivity (0xB4-0xB6)
+            reg = 0xB0;
+            while (reg <= 0xB6) : (reg += 1) {
+                self.ym_sample.write(addr_port, @intCast(reg));
+                self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(reg)));
+            }
+        }
+
+        // Replay key-on state: register 0x28 on port 0 controls all channels.
+        // The shadow stores the last value written; replay it to restore
+        // which operators are keyed on.
+        self.ym_sample.write(0, 0x28);
+        self.ym_sample.write(1, z80.getYmRegister(0, 0x28));
+
+        // Reset blip delta tracking so the first sample after restore
+        // doesn't produce a huge discontinuity pop.
+        self.blip_fm_last_left = 0;
+        self.blip_fm_last_right = 0;
+        self.blip_psg_last_left = 0;
+        self.blip_psg_last_right = 0;
+        self.blip.clear();
+    }
+
     fn takePendingEvents(self: *AudioOutput, z80: *Z80) PendingAudioEvents {
         const overflow = z80.takeOverflowCounts();
         self.last_overflow_events = overflow;

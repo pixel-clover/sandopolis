@@ -1786,6 +1786,7 @@ fn handleQuickStateAction(
                 stopWavRecording(audio, wav_recorder, "WAV recording stopped for state load");
                 if (audio) |a| {
                     resetAudioOutput(a, null);
+                    a.output.syncYmStateFromZ80(&machine.bus.z80);
                 }
                 frame_counter.* = 0;
                 std.debug.print("Quick state loaded.\n", .{});
@@ -1900,6 +1901,10 @@ fn handlePersistentStateAction(
             machine.* = next_machine;
             machine.rebindRuntimePointers();
             old_machine.deinit(allocator);
+
+            if (audio) |a| {
+                a.output.syncYmStateFromZ80(&machine.bus.z80);
+            }
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE LOADED", .{});

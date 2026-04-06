@@ -262,6 +262,7 @@ export fn sandopolis_quick_load(emu: *WasmEmulator) bool {
     const snap = &(emu.snapshot orelse return false);
     emu.machine.restoreSnapshot(allocator, snap) catch return false;
     emu.audio.reset();
+    emu.audio.syncYmStateFromZ80(&emu.machine.bus.z80);
     return true;
 }
 
