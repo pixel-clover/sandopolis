@@ -1,6 +1,9 @@
 FROM debian:trixie-slim AS build
 
 ARG TARGETARCH
+ARG SANDOPOLIS_GIT_BRANCH=unknown
+ARG SANDOPOLIS_GIT_HASH=unknown
+ARG SANDOPOLIS_BUILD_TIME=unknown
 
 WORKDIR /src
 
@@ -26,7 +29,10 @@ RUN set -eux; \
 
 COPY build.zig ./
 COPY src/ src/
-RUN zig build wasm
+RUN zig build wasm \
+    -Dgit-branch="${SANDOPOLIS_GIT_BRANCH}" \
+    -Dgit-hash="${SANDOPOLIS_GIT_HASH}" \
+    -Dbuild-time="${SANDOPOLIS_BUILD_TIME}"
 
 FROM nginx:alpine
 

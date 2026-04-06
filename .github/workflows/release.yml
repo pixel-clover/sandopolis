@@ -102,18 +102,32 @@ jobs:
         with:
           version: "0.15.2"
 
+      - name: Set build metadata
+        id: build_meta
+        shell: bash
+        run: |
+          echo "git_branch=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "git_hash=${GITHUB_SHA::5}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_OUTPUT"
+
       - name: Build the binary (Unix)
         if: runner.os != 'Windows'
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} \
+              -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" \
+              -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" \
+              -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
           else
-            zig build -Doptimize=ReleaseFast
+            zig build -Doptimize=ReleaseFast \
+              -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" \
+              -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" \
+              -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
           fi
 
       - name: Build the binary (Windows)
         if: runner.os == 'Windows'
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
 
       - name: Verify built binary exists (Unix)
         if: runner.os != 'Windows'
@@ -192,10 +206,22 @@ jobs:
             type=raw,value=latest
             type=ref,event=tag
 
+      - name: Set build metadata
+        id: build_meta
+        shell: bash
+        run: |
+          echo "git_branch=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "git_hash=${GITHUB_SHA::5}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          build-args: |
+            SANDOPOLIS_GIT_BRANCH=${{ steps.build_meta.outputs.git_branch }}
+            SANDOPOLIS_GIT_HASH=${{ steps.build_meta.outputs.git_hash }}
+            SANDOPOLIS_BUILD_TIME=${{ steps.build_meta.outputs.build_time }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

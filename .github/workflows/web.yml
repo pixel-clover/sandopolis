@@ -29,8 +29,16 @@ jobs:
         with:
           version: '0.15.2'
 
+      - name: Set build metadata
+        id: build_meta
+        shell: bash
+        run: |
+          echo "git_branch=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "git_hash=${GITHUB_SHA::5}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_OUTPUT"
+
       - name: Build WebAssembly module
-        run: zig build wasm
+        run: zig build wasm -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
 
       - name: Prepare publish directory
         run: |
