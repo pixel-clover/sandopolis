@@ -10,9 +10,8 @@
 [![License](https://img.shields.io/badge/license-MIT-007ec6?label=license&style=flat&labelColor=282c34&logo=open-source-initiative)](https://github.com/pixel-clover/sandopolis/blob/main/LICENSE)
 [![Zig Version](https://img.shields.io/badge/zig-0.15.2-orange?label=zig&style=flat&labelColor=282c34&logo=zig)](https://ziglang.org/download/)
 [![Play](https://img.shields.io/badge/web-play-007ec6?label=web&style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
-[![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?label=docker&style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
-[![Libretro](https://img.shields.io/badge/libretro-core-007ec6?label=libretro&style=flat&labelColor=282c34&logo=retroarch)](https://www.libretro.com/)
+[![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 
 A Sega Genesis/Mega Drive emulator written in Zig and C
 
@@ -113,7 +112,7 @@ sandopolis
 ```
 
 <div align="center">
-<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.4.png" width="100%">
+<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.5.png" width="100%">
 </div>
 
 Run `sandopolis --help` to see the list of available command-line options.

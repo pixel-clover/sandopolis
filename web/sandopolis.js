@@ -51,9 +51,20 @@ async function init() {
     ctx = canvas.getContext("2d");
     ctx.imageSmoothingEnabled = false;
 
+    const ERRNO_NOSYS = 52;
     const wasiStubs = {
         fd_write: () => 0, fd_read: () => 0, fd_close: () => 0, fd_seek: () => 0,
-        fd_fdstat_get: () => 0, fd_prestat_get: () => -1, fd_prestat_dir_name: () => -1,
+        fd_tell: () => 0, fd_sync: () => 0, fd_datasync: () => 0,
+        fd_advise: () => 0, fd_allocate: () => 0, fd_renumber: () => 0,
+        fd_pread: () => ERRNO_NOSYS, fd_pwrite: () => ERRNO_NOSYS, fd_readdir: () => ERRNO_NOSYS,
+        fd_fdstat_get: () => 0, fd_fdstat_set_flags: () => 0, fd_fdstat_set_rights: () => 0,
+        fd_filestat_get: () => 0, fd_filestat_set_size: () => 0, fd_filestat_set_times: () => 0,
+        fd_prestat_get: () => -1, fd_prestat_dir_name: () => -1,
+        path_open: () => ERRNO_NOSYS, path_create_directory: () => ERRNO_NOSYS,
+        path_link: () => ERRNO_NOSYS, path_readlink: () => ERRNO_NOSYS,
+        path_rename: () => ERRNO_NOSYS, path_symlink: () => ERRNO_NOSYS,
+        path_remove_directory: () => ERRNO_NOSYS, path_unlink_file: () => ERRNO_NOSYS,
+        path_filestat_get: () => ERRNO_NOSYS, path_filestat_set_times: () => ERRNO_NOSYS,
         environ_get: () => 0,
         environ_sizes_get: (cp, sp) => {
             const v = new DataView(wasm.instance.exports.memory.buffer);
