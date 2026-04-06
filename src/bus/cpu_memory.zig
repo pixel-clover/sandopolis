@@ -25,7 +25,7 @@ pub const View = struct {
     ensure_z80_host_window_ctx: ?*anyopaque,
     ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
     notify_bus_access_ctx: ?*anyopaque,
-    notify_bus_access_fn: *const fn (?*anyopaque, u32) void,
+    notify_bus_access_fn: *const fn (?*anyopaque, u32, u32) void,
 
     pub fn init(
         cartridge: *Cartridge,
@@ -42,7 +42,7 @@ pub const View = struct {
         ensure_z80_host_window_ctx: ?*anyopaque,
         ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
         notify_bus_access_ctx: ?*anyopaque,
-        notify_bus_access_fn: *const fn (?*anyopaque, u32) void,
+        notify_bus_access_fn: *const fn (?*anyopaque, u32, u32) void,
     ) View {
         return .{
             .cartridge = cartridge,
@@ -67,8 +67,8 @@ pub const View = struct {
         self.ensure_z80_host_window_fn(self.ensure_z80_host_window_ctx);
     }
 
-    pub fn notifyBusAccess(self: *View, delta_master_cycles: u32) void {
-        self.notify_bus_access_fn(self.notify_bus_access_ctx, delta_master_cycles);
+    pub fn notifyBusAccess(self: *View, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
+        self.notify_bus_access_fn(self.notify_bus_access_ctx, delta_master_cycles, elapsed_instruction_master);
     }
 
     fn currentCpuAccessAudioMasterOffset(self: *const View) u32 {
@@ -139,6 +139,14 @@ pub const View = struct {
         if (!isZ80WindowAddress(address)) return 0;
         if (!self.hasZ80BusFor68k()) return 0;
         return clock.m68kCyclesToMaster(1);
+    }
+
+    pub fn shouldHaltCpu(self: *const View) bool {
+        return self.vdp.shouldHaltCpu();
+    }
+
+    pub fn projectedDmaWaitMasterCycles(self: *const View, elapsed: u32) u32 {
+        return self.vdp.projectedMasterCyclesToNextRefreshSlot(elapsed);
     }
 
     pub fn m68kAccessWaitMasterCycles(self: *View, address: u32, size_bytes: u8) u32 {
@@ -294,7 +302,7 @@ pub const View = struct {
         // holds the instruction prefetch between cycles, and write data only
         // appears momentarily.  Reads from unmapped regions during a write
         // instruction should still see the prefetch, not the written value.
-        // Genesis Plus GX never updates its open-bus equivalent on writes.
+        // The open-bus latch is not updated on writes.
 
         if (self.cartridge.writeRegisterByte(addr, value)) return;
         if (self.cartridge.writeByte(addr, value)) return;
@@ -350,8 +358,8 @@ pub const View = struct {
             if (self.tmss_locked.*) return;
             const port = addr & 0x1F;
             // PSG is reachable from M68K via odd VDP port bytes in the
-            // 0x10-0x17 range.  Genesis Plus GX uses (address & 0xFC) cases
-            // 0x10/0x14 with an (address & 1) filter, matching 0x11/0x13/0x15/0x17.
+            // 0x10-0x17 range.  The VDP decodes (address & 0xFC) to cases
+            // 0x10/0x14, then (address & 1) selects odd bytes: 0x11/0x13/0x15/0x17.
             if (port >= 0x10 and port < 0x18 and (port & 1) != 0) {
                 self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeByte(0x7F11, value);
@@ -412,7 +420,7 @@ pub const View = struct {
 
 const TestHooks = struct {
     fn ensureZ80HostWindow(_: ?*anyopaque) void {}
-    fn notifyBusAccess(_: ?*anyopaque, _: u32) void {}
+    fn notifyBusAccess(_: ?*anyopaque, _: u32, _: u32) void {}
 };
 
 const TestRuntimeCtx = struct {
@@ -1140,9 +1148,9 @@ test "cpu memory psg writes through vdp ports reach the psg shadow registers" {
 test "cpu memory psg byte writes reach psg through vdp mirror ports 0x13 and 0x17" {
     const testing = std.testing;
 
-    // Genesis Plus GX routes byte writes to all odd ports in 0x10-0x17
-    // to the PSG: (address & 0xFC) matches case 0x10/0x14, then (address & 1)
-    // selects odd bytes.  This covers 0x11, 0x13, 0x15, and 0x17.
+    // Byte writes to all odd ports in 0x10-0x17 reach the PSG:
+    // (address & 0xFC) matches case 0x10/0x14, then (address & 1) selects
+    // odd bytes.  This covers 0x11, 0x13, 0x15, and 0x17.
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
@@ -1160,7 +1168,7 @@ test "cpu memory even byte writes to vdp psg ports are silently ignored" {
     const testing = std.testing;
 
     // Even byte addresses in the PSG range (0x10, 0x12, 0x14, 0x16) are
-    // unused on real hardware (GPGX: m68k_unused_8_w).
+    // unused on real hardware (no /DTACK, safe fallback).
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
     var view = fixture.view();
@@ -1403,7 +1411,7 @@ test "cpu memory writes do not contaminate open-bus prefetch reads" {
     // On real hardware, the 68K data bus holds the instruction prefetch
     // between cycles.  Write data appears momentarily but does not persist.
     // Reads from unmapped regions after a write should return the prefetch
-    // word, not the written value.  This matches Genesis Plus GX behavior
+    // word, not the written value.  This matches real hardware behavior
     // and fixes games like Time Killers that depend on prefetch-based open bus.
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);
@@ -1424,7 +1432,7 @@ test "cpu memory writes do not contaminate open-bus prefetch reads" {
 test "cpu memory vdp hvc counter is readable at mirror ports 0x0A and 0x0E" {
     const testing = std.testing;
 
-    // Genesis Plus GX masks byte reads with (address & 0xFD), making ports
+    // The VDP masks byte reads with (address & 0xFD), making ports
     // 0x0A/0x0B mirror 0x08/0x09 and ports 0x0E/0x0F mirror 0x0C/0x0D.
     var fixture = try TestFixture.init(testing.allocator);
     defer fixture.deinit(testing.allocator);

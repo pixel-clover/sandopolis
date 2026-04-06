@@ -113,6 +113,10 @@ async function init() {
     document.getElementById("master-volume").addEventListener("input", onMasterVolumeChange);
     document.getElementById("audio-mode").addEventListener("change", onAudioModeChange);
     document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
+    document.getElementById("eq-enabled").addEventListener("change", onEqChange);
+    document.getElementById("eq-low").addEventListener("input", onEqChange);
+    document.getElementById("eq-mid").addEventListener("input", onEqChange);
+    document.getElementById("eq-high").addEventListener("input", onEqChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
@@ -143,8 +147,13 @@ async function init() {
     // Close help on Escape
     document.addEventListener("keydown", (ev) => {
         if (ev.key === "Escape") {
-            if (helpOpen) { toggleHelp(); ev.preventDefault(); }
-            else if (aboutOpen) { toggleAbout(); ev.preventDefault(); }
+            if (helpOpen) {
+                toggleHelp();
+                ev.preventDefault();
+            } else if (aboutOpen) {
+                toggleAbout();
+                ev.preventDefault();
+            }
         }
     });
 
@@ -193,6 +202,10 @@ function loadSettings() {
         if (saved.audioEnabled !== undefined) audioEnabled = saved.audioEnabled;
         if (saved.audioMode !== undefined) document.getElementById("audio-mode").value = saved.audioMode;
         if (saved.psgVolume !== undefined) document.getElementById("psg-volume").value = saved.psgVolume;
+        if (saved.eqEnabled !== undefined) document.getElementById("eq-enabled").checked = saved.eqEnabled;
+        if (saved.eqLow !== undefined) document.getElementById("eq-low").value = saved.eqLow;
+        if (saved.eqMid !== undefined) document.getElementById("eq-mid").value = saved.eqMid;
+        if (saved.eqHigh !== undefined) document.getElementById("eq-high").value = saved.eqHigh;
         if (saved.controllerType !== undefined) document.getElementById("controller-type").value = saved.controllerType;
         if (saved.slot !== undefined) {
             currentSlot = saved.slot;
@@ -211,6 +224,9 @@ function loadSettings() {
     }
     updateAudioToggleLabel();
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
+    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
+    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
+    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
     document.getElementById("master-volume-label").textContent = masterVolume + "%";
     applyAspectMode();
 }
@@ -220,6 +236,10 @@ function saveSettings() {
         audioEnabled,
         audioMode: document.getElementById("audio-mode").value,
         psgVolume: document.getElementById("psg-volume").value,
+        eqEnabled: document.getElementById("eq-enabled").checked,
+        eqLow: document.getElementById("eq-low").value,
+        eqMid: document.getElementById("eq-mid").value,
+        eqHigh: document.getElementById("eq-high").value,
         controllerType: document.getElementById("controller-type").value,
         slot: currentSlot,
         aspectMode,
@@ -233,6 +253,11 @@ function applySettings() {
     const e = wasm.instance.exports;
     e.sandopolis_set_audio_mode(emu, parseInt(document.getElementById("audio-mode").value));
     e.sandopolis_set_psg_volume(emu, parseInt(document.getElementById("psg-volume").value));
+    e.sandopolis_set_eq_enabled(emu, document.getElementById("eq-enabled").checked ? 1 : 0);
+    e.sandopolis_set_eq_gains(emu,
+        parseInt(document.getElementById("eq-low").value) / 100,
+        parseInt(document.getElementById("eq-mid").value) / 100,
+        parseInt(document.getElementById("eq-high").value) / 100);
     e.sandopolis_set_controller_type(emu, 0, parseInt(document.getElementById("controller-type").value));
 }
 
@@ -243,6 +268,14 @@ function onAudioModeChange() {
 
 function onPsgVolumeChange() {
     document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
+    applySettings();
+    saveSettings();
+}
+
+function onEqChange() {
+    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
+    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
+    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
     applySettings();
     saveSettings();
 }
@@ -299,8 +332,11 @@ function updateAboutInfo() {
     }
 
     const e = wasm.instance.exports;
-    versionEl.textContent = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
-    buildEl.textContent = readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len());
+    const ver = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
+    const gitRef = readWasmString(() => e.sandopolis_git_hash_ptr(), () => e.sandopolis_git_hash_len());
+    const time = readWasmString(() => e.sandopolis_build_time_ptr(), () => e.sandopolis_build_time_len());
+    versionEl.textContent = `${ver} (${gitRef})`;
+    buildEl.textContent = `${readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len())} · ${time}`;
     audioEl.textContent = `YM2612 + SN76489 at ${Math.round(e.sandopolis_audio_sample_rate() / 1000)} kHz`;
 
     const width = e.sandopolis_video_width();
@@ -355,7 +391,10 @@ function togglePerf() {
         perfInterval = setInterval(updatePerf, 500);
     } else {
         hud.classList.add("hidden");
-        if (perfInterval) { clearInterval(perfInterval); perfInterval = null; }
+        if (perfInterval) {
+            clearInterval(perfInterval);
+            perfInterval = null;
+        }
     }
 }
 
@@ -450,6 +489,9 @@ async function initAudio() {
     if (audioCtx) return;
     try {
         audioCtx = new AudioContext({sampleRate: 48000});
+        if (audioCtx.sampleRate !== 48000) {
+            console.warn("Audio: requested 48kHz but got " + audioCtx.sampleRate + "Hz; browser will resample");
+        }
         await audioCtx.audioWorklet.addModule("audio-worklet.js");
         audioNode = new AudioWorkletNode(audioCtx, "sandopolis-audio", {
             numberOfOutputs: 1,
@@ -457,6 +499,12 @@ async function initAudio() {
             channelCountMode: "explicit",
             channelInterpretation: "speakers",
         });
+        audioNode.port.onmessage = (e) => {
+            if (e.data && e.data.type === "level") {
+                audioBufferLevel = e.data.count;
+                audioBufferCapacity = e.data.capacity;
+            }
+        };
         gainNode = audioCtx.createGain();
         gainNode.gain.value = masterVolume / 100;
         audioNode.connect(gainNode);
@@ -479,6 +527,8 @@ function renderAudio() {
     // Re-read memory.buffer after render call (may have grown via memory.grow)
     const samples = new Int16Array(e.memory.buffer, bufPtr, sampleCount);
     audioNode.port.postMessage(samples.slice());
+    // Query buffer level for adaptive frame pacing.
+    audioNode.port.postMessage("query-level");
 }
 
 // Save/Load
@@ -591,22 +641,39 @@ async function loadRom(file) {
     }
 
     const isPal = e.sandopolis_is_pal(emu);
-    setStatus(`Playing: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    setStatus(`Playing now: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
 
     running = true;
-    frameInterval = 1000 / (isPal ? 50 : 60);
+    // Use precise Genesis frame rates to avoid audio drift.
+    // NTSC: 53693175 / (262*3420) = 59.9227 fps
+    // PAL: 53203424 / (313*3420) = 49.7015 fps
+    frameInterval = isPal ? (1000 / 49.7015) : (1000 / 59.9227);
     lastFrameTime = performance.now();
     rafId = requestAnimationFrame(frameLoop);
 }
 
 let frameInterval = 1000 / 60;
 let lastFrameTime = 0;
+// Audio buffer level feedback from the AudioWorklet.
+let audioBufferLevel = 0;
+let audioBufferCapacity = 1;
 
 function frameLoop(now) {
     if (!running) return;
     rafId = requestAnimationFrame(frameLoop);
-    if (now - lastFrameTime < frameInterval * 0.8) return;
+
+    // Adaptive frame pacing: if the audio buffer is getting low, run
+    // the emulator slightly faster by shortening the frame gate. If
+    // it's getting full, slow down. This keeps audio and video in sync
+    // despite the ~0.1% mismatch between Genesis and display refresh.
+    let paceMultiplier = 0.8;
+    if (audioBufferCapacity > 0) {
+        const fill = audioBufferLevel / audioBufferCapacity;
+        if (fill < 0.1) paceMultiplier = 0.5;       // starving: run faster
+        else if (fill > 0.6) paceMultiplier = 0.95;  // full: slow down
+    }
+    if (now - lastFrameTime < frameInterval * paceMultiplier) return;
     lastFrameTime = now;
 
     const e = wasm.instance.exports;

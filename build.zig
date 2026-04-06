@@ -128,6 +128,16 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 
+    // Git branch, commit hash (first 5 chars), and build timestamp.
+    const git_branch = b.run(&.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
+    build_options.addOption([]const u8, "git_branch", std.mem.trim(u8, git_branch, "\n\r "));
+
+    const git_hash = b.run(&.{ "git", "rev-parse", "--short=5", "HEAD" });
+    build_options.addOption([]const u8, "git_hash", std.mem.trim(u8, git_hash, "\n\r "));
+
+    const build_time = b.run(&.{ "date", "-u", "+%Y-%m-%d %H:%M UTC" });
+    build_options.addOption([]const u8, "build_time", std.mem.trim(u8, build_time, "\n\r "));
+
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "sandopolis",
@@ -187,6 +197,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
@@ -315,7 +326,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         dump_audio_run.addArgs(args);
     }
-    const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or Genesis Plus GX");
+    const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or a reference libretro core");
     dump_audio_step.dependOn(&dump_audio_run.step);
 
     const trace_sound_boot = b.addExecutable(.{
@@ -375,7 +386,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         trace_ym_writes_run.addArgs(args);
     }
-    const trace_ym_writes_step = b.step("trace-ym-writes", "Dump decoded YM register writes from Sandopolis or Genesis Plus GX");
+    const trace_ym_writes_step = b.step("trace-ym-writes", "Dump decoded YM register writes from Sandopolis or a reference libretro core");
     trace_ym_writes_step.dependOn(&trace_ym_writes_run.step);
 
     const trace_z80_audio_ops = b.addExecutable(.{
@@ -452,4 +463,22 @@ pub fn build(b: *std.Build) void {
     });
     const wasm_step = b.step("wasm", "Build WebAssembly module for browser deployment");
     wasm_step.dependOn(&wasm_install.step);
+
+    // Libretro core (shared library)
+    const libretro_lib = b.addLibrary(.{
+        .name = "sandopolis_libretro",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/libretro.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = build_options.createModule() },
+            },
+        }),
+    });
+    addExternalCpuCores(libretro_lib, b, cpu_deps);
+    const libretro_install = b.addInstallArtifact(libretro_lib, .{});
+    const libretro_step = b.step("libretro", "Build Libretro core shared library");
+    libretro_step.dependOn(&libretro_install.step);
 }

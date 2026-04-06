@@ -1244,8 +1244,8 @@ pub fn writeData(self: *Vdp, value: u16) void {
 
     self.pending_command = false;
 
-    // Apply CRAM writes immediately at M68K write time, matching GPGX's
-    // vdp_bus_w() behavior.  The FIFO entry is still created for timing
+    // Apply CRAM writes immediately at M68K write time.  The FIFO entry
+    // is still created for timing
     // (M68K wait cycles) but the actual CRAM update happens NOW so that
     // mid-scanline palette changes take effect at the correct pixel.
     var entry = makeWriteFifoEntry(self, value, dma_fifo_latency_slots);
@@ -1317,7 +1317,7 @@ fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopa
         entry.cram_already_applied = true;
     }
     // DMA source wraps within a 128K window (bits 0-16), preserving the
-    // upper address from reg[23].  GPGX: source = (reg[23] << 17) | (source & 0x1FFFF)
+    // upper address from reg[23]: source = (reg[23] << 17) | (source & 0x1FFFF)
     const next_src = self.dma_source_addr +% 2;
     self.dma_source_addr = (self.dma_source_addr & 0xFFFE0000) | (next_src & 0x1FFFF);
     self.dma_remaining -= 1;
@@ -1535,6 +1535,17 @@ pub fn shouldHaltCpu(self: *const Vdp) bool {
     return self.dma_active and !self.dma_fill and !self.dma_copy;
 }
 
+/// Returns the master cycles until the next VDP refresh slot boundary,
+/// projected forward by `offset` master cycles from the current transfer
+/// phase position.  Returns 0 if the projected position is inside a
+/// refresh slot.
+pub fn projectedMasterCyclesToNextRefreshSlot(self: *const Vdp, offset: u32) u32 {
+    const phase = currentTransferPhase(self);
+    const raw_lmc = normalizeTransferLineMasterCycle(phase.line_master_cycle) + @as(u16, @intCast(@min(offset, clock.ntsc_master_cycles_per_line)));
+    const lmc = if (raw_lmc >= clock.ntsc_master_cycles_per_line) raw_lmc - clock.ntsc_master_cycles_per_line else raw_lmc;
+    return masterCyclesToNextRefreshSlotAtLmc(self, lmc);
+}
+
 /// Returns the master cycles until the next VDP refresh slot boundary
 /// from the current transfer phase position.  During refresh slots the
 /// VDP does not use the 68K bus, so the CPU can execute.  Returns 0 if
@@ -1542,6 +1553,10 @@ pub fn shouldHaltCpu(self: *const Vdp) bool {
 pub fn masterCyclesToNextRefreshSlot(self: *const Vdp) u32 {
     const phase = currentTransferPhase(self);
     const lmc = normalizeTransferLineMasterCycle(phase.line_master_cycle);
+    return masterCyclesToNextRefreshSlotAtLmc(self, lmc);
+}
+
+fn masterCyclesToNextRefreshSlotAtLmc(self: *const Vdp, lmc: u16) u32 {
     const slot_count = transferSlotCount(self);
 
     // Walk slots from the current position to find the next refresh slot.
@@ -1590,7 +1605,7 @@ pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
 pub fn writeControl(self: *Vdp, value: u16) void {
     // VDP register writes (8xxx pattern) are always processed immediately,
     // even during active DMA.  Only the second word of a 2-word command
-    // is cached during 68K-bus DMA, matching GPGX (vdp_68k_ctrl_w).
+    // is cached during 68K-bus DMA, matching hardware behavior.
     if (!self.pending_command and (value & 0xE000) == 0x8000) {
         // Register write — never buffered
     } else if (shouldBufferPortWrite(self)) {
@@ -1666,8 +1681,8 @@ pub fn writeControl(self: *Vdp, value: u16) void {
                 self.dma_active = true;
                 self.dma_start_delay_slots = 0;
             }
-            // Do NOT clear the FIFO when DMA starts.  GPGX only resets the
-            // FIFO at VDP hard reset, not on DMA activation.  Clearing here
+            // Do NOT clear the FIFO when DMA starts.  The FIFO is only
+            // reset at VDP hard reset, not on DMA activation.  Clearing here
             // would drop any pending data port writes that are still in the
             // pipeline, corrupting VRAM (e.g. Warsong's stats panel tiles).
         }

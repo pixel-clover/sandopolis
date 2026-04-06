@@ -140,10 +140,10 @@ pub const Bus = struct {
         self.ensureZ80HostWindow();
     }
 
-    fn notifySubInstructionBusAccess(ctx: ?*anyopaque, delta_master_cycles: u32) void {
+    fn notifySubInstructionBusAccess(ctx: ?*anyopaque, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
         const self: *Bus = @ptrCast(@alignCast(ctx orelse return));
         var timing = self.z80TimingView();
-        timing.runZ80Early(delta_master_cycles);
+        timing.runZ80Early(delta_master_cycles, elapsed_instruction_master);
     }
 
     fn cpuMemoryView(self: *Bus) cpu_memory.View {
@@ -398,6 +398,14 @@ pub const Bus = struct {
         self.ensureZ80HostWindow();
     }
 
+    pub fn shouldHaltCpu(self: *const Bus) bool {
+        return self.vdp.shouldHaltCpu();
+    }
+
+    pub fn projectedDmaWaitMasterCycles(self: *const Bus, elapsed: u32) u32 {
+        return self.vdp.projectedMasterCyclesToNextRefreshSlot(elapsed);
+    }
+
     pub fn cpuMemory(self: *Bus) MemoryInterface {
         return MemoryInterface.bind(Bus, self);
     }
@@ -492,9 +500,9 @@ pub const Bus = struct {
         memory.clearCpuRuntimeState();
     }
 
-    pub fn notifyBusAccess(self: *Bus, delta_master_cycles: u32) void {
+    pub fn notifyBusAccess(self: *Bus, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
         var memory = self.cpuMemoryView();
-        memory.notifyBusAccess(delta_master_cycles);
+        memory.notifyBusAccess(delta_master_cycles, elapsed_instruction_master);
     }
 
     pub fn setM68kSoundWriteTraceEnabled(self: *Bus, enabled: bool) void {
@@ -685,6 +693,14 @@ const ControlWriteTimingProbe = struct {
         return 0;
     }
 
+    pub fn shouldHaltCpu(_: *const @This()) bool {
+        return false;
+    }
+
+    pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
+        return 0;
+    }
+
     pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
         return 0;
     }
@@ -705,7 +721,7 @@ const ControlWriteTimingProbe = struct {
         self.runtime.clear();
     }
 
-    pub fn notifyBusAccess(_: *@This(), _: u32) void {}
+    pub fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
 };
 
 fn writeBe16(bytes: []u8, offset: usize, value: u16) void {
@@ -832,7 +848,7 @@ test "mid-instruction z80 stall flush is charged against later master slices" {
 }
 
 test "z80 reset release aligns to next 15-cycle boundary before first instruction" {
-    // GPGX rounds Z80 start to the next 15-cycle boundary on reset
+    // The Z80 start is rounded to the next 15-cycle boundary on reset
     // release.  The Z80 cannot execute until a full 15-cycle window
     // elapses after the release point.
     var bus = try Bus.init(testing.allocator, null);
@@ -962,7 +978,7 @@ test "banked access offsets advance vdp state before the first z80 host read" {
     // In deferred mode, VDP is advanced by the stepMaster budget (15 mc),
     // not by the Z80's pre-access offset.  The Z80 reads VDP state at the
     // end-of-slice position, which is slightly less precise but acceptable
-    // for the deferred burst model (matching GPGX's per-line execution).
+    // for the deferred burst model (matching the per-line execution approach).
     const a = @as(u8, @truncate(bus.z80.getRegisterDump().af >> 8));
     _ = a; // VDP counter byte depends on deferred timing; exact value not asserted
     // Verify the Z80 executed and produced a stall

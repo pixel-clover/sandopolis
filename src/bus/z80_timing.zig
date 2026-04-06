@@ -104,10 +104,10 @@ pub const View = struct {
     }
 
     /// M68K wait-state penalty when Z80 accesses the 68K bus.
-    /// Genesis Plus GX uses: m68k.cycles += (((Z80.cycles % 7) + 72) / 7) * 7
+    /// The M68K wait-state formula is: m68k.cycles += (((Z80.cycles % 7) + 72) / 7) * 7
     /// which resolves to 70-77 master cycles depending on Z80 phase alignment.
-    /// We approximate this using the Z80's master-clock phase modulo the M68K
-    /// divider, matching GPGX's per-access result.
+    /// We compute this using the Z80's master-clock phase modulo the M68K
+    /// divider, matching the per-access result.
     fn z80ContentionM68kWaitMasterCycles(self: *const View) u32 {
         const z80_phase_in_m68k = @as(u32, self.state.z80_master_phase) % clock.m68k_divider;
         return ((z80_phase_in_m68k + 72) / clock.m68k_divider) * clock.m68k_divider;
@@ -128,7 +128,7 @@ pub const View = struct {
         }
 
         // Z80 stalls for 3 Z80 cycles (45 master cycles) per bank access,
-        // matching GPGX's `Z80.cycles += (3 * 15)`.  The previous value of
+        // matching the expected `Z80.cycles += (3 * 15)`.  The previous value of
         // 49/50 (alternating) was 4-5 master cycles too high per access,
         // which caused GEMS DAC playback to fall behind its timing budget.
         self.state.z80_wait_master_cycles = 3 * clock.z80_divider;
@@ -178,7 +178,7 @@ pub const View = struct {
             return;
         }
 
-        // Align to the next Z80 cycle boundary, matching GPGX's
+        // Align to the next Z80 cycle boundary using
         // ((cycles + 14) / 15) * 15 rounding.  The Z80 loses 0-14
         // master cycles per BUSREQ/RESET release.  This keeps sound
         // driver timing (especially GEMS DAC playback) in sync.
@@ -203,8 +203,8 @@ pub const View = struct {
     /// VDP, audio, or I/O timing. Uses a temporary credit grant: credit is
     /// added so Z80 can execute, then removed so the scheduler's stepMaster
     /// re-accumulates it normally alongside VDP/audio advancement.
-    pub fn runZ80Early(self: *View, master_cycles: u32) void {
-        if (master_cycles == 0) return;
+    pub fn runZ80Early(self: *View, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
+        if (delta_master_cycles == 0) return;
         // In deferred mode Z80 runs as a burst at end-of-slice.
         if (self.state.z80_in_burst) return;
         if (!self.state.z80_cached_can_run) return;
@@ -213,14 +213,24 @@ pub const View = struct {
 
         self.ensureZ80HostWindow();
 
-        self.state.z80_master_credit += @intCast(master_cycles);
-        defer self.state.z80_master_credit -= @intCast(master_cycles);
+        self.state.z80_master_credit += @intCast(delta_master_cycles);
+        defer self.state.z80_master_credit -= @intCast(delta_master_cycles);
+
+        // The Z80 instructions here execute during the current M68K
+        // instruction.  Timestamps use the audio window base plus the
+        // M68K instruction's elapsed time at the start of this delta,
+        // advancing as Z80 credit is consumed.
+        const credit_at_start = self.state.z80_master_credit;
+        const window_pos = @as(i64, self.audio_timing.pending_master_cycles) + @as(i64, elapsed_instruction_master);
+        const audio_base: u32 = @intCast(@as(u64, @intCast(@max(window_pos - @max(credit_at_start, 0), 0))));
 
         while (self.state.z80_master_credit >= @as(i64, clock.z80_divider)) {
             if (self.state.z80_wait_master_cycles != 0) break;
             if (self.state.z80_dma_halted) break;
 
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+            const consumed = credit_at_start - self.state.z80_master_credit;
+            const offset = audio_base + @as(u32, @intCast(@max(consumed, 0)));
+            self.z80.setAudioMasterOffset(offset);
             const instruction_cycles = self.z80.stepInstruction();
             if (instruction_cycles == 0) break;
             if (self.active_execution_counters) |counters| counters.z80_instructions += 1;
@@ -232,7 +242,7 @@ pub const View = struct {
 
     /// Advance VDP/audio/I/O and accumulate Z80 credit, deferring Z80
     /// instruction execution until flushDeferredZ80() is called.  This
-    /// matches GPGX's per-line burst model where the Z80 runs after the
+    /// matches the per-line burst model where the Z80 runs after the
     /// M68K has finished its scanline work, avoiding race conditions in
     /// Z80 drivers (like SOR's GEMS) that depend on M68K shared-RAM
     /// writes being visible before the Z80 reads them.
@@ -289,6 +299,17 @@ pub const View = struct {
 
         const threshold = @as(i64, clock.z80_divider);
 
+        // The Z80 burst replays instructions that should have executed
+        // during the slice.  Track a running master-clock offset so each
+        // instruction's audio events get timestamps that reflect their
+        // actual position within the audio window, not just the end.
+        const credit_at_start = self.state.z80_master_credit;
+        const window_end = self.audio_timing.pending_master_cycles;
+        const burst_base: u32 = if (credit_at_start > 0 and window_end >= @as(u32, @intCast(credit_at_start)))
+            window_end - @as(u32, @intCast(credit_at_start))
+        else
+            window_end;
+
         while (self.state.z80_master_credit >= threshold) {
             // DMA halt check — Z80 bus access may have triggered DMA.
             if (self.state.z80_dma_halted) {
@@ -323,7 +344,12 @@ pub const View = struct {
                 continue;
             }
 
-            self.z80.setAudioMasterOffset(self.audio_timing.pending_master_cycles);
+            // Compute the current Z80 instruction's position within the
+            // audio window based on how much credit has been consumed.
+            const consumed_credit = credit_at_start - self.state.z80_master_credit;
+            const current_offset = burst_base + @as(u32, @intCast(@max(consumed_credit, 0)));
+            self.z80.setAudioMasterOffset(current_offset);
+
             const instruction_cycles = self.z80.stepInstruction();
             if (instruction_cycles == 0) break;
             if (self.active_execution_counters) |counters| counters.z80_instructions += 1;
@@ -540,10 +566,10 @@ test "z80 timing carries instruction overshoot across stepMaster slices" {
 }
 
 test "z80 timing aligns to next 15-cycle boundary on control-line release" {
-    // GPGX rounds Z80.cycles up to the next 15-cycle boundary when
+    // Z80.cycles is rounded up to the next 15-cycle boundary when
     // BUSREQ or RESET is released: Z80.cycles = ((cycles+14)/15)*15.
     // This means the Z80 loses 0-14 cycles per release event. Sandopolis
-    // must match this to keep Z80 sound driver timing in sync with GPGX.
+    // must match this to keep Z80 sound driver timing in sync.
     const testing = std.testing;
 
     const TestHooks = struct {
@@ -581,7 +607,7 @@ test "z80 timing aligns to next 15-cycle boundary on control-line release" {
     z80.setResetLineAsserted(false);
     view.noteZ80RunnableStateTransition(was_can_run);
 
-    // With GPGX-style alignment, phase=14 rounds up to 15, so the Z80
+    // With 15-cycle alignment, phase=14 rounds up to 15, so the Z80
     // gets 0 initial credit.  One more master cycle is not enough to
     // reach a full 15-cycle Z80 instruction.
     view.stepMasterAndFlush(1);

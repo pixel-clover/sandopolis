@@ -277,7 +277,7 @@
             content: "";
             position: absolute;
             inset: 0;
-            background: repeating-linear-gradient(0deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 3px);
+            background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.12) 0px, rgba(0, 0, 0, 0.12) 1px, transparent 1px, transparent 3px);
             pointer-events: none;
             z-index: 2;
             mix-blend-mode: multiply;
@@ -334,11 +334,11 @@
         }
 
         .btn-group.tone-audio {
-            --group-accent: #2FA86F;
+            --group-accent: #4C7BD9;
         }
 
         .btn-group.tone-save {
-            --group-accent: #D4820E;
+            --group-accent: #4C7BD9;
         }
 
         .btn-group.tone-view {
@@ -347,12 +347,12 @@
         }
 
         .btn-group.tone-system {
-            --group-accent: #8D94B3;
+            --group-accent: #4C7BD9;
             --group-chroma: 6%;
         }
 
         .btn-group.tone-info {
-            --group-accent: #9A67D6;
+            --group-accent: #4C7BD9;
             --group-chroma: 4%;
             opacity: 0.92;
         }
@@ -974,8 +974,8 @@
     </div>
     <div class="btn-group tone-info">
         <span class="btn-group-label">Info</span>
-        <button id="about-btn" title="About Sandopolis">About</button>
         <button id="help-btn" title="Help [F1]">Help</button>
+        <button id="about-btn" title="About Sandopolis">About</button>
     </div>
 </div>
 
@@ -1005,6 +1005,22 @@
             <input id="psg-volume" max="200" min="0" step="10" type="range" value="150">
             <span id="psg-volume-label">150%</span>
         </div>
+        <label><input id="eq-enabled" type="checkbox"> Equalizer</label>
+        <div class="volume-row">
+            <span class="eq-label">Low</span>
+            <input id="eq-low" max="200" min="0" step="5" type="range" value="100">
+            <span id="eq-low-label">100%</span>
+        </div>
+        <div class="volume-row">
+            <span class="eq-label">Mid</span>
+            <input id="eq-mid" max="200" min="0" step="5" type="range" value="100">
+            <span id="eq-mid-label">100%</span>
+        </div>
+        <div class="volume-row">
+            <span class="eq-label">High</span>
+            <input id="eq-high" max="200" min="0" step="5" type="range" value="100">
+            <span id="eq-high-label">100%</span>
+        </div>
         <label>Controller</label>
         <select id="controller-type">
             <option value="1">6-Button</option>
@@ -1032,10 +1048,16 @@
             </div>
             <div>
                 <h4>GAMEPAD</h4>
-                <img src="img/6button.png" alt="Genesis 6-button" class="genesis-layout">
-                <div class="help-row">(X) <img src="img/a.png" class="genesis-btn" alt="A"> &nbsp;(A) <img src="img/b.png" class="genesis-btn" alt="B"> &nbsp;(B) <img src="img/c.png" class="genesis-btn" alt="C"></div>
-                <div class="help-row">(LB) <img src="img/x.png" class="genesis-btn" alt="X"> &nbsp;(RB) <img src="img/z.png" class="genesis-btn" alt="Z"> &nbsp;(Y) <img src="img/y.png" class="genesis-btn" alt="Y"></div>
-                <div class="help-row">(Start) <img src="img/start.png" class="genesis-btn" alt="Start"> &nbsp;(D-Pad) Movement</div>
+                <img alt="Genesis 6-button" class="genesis-layout" src="img/6button.png">
+                <div class="help-row">(X) <img alt="A" class="genesis-btn" src="img/a.png"> &nbsp;(A) <img
+                    alt="B" class="genesis-btn" src="img/b.png"> &nbsp;(B) <img alt="C" class="genesis-btn"
+                                                                                src="img/c.png"></div>
+                <div class="help-row">(LB) <img alt="X" class="genesis-btn" src="img/x.png"> &nbsp;(RB) <img
+                    alt="Z" class="genesis-btn" src="img/z.png"> &nbsp;(Y) <img alt="Y" class="genesis-btn"
+                                                                                src="img/y.png"></div>
+                <div class="help-row">(Start) <img alt="Start" class="genesis-btn" src="img/start.png"> &nbsp;(D-Pad)
+                    Movement
+                </div>
             </div>
         </div>
         <button id="help-close">CLOSE</button>
@@ -1043,7 +1065,7 @@
 </div>
 
 <!-- Performance HUD -->
-<div id="perf-hud" class="hidden">
+<div class="hidden" id="perf-hud">
     <div class="perf-row"><span>FPS</span><span id="perf-fps">--</span></div>
     <div class="perf-row"><span>Frame</span><span id="perf-frame-ms">--</span></div>
     <div class="perf-row"><span>WASM Mem</span><span id="perf-wasm-mem">--</span></div>
@@ -1064,7 +1086,8 @@
                 <div class="about-row"><span>License</span><span>MIT</span></div>
                 <div class="about-row"><span>WASM Size</span><span id="about-wasm-size">--</span></div>
             </div>
-            <p class="about-link"><a href="https://github.com/pixel-clover/sandopolis">github.com/pixel-clover/sandopolis</a></p>
+            <p class="about-link"><a href="https://github.com/pixel-clover/sandopolis">github.com/pixel-clover/sandopolis</a>
+            </p>
         </div>
         <button id="about-close">CLOSE</button>
     </div>

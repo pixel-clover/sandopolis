@@ -422,7 +422,7 @@ pub const Machine = struct {
         self.bus.vdp.hblank = start_master_cycles >= hblank_start_master_cycles;
 
         // Collect all scanline events and sort by time. VInt fires at a specific
-        // cycle offset into the vblank entry line (matching Genesis Plus GX), not
+        // cycle offset into the vblank entry line (matching real hardware timing), not
         // at cycle 0. This lets HInt fire first when both occur on the same line.
         var events: [3]u16 = undefined;
         var event_count: u8 = 0;

@@ -13,9 +13,11 @@ pub const MemoryInterface = struct {
     dataPortReadWaitMasterCyclesFn: *const fn (?*anyopaque) u32,
     reserveDataPortWriteWaitMasterCyclesFn: *const fn (?*anyopaque) u32,
     controlPortWriteWaitMasterCyclesFn: *const fn (?*anyopaque) u32,
+    shouldHaltCpuFn: *const fn (?*anyopaque) bool,
+    projectedDmaWaitMasterCyclesFn: *const fn (?*anyopaque, u32) u32,
     setCpuRuntimeStateFn: *const fn (?*anyopaque, runtime_state.RuntimeState) void,
     clearCpuRuntimeStateFn: *const fn (?*anyopaque) void,
-    notifyBusAccessFn: *const fn (?*anyopaque, u32) void,
+    notifyBusAccessFn: *const fn (?*anyopaque, u32, u32) void,
 
     pub fn bind(comptime Context: type, ctx: *Context) MemoryInterface {
         return .{
@@ -80,6 +82,18 @@ pub const MemoryInterface = struct {
                     return self.controlPortWriteWaitMasterCycles();
                 }
             }.call,
+            .shouldHaltCpuFn = struct {
+                fn call(raw_ctx: ?*anyopaque) bool {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    return self.shouldHaltCpu();
+                }
+            }.call,
+            .projectedDmaWaitMasterCyclesFn = struct {
+                fn call(raw_ctx: ?*anyopaque, elapsed: u32) u32 {
+                    const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
+                    return self.projectedDmaWaitMasterCycles(elapsed);
+                }
+            }.call,
             .setCpuRuntimeStateFn = struct {
                 fn call(raw_ctx: ?*anyopaque, state: runtime_state.RuntimeState) void {
                     const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
@@ -93,9 +107,9 @@ pub const MemoryInterface = struct {
                 }
             }.call,
             .notifyBusAccessFn = struct {
-                fn call(raw_ctx: ?*anyopaque, delta_master_cycles: u32) void {
+                fn call(raw_ctx: ?*anyopaque, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
                     const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
-                    self.notifyBusAccess(delta_master_cycles);
+                    self.notifyBusAccess(delta_master_cycles, elapsed_instruction_master);
                 }
             }.call,
         };
@@ -141,6 +155,14 @@ pub const MemoryInterface = struct {
         return self.controlPortWriteWaitMasterCyclesFn(self.ctx);
     }
 
+    pub fn shouldHaltCpu(self: *const MemoryInterface) bool {
+        return self.shouldHaltCpuFn(self.ctx);
+    }
+
+    pub fn projectedDmaWaitMasterCycles(self: *const MemoryInterface, elapsed: u32) u32 {
+        return self.projectedDmaWaitMasterCyclesFn(self.ctx, elapsed);
+    }
+
     pub fn setCpuRuntimeState(self: *const MemoryInterface, state: runtime_state.RuntimeState) void {
         self.setCpuRuntimeStateFn(self.ctx, state);
     }
@@ -149,8 +171,8 @@ pub const MemoryInterface = struct {
         self.clearCpuRuntimeStateFn(self.ctx);
     }
 
-    pub fn notifyBusAccess(self: *const MemoryInterface, delta_master_cycles: u32) void {
-        self.notifyBusAccessFn(self.ctx, delta_master_cycles);
+    pub fn notifyBusAccess(self: *const MemoryInterface, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
+        self.notifyBusAccessFn(self.ctx, delta_master_cycles, elapsed_instruction_master);
     }
 };
 
@@ -204,6 +226,14 @@ test "memory interface bind forwards reads writes waits and runtime hooks" {
             return address + size_bytes;
         }
 
+        fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+
+        fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
+            return 0;
+        }
+
         fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
             return 11;
         }
@@ -224,7 +254,7 @@ test "memory interface bind forwards reads writes waits and runtime hooks" {
             self.runtime.clear();
         }
 
-        fn notifyBusAccess(_: *@This(), _: u32) void {}
+        fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
     };
 
     var probe = Probe{};

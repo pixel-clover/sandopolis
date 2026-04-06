@@ -194,6 +194,12 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
         pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
             return 0;
         }
+        pub fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
+            return 0;
+        }
         pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
             return 0;
         }
@@ -205,7 +211,7 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
         }
         pub fn setCpuRuntimeState(_: *@This(), _: @import("../cpu/runtime_state.zig").RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
-        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
     };
 
     const BusProbe = struct {
@@ -292,6 +298,12 @@ test "scheduler cpu bind forwards instruction stepping through memory" {
         pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
             return 0;
         }
+        pub fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
+            return 0;
+        }
         pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
             return 0;
         }
@@ -303,7 +315,7 @@ test "scheduler cpu bind forwards instruction stepping through memory" {
         }
         pub fn setCpuRuntimeState(_: *@This(), _: @import("../cpu/runtime_state.zig").RuntimeState) void {}
         pub fn clearCpuRuntimeState(_: *@This()) void {}
-        pub fn notifyBusAccess(_: *@This(), _: u32) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
     };
 
     const CpuProbe = struct {

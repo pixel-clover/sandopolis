@@ -7,9 +7,14 @@ const Io = @import("input/io.zig").Io;
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const state_file = @import("state_file.zig");
 
-const allocator = std.heap.wasm_allocator;
+const allocator: std.mem.Allocator = if (builtin.target.cpu.arch == .wasm32)
+    std.heap.wasm_allocator
+else
+    std.heap.page_allocator;
 const version_cstr = std.fmt.comptimePrint("{s}", .{build_options.version});
-const build_label_cstr = std.fmt.comptimePrint("Zig {s} + WebAssembly", .{builtin.zig_version_string});
+const build_label_cstr = std.fmt.comptimePrint("Zig {s}", .{builtin.zig_version_string});
+const git_ref_cstr = std.fmt.comptimePrint("{s}@{s}", .{ build_options.git_branch, build_options.git_hash });
+const build_time_cstr = std.fmt.comptimePrint("{s}", .{build_options.build_time});
 
 pub const std_options: std.Options = .{
     .log_level = .err,
@@ -46,6 +51,21 @@ const WasmAudioSink = struct {
     }
 };
 
+fn initWasmEmulator(alloc: std.mem.Allocator, rom_bytes: []const u8) !WasmEmulator {
+    var machine = try Machine.initFromRomBytes(alloc, rom_bytes);
+    machine.reset();
+
+    return .{
+        .machine = machine,
+        .audio = AudioOutput.init(),
+        .audio_buffer = [_]i16{0} ** 8192,
+        .audio_sample_count = 0,
+        .snapshot = null,
+        .last_save_buf = null,
+        .last_save_len = 0,
+    };
+}
+
 // Memory allocation for JS interop
 
 export fn sandopolis_alloc(len: usize) ?[*]u8 {
@@ -61,17 +81,9 @@ export fn sandopolis_free(ptr: [*]u8, len: usize) void {
 
 export fn sandopolis_create(rom_ptr: [*]const u8, rom_len: usize) ?*WasmEmulator {
     const emu = allocator.create(WasmEmulator) catch return null;
-    emu.* = .{
-        .machine = Machine.initFromRomBytes(allocator, rom_ptr[0..rom_len]) catch {
-            allocator.destroy(emu);
-            return null;
-        },
-        .audio = AudioOutput.init(),
-        .audio_buffer = [_]i16{0} ** 8192,
-        .audio_sample_count = 0,
-        .snapshot = null,
-        .last_save_buf = null,
-        .last_save_len = 0,
+    emu.* = initWasmEmulator(allocator, rom_ptr[0..rom_len]) catch {
+        allocator.destroy(emu);
+        return null;
     };
     return emu;
 }
@@ -166,6 +178,30 @@ export fn sandopolis_get_psg_volume(emu: *const WasmEmulator) u8 {
     return emu.audio.psg_volume_percent;
 }
 
+export fn sandopolis_set_eq_enabled(emu: *WasmEmulator, enabled: u8) void {
+    emu.audio.setEqEnabled(enabled != 0);
+}
+
+export fn sandopolis_get_eq_enabled(emu: *const WasmEmulator) u8 {
+    return if (emu.audio.eq_enabled) 1 else 0;
+}
+
+export fn sandopolis_set_eq_gains(emu: *WasmEmulator, low: f64, mid: f64, high: f64) void {
+    emu.audio.setEqGains(low, mid, high);
+}
+
+export fn sandopolis_get_eq_low(emu: *const WasmEmulator) f64 {
+    return emu.audio.eq_left.lg;
+}
+
+export fn sandopolis_get_eq_mid(emu: *const WasmEmulator) f64 {
+    return emu.audio.eq_left.mg;
+}
+
+export fn sandopolis_get_eq_high(emu: *const WasmEmulator) f64 {
+    return emu.audio.eq_left.hg;
+}
+
 // About metadata
 
 export fn sandopolis_version_ptr() [*:0]const u8 {
@@ -182,6 +218,22 @@ export fn sandopolis_build_label_ptr() [*:0]const u8 {
 
 export fn sandopolis_build_label_len() usize {
     return build_label_cstr.len;
+}
+
+export fn sandopolis_git_hash_ptr() [*:0]const u8 {
+    return git_ref_cstr.ptr;
+}
+
+export fn sandopolis_git_hash_len() usize {
+    return git_ref_cstr.len;
+}
+
+export fn sandopolis_build_time_ptr() [*:0]const u8 {
+    return build_time_cstr.ptr;
+}
+
+export fn sandopolis_build_time_len() usize {
+    return build_time_cstr.len;
 }
 
 export fn sandopolis_audio_sample_rate() u32 {
@@ -228,6 +280,7 @@ export fn sandopolis_quick_load(emu: *WasmEmulator) bool {
     const snap = &(emu.snapshot orelse return false);
     emu.machine.restoreSnapshot(allocator, snap) catch return false;
     emu.audio.reset();
+    emu.audio.syncYmStateFromZ80(&emu.machine.bus.z80);
     return true;
 }
 
@@ -296,4 +349,35 @@ export fn sandopolis_button_y() u16 {
 }
 export fn sandopolis_button_z() u16 {
     return Io.Button.Z;
+}
+
+fn makeGenesisRom(alloc: std.mem.Allocator, stack_pointer: u32, program_counter: u32, program: []const u8) ![]u8 {
+    const rom_len = @max(@as(usize, 0x4000), 0x0200 + program.len);
+    var rom = try alloc.alloc(u8, rom_len);
+    @memset(rom, 0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    std.mem.writeInt(u32, rom[0..4], stack_pointer, .big);
+    std.mem.writeInt(u32, rom[4..8], program_counter, .big);
+    @memcpy(rom[0x0200 .. 0x0200 + program.len], program);
+    return rom;
+}
+
+test "wasm emulator creation resets the machine before the first frame" {
+    const test_allocator = std.testing.allocator;
+    const rom = try makeGenesisRom(test_allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x4E, 0x71,
+        0x60, 0xFC,
+    });
+    defer test_allocator.free(rom);
+
+    var emu = try initWasmEmulator(test_allocator, rom);
+    defer emu.machine.deinit(test_allocator);
+
+    try std.testing.expectEqual(@as(@TypeOf(emu.machine.pending_frame_phase), .hard_reset), emu.machine.pending_frame_phase);
+    try std.testing.expectEqual(@as(u32, 0x0000_0200), emu.machine.programCounter());
+
+    const pc_before = emu.machine.programCounter();
+    emu.machine.runFrame();
+    try std.testing.expect(emu.machine.programCounter() != pc_before);
 }

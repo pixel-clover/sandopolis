@@ -5,23 +5,26 @@ pub const PsgStereoSample = struct {
     right: i16,
 };
 
+// Volume table matching the reference implementation: max amplitude 2800,
+// 2 dB attenuation per step.  This scale places PSG output in the same
+// integer domain as FM when both feed into the blip buffer.
 const psg_levels: [16]i16 = .{
-    0x1FFF,
-    0x196A,
-    0x1430,
-    0x1009,
-    0x0CBD,
-    0x0A1E,
-    0x0809,
-    0x0662,
-    0x0512,
-    0x0407,
-    0x0333,
-    0x028A,
-    0x0204,
-    0x019A,
-    0x0146,
-    0x0000,
+    2800, // 0:  MAX
+    2224, // 1:  -2 dB
+    1767, // 2:  -4 dB
+    1403, // 3:  -6 dB
+    1115, // 4:  -8 dB
+    885, // 5:  -10 dB
+    703, // 6:  -12 dB
+    559, // 7:  -14 dB
+    444, // 8:  -16 dB
+    352, // 9:  -18 dB
+    280, // 10: -20 dB
+    222, // 11: -22 dB
+    177, // 12: -24 dB
+    140, // 13: -26 dB
+    111, // 14: -28 dB
+    0, // 15: OFF
 };
 
 const NoiseType = enum { periodic, white };
@@ -82,8 +85,9 @@ pub const Psg = struct {
     }
 
     fn toneLevel(tone: *const ToneState) i16 {
-        // The integrated PSG core is a unipolar pulse generator. Board-side filtering centers it later.
-        return if (tone.output_bit == 0) tone.level else 0;
+        // Bipolar output matching the reference: output swings between
+        // +level and -level based on the square wave polarity.
+        return if (tone.output_bit == 0) tone.level else -tone.level;
     }
 
     fn stepTone(tone: *ToneState) void {
@@ -96,7 +100,8 @@ pub const Psg = struct {
     }
 
     fn noiseLevel(noise: *const NoiseState) i16 {
-        return if (noise.real_output_bit != 0) noise.level else 0;
+        // Bipolar output matching the reference.
+        return if (noise.real_output_bit != 0) noise.level else -noise.level;
     }
 
     fn stepNoise(noise: *NoiseState, tone2_period: u16) void {
@@ -357,18 +362,18 @@ test "psg zero tone period behaves like period one" {
     var buf: [8]i16 = [_]i16{0} ** 8;
     psg.update(&buf, buf.len);
 
-    var saw_high = false;
-    var saw_low = false;
+    var saw_positive = false;
+    var saw_negative = false;
     for (buf) |sample| {
-        if (sample > 0) saw_high = true;
-        if (sample == 0) saw_low = true;
+        if (sample > 0) saw_positive = true;
+        if (sample < 0) saw_negative = true;
     }
 
-    try std.testing.expect(saw_high);
-    try std.testing.expect(saw_low);
+    try std.testing.expect(saw_positive);
+    try std.testing.expect(saw_negative);
 }
 
-test "psg tone output is unipolar before board filtering" {
+test "psg tone output is bipolar matching reference" {
     var psg = Psg{};
 
     psg.doCommand(0x90);
@@ -378,16 +383,15 @@ test "psg tone output is unipolar before board filtering" {
     var buf: [16]i16 = [_]i16{0} ** 16;
     psg.update(&buf, buf.len);
 
-    var saw_high = false;
-    var saw_low = false;
+    var saw_positive = false;
+    var saw_negative = false;
     for (buf) |sample| {
-        try std.testing.expect(sample >= 0);
-        if (sample > 0) saw_high = true;
-        if (sample == 0) saw_low = true;
+        if (sample > 0) saw_positive = true;
+        if (sample < 0) saw_negative = true;
     }
 
-    try std.testing.expect(saw_high);
-    try std.testing.expect(saw_low);
+    try std.testing.expect(saw_positive);
+    try std.testing.expect(saw_negative);
 }
 
 test "psg noise mode write reseeds lfsr without resetting divider phase" {
@@ -464,13 +468,12 @@ test "psg stereo panning isolates channels to left or right" {
     psg.channel_pan[0][0] = true; // Left enabled
     psg.channel_pan[0][1] = false; // Right disabled
 
-    // Get a sample when tone is high
+    // Left should have energy, right should be near zero (muted channels only).
     var found_asymmetric = false;
     for (0..16) |_| {
         const sample = psg.nextStereoSample();
-        if (sample.left != sample.right) {
+        if (@abs(sample.left) > @abs(sample.right)) {
             found_asymmetric = true;
-            try std.testing.expect(sample.left > sample.right);
             break;
         }
     }

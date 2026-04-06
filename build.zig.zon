@@ -21,12 +21,12 @@
             .hash = "N-V-__8AAOj4AgCPCxSePjb6U-Kb3CMWSn14SVV5AOOWXXCt",
         },
         .rocket68 = .{
-            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.1.2.tar.gz",
-            .hash = "rocket68-0.1.2-Jd6gXDu9AgDdKnmMb3rLhNZ4iR7hHrKOgcbHDZCNgLrd",
+            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.2.0.tar.gz",
+            .hash = "rocket68-0.2.0-Jd6gXJu_AgAPUNA3Ynd3PaWG_YrZoPopRU_dTjZvq3Lm",
         },
         .sdl3 = .{
-            .url = "https://github.com/castholm/SDL/archive/refs/tags/v0.4.1+3.4.2.tar.gz",
-            .hash = "sdl-0.4.1+3.4.2-SDL--hF-pAEsbMtCvJAr9CwYI94eOItCgmnDb0ZXeKPJ",
+            .url = "https://github.com/castholm/SDL/archive/refs/tags/v0.4.2+3.4.4.tar.gz",
+            .hash = "sdl-0.4.2+3.4.4-SDL--nF2pQHiRAibwjhZ6jBJu0Omc3x4EoxPn6gxfnAi",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md" },

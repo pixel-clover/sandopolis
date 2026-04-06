@@ -25,6 +25,30 @@ fn deinterleaveSmdPayload(allocator: std.mem.Allocator, payload: []const u8) ![]
     return out;
 }
 
+fn normalizeRomBytes(allocator: std.mem.Allocator, raw: []u8) []u8 {
+    if (looksLikeGenesis(raw)) return raw;
+
+    if (raw.len > 512) {
+        if (deinterleaveSmdPayload(allocator, raw[512..])) |tmp| {
+            if (looksLikeGenesis(tmp)) {
+                allocator.free(raw);
+                return tmp;
+            }
+            allocator.free(tmp);
+        } else |_| {}
+    }
+
+    if (deinterleaveSmdPayload(allocator, raw)) |tmp| {
+        if (looksLikeGenesis(tmp)) {
+            allocator.free(raw);
+            return tmp;
+        }
+        allocator.free(tmp);
+    } else |_| {}
+
+    return raw;
+}
+
 const RamType = enum {
     none,
     sixteen_bit,
@@ -350,31 +374,7 @@ pub const Cartridge = struct {
             const size = try file.getEndPos();
             const raw = try allocator.alloc(u8, size);
             _ = try file.readAll(raw);
-
-            if (std.mem.endsWith(u8, path, ".smd")) {
-                var candidate: ?[]u8 = null;
-
-                if (raw.len > 512) {
-                    if (deinterleaveSmdPayload(allocator, raw[512..])) |tmp| {
-                        if (looksLikeGenesis(tmp)) candidate = tmp else allocator.free(tmp);
-                    } else |_| {}
-                }
-
-                if (candidate == null) {
-                    if (deinterleaveSmdPayload(allocator, raw)) |tmp| {
-                        if (looksLikeGenesis(tmp)) candidate = tmp else allocator.free(tmp);
-                    } else |_| {}
-                }
-
-                if (candidate) |rom| {
-                    allocator.free(raw);
-                    rom_data = rom;
-                } else {
-                    rom_data = raw;
-                }
-            } else {
-                rom_data = raw;
-            }
+            rom_data = normalizeRomBytes(allocator, raw);
         } else {
             rom_data = try allocator.alloc(u8, 4 * 1024 * 1024);
             @memset(rom_data, 0);
@@ -386,13 +386,13 @@ pub const Cartridge = struct {
     pub fn initFromRomBytes(allocator: std.mem.Allocator, rom_bytes: []const u8) !Cartridge {
         const rom_data = try allocator.alloc(u8, rom_bytes.len);
         std.mem.copyForwards(u8, rom_data, rom_bytes);
-        return initWithRomData(allocator, rom_data, null, null);
+        return initWithRomData(allocator, normalizeRomBytes(allocator, rom_data), null, null);
     }
 
     pub fn initFromRomBytesWithChecksum(allocator: std.mem.Allocator, rom_bytes: []const u8, checksum: u32) !Cartridge {
         const rom_data = try allocator.alloc(u8, rom_bytes.len);
         std.mem.copyForwards(u8, rom_data, rom_bytes);
-        return initWithRomData(allocator, rom_data, null, checksum);
+        return initWithRomData(allocator, normalizeRomBytes(allocator, rom_data), null, checksum);
     }
 
     fn initWithRomData(
@@ -674,6 +674,27 @@ fn makeBasicGenesisRom(allocator: std.mem.Allocator, rom_len: usize) ![]u8 {
     return rom;
 }
 
+fn makeSmdRomFromGenesisRom(allocator: std.mem.Allocator, rom: []const u8) ![]u8 {
+    const block_size: usize = 16 * 1024;
+    if (rom.len % block_size != 0) return error.InvalidTestRom;
+
+    var smd = try allocator.alloc(u8, 512 + rom.len);
+    @memset(smd[0..512], 0);
+
+    var i: usize = 0;
+    while (i < rom.len) : (i += block_size) {
+        const block = rom[i .. i + block_size];
+        const payload = smd[512 + i .. 512 + i + block_size];
+        var j: usize = 0;
+        while (j < block_size / 2) : (j += 1) {
+            payload[j] = block[j * 2];
+            payload[j + (block_size / 2)] = block[j * 2 + 1];
+        }
+    }
+
+    return smd;
+}
+
 fn makeRomWithSramHeader(
     allocator: std.mem.Allocator,
     rom_len: usize,
@@ -728,6 +749,20 @@ test "cartridge odd-byte sram past end of rom is auto-mapped" {
     try std.testing.expect(cartridge.writeByte(0x0020_0001, 0x5A));
     try std.testing.expectEqual(@as(u8, 0x5A), cartridge.readByte(0x0020_0001).?);
     try std.testing.expectEqual(@as(u16, 0x5A5A), cartridge.readWord(0x0020_0000).?);
+}
+
+test "cartridge initFromRomBytes deinterleaves smd payloads" {
+    const genesis_rom = try makeBasicGenesisRom(std.testing.allocator, 0x4000);
+    defer std.testing.allocator.free(genesis_rom);
+
+    const smd_rom = try makeSmdRomFromGenesisRom(std.testing.allocator, genesis_rom);
+    defer std.testing.allocator.free(smd_rom);
+
+    var cartridge = try Cartridge.initFromRomBytes(std.testing.allocator, smd_rom);
+    defer cartridge.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualSlices(u8, genesis_rom, cartridge.romBytes());
+    try std.testing.expectEqualStrings("SEGA", cartridge.romBytes()[0x100..0x104]);
 }
 
 test "forced 8kb sram checksum maps odd-byte persistent ram without header" {

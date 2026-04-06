@@ -26,7 +26,7 @@ fn powerOnStartScanline(self: *const Vdp) u16 {
 }
 
 fn powerOnStartLineMasterCycle() u16 {
-    // Genesis Plus GX seeds hard reset from the measured first-HVC point; Sandopolis's
+    // Hard reset is seeded from the measured first-HVC point; Sandopolis's
     // internal line origin differs, so this maps the same hardware point into our timing model.
     return 522;
 }
@@ -59,7 +59,7 @@ pub fn hblankStartMasterCycles(self: *const Vdp) u16 {
     return if (self.isH40()) 0x015A * 8 else 0x0108 * 10;
 }
 
-/// Delay between VBLANK flag set and VInt firing, matching Genesis Plus GX.
+/// Delay between VBLANK flag set and VInt firing, matching hardware timing.
 /// Games like Dracula, OutRunners, and VR Troopers depend on this gap.
 pub fn vIntMasterCycles(self: *const Vdp) u16 {
     return if (self.isH40()) 788 else 770;
@@ -319,7 +319,7 @@ pub fn readControlAdjusted(self: *Vdp, opcode: u16) u16 {
     const status = statusWordForAdjustedState(self, adjusted);
 
     self.pending_command = false;
-    // Match Genesis Plus GX: only clear vint_pending when VInt is enabled.
+    // Only clear vint_pending when VInt is enabled.
     // If VInt is disabled, the pending flag must be preserved so it can fire
     // as soon as the game enables VInt.  Clearing it unconditionally causes
     // games that read status before enabling VInt to miss the first VBlank.
@@ -391,8 +391,8 @@ pub fn isVBlankInterruptEnabled(self: *const Vdp) bool {
 }
 
 /// Compute the M68K interrupt level the VDP should currently assert based on
-/// pending interrupt flags and their enable bits.  This mirrors Genesis Plus GX's
-/// `update_irq_line()` and is called after a status-register read clears
+/// pending interrupt flags and their enable bits.  This is called after
+/// a status-register read clears
 /// `vint_pending` so the CPU sees the correct residual level instead of zero.
 pub fn currentInterruptLevel(self: *const Vdp) u3 {
     if (self.vint_pending and isVBlankInterruptEnabled(self)) return 6;
