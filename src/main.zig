@@ -2626,7 +2626,7 @@ pub fn main() !void {
     defer zsdl3.quit();
 
     const window = try zsdl3.Window.create(
-        "Sandopolis Emulator (v" ++ build_options.version ++ ")",
+        "Sandopolis Emulator (" ++ build_options.version ++ "; " ++ build_options.git_branch ++ "@" ++ build_options.git_hash ++ ")",
         800,
         600,
         .{ .resizable = true },
@@ -5354,6 +5354,15 @@ test "cli parser accepts version flag without starting the emulator" {
     const result = try runCliTest(&.{ "--version" });
     defer result.deinit();
     try std.testing.expect(!result.config.should_run);
+}
+
+test "cli version summary includes git branch and hash" {
+    const expected = std.fmt.comptimePrint("{s} ({s}@{s})", .{
+        build_options.version,
+        build_options.git_branch,
+        build_options.git_hash,
+    });
+    try std.testing.expectEqualStrings(expected, cli_module.version_summary);
 }
 
 test "cli parser accepts pal timing override" {

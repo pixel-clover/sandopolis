@@ -5,6 +5,11 @@ const rom_metadata = @import("rom_metadata.zig");
 const build_options = @import("build_options");
 
 pub const TimingModeOption = rom_metadata.TimingModeOption;
+pub const version_summary = std.fmt.comptimePrint("{s} ({s}@{s})", .{
+    build_options.version,
+    build_options.git_branch,
+    build_options.git_hash,
+});
 
 pub const Config = struct {
     rom_path: ?[]const u8 = null,
@@ -23,7 +28,7 @@ fn exec(ctx: chilli.CommandContext) !void {
 
     const show_version = try ctx.getFlag("version", bool);
     if (show_version) {
-        try std.fs.File.stdout().writeAll("sandopolis " ++ build_options.version ++ "\n");
+        try std.fs.File.stdout().writeAll(version_summary ++ "\n");
         return;
     }
 
