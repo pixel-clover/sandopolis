@@ -21,8 +21,8 @@
             .hash = "N-V-__8AAOj4AgCPCxSePjb6U-Kb3CMWSn14SVV5AOOWXXCt",
         },
         .rocket68 = .{
-            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.2.0.tar.gz",
-            .hash = "rocket68-0.2.0-Jd6gXJu_AgAPUNA3Ynd3PaWG_YrZoPopRU_dTjZvq3Lm",
+            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.2.1.tar.gz",
+            .hash = "rocket68-0.2.1-Jd6gXErFAgD2BjxYjBfBBFCVmh7fmy11y_mbHQMaXyr-",
         },
         .sdl3 = .{
             .url = "https://github.com/castholm/SDL/archive/refs/tags/v0.4.2+3.4.4.tar.gz",

@@ -87,6 +87,13 @@ fn pathExists(relative_path: []const u8) bool {
     return true;
 }
 
+fn runOrDefault(b: *std.Build, argv: []const []const u8, default_value: []const u8) []const u8 {
+    if (!std.process.can_spawn) return default_value;
+
+    var code: u8 = 0;
+    return b.runAllowFail(argv, &code, .Ignore) catch default_value;
+}
+
 fn addStbTruetype(step: *std.Build.Step.Compile, b: *std.Build) void {
     step.addCSourceFiles(.{
         .files = &.{"src/frontend/fonts/stb_impl.c"},
@@ -128,14 +135,18 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 
-    // Git branch, commit hash (first 5 chars), and build timestamp.
-    const git_branch = b.run(&.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
+    // Allow CI to provide authoritative metadata explicitly. Fall back to
+    // local command discovery for developer builds.
+    const git_branch = b.option([]const u8, "git-branch", "Git branch name for build metadata") orelse
+        runOrDefault(b, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" }, "unknown");
     build_options.addOption([]const u8, "git_branch", std.mem.trim(u8, git_branch, "\n\r "));
 
-    const git_hash = b.run(&.{ "git", "rev-parse", "--short=5", "HEAD" });
+    const git_hash = b.option([]const u8, "git-hash", "Short Git commit hash for build metadata") orelse
+        runOrDefault(b, &.{ "git", "rev-parse", "--short=5", "HEAD" }, "unknown");
     build_options.addOption([]const u8, "git_hash", std.mem.trim(u8, git_hash, "\n\r "));
 
-    const build_time = b.run(&.{ "date", "-u", "+%Y-%m-%d %H:%M UTC" });
+    const build_time = b.option([]const u8, "build-time", "Build timestamp for build metadata") orelse
+        runOrDefault(b, &.{ "date", "-u", "+%Y-%m-%d %H:%M UTC" }, "unknown");
     build_options.addOption([]const u8, "build_time", std.mem.trim(u8, build_time, "\n\r "));
 
     // Create the executable

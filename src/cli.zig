@@ -5,6 +5,11 @@ const rom_metadata = @import("rom_metadata.zig");
 const build_options = @import("build_options");
 
 pub const TimingModeOption = rom_metadata.TimingModeOption;
+pub const version_summary = std.fmt.comptimePrint("{s} ({s}@{s})", .{
+    build_options.version,
+    build_options.git_branch,
+    build_options.git_hash,
+});
 
 pub const Config = struct {
     rom_path: ?[]const u8 = null,
@@ -16,10 +21,17 @@ pub const Config = struct {
     timing_mode: TimingModeOption = .auto,
     config_path: ?[]const u8 = null,
     should_run: bool = false,
+    show_version: bool = false,
 };
 
 fn exec(ctx: chilli.CommandContext) !void {
     const config: *Config = ctx.getContextData(Config).?;
+
+    const show_version = try ctx.getFlag("version", bool);
+    if (show_version) {
+        config.show_version = true;
+        return;
+    }
 
     // Positional: ROM path — dupe via app_allocator so it outlives
     // the process-arg memory that chilli frees when run() returns.
@@ -66,7 +78,6 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     var cmd = try chilli.Command.init(allocator, .{
         .name = "sandopolis",
         .description = "A Sega Genesis/Mega Drive emulator written in Zig and C",
-        .version = build_options.version,
         .exec = exec,
     });
 
@@ -90,7 +101,7 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     });
     try cmd.addFlag(.{
         .name = "config",
-        .description = "Path to config file (default: sandopolis.cfg in current directory)",
+        .description = "Path to the unified config file (default: SANDOPOLIS_CONFIG, platform app data, or ./sandopolis.cfg)",
         .type = .String,
         .default_value = .{ .String = "" },
     });
@@ -103,6 +114,12 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     try cmd.addFlag(.{
         .name = "ntsc",
         .description = "Force NTSC/60Hz timing and version bits",
+        .type = .Bool,
+        .default_value = .{ .Bool = false },
+    });
+    try cmd.addFlag(.{
+        .name = "version",
+        .description = "Print version information and exit",
         .type = .Bool,
         .default_value = .{ .Bool = false },
     });

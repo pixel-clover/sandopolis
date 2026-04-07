@@ -447,7 +447,7 @@ pub const Vdp = struct {
             .pixel_x = pixel,
             .cram_addr = cram_addr,
             .old_hi = self.cram[cram_addr],
-            .old_lo = self.cram[cram_addr + 1],
+            .old_lo = self.cram[cram_addr +% 1],
             .written_word = written_word,
         };
         self.cram_dot_event_count += 1;
@@ -457,7 +457,7 @@ pub const Vdp = struct {
         // will write the same value again when it drains (harmless).
         const masked = written_word & 0x0EEE;
         self.cram[cram_addr] = @intCast((masked >> 8) & 0xFF);
-        self.cram[cram_addr + 1] = @intCast(masked & 0xFF);
+        self.cram[cram_addr +% 1] = @intCast(masked & 0xFF);
     }
 
     pub fn recordRegChange(self: *Vdp, reg_index: u8, new_value: u8) void {

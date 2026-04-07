@@ -374,6 +374,7 @@ pub fn defaultConfigPath(allocator: std.mem.Allocator) ![]u8 {
 // Compute video destination rectangle based on aspect and scale modes
 pub fn computeVideoDestinationRect(
     viewport: zsdl3.Rect,
+    source_width: u16,
     source_height: i32,
     aspect_mode: VideoAspectMode,
     scale_mode: VideoScaleMode,
@@ -391,7 +392,7 @@ pub fn computeVideoDestinationRect(
     const nominal_w = switch (aspect_mode) {
         .stretch => unreachable,
         .four_three => nominal_h * (4.0 / 3.0),
-        .square_pixels => @as(f32, @floatFromInt(Vdp.framebuffer_width)),
+        .square_pixels => @as(f32, @floatFromInt(source_width)),
     };
 
     var scale = @min(viewport_w / nominal_w, viewport_h / nominal_h);

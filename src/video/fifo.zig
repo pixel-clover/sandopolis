@@ -1220,7 +1220,7 @@ fn writeTargetWord(self: *Vdp, code: u8, addr: u16, value: u16) void {
             // Mask out unused bits so readback returns canonical values.
             const masked = value & 0x0EEE;
             self.cram[idx] = @intCast((masked >> 8) & 0xFF);
-            self.cram[idx + 1] = @intCast(masked & 0xFF);
+            self.cram[idx +% 1] = @intCast(masked & 0xFF);
         },
         0x5 => {
             self.dbg_vsram_writes += 1;
@@ -1258,7 +1258,7 @@ pub fn writeData(self: *Vdp, value: u16) void {
         // Apply CRAM write immediately regardless of display state.
         const masked = value & 0x0EEE;
         self.cram[cram_idx] = @intCast((masked >> 8) & 0xFF);
-        self.cram[cram_idx + 1] = @intCast(masked & 0xFF);
+        self.cram[cram_idx +% 1] = @intCast(masked & 0xFF);
         entry.cram_already_applied = true;
     }
 
@@ -1313,7 +1313,7 @@ fn progressMemoryToVramDmaReadSlot(self: *Vdp, slot_idx: u16, read_ctx: ?*anyopa
         self.recordCramDot(self.transfer_line_master_cycle, cram_idx, word);
         const masked = word & 0x0EEE;
         self.cram[cram_idx] = @intCast((masked >> 8) & 0xFF);
-        self.cram[cram_idx + 1] = @intCast(masked & 0xFF);
+        self.cram[cram_idx +% 1] = @intCast(masked & 0xFF);
         entry.cram_already_applied = true;
     }
     // DMA source wraps within a 128K window (bits 0-16), preserving the
@@ -1375,7 +1375,7 @@ fn progressDmaFill(self: *Vdp, access_slots: u32) void {
                 self.recordCramDot(self.transfer_line_master_cycle, @intCast(idx & 0x7E), fill_word);
                 const masked = fill_word & 0x0EEE;
                 self.cram[idx] = @intCast((masked >> 8) & 0xFF);
-                self.cram[idx + 1] = @intCast(masked & 0xFF);
+                self.cram[idx +% 1] = @intCast(masked & 0xFF);
             },
             0x5 => {
                 self.dbg_vsram_writes += 1;

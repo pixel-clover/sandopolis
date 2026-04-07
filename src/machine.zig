@@ -514,6 +514,10 @@ pub const Machine = struct {
         return self.bus.vdp.framebuffer[0 .. Vdp.framebuffer_width * @as(usize, self.bus.vdp.activeVisibleLines())];
     }
 
+    pub fn framebufferWidth(self: *const Machine) u16 {
+        return self.bus.vdp.screenWidth();
+    }
+
     pub fn romMetadata(self: *const Machine) RomMetadata {
         const rom = self.bus.rom;
         const has_header = rom.len >= 0x200;

@@ -8,8 +8,9 @@
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/pixel-clover/sandopolis/tests.yml?label=tests&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-007ec6?label=license&style=flat&labelColor=282c34&logo=open-source-initiative)](https://github.com/pixel-clover/sandopolis/blob/main/LICENSE)
-[![Zig Version](https://img.shields.io/badge/Zig-0.15.2-orange?logo=zig&labelColor=282c34)](https://ziglang.org/download/)
+[![Zig Version](https://img.shields.io/badge/zig-0.15.2-orange?label=zig&style=flat&labelColor=282c34&logo=zig)](https://ziglang.org/download/)
 [![Play](https://img.shields.io/badge/web-play-007ec6?label=web&style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?label=docker&style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 
 A Sega Genesis/Mega Drive emulator written in Zig and C
@@ -19,7 +20,7 @@ A Sega Genesis/Mega Drive emulator written in Zig and C
 ---
 
 **Download the latest desktop version of Sandopolis from [here](https://github.com/pixel-clover/sandopolis/releases)
-or just run Sandopolis in your web browser [here](https://pixel-clover.github.io/sandopolis/).**
+or [try Sandopolis in your web browser](https://pixel-clover.github.io/sandopolis/).**
 
 Footage of Sandopolis running a few games:
 
@@ -58,7 +59,20 @@ See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.
 
 #### Download the Latest Release
 
-You can download the latest pre-build binaries from the project's [release page](https://github.com/pixel-clover/sandopolis/releases).
+##### A. Desktop
+
+You can download the latest pre-built binaries from the project's [release page](https://github.com/pixel-clover/sandopolis/releases).
+
+##### B. Web
+
+You can download and use the latest pre-built Docker image for the web version of Sandopolis from the
+[GCR](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web):
+
+```bash
+docker run -d -p 8085:80 --rm ghcr.io/pixel-clover/sandopolis-web:latest
+```
+
+Then open http://localhost:8085 in your browser.
 
 #### Build Sandopolis from Source
 
@@ -98,7 +112,7 @@ sandopolis
 ```
 
 <div align="center">
-<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.4.png" width="100%">
+<img alt="Sandopolis Screenshot" src="docs/assets/img/main_window_v0.1.0-alpha.5.png" width="100%">
 </div>
 
 Run `sandopolis --help` to see the list of available command-line options.
@@ -107,7 +121,6 @@ Example output:
 
 ```
 A Sega Genesis/Mega Drive emulator written in Zig and C
-Version: 0.1.0-alpha.4
 
 Usage:
   sandopolis [flags] [rom_file]
@@ -120,7 +133,7 @@ Flags:
       --audio-mode      Audio render mode: normal, ym-only, psg-only, unfiltered-mix [String] (default: "")
       --audio-queue-ms  Audio queue budget in milliseconds (40-150) before backlog recovery [String] (default: "")
       --renderer        SDL render driver override (e.g. software, opengl) [String] (default: "")
-      --config          Path to config file (default: sandopolis.cfg in current directory) [String] (default: "")
+      --config          Path to the unified config file (default: SANDOPOLIS_CONFIG, platform app data, or ./sandopolis.cfg) [String] (default: "")
       --pal             Force PAL/50Hz timing and version bits [Bool] (default: false)
       --ntsc            Force NTSC/60Hz timing and version bits [Bool] (default: false)
       --version         Print version information and exit [Bool] (default: false)
@@ -155,8 +168,8 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
 
 Sandopolis implementation logic was checked with the following implementations for finding errors and verifying correctness:
 
-* [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
 * [Genesis-Plus-GX](https://github.com/ekeeke/Genesis-Plus-GX)
+* [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2)
 * [clownmdemu-core](https://github.com/Clownacy/clownmdemu-core)
 * [kiwi](https://github.com/drx/kiwi)
 * [jgenesis](https://github.com/jsgroth/jgenesis/tree/master/backend/genesis-core)

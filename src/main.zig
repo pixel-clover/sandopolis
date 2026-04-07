@@ -2612,6 +2612,10 @@ pub fn main() !void {
     const root_cmd = try createCliCommand(allocator);
     defer root_cmd.deinit();
     try root_cmd.run(&cli_config);
+    if (cli_config.show_version) {
+        try std.fs.File.stdout().writeAll(cli_module.version_summary ++ "\n");
+        return;
+    }
     if (!cli_config.should_run) return;
 
     const cli = cli_config;
@@ -2626,7 +2630,7 @@ pub fn main() !void {
     defer zsdl3.quit();
 
     const window = try zsdl3.Window.create(
-        "Sandopolis Emulator (v" ++ build_options.version ++ ")",
+        "Sandopolis Emulator (" ++ build_options.version ++ "; " ++ build_options.git_branch ++ "@" ++ build_options.git_hash ++ ")",
         800,
         600,
         .{ .resizable = true },
@@ -3684,15 +3688,17 @@ pub fn main() !void {
         const draw_start = std.time.Instant.now() catch frame_timer;
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
+        const active_width = machine.framebufferWidth();
         const source_rect = zsdl3.FRect{
             .x = 0,
             .y = 0,
-            .w = @floatFromInt(Vdp.framebuffer_width),
+            .w = @floatFromInt(active_width),
             .h = @floatFromInt(framebuffer_height),
         };
         const viewport = try zsdl3.getRenderViewport(renderer);
         const dest_rect = computeVideoDestinationRect(
             viewport,
+            active_width,
             framebuffer_height,
             frontend_config.video_aspect_mode,
             frontend_config.video_scale_mode,
@@ -4926,19 +4932,19 @@ test "settings menu wraps and audio render mode cycles" {
 test "video destination rect honors aspect and integer scaling" {
     const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 };
 
-    const stretch = computeVideoDestinationRect(viewport, 224, .stretch, .fit);
+    const stretch = computeVideoDestinationRect(viewport, 320, 224, .stretch, .fit);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), stretch.x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), stretch.y, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1280.0), stretch.w, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 720.0), stretch.h, 0.001);
 
-    const four_three = computeVideoDestinationRect(viewport, 224, .four_three, .fit);
+    const four_three = computeVideoDestinationRect(viewport, 320, 224, .four_three, .fit);
     try std.testing.expectApproxEqAbs(@as(f32, 160.0), four_three.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), four_three.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 960.0), four_three.w, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 720.0), four_three.h, 0.01);
 
-    const integer_scaled = computeVideoDestinationRect(viewport, 224, .square_pixels, .whole_pixels);
+    const integer_scaled = computeVideoDestinationRect(viewport, 320, 224, .square_pixels, .whole_pixels);
     try std.testing.expectApproxEqAbs(@as(f32, 160.0), integer_scaled.x, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 24.0), integer_scaled.y, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 960.0), integer_scaled.w, 0.01);
@@ -5341,6 +5347,29 @@ test "cli parser accepts renderer override before rom path" {
     try std.testing.expectEqual(AudioOutput.RenderMode.normal, result.config.audio_mode);
     try std.testing.expect(!result.config.audio_mode_overridden);
     try std.testing.expect(!result.config.audio_queue_ms_overridden);
+}
+
+test "cli parser accepts config override" {
+    const result = try runCliTest(&.{ "--config=custom/sandopolis.cfg", "roms/test.bin" });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("roms/test.bin", result.config.rom_path.?);
+    try std.testing.expectEqualStrings("custom/sandopolis.cfg", result.config.config_path.?);
+}
+
+test "cli parser accepts version flag without starting the emulator" {
+    const result = try runCliTest(&.{"--version"});
+    defer result.deinit();
+    try std.testing.expect(result.config.show_version);
+    try std.testing.expect(!result.config.should_run);
+}
+
+test "cli version summary includes git branch and hash" {
+    const expected = std.fmt.comptimePrint("{s} ({s}@{s})", .{
+        build_options.version,
+        build_options.git_branch,
+        build_options.git_hash,
+    });
+    try std.testing.expectEqualStrings(expected, cli_module.version_summary);
 }
 
 test "cli parser accepts pal timing override" {
