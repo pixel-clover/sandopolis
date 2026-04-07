@@ -22,6 +22,7 @@ pub const SmsVdp = struct {
     hint_pending: bool = false,
     line_counter: u8 = 0,
 
+
     // Frame state
     scanline: u16 = 0,
     pal_mode: bool = false,
@@ -113,7 +114,7 @@ pub const SmsVdp = struct {
         if (!self.control_latch) {
             self.control_latch = true;
             self.control_word = (self.control_word & 0xFF00) | @as(u16, value);
-            self.addr = @truncate(self.control_word);
+            // Do NOT update addr here; it is only valid after both bytes are written.
         } else {
             self.control_latch = false;
             self.control_word = (@as(u16, value) << 8) | (self.control_word & 0x00FF);
@@ -247,7 +248,7 @@ pub const SmsVdp = struct {
         self.scanline = 0;
     }
 
-    fn isDisplayEnabled(self: *const SmsVdp) bool {
+    pub fn isDisplayEnabled(self: *const SmsVdp) bool {
         return (self.regs[1] & 0x40) != 0;
     }
 
@@ -268,7 +269,7 @@ pub const SmsVdp = struct {
         return if (self.isSpriteDouble()) base * 2 else base;
     }
 
-    fn nameTableBase(self: *const SmsVdp) u16 {
+    pub fn nameTableBase(self: *const SmsVdp) u16 {
         return (@as(u16, self.regs[2] & 0x0E) << 10) | 0x0000;
     }
 
@@ -277,7 +278,8 @@ pub const SmsVdp = struct {
     }
 
     fn spritePatternBase(self: *const SmsVdp) u16 {
-        return @as(u16, self.regs[6] & 0x04) << 6;
+        // In Mode 4, bit 2 of register 6 selects pattern base: 0 = 0x0000, 1 = 0x2000
+        return if ((self.regs[6] & 0x04) != 0) @as(u16, 0x2000) else 0;
     }
 
     fn backdropColor(self: *const SmsVdp) u32 {
@@ -410,6 +412,7 @@ pub const SmsVdp = struct {
 
         var sprite_count: u8 = 0;
         const max_sprites: u8 = 8;
+        var sprite_drawn: [framebuffer_width]bool = [_]bool{false} ** framebuffer_width;
 
         // Scan SAT for sprites on this line
         for (0..64) |i| {
@@ -475,8 +478,13 @@ pub const SmsVdp = struct {
                 // Priority: BG tiles with priority bit set are in front of sprites
                 if (priority_buf[sx]) continue;
 
-                // Sprite collision detection
-                // (Check if another sprite already drew here; simplified via non-zero check)
+                // Sprite collision detection: if a sprite pixel was already drawn here
+                if (sprite_drawn[sx]) {
+                    self.status |= status_sprite_collision;
+                } else {
+                    sprite_drawn[sx] = true;
+                }
+
                 line_buf[sx] = cramToRgba(self.cram[16 + color_index]);
             }
 
@@ -550,6 +558,159 @@ test "sms vdp cram to rgba" {
     // R=0, G=0, B=3 -> 0x30
     const blue = SmsVdp.cramToRgba(0x30);
     try testing.expectEqual(@as(u32, 0xFF_00_00_FF), blue);
+}
+
+test "sms vdp sprite collision sets status flag" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40; // Display enabled
+    vdp.regs[5] = 0x7E; // SAT base = 0x3F00
+    vdp.regs[6] = 0x00; // Pattern base = 0x0000
+
+    const sat_base: u16 = 0x3F00;
+
+    // Two sprites at same position, both on line 1 (Y=0 → displayed at Y+1=1)
+    vdp.vram[sat_base] = 0x00; // sprite 0 Y=0
+    vdp.vram[sat_base + 1] = 0x00; // sprite 1 Y=0
+    vdp.vram[sat_base + 2] = 0xD0; // terminator
+
+    vdp.vram[sat_base + 128] = 10; // sprite 0 X
+    vdp.vram[sat_base + 129] = 0; // sprite 0 tile=0
+    vdp.vram[sat_base + 130] = 10; // sprite 1 X (overlapping!)
+    vdp.vram[sat_base + 131] = 0; // sprite 1 tile=0
+
+    // Tile 0, row 0: make all 8 pixels non-transparent (color index 1)
+    // 4bpp planar: byte 0 = plane 0
+    vdp.vram[0] = 0xFF; // plane 0: all bits set
+    vdp.vram[1] = 0x00;
+    vdp.vram[2] = 0x00;
+    vdp.vram[3] = 0x00;
+
+    // Render line 1
+    vdp.scanline = 1;
+    _ = vdp.stepScanline();
+
+    try testing.expect((vdp.status & SmsVdp.status_sprite_collision) != 0);
+}
+
+test "sms vdp no sprite collision when sprites dont overlap" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40; // Display enabled
+    vdp.regs[5] = 0x7E; // SAT base = 0x3F00
+    vdp.regs[6] = 0x00; // Pattern base = 0x0000
+
+    const sat_base: u16 = 0x3F00;
+
+    // Two sprites at different X positions, no overlap (8px wide each)
+    vdp.vram[sat_base] = 0x00; // sprite 0 Y=0
+    vdp.vram[sat_base + 1] = 0x00; // sprite 1 Y=0
+    vdp.vram[sat_base + 2] = 0xD0; // terminator
+
+    vdp.vram[sat_base + 128] = 0; // sprite 0 X=0
+    vdp.vram[sat_base + 129] = 0; // sprite 0 tile=0
+    vdp.vram[sat_base + 130] = 100; // sprite 1 X=100 (far away)
+    vdp.vram[sat_base + 131] = 0; // sprite 1 tile=0
+
+    // Non-transparent tile: all pixels set
+    vdp.vram[0] = 0xFF;
+    vdp.vram[1] = 0x00;
+    vdp.vram[2] = 0x00;
+    vdp.vram[3] = 0x00;
+
+    vdp.scanline = 1;
+    _ = vdp.stepScanline();
+
+    try testing.expect((vdp.status & SmsVdp.status_sprite_collision) == 0);
+}
+
+test "sms vdp horizontal scroll shifts background right" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40; // Display enabled
+
+    // Set up nametable: column 0 has tile 1 (non-zero), rest tile 0 (blank)
+    const nt_base = vdp.nameTableBase();
+
+    // Tile 1, row 0: all pixels color index 1 (palette 0)
+    const tile1_addr: u16 = 1 * 32; // tile 1 at byte offset 32
+    vdp.vram[tile1_addr] = 0xFF; // plane 0
+    vdp.vram[tile1_addr + 1] = 0x00;
+    vdp.vram[tile1_addr + 2] = 0x00;
+    vdp.vram[tile1_addr + 3] = 0x00;
+
+    // CRAM: palette 0, color 1 = white
+    vdp.cram[1] = 0x3F; // R=3, G=3, B=3 = white
+
+    // Name table row 0, column 0 = tile 1
+    vdp.vram[nt_base] = 0x01; // tile index 1 (low byte)
+    vdp.vram[nt_base + 1] = 0x00; // high byte
+
+    // No scroll: column 0 should appear at screen X=0
+    vdp.regs[8] = 0; // hscroll = 0
+    vdp.scanline = 0;
+    _ = vdp.stepScanline();
+
+    const white = SmsVdp.cramToRgba(0x3F);
+    // Pixel at X=0 should be white (tile 1)
+    try testing.expectEqual(white, vdp.framebuffer[0]);
+    // Pixel at X=8 should be backdrop (tile 0 = transparent)
+    try testing.expect(vdp.framebuffer[8] != white);
+
+    // Now set horizontal scroll to 16: column 0 content should appear at screen X=16
+    vdp.regs[8] = 16;
+    vdp.scanline = 0;
+    _ = vdp.stepScanline();
+
+    // X=0 should NOT be white anymore (it's now showing a different nametable column)
+    try testing.expect(vdp.framebuffer[0] != white);
+    // X=16 should be white (column 0 shifted right by 16)
+    try testing.expectEqual(white, vdp.framebuffer[16]);
+}
+
+test "sms vdp vertical scroll wraps at 224 in mode 192" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40; // Display enabled, mode 192
+
+    const nt_base = vdp.nameTableBase();
+
+    // Tile 1: all pixels color 1
+    vdp.vram[32] = 0xFF;
+    vdp.vram[33] = 0x00;
+    vdp.vram[34] = 0x00;
+    vdp.vram[35] = 0x00;
+    vdp.cram[1] = 0x3F;
+
+    // Put tile 1 in nametable row 1, column 0 (offset = row*64 + col*2)
+    vdp.vram[nt_base + 64] = 0x01;
+    vdp.vram[nt_base + 65] = 0x00;
+
+    // With vscroll=8, line 0 should show nametable row 1 (effective_y = 0+8 = 8, row = 1)
+    vdp.regs[9] = 8;
+    vdp.scanline = 0;
+    _ = vdp.stepScanline();
+
+    const white = SmsVdp.cramToRgba(0x3F);
+    try testing.expectEqual(white, vdp.framebuffer[0]);
+
+    // With vscroll=0, line 0 should show nametable row 0 (which has tile 0 = backdrop)
+    vdp.regs[9] = 0;
+    vdp.scanline = 0;
+    _ = vdp.stepScanline();
+    try testing.expect(vdp.framebuffer[0] != white);
+}
+
+test "sms vdp 224-line mode" {
+    var vdp = SmsVdp.init();
+    // Mode 4 + M1+M2+M3 = 224-line mode
+    vdp.regs[0] = 0x06; // M4=1, M2=1
+    vdp.regs[1] = 0x58; // Display enabled, M1=1, M3=1
+    try testing.expectEqual(@as(u16, 224), vdp.activeVisibleLines());
+}
+
+test "sms vdp 240-line mode" {
+    var vdp = SmsVdp.init();
+    // Mode 4 + M2+M3 (no M1) = 240-line mode
+    vdp.regs[0] = 0x06; // M4=1, M2=1
+    vdp.regs[1] = 0x48; // Display enabled, M3=1 (no M1)
+    try testing.expectEqual(@as(u16, 240), vdp.activeVisibleLines());
 }
 
 test "sms vdp stepScanline enters vblank at line 192" {

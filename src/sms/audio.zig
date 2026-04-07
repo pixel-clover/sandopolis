@@ -25,13 +25,12 @@ pub const SmsAudio = struct {
 
     pub fn init() SmsAudio {
         var audio = SmsAudio{};
-        audio.psg.powerOn();
+        audio.psg = Psg.powerOn();
         return audio;
     }
 
     pub fn reset(self: *SmsAudio) void {
-        self.psg = Psg{};
-        self.psg.powerOn();
+        self.psg = Psg.powerOn();
         self.psg_command_count = 0;
         self.sample_counter = 0;
     }

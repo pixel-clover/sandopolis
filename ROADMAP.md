@@ -109,4 +109,31 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
-- [x] Sega Master System support (SMS VDP Mode 4, Sega mapper, PSG audio, Z80 SMS mode in jgz80 bridge)
+
+### Sega Master System
+
+- [x] Z80 bridge SMS mode: host-routed memory, I/O port callbacks, NMI assertion (`jgz80_bridge.c`)
+- [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background and sprite rendering
+- [x] SMS bus with Sega mapper (3 page registers, cartridge RAM banking)
+- [x] SMS I/O port dispatch with partial address decoding (VDP, PSG, controllers)
+- [x] SMS controller input (2 buttons per player, pause via NMI)
+- [x] SMS cartridge detection ("TMR SEGA" header) and system auto-detection (`system.zig`)
+- [x] SMS machine coordinator with Z80-only frame loop (228 cycles per scanline, 262/313 lines)
+- [x] PSG-only audio pipeline reusing the existing SN76489 implementation
+- [x] SystemMachine tagged union abstracting Genesis and SMS for the SDL frontend
+- [x] WASM layer SMS support with system auto-detection and button mapping
+- [x] Web and desktop file dialogs accept `.sms` extension
+- [x] VDP sprite collision flag and overflow detection
+- [x] Sprite pattern base address fix (bit 2 of register 6 selects 0x0000/0x2000)
+- [x] SMS-specific keyboard and gamepad input binding in the SDL frontend
+- [x] VDP rendering accuracy: horizontal scroll, vertical scroll wrapping, scroll lock columns
+- [x] Extended display modes (224-line and 240-line) with mode detection
+- [x] I/O control register (port 0x3F) TH pin direction/level reflected in port 0xDD reads (region/nationality detection)
+- [ ] VDP rendering accuracy: fine scroll sub-tile edge cases
+- [ ] Game-specific: Disney's Aladdin init sequence (OUTI RAM code, interrupt-driven palette loading)
+- [ ] Game Gear support (GG uses SMS hardware with different CRAM format and viewport)
+- [x] SMS quick save states (in-memory capture and restore of Z80, VDP, bus, and audio state)
+- [ ] SMS persistent save states (file-based serialization)
+- [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
+- [ ] BIOS/boot ROM support
+- [ ] FM sound unit (YM2413) for Japanese SMS and Mark III

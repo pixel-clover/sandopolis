@@ -27,7 +27,7 @@ pub const SmsRomMetadata = struct {
 
     pub const Region = enum {
         japanese,
-        export,
+        international,
         game_gear_japanese,
         game_gear_export,
         game_gear_international,
@@ -52,7 +52,7 @@ pub fn parseMetadata(rom: []const u8) SmsRomMetadata {
                     @as(u32, product_hi_ver >> 4) * 10000;
                 const version: u4 = @truncate(product_hi_ver);
                 const region_size = rom[offset + 0x0F];
-                const region = decodeRegion(region_size >> 4);
+                const region = decodeRegion(@truncate(region_size >> 4));
                 const rom_size_code: u4 = @truncate(region_size);
 
                 return .{
@@ -84,7 +84,7 @@ fn decodeBcd(byte: u8) u8 {
 fn decodeRegion(code: u4) SmsRomMetadata.Region {
     return switch (code) {
         3 => .japanese,
-        4 => .export,
+        4 => .international,
         5 => .game_gear_japanese,
         6 => .game_gear_export,
         7 => .game_gear_international,
@@ -113,5 +113,5 @@ test "sms cartridge metadata parsing" {
     const meta = parseMetadata(&rom);
     try testing.expect(meta.has_header);
     try testing.expectEqual(@as(u16, 0x1234), meta.checksum);
-    try testing.expectEqual(SmsRomMetadata.Region.export, meta.region);
+    try testing.expectEqual(SmsRomMetadata.Region.international, meta.region);
 }

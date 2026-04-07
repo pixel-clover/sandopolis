@@ -43,8 +43,32 @@ pub const SmsIo = struct {
             return self.input.readPortDC();
         }
         if (p & 0xC1 == 0xC1) {
-            // 0xC0-0xFF odd: I/O port B (controller 2)
-            return self.input.readPortDD();
+            // 0xC0-0xFF odd: I/O port B (controller 2 + TH pins)
+            var data = self.input.readPortDD();
+
+            // Bits 6-7 reflect TH pin state from I/O control register.
+            // I/O control register (port 0x3F):
+            //   Bit 1: Port A TH direction (1=input, 0=output)
+            //   Bit 3: Port B TH direction (1=input, 0=output)
+            //   Bit 5: Port A TH output level
+            //   Bit 7: Port B TH output level
+            const ctrl = self.io_control;
+
+            // Port A TH → bit 6 of port DD
+            if ((ctrl & 0x02) == 0) {
+                // TH-A is output: return output level (bit 5 → bit 6)
+                data = (data & ~@as(u8, 0x40)) | ((ctrl & 0x20) << 1);
+            }
+            // else: TH-A is input → leave as 1 (export SMS pull-up, already set)
+
+            // Port B TH → bit 7 of port DD
+            if ((ctrl & 0x08) == 0) {
+                // TH-B is output: return output level (bit 7)
+                data = (data & ~@as(u8, 0x80)) | (ctrl & 0x80);
+            }
+            // else: TH-B is input → leave as 1 (export SMS pull-up, already set)
+
+            return data;
         }
 
         return 0xFF;
@@ -102,4 +126,63 @@ test "sms io port dispatch controller read" {
     var io = SmsIo{ .vdp = &vdp, .input = &input };
     const dc = io.portIn(0xDC);
     try testing.expectEqual(@as(u8, 0xFE), dc); // Up pressed = bit 0 clear
+}
+
+test "sms io port DD reflects TH output from io control register" {
+    var vdp = SmsVdp.init();
+    var input = SmsInput{};
+    var io = SmsIo{ .vdp = &vdp, .input = &input };
+
+    // Default: io_control = 0, TH direction = output (bit 1=0, bit 3=0),
+    // TH level = low (bit 5=0, bit 7=0)
+    // Port DD bits 6-7 should reflect TH output levels = 0
+    io.io_control = 0x00; // All outputs, all low
+    const dd_low = io.portIn(0xDD);
+    try testing.expectEqual(@as(u8, 0), dd_low & 0xC0); // bits 6-7 should be 0
+
+    // Set TH-A and TH-B output high: bit 5=1 (TH-A level), bit 7=1 (TH-B level)
+    // Direction still output: bit 1=0, bit 3=0
+    io.io_control = 0xA0; // TH-A=high (bit5), TH-B=high (bit7), direction=output
+    const dd_high = io.portIn(0xDD);
+    try testing.expectEqual(@as(u8, 0xC0), dd_high & 0xC0); // bits 6-7 should be 1
+
+    // Set TH as input (bit 1=1, bit 3=1): should return 1 (export SMS pull-up)
+    io.io_control = 0x0A; // TH-A direction=input (bit1), TH-B direction=input (bit3)
+    const dd_input = io.portIn(0xDD);
+    try testing.expectEqual(@as(u8, 0xC0), dd_input & 0xC0); // bits 6-7 = 1 (pull-up)
+}
+
+test "sms io nationality detection pattern" {
+    // Simulate what SMS games do for region detection.
+    // I/O control register (port 0x3F) bit encoding:
+    //   Bit 1: Port A TH direction (1=input, 0=output)
+    //   Bit 3: Port B TH direction (1=input, 0=output)
+    //   Bit 5: Port A TH output level
+    //   Bit 7: Port B TH output level
+    var vdp = SmsVdp.init();
+    var input = SmsInput{};
+    var io = SmsIo{ .vdp = &vdp, .input = &input };
+
+    // Step 1: Write 0x55 — TH-A/TH-B as OUTPUT (bits 1,3=0), levels LOW (bits 5,7=0)
+    // 0x55 = 0101_0101: bit1=0(TH-A out), bit3=0(TH-B out), bit5=0(low), bit7=0(low)
+    io.portOut(0x3F, 0x55);
+    const dd1 = io.portIn(0xDD);
+    // TH is output with level low → bits 6-7 = 0
+    try testing.expectEqual(@as(u8, 0x00), dd1 & 0xC0);
+
+    // Step 2: Write 0xAA — TH-A/TH-B as INPUT (bits 1,3=1)
+    // 0xAA = 1010_1010: bit1=1(TH-A in), bit3=1(TH-B in)
+    io.portOut(0x3F, 0xAA);
+    const dd2 = io.portIn(0xDD);
+    // TH is input → export SMS returns 1 (pull-up)
+    try testing.expectEqual(@as(u8, 0xC0), dd2 & 0xC0);
+
+    // Export detection: dd1 != dd2 (0x00 vs 0xC0) → export console confirmed
+    try testing.expect((dd1 & 0xC0) != (dd2 & 0xC0));
+
+    // Step 3: TH output high
+    // bit1=0(TH-A out), bit3=0(TH-B out), bit5=1(high), bit7=1(high)
+    io.portOut(0x3F, 0xA0);
+    const dd3 = io.portIn(0xDD);
+    try testing.expectEqual(@as(u8, 0xC0), dd3 & 0xC0);
 }

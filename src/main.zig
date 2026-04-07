@@ -11,6 +11,8 @@ const gamepad = @import("input/gamepad.zig");
 const keyboard = @import("input/keyboard.zig");
 const binding_editor_module = @import("input/binding_editor.zig");
 const Machine = @import("machine.zig").Machine;
+const SystemMachine = @import("system_machine.zig").SystemMachine;
+const system_detect = @import("system.zig");
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
@@ -115,6 +117,16 @@ const AudioInit = struct {
         _ = wav_recorder;
         var sink = StreamSink{ .stream = self.stream, .audio = self };
         try self.output.renderPending(pending, z80, is_pal, &sink);
+    }
+
+    pub fn queueRawSamples(self: *AudioInit, samples: []const i16) !void {
+        if (self.startupMuteActive()) {
+            if (samples.len > 0) self.clearStartupMute();
+            return;
+        }
+        if (self.queueHasRoom()) {
+            try zsdl3.putAudioStreamData(i16, self.stream, samples);
+        }
     }
 
     fn startupMuteActive(self: *const AudioInit) bool {
@@ -332,21 +344,23 @@ fn persistFrontendConfig(frontend_config: *const FrontendConfig, bindings: *cons
 fn refreshSaveManager(
     save_manager: *SaveManagerState,
     allocator: std.mem.Allocator,
-    machine: *const Machine,
+    machine: *const SystemMachine,
     explicit_state_path: ?[]const u8,
     notifications: FrontendNotifications,
 ) void {
-    save_manager.refresh(allocator, machine, explicit_state_path) catch |err| {
-        std.debug.print("Failed to refresh save manager metadata: {s}\n", .{@errorName(err)});
-        notifyFrontend(notifications, .failure, "FAILED TO REFRESH SAVE MANAGER", .{});
-    };
+    if (machine.asGenesisConst()) |gen| {
+        save_manager.refresh(allocator, gen, explicit_state_path) catch |err| {
+            std.debug.print("Failed to refresh save manager metadata: {s}\n", .{@errorName(err)});
+            notifyFrontend(notifications, .failure, "FAILED TO REFRESH SAVE MANAGER", .{});
+        };
+    }
 }
 
 fn openSaveManager(
     ui: *FrontendUi,
     save_manager: *SaveManagerState,
     allocator: std.mem.Allocator,
-    machine: *const Machine,
+    machine: *const SystemMachine,
     explicit_state_path: ?[]const u8,
     notifications: FrontendNotifications,
 ) void {
@@ -356,12 +370,13 @@ fn openSaveManager(
 
 fn deletePersistentStateFile(
     allocator: std.mem.Allocator,
-    machine: *const Machine,
+    machine: *const SystemMachine,
     explicit_state_path: ?[]const u8,
     persistent_state_slot: u8,
     notifications: FrontendNotifications,
 ) bool {
-    const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot) catch |err| {
+    const gen = machine.asGenesisConst() orelse return true;
+    const state_path = resolvePersistentStatePath(allocator, gen, explicit_state_path, persistent_state_slot) catch |err| {
         std.debug.print("Failed to resolve state-file path for delete: {s}\n", .{@errorName(err)});
         notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
         return true;
@@ -393,7 +408,7 @@ fn handlePauseOverlayKey(
     save_manager: *SaveManagerState,
     settings: *SettingsMenuState,
     allocator: std.mem.Allocator,
-    machine: *const Machine,
+    machine: *const SystemMachine,
     explicit_state_path: ?[]const u8,
     scancode: zsdl3.Scancode,
     pressed: bool,
@@ -448,7 +463,7 @@ fn handleSettingsKey(
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
     bindings: *InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     ui_font: *ui_render.Font,
     renderer: *zsdl3.Renderer,
     scancode: zsdl3.Scancode,
@@ -545,7 +560,7 @@ fn handleSaveManagerKey(
     ui: *FrontendUi,
     save_manager: *SaveManagerState,
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     explicit_state_path: ?[]const u8,
     persistent_state_slot: *u8,
     gif_recorder: *?GifRecorder,
@@ -655,7 +670,7 @@ const SdlDialogFileFilter = extern struct {
 };
 
 const rom_dialog_filters = [_]SdlDialogFileFilter{
-    .{ .name = "Genesis ROMs", .pattern = "bin;md;smd;gen" },
+    .{ .name = "ROM files", .pattern = "bin;md;smd;gen;sms" },
     .{ .name = "All files", .pattern = "*" },
 };
 
@@ -791,7 +806,7 @@ fn applySettingsAction(
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
     bindings: *InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     ui_font: *ui_render.Font,
     renderer: *zsdl3.Renderer,
     action: SettingsMenuAction,
@@ -856,12 +871,12 @@ fn applySettingsAction(
         .controller_p1_type => {
             const ct = if (delta >= 0) nextCT(bindings.controller_types[0]) else prevCT(bindings.controller_types[0]);
             bindings.controller_types[0] = ct;
-            machine.bus.io.setControllerType(0, ct);
+            if (machine.genesisIo()) |io| io.setControllerType(0, ct);
         },
         .controller_p2_type => {
             const ct = if (delta >= 0) nextCT(bindings.controller_types[1]) else prevCT(bindings.controller_types[1]);
             bindings.controller_types[1] = ct;
-            machine.bus.io.setControllerType(1, ct);
+            if (machine.genesisIo()) |io| io.setControllerType(1, ct);
         },
         .font_face => {
             const next = frontend_config.font_face.cycle(if (delta == 0) 1 else delta);
@@ -971,7 +986,7 @@ fn handlePauseOverlayGamepadInput(
     save_manager: *SaveManagerState,
     settings: *SettingsMenuState,
     allocator: std.mem.Allocator,
-    machine: *const Machine,
+    machine: *const SystemMachine,
     explicit_state_path: ?[]const u8,
     input: InputBindings.GamepadInput,
     pressed: bool,
@@ -1012,7 +1027,7 @@ fn handleSettingsGamepadInput(
     audio: ?*AudioInit,
     current_audio_mode: *AudioOutput.RenderMode,
     bindings: *InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     ui_font: *ui_render.Font,
     renderer: *zsdl3.Renderer,
     input: InputBindings.GamepadInput,
@@ -1118,7 +1133,7 @@ fn handleSaveManagerGamepadInput(
     ui: *FrontendUi,
     save_manager: *SaveManagerState,
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     explicit_state_path: ?[]const u8,
     persistent_state_slot: *u8,
     gif_recorder: *?GifRecorder,
@@ -1237,7 +1252,7 @@ fn handleFrontendGamepadInput(
     frontend_config_path: []const u8,
     save_manager: *SaveManagerState,
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     explicit_state_path: ?[]const u8,
     persistent_state_slot: *u8,
     gif_recorder: *?GifRecorder,
@@ -1366,7 +1381,7 @@ fn launchOpenRomDialog(dialog_state: *FileDialogState, ui: *FrontendUi, window: 
 fn dispatchHomeScreenCommand(
     command: HomeScreenCommand,
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     input_bindings: *InputBindings.Bindings,
     timing_mode: TimingModeOption,
     audio: ?*AudioInit,
@@ -1435,7 +1450,7 @@ fn dispatchHomeScreenCommand(
 fn dispatchFrontendGamepadCommand(
     command: FrontendGamepadCommand,
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     input_bindings: *InputBindings.Bindings,
     timing_mode: TimingModeOption,
     audio: ?*AudioInit,
@@ -1534,7 +1549,7 @@ fn stopWavRecording(audio: ?*AudioInit, wav_recorder: *?WavRecorder, reason: []c
 
 fn loadRomIntoMachine(
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     input_bindings: *const InputBindings.Bindings,
     timing_mode: TimingModeOption,
     audio: ?*AudioInit,
@@ -1544,7 +1559,7 @@ fn loadRomIntoMachine(
     rom_path: []const u8,
     notifications: FrontendNotifications,
 ) !void {
-    var next_machine = try Machine.init(allocator, rom_path);
+    var next_machine = try SystemMachine.init(allocator, rom_path);
     errdefer next_machine.deinit(allocator);
 
     logLoadedRomMetadata(&next_machine, rom_path);
@@ -1577,7 +1592,7 @@ fn loadRomIntoMachine(
     notifyFrontend(notifications, .success, "LOADED {s}", .{std.fs.path.basename(rom_path)});
 }
 
-fn softResetCurrentMachine(machine: *Machine, frame_counter: *u32, notifications: FrontendNotifications) void {
+fn softResetCurrentMachine(machine: *SystemMachine, frame_counter: *u32, notifications: FrontendNotifications) void {
     machine.softReset();
     frame_counter.* = 0;
     std.debug.print("CPU Soft Reset complete.\n", .{});
@@ -1587,7 +1602,7 @@ fn softResetCurrentMachine(machine: *Machine, frame_counter: *u32, notifications
 
 fn hardResetCurrentMachine(
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     input_bindings: *const InputBindings.Bindings,
     timing_mode: TimingModeOption,
     audio: ?*AudioInit,
@@ -1661,13 +1676,93 @@ const inferPalModeFromCountryCodes = rom_metadata.inferPalModeFromCountryCodes;
 const inferConsoleIsOverseasFromCountryCodes = rom_metadata.inferConsoleIsOverseasFromCountryCodes;
 const resolveTimingMode = rom_metadata.resolveTimingMode;
 const resolveConsoleRegion = rom_metadata.resolveConsoleRegion;
-const logLoadedRomMetadata = rom_metadata.logLoadedRomMetadata;
+fn logLoadedRomMetadata(machine: anytype, rom_path: []const u8) void {
+    const metadata = machine.romMetadata();
+    std.debug.print("Loading ROM: {s}\n", .{rom_path});
+    if (metadata.console) |console| {
+        std.debug.print("Console: {s}\n", .{console});
+    }
+    if (metadata.title) |title| {
+        std.debug.print("Title:   {s}\n", .{title});
+    }
+    if (metadata.product_code) |code| {
+        std.debug.print("Product: {s}\n", .{code});
+    }
+    std.debug.print("Reset Vectors: SSP={X:0>8} PC={X:0>8}\n", .{ metadata.reset_stack_pointer, metadata.reset_program_counter });
+    std.debug.print("Checksum: header={X:0>4} computed={X:0>4} ({s})\n", .{
+        metadata.header_checksum, metadata.computed_checksum, if (metadata.checksum_valid) "OK" else "MISMATCH",
+    });
+}
+
+const SmsInput = @import("sms/input.zig").SmsInput;
+
+fn applySmsKeyboardInput(machine: *SystemMachine, input: InputBindings.KeyboardInput, pressed: bool) void {
+    // Default SMS keyboard layout:
+    // Arrows = D-Pad, A/S = Button1/Button2, Enter = Pause (NMI)
+    const mapping = smsKeyboardMapping(input);
+    if (mapping.button) |btn| {
+        machine.setSmsButton(mapping.port, btn, pressed);
+    } else if (mapping.pause and pressed) {
+        switch (machine.*) {
+            .sms => |*s| s.bus.input.pause_pressed = true,
+            else => {},
+        }
+    }
+}
+
+const SmsKeyMapping = struct {
+    port: u1 = 0,
+    button: ?SmsInput.Button = null,
+    pause: bool = false,
+};
+
+fn applySmsGamepadInput(machine: *SystemMachine, port: u1, input: InputBindings.GamepadInput, pressed: bool) void {
+    const btn: ?SmsInput.Button = switch (input) {
+        .dpad_up => .up,
+        .dpad_down => .down,
+        .dpad_left => .left,
+        .dpad_right => .right,
+        .south, .west => .button1,
+        .east, .north => .button2,
+        .start => {
+            if (pressed) {
+                switch (machine.*) {
+                    .sms => |*s| s.bus.input.pause_pressed = true,
+                    else => {},
+                }
+            }
+            return;
+        },
+        else => null,
+    };
+    if (btn) |b| machine.setSmsButton(port, b, pressed);
+}
+
+fn smsKeyboardMapping(input: InputBindings.KeyboardInput) SmsKeyMapping {
+    return switch (input) {
+        .up => .{ .button = .up },
+        .down => .{ .button = .down },
+        .left => .{ .button = .left },
+        .right => .{ .button = .right },
+        .a, .s => .{ .button = .button1 },
+        .d => .{ .button = .button2 },
+        .@"return" => .{ .pause = true },
+        // Player 2: I/J/K/L = D-Pad, N/M = buttons
+        .i => .{ .port = 1, .button = .up },
+        .k => .{ .port = 1, .button = .down },
+        .j => .{ .port = 1, .button = .left },
+        .l => .{ .port = 1, .button = .right },
+        .n => .{ .port = 1, .button = .button1 },
+        .m => .{ .port = 1, .button = .button2 },
+        else => .{},
+    };
+}
 
 fn handleBindingEditorKey(
     ui: *FrontendUi,
     editor: *BindingEditorState,
     bindings: *InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     unified_cfg_path: []const u8,
     frontend_cfg: *const FrontendConfig,
     scancode: zsdl3.Scancode,
@@ -1680,7 +1775,7 @@ fn handleBindingEditorKey(
         if (bindings.hotkeyForBinding(binding) != .open_keyboard_editor) return false;
         ui.overlay = .keyboard_editor;
         editor.open();
-        machine.releaseKeyboardBindings(bindings);
+        if (machine.asGenesis()) |gen| gen.releaseKeyboardBindings(bindings);
         return true;
     }
 
@@ -1752,8 +1847,8 @@ fn handleBindingEditorKey(
 fn handleQuickStateAction(
     allocator: std.mem.Allocator,
     action: InputBindings.HotkeyAction,
-    machine: *Machine,
-    quick_state: *?Machine.Snapshot,
+    machine: *SystemMachine,
+    quick_state: *?SystemMachine.Snapshot,
     audio: ?*AudioInit,
     gif_recorder: *?GifRecorder,
     wav_recorder: *?WavRecorder,
@@ -1786,7 +1881,7 @@ fn handleQuickStateAction(
                 stopWavRecording(audio, wav_recorder, "WAV recording stopped for state load");
                 if (audio) |a| {
                     resetAudioOutput(a, null);
-                    a.output.syncYmStateFromZ80(&machine.bus.z80);
+                    if (machine.audioZ80()) |z80| a.output.syncYmStateFromZ80(z80);
                 }
                 frame_counter.* = 0;
                 std.debug.print("Quick state loaded.\n", .{});
@@ -1810,9 +1905,9 @@ const PersistentStateActionResult = enum {
 fn syncFrontendAfterPersistentStateLoad(
     ui: *FrontendUi,
     current_rom_path: *DialogPathCopy,
-    machine: *const Machine,
+    machine: *const SystemMachine,
 ) void {
-    if (machine.bus.sourcePath()) |source_path| {
+    if (machine.sourcePath()) |source_path| {
         current_rom_path.set(source_path);
     } else {
         current_rom_path.* = .{};
@@ -1823,7 +1918,7 @@ fn syncFrontendAfterPersistentStateLoad(
 fn handlePersistentStateAction(
     allocator: std.mem.Allocator,
     action: InputBindings.HotkeyAction,
-    machine: *Machine,
+    machine: *SystemMachine,
     explicit_state_path: ?[]const u8,
     persistent_state_slot: *u8,
     audio: ?*AudioInit,
@@ -1836,7 +1931,8 @@ fn handlePersistentStateAction(
     if (action == .next_state_slot) {
         persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
 
-        const state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
+        const gen_for_slot = machine.asGenesisConst() orelse return .handled;
+        const state_path = resolvePersistentStatePath(allocator, gen_for_slot, explicit_state_path, persistent_state_slot.*) catch |err| {
             std.debug.print("Failed to resolve state-file slot path: {s}\n", .{@errorName(err)});
             notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE SLOT", .{});
             return .handled;
@@ -1858,7 +1954,11 @@ fn handlePersistentStateAction(
     var owned_state_path: ?[]u8 = null;
     defer if (owned_state_path) |path| allocator.free(path);
 
-    owned_state_path = resolvePersistentStatePath(allocator, machine, explicit_state_path, persistent_state_slot.*) catch |err| {
+    const gen_for_state = machine.asGenesisConst() orelse {
+        notifyFrontend(notifications, .info, "SAVE STATES NOT YET SUPPORTED FOR SMS", .{});
+        return .handled;
+    };
+    owned_state_path = resolvePersistentStatePath(allocator, gen_for_state, explicit_state_path, persistent_state_slot.*) catch |err| {
         std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
         notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
         return .handled;
@@ -1867,12 +1967,16 @@ fn handlePersistentStateAction(
 
     switch (action) {
         .save_state_file => {
-            StateFile.saveToFile(machine, state_path) catch |err| {
+            const gen = machine.asGenesis() orelse {
+                notifyFrontend(notifications, .info, "SAVE STATES NOT YET SUPPORTED FOR SMS", .{});
+                return .handled;
+            };
+            StateFile.saveToFile(gen, state_path) catch |err| {
                 std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
                 notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
                 return .handled;
             };
-            saveStatePreviewFile(allocator, machine, state_path) catch |err| {
+            if (machine.asGenesisConst()) |gen_for_preview| saveStatePreviewFile(allocator, gen_for_preview, state_path) catch |err| {
                 std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
             };
             std.debug.print("Saved state file: {s}\n", .{state_path});
@@ -1880,6 +1984,10 @@ fn handlePersistentStateAction(
             return .handled;
         },
         .load_state_file => {
+            if (machine.systemType() == .sms) {
+                notifyFrontend(notifications, .info, "SAVE STATES NOT YET SUPPORTED FOR SMS", .{});
+                return .handled;
+            }
             var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
                 if (err == error.FileNotFound) {
                     notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
@@ -1898,12 +2006,12 @@ fn handlePersistentStateAction(
             }
 
             var old_machine = machine.*;
-            machine.* = next_machine;
+            machine.* = .{ .genesis = next_machine };
             machine.rebindRuntimePointers();
             old_machine.deinit(allocator);
 
             if (audio) |a| {
-                a.output.syncYmStateFromZ80(&machine.bus.z80);
+                if (machine.audioZ80()) |z80| a.output.syncYmStateFromZ80(z80);
             }
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
@@ -1934,7 +2042,7 @@ fn handleFrontendGamepadTransitions(
     frontend_config_path: []const u8,
     save_manager: *SaveManagerState,
     allocator: std.mem.Allocator,
-    machine: *Machine,
+    machine: *SystemMachine,
     explicit_state_path: ?[]const u8,
     persistent_state_slot: *u8,
     gif_recorder: *?GifRecorder,
@@ -2318,7 +2426,7 @@ const renderPerformanceHud = perf_monitor.renderHud;
 fn renderGameInfoOverlay(
     renderer: *zsdl3.Renderer,
     viewport: zsdl3.Rect,
-    machine: *const Machine,
+    machine: *const SystemMachine,
 ) !void {
     const metadata = machine.romMetadata();
     const game_lookup = rom_metadata.lookupGameByProductCode(metadata.product_code);
@@ -2403,7 +2511,7 @@ fn renderSettingsOverlay(
     ui: *const FrontendUi,
     settings: *const SettingsMenuState,
     frontend_config: *const FrontendConfig,
-    machine: *const Machine,
+    machine: *const SystemMachine,
     window: *zsdl3.Window,
     audio_enabled: bool,
     current_audio_mode: AudioOutput.RenderMode,
@@ -2431,7 +2539,7 @@ fn renderSettingsOverlay(
             fullscreenEnabled(window),
             current_audio_mode,
             frontend_config.psg_volume,
-            machine.bus.io.controller_types,
+            if (machine.genesisIoConst()) |io| io.controller_types else .{ .six_button, .six_button },
             ui.overlay == .performance_hud,
             frontend_config.font_face,
         );
@@ -2564,7 +2672,7 @@ fn renderFrontendOverlay(
     frontend_frame_number: u64,
     editor: *const BindingEditorState,
     bindings: *const InputBindings.Bindings,
-    machine: *const Machine,
+    machine: *const SystemMachine,
     window: *zsdl3.Window,
     audio_enabled: bool,
     current_audio_mode: AudioOutput.RenderMode,
@@ -2766,7 +2874,7 @@ pub fn main() !void {
         std.debug.print("Audio queue budget: {d} ms\n", .{current_audio_queue_ms});
     }
 
-    var machine = try Machine.init(allocator, rom_path);
+    var machine = try SystemMachine.init(allocator, rom_path);
     defer {
         machine.flushPersistentStorage() catch |err| {
             std.debug.print("Failed to flush persistent SRAM: {s}\n", .{@errorName(err)});
@@ -2797,7 +2905,7 @@ pub fn main() !void {
     const uncapped_boot_frames: u32 = uncappedBootFrames(audio != null);
     var gif_recorder: ?GifRecorder = null;
     var wav_recorder: ?WavRecorder = null;
-    var quick_state: ?Machine.Snapshot = null;
+    var quick_state: ?SystemMachine.Snapshot = null;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
     defer if (quick_state) |*state| state.deinit(allocator);
     var frontend_ui = FrontendUi{ .overlay = if (rom_path == null) .home else .none };
@@ -2825,9 +2933,30 @@ pub fn main() !void {
             switch (event.type) {
                 zsdl3.EventType.quit => break :mainLoop,
                 zsdl3.EventType.gamepad_added => assignGamepadSlot(&gamepads, &joysticks, &gamepad_sticks, &gamepad_triggers, event.gdevice.which),
-                zsdl3.EventType.gamepad_removed => removeGamepadSlot(&gamepads, &gamepad_sticks, &gamepad_triggers, &machine, &input_bindings, event.gdevice.which),
+                zsdl3.EventType.gamepad_removed => {
+                    if (machine.asGenesis()) |gen| {
+                        removeGamepadSlot(&gamepads, &gamepad_sticks, &gamepad_triggers, gen, &input_bindings, event.gdevice.which);
+                    } else {
+                        // SMS: just close the gamepad slot without machine interaction
+                        for (&gamepads, 0..) |*slot, port| {
+                            if (slot.*) |assigned| {
+                                if (assigned.id == event.gdevice.which) {
+                                    gamepad_sticks[port] = .{};
+                                    gamepad_triggers[port] = .{};
+                                    assigned.handle.close();
+                                    slot.* = null;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                },
                 zsdl3.EventType.joystick_added => assignJoystickSlot(&gamepads, &joysticks, &joystick_axes, &joystick_hats, event.jdevice.which),
-                zsdl3.EventType.joystick_removed => removeJoystickSlot(&joysticks, &joystick_axes, &joystick_hats, &machine, &input_bindings, event.jdevice.which),
+                zsdl3.EventType.joystick_removed => {
+                    if (machine.asGenesis()) |gen| {
+                        removeJoystickSlot(&joysticks, &joystick_axes, &joystick_hats, gen, &input_bindings, event.jdevice.which);
+                    }
+                },
                 zsdl3.EventType.gamepad_button_down, zsdl3.EventType.gamepad_button_up => {
                     const pressed = (event.type == zsdl3.EventType.gamepad_button_down);
                     const button = event.gbutton.button;
@@ -2923,7 +3052,11 @@ pub fn main() !void {
                     }
                     if (frontend_ui.emulationPaused() and pressed) continue;
                     if (gamepadInputFromButton(button)) |mapped_button| {
-                        _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
+                        if (machine.asGenesis()) |gen| {
+                            _ = gen.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
+                        } else {
+                            applySmsGamepadInput(&machine, @intCast(@min(port, 1)), mapped_button, pressed);
+                        }
                     }
                 },
                 zsdl3.EventType.gamepad_axis_motion => {
@@ -2993,10 +3126,18 @@ pub fn main() !void {
                         .unhandled => {},
                     }
                     if (frontend_ui.emulationPaused()) {
-                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        if (machine.asGenesis()) |gen| applyReleaseTransitionsOnly(&input_bindings, gen, port, transitions);
                         continue;
                     }
-                    applyInputTransitions(&input_bindings, &machine, port, transitions);
+                    if (machine.asGenesis()) |gen| {
+                        applyInputTransitions(&input_bindings, gen, port, transitions);
+                    } else {
+                        for (transitions) |maybe_transition| {
+                            if (maybe_transition) |transition| {
+                                applySmsGamepadInput(&machine, @intCast(@min(port, 1)), transition.input, transition.pressed);
+                            }
+                        }
+                    }
                 },
                 zsdl3.EventType.joystick_button_down, zsdl3.EventType.joystick_button_up => {
                     const pressed = (event.type == zsdl3.EventType.joystick_button_down);
@@ -3061,7 +3202,11 @@ pub fn main() !void {
                     }
                     if (frontend_ui.emulationPaused() and pressed) continue;
                     if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
-                        _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
+                        if (machine.asGenesis()) |gen| {
+                            _ = gen.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
+                        } else {
+                            applySmsGamepadInput(&machine, @intCast(@min(port, 1)), mapped_button, pressed);
+                        }
                     }
                 },
                 zsdl3.EventType.joystick_axis_motion => {
@@ -3128,10 +3273,18 @@ pub fn main() !void {
                         .unhandled => {},
                     }
                     if (frontend_ui.emulationPaused()) {
-                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        if (machine.asGenesis()) |gen| applyReleaseTransitionsOnly(&input_bindings, gen, port, transitions);
                         continue;
                     }
-                    applyInputTransitions(&input_bindings, &machine, port, transitions);
+                    if (machine.asGenesis()) |gen| {
+                        applyInputTransitions(&input_bindings, gen, port, transitions);
+                    } else {
+                        for (transitions) |maybe_transition| {
+                            if (maybe_transition) |transition| {
+                                applySmsGamepadInput(&machine, @intCast(@min(port, 1)), transition.input, transition.pressed);
+                            }
+                        }
+                    }
                 },
                 zsdl3.EventType.joystick_hat_motion => {
                     if (event.jhat.hat != 0) continue;
@@ -3193,10 +3346,18 @@ pub fn main() !void {
                         .unhandled => {},
                     }
                     if (frontend_ui.emulationPaused()) {
-                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
+                        if (machine.asGenesis()) |gen| applyReleaseTransitionsOnly(&input_bindings, gen, port, transitions);
                         continue;
                     }
-                    applyInputTransitions(&input_bindings, &machine, port, transitions);
+                    if (machine.asGenesis()) |gen| {
+                        applyInputTransitions(&input_bindings, gen, port, transitions);
+                    } else {
+                        for (transitions) |maybe_transition| {
+                            if (maybe_transition) |transition| {
+                                applySmsGamepadInput(&machine, @intCast(@min(port, 1)), transition.input, transition.pressed);
+                            }
+                        }
+                    }
                 },
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
                     const pressed = (event.type == zsdl3.EventType.key_down);
@@ -3530,7 +3691,11 @@ pub fn main() !void {
                     if (!frontend_ui.emulationPaused() or !pressed) {
                         if (hotkey_binding) |binding| {
                             const mapped_key = binding.input orelse continue;
-                            _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
+                            if (machine.asGenesis()) |gen| {
+                                _ = gen.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
+                            } else {
+                                applySmsKeyboardInput(&machine, mapped_key, pressed);
+                            }
                         }
                     }
                 },
@@ -3616,23 +3781,23 @@ pub fn main() !void {
         } else if (debugger_state.active and debugger_state.running_to_breakpoint) {
             // Run instructions until a breakpoint is hit or one frame's worth of
             // instructions have executed (to keep the UI responsive).
-            var testing_view = machine.testing();
-            var budget: u32 = 100_000;
-            while (budget > 0) : (budget -= 1) {
-                _ = testing_view.runCpuCycles(1);
-                if (debugger_state.hasBreakpoint(machine.programCounter())) {
-                    debugger_state.stopRunning();
-                    break;
+            if (machine.testing()) |tv| {
+                var testing_view = tv;
+                var budget: u32 = 100_000;
+                while (budget > 0) : (budget -= 1) {
+                    _ = testing_view.runCpuCycles(1);
+                    if (debugger_state.hasBreakpoint(machine.programCounter())) {
+                        debugger_state.stopRunning();
+                        break;
+                    }
                 }
-            }
-            if (budget == 0) {
-                // Ran out of budget without hitting a breakpoint; keep running
-                // next frame to stay responsive.
             }
         } else if (debugger_state.active and debugger_state.shouldStep()) {
             // Single-step: run one M68K instruction
-            var testing_view = machine.testing();
-            _ = testing_view.runCpuCycles(1);
+            if (machine.testing()) |tv| {
+                var testing_view = tv;
+                _ = testing_view.runCpuCycles(1);
+            }
         }
 
         if (!emulation_paused) {
@@ -3655,9 +3820,15 @@ pub fn main() !void {
         }
         if (audio) |*a| {
             const audio_start = std.time.Instant.now() catch frame_timer;
-            const pending = machine.takePendingAudio();
-            const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
-            try a.handlePending(pending, &machine.bus.z80, machine.palMode(), wav_rec_ptr);
+            if (machine.audioZ80()) |z80| {
+                // Genesis: render audio from pending YM+PSG events
+                const pending = machine.takePendingAudio();
+                const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
+                try a.handlePending(pending, z80, machine.palMode(), wav_rec_ptr);
+            } else if (machine.smsAudioBuffer()) |sms_samples| {
+                // SMS: audio already rendered in runFrame; queue to SDL
+                try a.queueRawSamples(sms_samples);
+            }
             frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
         } else {
             const audio_start = std.time.Instant.now() catch frame_timer;
@@ -3674,15 +3845,29 @@ pub fn main() !void {
             null;
 
         const framebuffer = machine.framebuffer();
-        const framebuffer_height: i32 = @intCast(framebuffer.len / Vdp.framebuffer_width);
+        const fb_stride = machine.framebufferStride();
+        const framebuffer_height: i32 = @intCast(framebuffer.len / @as(usize, fb_stride));
+        if (frame_counter == 600 and machine.systemType() == .sms) {
+            const sms = &machine.sms;
+            const z80s = sms.z80.captureState();
+            // Read D802-D803 (decompression end pointer)
+            const d802 = @as(u16, sms.bus.read(0xD802)) | (@as(u16, sms.bus.read(0xD803)) << 8);
+            std.debug.print("SMS @600: pc={X:0>4} hl={X:0>4} page2={d} d802(end_ptr)={X:0>4} sp={X:0>4} iff={d}\n", .{
+                z80s.pc, z80s.hl, sms.bus.page[2], d802, z80s.sp, z80s.iff1,
+            });
+            // Check VDP addr and code
+            std.debug.print("  vdp: code={d} addr={X:0>4} regs[1]={X:0>2}\n", .{
+                sms.bus.vdp.code, @as(u16, sms.bus.vdp.addr), sms.bus.vdp.regs[1],
+            });
+        }
         const update_rect = zsdl3.Rect{
             .x = 0,
             .y = 0,
-            .w = @intCast(Vdp.framebuffer_width),
+            .w = @intCast(fb_stride),
             .h = framebuffer_height,
         };
         const upload_start = std.time.Instant.now() catch frame_timer;
-        _ = SDL_UpdateTexture(vdp_texture, &update_rect, @ptrCast(framebuffer.ptr), @intCast(Vdp.framebuffer_width * @sizeOf(u32)));
+        _ = SDL_UpdateTexture(vdp_texture, &update_rect, @ptrCast(framebuffer.ptr), @intCast(@as(u32, fb_stride) * @sizeOf(u32)));
         frame_phases.upload_ns = (std.time.Instant.now() catch upload_start).since(upload_start);
 
         const draw_start = std.time.Instant.now() catch frame_timer;
@@ -3732,7 +3917,7 @@ pub fn main() !void {
         if (frontend_ui.overlay == .debugger and debugger_state.active) {
             const dbg_viewport = try zsdl3.getRenderViewport(renderer);
             try zsdl3.setRenderDrawBlendMode(renderer, .blend);
-            try debugger_mod.render(renderer, dbg_viewport, &machine, &debugger_state);
+            if (machine.asGenesisConst()) |gen| try debugger_mod.render(renderer, dbg_viewport, gen, &debugger_state);
         }
         frame_phases.draw_ns = (std.time.Instant.now() catch draw_start).since(draw_start);
         const present_call_start = std.time.Instant.now() catch frame_timer;
@@ -4238,13 +4423,13 @@ test "binding editor opens releases inputs and rebinds selected action" {
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
     const test_cfg_path = "test_sandopolis.cfg";
     var test_frontend_cfg = FrontendConfig{};
 
-    _ = machine.applyKeyboardBindings(&bindings, .a, true);
-    try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
+    _ = machine.genesis.applyKeyboardBindings(&bindings, .a, true);
+    try std.testing.expectEqual(@as(u16, 0), machine.genesis.controllerPadState(0) & Io.Button.A);
 
     try std.testing.expect(handleBindingEditorKey(
         &ui,
@@ -4259,7 +4444,7 @@ test "binding editor opens releases inputs and rebinds selected action" {
     ));
     try std.testing.expectEqual(Overlay.keyboard_editor, ui.overlay);
     try std.testing.expect(ui.emulationPaused());
-    try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
+    try std.testing.expect((machine.genesis.controllerPadState(0) & Io.Button.A) != 0);
 
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(editor.capture_mode);
@@ -4287,7 +4472,7 @@ test "binding editor clears hotkeys during capture" {
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
     const test_cfg_path = "test_sandopolis.cfg";
     var test_frontend_cfg = FrontendConfig{};
@@ -4317,7 +4502,7 @@ test "binding editor captures modifier hotkeys" {
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
     const test_cfg_path = "test_sandopolis.cfg";
     var test_frontend_cfg = FrontendConfig{};
@@ -4376,7 +4561,7 @@ test "soft reset helper rewinds cpu without reloading runtime state" {
     const rom_path = try tmp.dir.realpathAlloc(allocator, "restart.bin");
     defer allocator.free(rom_path);
 
-    var machine = try Machine.init(allocator, rom_path);
+    var machine = SystemMachine{ .genesis = try Machine.init(allocator, rom_path) };
     defer machine.deinit(allocator);
 
     var bindings = InputBindings.Bindings.defaults();
@@ -4387,15 +4572,15 @@ test "soft reset helper rewinds cpu without reloading runtime state" {
     machine.setPalMode(resolved_timing.pal_mode);
     machine.setConsoleIsOverseas(resolved_region.overseas);
 
-    machine.writeWorkRamByte(0x20, 0x5A);
+    machine.genesis.writeWorkRamByte(0x20, 0x5A);
     var frame_counter: u32 = 42;
-    machine.runMasterSlice(clock.m68kCyclesToMaster(4));
+    machine.genesis.runMasterSlice(clock.m68kCyclesToMaster(4));
 
     try std.testing.expectEqual(@as(u32, 0x0000_0202), machine.programCounter());
 
     softResetCurrentMachine(&machine, &frame_counter, .{});
 
-    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
     try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
 }
@@ -4412,7 +4597,7 @@ test "hard reset helper reloads the current rom path" {
     const rom_path = try tmp.dir.realpathAlloc(allocator, "restart.bin");
     defer allocator.free(rom_path);
 
-    var machine = try Machine.init(allocator, rom_path);
+    var machine = SystemMachine{ .genesis = try Machine.init(allocator, rom_path) };
     defer machine.deinit(allocator);
 
     var bindings = InputBindings.Bindings.defaults();
@@ -4423,7 +4608,7 @@ test "hard reset helper reloads the current rom path" {
     machine.setPalMode(resolved_timing.pal_mode);
     machine.setConsoleIsOverseas(resolved_region.overseas);
 
-    machine.writeWorkRamByte(0x20, 0x5A);
+    machine.genesis.writeWorkRamByte(0x20, 0x5A);
     var gif_recorder: ?GifRecorder = null;
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
@@ -4441,7 +4626,7 @@ test "hard reset helper reloads the current rom path" {
         .{},
     );
 
-    try std.testing.expectEqual(@as(u8, 0x00), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x00), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
     try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
 }
@@ -4541,23 +4726,23 @@ test "quick state helper saves and restores machine state" {
     const allocator = std.testing.allocator;
     const rom = [_]u8{0} ** 0x400;
 
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
 
-    var quick_state: ?Machine.Snapshot = null;
+    var quick_state: ?SystemMachine.Snapshot = null;
     defer if (quick_state) |*state| state.deinit(allocator);
     var gif_recorder: ?GifRecorder = null;
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
 
-    machine.writeWorkRamByte(0x20, 0x5A);
+    machine.genesis.writeWorkRamByte(0x20, 0x5A);
     try std.testing.expect(handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    machine.writeWorkRamByte(0x20, 0x00);
+    machine.genesis.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
     try std.testing.expect(handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
@@ -4572,7 +4757,7 @@ test "persistent state helper saves and restores machine state" {
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
     defer allocator.free(rom_path);
 
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
 
     var gif_recorder: ?GifRecorder = null;
@@ -4582,15 +4767,15 @@ test "persistent state helper saves and restores machine state" {
     const slot1_state_path = try rom_paths.statePath(allocator, rom_path, persistent_state_slot);
     defer allocator.free(slot1_state_path);
 
-    machine.writeWorkRamByte(0x20, 0x5A);
+    machine.genesis.writeWorkRamByte(0x20, 0x5A);
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.fs.cwd().access(slot1_state_path, .{});
 
-    machine.writeWorkRamByte(0x20, 0x00);
+    machine.genesis.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
     try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
@@ -4605,7 +4790,7 @@ test "persistent state helper cycles slots and keeps files separate" {
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
     defer allocator.free(rom_path);
 
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
 
     var gif_recorder: ?GifRecorder = null;
@@ -4613,19 +4798,19 @@ test "persistent state helper cycles slots and keeps files separate" {
     var frame_counter: u32 = 17;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
-    machine.writeWorkRamByte(0x20, 0x11);
+    machine.genesis.writeWorkRamByte(0x20, 0x11);
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 2), persistent_state_slot);
 
-    machine.writeWorkRamByte(0x20, 0x22);
+    machine.genesis.writeWorkRamByte(0x20, 0x22);
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
-    machine.writeWorkRamByte(0x20, 0x00);
+    machine.genesis.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
     try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
-    try std.testing.expectEqual(@as(u8, 0x22), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x22), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
@@ -4633,10 +4818,10 @@ test "persistent state helper cycles slots and keeps files separate" {
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .next_state_slot, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
-    machine.writeWorkRamByte(0x20, 0x00);
+    machine.genesis.writeWorkRamByte(0x20, 0x00);
     frame_counter = 55;
     try std.testing.expectEqual(PersistentStateActionResult.loaded_machine, handlePersistentStateAction(allocator, .load_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
-    try std.testing.expectEqual(@as(u8, 0x11), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x11), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 }
 
@@ -4660,7 +4845,7 @@ test "persistent state load sync exits home screen and updates current rom path"
     defer allocator.free(state_path);
     try StateFile.saveToFile(&saved_machine, state_path);
 
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
 
     var gif_recorder: ?GifRecorder = null;
@@ -4687,7 +4872,7 @@ test "persistent state load sync exits home screen and updates current rom path"
     );
     syncFrontendAfterPersistentStateLoad(&ui, &current_rom_path, &machine);
 
-    try std.testing.expectEqual(@as(u8, 0x5A), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x5A), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expect(ui.overlay != .home);
     try std.testing.expectEqualStrings(rom_path, current_rom_path.slice());
 }
@@ -4707,7 +4892,7 @@ test "save manager metadata tracks slot files and deletions" {
     const slot2_preview_path = try resolveStatePreviewPath(allocator, slot2_state_path);
     defer allocator.free(slot2_preview_path);
 
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
 
     var gif_recorder: ?GifRecorder = null;
@@ -4715,7 +4900,7 @@ test "save manager metadata tracks slot files and deletions" {
     var frame_counter: u32 = 0;
     var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
 
-    machine.writeWorkRamByte(0x20, 0x11);
+    machine.genesis.writeWorkRamByte(0x20, 0x11);
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(
         allocator,
         .save_state_file,
@@ -4730,7 +4915,7 @@ test "save manager metadata tracks slot files and deletions" {
     ));
 
     persistent_state_slot = 2;
-    machine.writeWorkRamByte(0x20, 0x22);
+    machine.genesis.writeWorkRamByte(0x20, 0x22);
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(
         allocator,
         .save_state_file,
@@ -4745,7 +4930,7 @@ test "save manager metadata tracks slot files and deletions" {
     ));
 
     var save_manager = SaveManagerState{};
-    try save_manager.refresh(allocator, &machine, rom_path);
+    try save_manager.refresh(allocator, &machine.genesis, rom_path);
 
     try std.testing.expect(save_manager.slotMetadata(1).exists);
     try std.testing.expect(save_manager.slotMetadata(2).exists);
@@ -4759,7 +4944,7 @@ test "save manager metadata tracks slot files and deletions" {
     try std.fs.cwd().access(slot2_preview_path, .{});
 
     try std.testing.expect(deletePersistentStateFile(allocator, &machine, rom_path, 2, .{}));
-    try save_manager.refresh(allocator, &machine, rom_path);
+    try save_manager.refresh(allocator, &machine.genesis, rom_path);
     try std.testing.expect(!save_manager.slotMetadata(2).exists);
     try std.testing.expect(!save_manager.slotMetadata(2).preview.available);
     try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot2_preview_path, .{}));
@@ -4969,7 +5154,7 @@ test "guide button toggles pause and resumes overlays" {
     const allocator = std.testing.allocator;
     const rom = [_]u8{0} ** 0x400;
 
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
 
     var ui = FrontendUi{};
@@ -5073,7 +5258,7 @@ test "save manager gamepad controls save load delete and close" {
     const slot1_state_path = try rom_paths.statePath(allocator, rom_path, 1);
     defer allocator.free(slot1_state_path);
 
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
 
     var ui = FrontendUi{ .overlay = .save_manager, .parent_overlay = .pause };
@@ -5083,7 +5268,7 @@ test "save manager gamepad controls save load delete and close" {
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 5;
 
-    machine.writeWorkRamByte(0x20, 0x44);
+    machine.genesis.writeWorkRamByte(0x20, 0x44);
     switch (handleSaveManagerGamepadInput(
         &ui,
         &save_manager,
@@ -5105,7 +5290,7 @@ test "save manager gamepad controls save load delete and close" {
     try std.fs.cwd().access(slot1_state_path, .{});
     try std.testing.expect(save_manager.slotMetadata(1).exists);
 
-    machine.writeWorkRamByte(0x20, 0x00);
+    machine.genesis.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
     switch (handleSaveManagerGamepadInput(
         &ui,
@@ -5125,7 +5310,7 @@ test "save manager gamepad controls save load delete and close" {
         .consumed => {},
         else => try std.testing.expect(false),
     }
-    try std.testing.expectEqual(@as(u8, 0x44), machine.readWorkRamByte(0x20));
+    try std.testing.expectEqual(@as(u8, 0x44), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
     switch (handleSaveManagerGamepadInput(
@@ -5663,7 +5848,7 @@ test "frontend config psg_volume clamps to 200" {
 test "pause overlay key opens game info with i" {
     const allocator = std.testing.allocator;
     const rom = [_]u8{0} ** 0x400;
-    var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
     var ui = FrontendUi{ .overlay = .pause };
     var save_manager = SaveManagerState{};

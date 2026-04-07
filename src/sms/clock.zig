@@ -1,5 +1,4 @@
 /// SMS timing constants.
-
 /// NTSC master clock: 10,738,635 Hz (same as NTSC colorburst * 3).
 pub const ntsc_master_clock: u32 = 10_738_635;
 

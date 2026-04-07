@@ -15,6 +15,7 @@ const SmsInput = @import("input.zig").SmsInput;
 ///   0xE000-0xFFFF: RAM mirror (mapper registers at 0xFFFC-0xFFFF)
 pub const SmsBus = struct {
     rom: []const u8,
+    rom_owned: bool = false,
     ram: [8 * 1024]u8 = [_]u8{0} ** (8 * 1024),
     vdp: SmsVdp = SmsVdp.init(),
     input: SmsInput = SmsInput{},
@@ -26,10 +27,45 @@ pub const SmsBus = struct {
     ram_bank: u1 = 0,
     cartridge_ram: [2 * 8 * 1024]u8 = [_]u8{0} ** (2 * 8 * 1024),
 
+    /// Create a bus with a borrowed ROM slice (caller keeps ownership).
     pub fn init(rom: []const u8) SmsBus {
         var bus = SmsBus{ .rom = rom };
         bus.io = SmsIo{ .vdp = &bus.vdp, .input = &bus.input };
         return bus;
+    }
+
+    /// Create a bus with a copied ROM (bus owns the memory).
+    pub fn initOwned(alloc: std.mem.Allocator, rom_bytes: []const u8) !SmsBus {
+        const rom_copy = try alloc.alloc(u8, rom_bytes.len);
+        @memcpy(rom_copy, rom_bytes);
+        var bus = SmsBus{ .rom = rom_copy, .rom_owned = true };
+        bus.io = SmsIo{ .vdp = &bus.vdp, .input = &bus.input };
+        return bus;
+    }
+
+    pub fn deinit(self: *SmsBus, alloc: std.mem.Allocator) void {
+        if (self.rom_owned) {
+            alloc.free(@constCast(self.rom));
+            self.rom = &.{};
+            self.rom_owned = false;
+        }
+    }
+
+    pub fn clone(self: *const SmsBus, alloc: std.mem.Allocator) !SmsBus {
+        const rom_copy = try alloc.alloc(u8, self.rom.len);
+        @memcpy(rom_copy, self.rom);
+        return SmsBus{
+            .rom = rom_copy,
+            .rom_owned = true,
+            .ram = self.ram,
+            .vdp = self.vdp,
+            .input = self.input,
+            .io = undefined, // Rebind after placement
+            .page = self.page,
+            .ram_bank_enabled = self.ram_bank_enabled,
+            .ram_bank = self.ram_bank,
+            .cartridge_ram = self.cartridge_ram,
+        };
     }
 
     pub fn reset(self: *SmsBus) void {
@@ -145,8 +181,7 @@ pub const SmsBus = struct {
 // -- Tests --
 
 test "sms bus read rom page 0" {
-    const rom = [_]u8{0} ** (32 * 1024) ++ [_]u8{0} ** 0; // 32KB dummy
-    var rom_buf: [32 * 1024]u8 = undefined;
+    var rom_buf = [_]u8{0} ** (32 * 1024);
     rom_buf[0] = 0x42;
     rom_buf[0x100] = 0xAB;
     const bus = SmsBus.init(&rom_buf);
