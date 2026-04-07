@@ -23,18 +23,19 @@ const textDecoder = new TextDecoder();
 // Display
 let aspectMode = "fit"; // "fit" (4:3), "stretch", "native"
 
+// Mapped by ev.code (physical key position) so layout doesn't matter.
 const KEY_MAP = {
     ArrowUp: "Up",
     ArrowDown: "Down",
     ArrowLeft: "Left",
     ArrowRight: "Right",
-    z: "A", Z: "A",
-    x: "B", X: "B",
-    c: "C", C: "C",
+    KeyA: "A",
+    KeyS: "B",
+    KeyD: "C",
     Enter: "Start",
-    a: "X", A: "X",
-    s: "Y", S: "Y",
-    d: "Z", D: "Z",
+    KeyZ: "X",
+    KeyX: "Y",
+    KeyC: "Z",
 };
 
 const HOTKEYS = {
@@ -741,7 +742,7 @@ function onKeyDown(ev) {
         return;
     }
     if (!emu) return;
-    const btn = KEY_MAP[ev.key];
+    const btn = KEY_MAP[ev.code] || KEY_MAP[ev.key];
     if (btn && BUTTONS[btn] !== undefined) {
         ev.preventDefault();
         wasm.instance.exports.sandopolis_set_button(emu, 0, BUTTONS[btn], true);
@@ -750,7 +751,7 @@ function onKeyDown(ev) {
 
 function onKeyUp(ev) {
     if (!emu) return;
-    const btn = KEY_MAP[ev.key];
+    const btn = KEY_MAP[ev.code] || KEY_MAP[ev.key];
     if (btn && BUTTONS[btn] !== undefined) {
         ev.preventDefault();
         wasm.instance.exports.sandopolis_set_button(emu, 0, BUTTONS[btn], false);
