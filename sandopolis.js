@@ -484,8 +484,12 @@ function updatePerf() {
         const isPal = e.sandopolis_is_pal(emu);
         document.getElementById("perf-resolution").textContent = w + "x" + h;
 
+        const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
+        const sysName = sysType === 1 ? "SMS" : "Genesis";
         const mode = e.sandopolis_display_mode(emu);
-        const parts = [(mode & 1) ? "H40" : "H32", isPal ? "PAL" : "NTSC"];
+        const parts = [sysName];
+        if (sysType === 0) parts.push((mode & 1) ? "H40" : "H32");
+        parts.push(isPal ? "PAL" : "NTSC");
         if (mode & 2) parts.push("Interlace");
         if (mode & 4) parts.push("S/H");
         document.getElementById("perf-display").textContent = parts.join(" ");
@@ -754,7 +758,9 @@ async function loadRom(file) {
     }
 
     const isPal = e.sandopolis_is_pal(emu);
-    setStatus(`Playing now: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
+    const sysLabel = sysType === 1 ? "SMS" : "Genesis";
+    setStatus(`Playing now: ${file.name} (${sysLabel} ${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
 
     running = true;
