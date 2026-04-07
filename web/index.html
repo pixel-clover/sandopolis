@@ -200,6 +200,17 @@
             display: none;
         }
 
+        #recent-roms {
+            margin-top: 6px;
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-panel);
+            color: var(--text);
+            cursor: pointer;
+        }
+
         /* Screen */
         #screen-container {
             position: relative;
@@ -938,6 +949,9 @@
 <div id="drop-zone">
     <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
     <input accept=".bin,.md,.smd,.gen" id="rom-input" type="file">
+    <select id="recent-roms" style="display:none">
+        <option value="">Recent ROMs...</option>
+    </select>
 </div>
 
 <div id="screen-container">

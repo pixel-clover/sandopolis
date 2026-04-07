@@ -104,6 +104,10 @@ async function init() {
     };
 
     document.getElementById("rom-input").addEventListener("change", onFileSelected);
+    document.getElementById("recent-roms").addEventListener("change", (ev) => {
+        if (ev.target.value) loadRecentRom(ev.target.value);
+        ev.target.selectedIndex = 0;
+    });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
 
@@ -174,6 +178,7 @@ async function init() {
 
     loadSettings();
     db = await openDB();
+    await populateRecentRoms();
     setStatus("We are ready. Load a ROM to start playing!");
 }
 
@@ -181,8 +186,12 @@ async function init() {
 
 function openDB() {
     return new Promise((resolve, reject) => {
-        const req = indexedDB.open("sandopolis-saves", 1);
-        req.onupgradeneeded = () => req.result.createObjectStore("states");
+        const req = indexedDB.open("sandopolis-saves", 2);
+        req.onupgradeneeded = (ev) => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains("states")) db.createObjectStore("states");
+            if (!db.objectStoreNames.contains("roms")) db.createObjectStore("roms");
+        };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
@@ -204,6 +213,87 @@ function dbGet(key) {
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
+}
+
+// Recent ROMs (cached in IndexedDB, max 10)
+
+const MAX_RECENT_ROMS = 10;
+
+async function saveRecentRom(name, bytes) {
+    const tx = db.transaction("roms", "readwrite");
+    const store = tx.objectStore("roms");
+    store.put({ name, bytes, timestamp: Date.now() }, name);
+    // Prune old entries beyond MAX_RECENT_ROMS
+    const allKeys = await new Promise((resolve, reject) => {
+        const req = store.getAllKeys();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    if (allKeys.length > MAX_RECENT_ROMS) {
+        const allEntries = await new Promise((resolve, reject) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        allEntries.sort((a, b) => b.timestamp - a.timestamp);
+        for (const old of allEntries.slice(MAX_RECENT_ROMS)) {
+            store.delete(old.name);
+        }
+    }
+}
+
+async function getRecentRoms() {
+    try {
+        const tx = db.transaction("roms", "readonly");
+        const store = tx.objectStore("roms");
+        const entries = await new Promise((resolve, reject) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        entries.sort((a, b) => b.timestamp - a.timestamp);
+        return entries;
+    } catch (_) {
+        return [];
+    }
+}
+
+async function populateRecentRoms() {
+    const entries = await getRecentRoms();
+    const select = document.getElementById("recent-roms");
+    // Clear existing options except the placeholder
+    while (select.options.length > 1) select.remove(1);
+    if (entries.length === 0) {
+        select.style.display = "none";
+        return;
+    }
+    for (const entry of entries) {
+        const opt = document.createElement("option");
+        opt.value = entry.name;
+        opt.textContent = entry.name;
+        select.appendChild(opt);
+    }
+    select.style.display = "";
+}
+
+async function loadRecentRom(name) {
+    const tx = db.transaction("roms", "readonly");
+    const store = tx.objectStore("roms");
+    const entry = await new Promise((resolve, reject) => {
+        const req = store.get(name);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    if (!entry) return;
+    // Update timestamp
+    const txW = db.transaction("roms", "readwrite");
+    txW.objectStore("roms").put({ ...entry, timestamp: Date.now() }, name);
+    // Create a fake File-like object
+    const blob = new Blob([entry.bytes]);
+    blob.name = entry.name;
+    blob.arrayBuffer = () => Promise.resolve(entry.bytes.buffer.slice(
+        entry.bytes.byteOffset, entry.bytes.byteOffset + entry.bytes.byteLength));
+    await loadRom(blob);
 }
 
 // Settings
@@ -645,6 +735,7 @@ async function loadRom(file) {
     }
 
     currentRomName = file.name;
+    saveRecentRom(file.name, romBytes).then(populateRecentRoms).catch(() => {});
     applySettings();
 
     // Resume AudioContext on user gesture (required by browsers)
