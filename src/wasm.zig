@@ -37,6 +37,7 @@ const WasmEmulator = struct {
     snapshot: ?Machine.Snapshot,
     last_save_buf: ?[]u8,
     last_save_len: usize,
+    frame_count: u64 = 0,
 };
 
 const WasmAudioSink = struct {
@@ -99,6 +100,7 @@ export fn sandopolis_destroy(emu: *WasmEmulator) void {
 
 export fn sandopolis_run_frame(emu: *WasmEmulator) void {
     emu.machine.runFrame();
+    emu.frame_count += 1;
 }
 
 // Video
@@ -242,6 +244,43 @@ export fn sandopolis_audio_sample_rate() u32 {
 
 export fn sandopolis_video_width() u32 {
     return @intCast(Vdp.framebuffer_width);
+}
+
+export fn sandopolis_save_state_version() u32 {
+    return state_file.save_state_version;
+}
+
+// Statistics
+
+export fn sandopolis_frame_count(emu: *const WasmEmulator) u32 {
+    return @intCast(@min(emu.frame_count, std.math.maxInt(u32)));
+}
+
+export fn sandopolis_rom_size(emu: *const WasmEmulator) u32 {
+    return @intCast(emu.machine.bus.rom.len);
+}
+
+export fn sandopolis_rom_title_ptr(emu: *const WasmEmulator) ?[*]const u8 {
+    const meta = emu.machine.romMetadata();
+    if (meta.title) |t| return t.ptr;
+    return null;
+}
+
+export fn sandopolis_rom_title_len() u32 {
+    return 0x30; // Fixed length in Genesis header (0x150..0x180)
+}
+
+export fn sandopolis_rom_checksum_valid(emu: *const WasmEmulator) bool {
+    return emu.machine.romMetadata().checksum_valid;
+}
+
+export fn sandopolis_display_mode(emu: *const WasmEmulator) u32 {
+    // Encodes: bit 0 = H40 (else H32), bit 1 = interlace, bit 2 = shadow/highlight
+    var mode: u32 = 0;
+    if (emu.machine.bus.vdp.isH40()) mode |= 1;
+    if (emu.machine.bus.vdp.isInterlaceMode2()) mode |= 2;
+    if (emu.machine.bus.vdp.isShadowHighlightEnabled()) mode |= 4;
+    return mode;
 }
 
 // Settings

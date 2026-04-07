@@ -21,6 +21,8 @@ pub const Z80 = struct {
     pub const HostPeekFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
     pub const HostM68kBusAccessFn = *const fn (userdata: ?*anyopaque, pre_access_master_cycles: u32) callconv(.c) void;
+    pub const HostPortInFn = *const fn (userdata: ?*anyopaque, port: u16) callconv(.c) u8;
+    pub const HostPortOutFn = *const fn (userdata: ?*anyopaque, port: u16, val: u8) callconv(.c) void;
 
     pub fn init() Z80 {
         return .{ .handle = c.jgz80_create() };
@@ -85,6 +87,23 @@ pub const Z80 = struct {
         host_m68k_bus_access: HostM68kBusAccessFn,
     ) void {
         if (self.handle) |h| c.jgz80_set_host_callbacks(h, host_read, host_peek, host_write, host_m68k_bus_access, userdata);
+    }
+
+    pub fn setSmsMode(self: *Z80, enabled: bool) void {
+        if (self.handle) |h| c.jgz80_set_sms_mode(h, if (enabled) 1 else 0);
+    }
+
+    pub fn setPortCallbacks(
+        self: *Z80,
+        userdata: ?*anyopaque,
+        port_in: HostPortInFn,
+        port_out: HostPortOutFn,
+    ) void {
+        if (self.handle) |h| c.jgz80_set_port_callbacks(h, port_in, port_out, userdata);
+    }
+
+    pub fn assertNmi(self: *Z80) void {
+        if (self.handle) |h| c.jgz80_assert_nmi(h);
     }
 
     pub fn getBank(self: *const Z80) u16 {

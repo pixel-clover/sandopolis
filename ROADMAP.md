@@ -109,4 +109,4 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
-- [ ] Sega Master System support
+- [x] Sega Master System support (SMS VDP Mode 4, Sega mapper, PSG audio, Z80 SMS mode in jgz80 bridge)

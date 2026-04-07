@@ -164,6 +164,10 @@ typedef void (*Jgz80HostWriteFunc)(void *userdata, uint32_t addr, uint8_t val);
 
 typedef void (*Jgz80M68kBusAccessFunc)(void *userdata, uint32_t pre_access_master_cycles);
 
+typedef uint8_t (*Jgz80HostPortInFunc)(void *userdata, uint16_t port);
+
+typedef void (*Jgz80HostPortOutFunc)(void *userdata, uint16_t port, uint8_t val);
+
 Jgz80Handle *jgz80_create(void);
 
 Jgz80Handle *jgz80_clone(const Jgz80Handle *handle);
@@ -269,6 +273,17 @@ uint16_t jgz80_read_reset(Jgz80Handle *handle);
 uint8_t jgz80_reset_line_asserted(Jgz80Handle *handle);
 
 void jgz80_set_reset_line_asserted(Jgz80Handle *handle, uint8_t asserted);
+
+void jgz80_set_sms_mode(Jgz80Handle *handle, uint8_t enabled);
+
+void jgz80_set_port_callbacks(
+    Jgz80Handle *handle,
+    Jgz80HostPortInFunc port_in,
+    Jgz80HostPortOutFunc port_out,
+    void *userdata
+);
+
+void jgz80_assert_nmi(Jgz80Handle *handle);
 
 #ifdef __cplusplus
 }

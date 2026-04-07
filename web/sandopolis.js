@@ -110,6 +110,7 @@ async function init() {
     });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
+    document.getElementById("screen").addEventListener("click", togglePause);
 
     // Drag and drop
     const dropZone = document.getElementById("drop-zone");
@@ -127,12 +128,6 @@ async function init() {
     // Settings UI
     document.getElementById("audio-toggle").addEventListener("click", toggleAudio);
     document.getElementById("master-volume").addEventListener("input", onMasterVolumeChange);
-    document.getElementById("audio-mode").addEventListener("change", onAudioModeChange);
-    document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
-    document.getElementById("eq-enabled").addEventListener("change", onEqChange);
-    document.getElementById("eq-low").addEventListener("input", onEqChange);
-    document.getElementById("eq-mid").addEventListener("input", onEqChange);
-    document.getElementById("eq-high").addEventListener("input", onEqChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
@@ -302,12 +297,6 @@ function loadSettings() {
     try {
         const saved = JSON.parse(localStorage.getItem("sandopolis-settings") || "{}");
         if (saved.audioEnabled !== undefined) audioEnabled = saved.audioEnabled;
-        if (saved.audioMode !== undefined) document.getElementById("audio-mode").value = saved.audioMode;
-        if (saved.psgVolume !== undefined) document.getElementById("psg-volume").value = saved.psgVolume;
-        if (saved.eqEnabled !== undefined) document.getElementById("eq-enabled").checked = saved.eqEnabled;
-        if (saved.eqLow !== undefined) document.getElementById("eq-low").value = saved.eqLow;
-        if (saved.eqMid !== undefined) document.getElementById("eq-mid").value = saved.eqMid;
-        if (saved.eqHigh !== undefined) document.getElementById("eq-high").value = saved.eqHigh;
         if (saved.controllerType !== undefined) document.getElementById("controller-type").value = saved.controllerType;
         if (saved.slot !== undefined) {
             currentSlot = saved.slot;
@@ -325,10 +314,6 @@ function loadSettings() {
     } catch (_) {
     }
     updateAudioToggleLabel();
-    document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
-    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
-    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
-    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
     document.getElementById("master-volume-label").textContent = masterVolume + "%";
     applyAspectMode();
 }
@@ -336,12 +321,6 @@ function loadSettings() {
 function saveSettings() {
     localStorage.setItem("sandopolis-settings", JSON.stringify({
         audioEnabled,
-        audioMode: document.getElementById("audio-mode").value,
-        psgVolume: document.getElementById("psg-volume").value,
-        eqEnabled: document.getElementById("eq-enabled").checked,
-        eqLow: document.getElementById("eq-low").value,
-        eqMid: document.getElementById("eq-mid").value,
-        eqHigh: document.getElementById("eq-high").value,
         controllerType: document.getElementById("controller-type").value,
         slot: currentSlot,
         aspectMode,
@@ -353,33 +332,7 @@ function saveSettings() {
 function applySettings() {
     if (!emu) return;
     const e = wasm.instance.exports;
-    e.sandopolis_set_audio_mode(emu, parseInt(document.getElementById("audio-mode").value));
-    e.sandopolis_set_psg_volume(emu, parseInt(document.getElementById("psg-volume").value));
-    e.sandopolis_set_eq_enabled(emu, document.getElementById("eq-enabled").checked ? 1 : 0);
-    e.sandopolis_set_eq_gains(emu,
-        parseInt(document.getElementById("eq-low").value) / 100,
-        parseInt(document.getElementById("eq-mid").value) / 100,
-        parseInt(document.getElementById("eq-high").value) / 100);
     e.sandopolis_set_controller_type(emu, 0, parseInt(document.getElementById("controller-type").value));
-}
-
-function onAudioModeChange() {
-    applySettings();
-    saveSettings();
-}
-
-function onPsgVolumeChange() {
-    document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
-    applySettings();
-    saveSettings();
-}
-
-function onEqChange() {
-    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
-    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
-    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
-    applySettings();
-    saveSettings();
 }
 
 function onControllerTypeChange() {
@@ -409,7 +362,7 @@ function toggleTheme() {
 
 function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
-    document.getElementById("theme-toggle").textContent = theme === "dark" ? "Light" : "Dark";
+    document.getElementById("theme-toggle").textContent = theme === "dark" ? "Dark" : "Light";
 }
 
 function readWasmString(ptrFn, lenFn) {
@@ -444,12 +397,29 @@ function updateAboutInfo() {
     const width = e.sandopolis_video_width();
     const height = emu ? e.sandopolis_screen_height(emu) : 224;
     videoEl.textContent = `${width}x${height} ARGB Canvas`;
+
+    document.getElementById("about-save-version").textContent = "v" + e.sandopolis_save_state_version();
 }
 
 // Help overlay
 
 let helpOpen = false;
 let wasRunningBeforeHelp = false;
+
+function togglePause() {
+    if (!emu) return;
+    if (running) {
+        running = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        if (audioCtx) audioCtx.suspend();
+        setStatus("Paused");
+    } else {
+        running = true;
+        resumeFrame();
+        if (audioCtx && audioEnabled) audioCtx.resume();
+        setStatus("Playing now: " + currentRomName);
+    }
+}
 
 function pauseForOverlay() {
     if (!running) return;
@@ -501,10 +471,50 @@ function togglePerf() {
 }
 
 function updatePerf() {
+    const e = wasm ? wasm.instance.exports : null;
     const fps = document.getElementById("fps-display").textContent || "--";
     document.getElementById("perf-fps").textContent = fps;
     const fpsNum = parseInt(fps);
     document.getElementById("perf-frame-ms").textContent = fpsNum > 0 ? (1000 / fpsNum).toFixed(1) + " ms" : "--";
+
+    if (e && emu) {
+        // Resolution & display mode
+        const w = e.sandopolis_screen_width(emu);
+        const h = e.sandopolis_screen_height(emu);
+        const isPal = e.sandopolis_is_pal(emu);
+        document.getElementById("perf-resolution").textContent = w + "x" + h;
+
+        const mode = e.sandopolis_display_mode(emu);
+        const parts = [(mode & 1) ? "H40" : "H32", isPal ? "PAL" : "NTSC"];
+        if (mode & 2) parts.push("Interlace");
+        if (mode & 4) parts.push("S/H");
+        document.getElementById("perf-display").textContent = parts.join(" ");
+
+        // ROM info
+        const titlePtr = e.sandopolis_rom_title_ptr(emu);
+        if (titlePtr) {
+            const titleLen = e.sandopolis_rom_title_len();
+            const titleBytes = new Uint8Array(e.memory.buffer, titlePtr, titleLen);
+            document.getElementById("perf-rom-title").textContent = textDecoder.decode(titleBytes).trim();
+        } else {
+            document.getElementById("perf-rom-title").textContent = "N/A";
+        }
+        const romSize = e.sandopolis_rom_size(emu);
+        if (romSize >= 1048576) {
+            document.getElementById("perf-rom-size").textContent = (romSize / 1048576).toFixed(1) + " MB";
+        } else {
+            document.getElementById("perf-rom-size").textContent = (romSize / 1024).toFixed(0) + " KB";
+        }
+        document.getElementById("perf-checksum").textContent = e.sandopolis_rom_checksum_valid(emu) ? "OK" : "MISMATCH";
+
+        // Frame count
+        const frames = e.sandopolis_frame_count(emu);
+        const seconds = frames / (isPal ? 50 : 60);
+        const mm = Math.floor(seconds / 60).toString().padStart(2, "0");
+        const ss = Math.floor(seconds % 60).toString().padStart(2, "0");
+        document.getElementById("perf-frame-count").textContent = frames + " (" + mm + ":" + ss + ")";
+    }
+
     if (wasm) {
         const bytes = wasm.instance.exports.memory.buffer.byteLength;
         document.getElementById("perf-wasm-mem").textContent = (bytes / 1048576).toFixed(1) + " MB";
@@ -515,7 +525,7 @@ function updatePerf() {
         document.getElementById("perf-js-heap").textContent = "N/A";
     }
     if (audioCtx && audioNode) {
-        document.getElementById("perf-audio").textContent = audioCtx.state + " " + masterVolume + "%";
+        document.getElementById("perf-audio").textContent = audioCtx.state + " @ " + audioCtx.sampleRate + "Hz";
     } else {
         document.getElementById("perf-audio").textContent = "OFF";
     }
