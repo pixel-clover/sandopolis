@@ -49,50 +49,50 @@
             font-display: swap;
         }
 
-        /* Dark: Genesis blue-black + Zig orange */
+        /* Dark: Genesis console — black chassis, Sega blue, 16-BIT gold */
         :root[data-theme="dark"] {
-            --bg: #0A0E1A;
-            --bg-panel: #111730;
-            --bg-input: #0A0E1A;
-            --bg-btn-hover: #1A2244;
-            --border: #2A3050;
-            --border-accent: #3366CC;
-            --text: #E0E4EF;
-            --text-muted: #7A82A0;
-            --text-accent: #F7A41D;
-            --text-link: #5B8ECC;
-            --text-heading: #4A90D9;
-            --toast-bg: #111730;
-            --toast-border: #F7A41D;
-            --toast-text: #F7A41D;
+            --bg: #08080E;
+            --bg-panel: #101018;
+            --bg-input: #0C0C14;
+            --bg-btn-hover: #1C1C2C;
+            --border: #28283C;
+            --border-accent: #0060A8;
+            --text: #D0D4E0;
+            --text-muted: #6A6E88;
+            --text-accent: #C8A830;
+            --text-link: #4488CC;
+            --text-heading: #0080D0;
+            --toast-bg: #101018;
+            --toast-border: #C8A830;
+            --toast-text: #C8A830;
             --screen-bg: #000;
-            --group-bg: #0D1225;
-            --error-bg: rgba(220, 50, 47, 0.12);
-            --error-border: #DC322F;
-            --overlay-bg: rgba(5, 8, 20, 0.8);
+            --group-bg: #0E0E18;
+            --error-bg: rgba(200, 40, 40, 0.14);
+            --error-border: #CC3030;
+            --overlay-bg: rgba(4, 4, 8, 0.85);
         }
 
-        /* Light: warm white + Genesis blue + Zig orange */
+        /* Light: Genesis box art — cream white, Sega blue, gold accents */
         :root[data-theme="light"] {
-            --bg: #F5F6FA;
-            --bg-panel: #FFFFFF;
-            --bg-input: #F0F1F8;
-            --bg-btn-hover: #E8EAF2;
-            --border: #C8CCE0;
-            --border-accent: #2856A8;
-            --text: #1A1E30;
-            --text-muted: #5A6080;
-            --text-accent: #D4820E;
-            --text-link: #2856A8;
-            --text-heading: #1E3A7A;
-            --toast-bg: #FFFFFF;
-            --toast-border: #D4820E;
-            --toast-text: #D4820E;
-            --screen-bg: #101428;
-            --group-bg: #ECEEF6;
-            --error-bg: rgba(220, 50, 47, 0.08);
-            --error-border: #DC322F;
-            --overlay-bg: rgba(10, 14, 26, 0.5);
+            --bg: #F0EDE6;
+            --bg-panel: #FAF8F4;
+            --bg-input: #EBE8E0;
+            --bg-btn-hover: #E0DDD4;
+            --border: #C0BCA8;
+            --border-accent: #004C90;
+            --text: #18181E;
+            --text-muted: #58585E;
+            --text-accent: #9A7810;
+            --text-link: #004C90;
+            --text-heading: #003870;
+            --toast-bg: #FAF8F4;
+            --toast-border: #9A7810;
+            --toast-text: #9A7810;
+            --screen-bg: #080810;
+            --group-bg: #E8E4DA;
+            --error-bg: rgba(200, 40, 40, 0.08);
+            --error-border: #CC3030;
+            --overlay-bg: rgba(8, 8, 14, 0.5);
         }
 
         body {
@@ -116,17 +116,35 @@
 
         header h1 {
             color: var(--text-accent);
-            font-size: 1.6rem;
-            letter-spacing: 0.12em;
+            font-size: 1.8rem;
+            letter-spacing: 0.22em;
             font-family: var(--font-ui);
             font-weight: 500;
             margin-bottom: 2px;
+            text-shadow: 0 1px 0 rgba(0,0,0,0.3);
         }
 
-        header p {
-            color: var(--text-muted);
-            font-size: 0.78rem;
+        header .subtitle {
+            color: var(--text-heading);
+            font-size: 0.62rem;
             font-family: var(--font-mono);
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+            font-weight: 500;
+        }
+
+        header .era-tag {
+            display: inline-block;
+            color: var(--text-accent);
+            font-size: 0.55rem;
+            font-family: var(--font-mono);
+            font-weight: 500;
+            letter-spacing: 0.15em;
+            border: 1px solid var(--text-accent);
+            border-radius: 2px;
+            padding: 1px 6px;
+            margin-top: 4px;
+            opacity: 0.7;
         }
 
         /* Error banner */
@@ -173,7 +191,7 @@
         /* ROM loader */
         #drop-zone {
             border: 2px dashed var(--border-accent);
-            border-radius: var(--radius-lg);
+            border-radius: 3px;
             padding: 14px 24px;
             text-align: center;
             cursor: pointer;
@@ -200,14 +218,25 @@
             display: none;
         }
 
+        #recent-roms {
+            margin-top: 6px;
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-panel);
+            color: var(--text);
+            cursor: pointer;
+        }
+
         /* Screen */
         #screen-container {
             position: relative;
             background: var(--screen-bg);
-            border: 2px solid var(--border-accent);
-            border-radius: var(--radius-md);
+            border: 3px solid #1A1A24;
+            border-radius: 3px;
             overflow: hidden;
-            box-shadow: var(--shadow-md);
+            box-shadow: 0 0 0 1px var(--border-accent), var(--shadow-md), inset 0 0 20px rgba(0,0,0,0.4);
             transition: box-shadow var(--transition-fast);
             margin-bottom: 6px;
             width: min(100%, 640px);
@@ -313,7 +342,7 @@
             gap: 8px;
             background: var(--bg-panel);
             border: 1px solid var(--border);
-            border-radius: var(--radius-md);
+            border-radius: 3px;
             padding: 6px;
             max-width: 660px;
             width: 100%;
@@ -328,32 +357,29 @@
             gap: 4px;
             background: var(--group-bg);
             border: 1px solid color-mix(in srgb, var(--group-accent) 30%, var(--border));
-            border-radius: var(--radius-md);
+            border-radius: 3px;
             padding: 5px 6px;
             transition: background var(--transition-normal);
         }
 
         .btn-group.tone-audio {
-            --group-accent: #4C7BD9;
+            --group-accent: #0070B8;
         }
 
         .btn-group.tone-save {
-            --group-accent: #4C7BD9;
+            --group-accent: #B89820;
         }
 
         .btn-group.tone-view {
-            --group-accent: #4C7BD9;
-            --group-chroma: 12%;
+            --group-accent: #0070B8;
         }
 
         .btn-group.tone-system {
-            --group-accent: #4C7BD9;
-            --group-chroma: 6%;
+            --group-accent: #606880;
         }
 
         .btn-group.tone-info {
-            --group-accent: #4C7BD9;
-            --group-chroma: 4%;
+            --group-accent: #606880;
             opacity: 0.92;
         }
 
@@ -372,7 +398,7 @@
             background: color-mix(in srgb, var(--group-accent) 4%, var(--bg-input));
             color: var(--text);
             border: 1px solid color-mix(in srgb, var(--group-accent) 20%, var(--border));
-            border-radius: 999px;
+            border-radius: 3px;
             padding: 4px 10px;
             font-family: var(--font-ui);
             font-size: 0.68rem;
@@ -474,7 +500,7 @@
             width: 100%;
             background: var(--bg-panel);
             border: 1px solid var(--border);
-            border-radius: var(--radius-md);
+            border-radius: 3px;
             padding: 14px 18px;
             margin-bottom: 12px;
             box-shadow: var(--shadow-sm);
@@ -524,6 +550,7 @@
             border-color: var(--text-accent);
         }
 
+
         .volume-row {
             display: flex;
             align-items: center;
@@ -548,9 +575,10 @@
             right: 16px;
             background: var(--toast-bg);
             border: 1px solid var(--toast-border);
-            border-radius: var(--radius-sm);
+            border-radius: 2px;
             padding: 8px 16px;
             font-size: 0.78rem;
+            letter-spacing: 0.05em;
             color: var(--toast-text);
             box-shadow: var(--shadow-md);
             backdrop-filter: blur(8px);
@@ -591,7 +619,7 @@
         .help-panel {
             background: var(--bg-panel);
             border: 2px solid var(--text-heading);
-            border-radius: var(--radius-lg);
+            border-radius: 3px;
             padding: 20px 28px;
             max-width: 540px;
             width: 90%;
@@ -604,6 +632,7 @@
         .help-panel h3 {
             color: var(--text-accent);
             font-size: 1rem;
+            letter-spacing: 0.15em;
             margin-bottom: 12px;
             text-align: center;
             font-family: var(--font-ui);
@@ -647,6 +676,23 @@
 
         .help-row .key:hover {
             border-color: var(--text-accent);
+        }
+
+        .help-footer {
+            margin: 12px 0 0;
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            text-align: center;
+            font-family: var(--font-ui);
+        }
+
+        .help-footer a {
+            color: var(--text-link);
+            text-decoration: none;
+        }
+
+        .help-footer a:hover {
+            color: var(--text-accent);
         }
 
         #help-close,
@@ -700,10 +746,10 @@
             border-radius: var(--radius-sm);
             padding: 6px 10px;
             font-size: 0.62rem;
-            color: #8CB4E0;
+            color: #A0A880;
             backdrop-filter: blur(6px);
             -webkit-backdrop-filter: blur(6px);
-            min-width: 140px;
+            min-width: 180px;
             font-family: var(--font-mono);
         }
 
@@ -719,12 +765,16 @@
         }
 
         .perf-row span:first-child {
-            color: #5A7AAA;
+            color: #707860;
         }
 
         .perf-row span:last-child {
-            color: #B8D4F0;
+            color: #C8D0A0;
             font-variant-numeric: tabular-nums;
+            max-width: 160px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         /* About modal */
@@ -808,6 +858,22 @@
 
         .about-link a:hover {
             color: var(--text-accent);
+        }
+
+        .about-donate {
+            margin: 8px 0 4px;
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            font-family: var(--font-ui);
+        }
+
+        .about-donate a {
+            color: var(--text-accent);
+            text-decoration: none;
+        }
+
+        .about-donate a:hover {
+            text-decoration: underline;
         }
 
         .about-credits {
@@ -932,12 +998,17 @@
 
 <header>
     <h1>SANDOPOLIS</h1>
-    <p>Sega Genesis / Mega Drive Emulator</p>
+    <span class="subtitle">Sega Genesis / Mega Drive Emulator</span>
+    <br>
+    <span class="era-tag">16-BIT</span>
 </header>
 
 <div id="drop-zone">
     <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
     <input accept=".bin,.md,.smd,.gen" id="rom-input" type="file">
+    <select id="recent-roms" style="display:none">
+        <option value="">Recent ROMs...</option>
+    </select>
 </div>
 
 <div id="screen-container">
@@ -997,34 +1068,6 @@
             <option value="stretch">Stretch</option>
             <option value="native">Native (320x224)</option>
         </select>
-        <label>Audio</label>
-        <select id="audio-mode">
-            <option value="0">Normal</option>
-            <option value="1">FM Only</option>
-            <option value="2">PSG Only</option>
-            <option value="3">Unfiltered</option>
-        </select>
-        <label>PSG Balance</label>
-        <div class="volume-row">
-            <input id="psg-volume" max="200" min="0" step="10" type="range" value="150">
-            <span id="psg-volume-label">150%</span>
-        </div>
-        <label><input id="eq-enabled" type="checkbox"> Equalizer</label>
-        <div class="volume-row">
-            <span class="eq-label">Low</span>
-            <input id="eq-low" max="200" min="0" step="5" type="range" value="100">
-            <span id="eq-low-label">100%</span>
-        </div>
-        <div class="volume-row">
-            <span class="eq-label">Mid</span>
-            <input id="eq-mid" max="200" min="0" step="5" type="range" value="100">
-            <span id="eq-mid-label">100%</span>
-        </div>
-        <div class="volume-row">
-            <span class="eq-label">High</span>
-            <input id="eq-high" max="200" min="0" step="5" type="range" value="100">
-            <span id="eq-high-label">100%</span>
-        </div>
         <label>Controller</label>
         <select id="controller-type">
             <option value="1">6-Button</option>
@@ -1043,8 +1086,8 @@
                 <h4>KEYBOARD</h4>
                 <div class="help-row">[Arrows] D-Pad</div>
                 <div class="help-row">[Enter] Start</div>
-                <div class="help-row">[Z] A &nbsp;[X] B &nbsp;[C] C</div>
-                <div class="help-row">[A] X &nbsp;[S] Y &nbsp;[D] Z</div>
+                <div class="help-row">[Z] X &nbsp;[X] Y &nbsp;[C] Z</div>
+                <div class="help-row">[A] A &nbsp;[S] B &nbsp;[D] C</div>
                 <h4>HOTKEYS</h4>
                 <div class="help-row">[F5] Quick Save &nbsp;[F8] Quick Load</div>
                 <div class="help-row">[F6] Slot Save &nbsp;[F9] Slot Load</div>
@@ -1052,7 +1095,6 @@
             </div>
             <div>
                 <h4>GAMEPAD</h4>
-                <img alt="Genesis 6-button" class="genesis-layout" src="img/6button.png">
                 <div class="help-row">(X) <img alt="A" class="genesis-btn" src="img/a.png"> &nbsp;(A) <img
                     alt="B" class="genesis-btn" src="img/b.png"> &nbsp;(B) <img alt="C" class="genesis-btn"
                                                                                 src="img/c.png"></div>
@@ -1064,6 +1106,7 @@
                 </div>
             </div>
         </div>
+        <p class="help-footer">Found a bug or have a feature request? <a href="https://github.com/pixel-clover/sandopolis/issues">Please open an issue for it</a>. For everything else, use <a href="https://github.com/pixel-clover/sandopolis/discussions">project's Discussions forum</a>.</p>
         <button id="help-close">CLOSE</button>
     </div>
 </div>
@@ -1072,9 +1115,15 @@
 <div class="hidden" id="perf-hud">
     <div class="perf-row"><span>FPS</span><span id="perf-fps">--</span></div>
     <div class="perf-row"><span>Frame</span><span id="perf-frame-ms">--</span></div>
+    <div class="perf-row"><span>Resolution</span><span id="perf-resolution">--</span></div>
+    <div class="perf-row"><span>Display</span><span id="perf-display">--</span></div>
+    <div class="perf-row"><span>ROM</span><span id="perf-rom-title">--</span></div>
+    <div class="perf-row"><span>ROM Size</span><span id="perf-rom-size">--</span></div>
+    <div class="perf-row"><span>Checksum</span><span id="perf-checksum">--</span></div>
+    <div class="perf-row"><span>Frames</span><span id="perf-frame-count">--</span></div>
     <div class="perf-row"><span>WASM Mem</span><span id="perf-wasm-mem">--</span></div>
     <div class="perf-row"><span>JS Heap</span><span id="perf-js-heap">--</span></div>
-    <div class="perf-row"><span>Audio Buf</span><span id="perf-audio">--</span></div>
+    <div class="perf-row"><span>Audio</span><span id="perf-audio">--</span></div>
 </div>
 
 <!-- About modal -->
@@ -1087,11 +1136,11 @@
                 <div class="about-row"><span>Build</span><span id="about-build">--</span></div>
                 <div class="about-row"><span>Audio</span><span id="about-audio">--</span></div>
                 <div class="about-row"><span>Video</span><span id="about-video">--</span></div>
+                <div class="about-row"><span>Save Format</span><span id="about-save-version">--</span></div>
                 <div class="about-row"><span>License</span><span>MIT</span></div>
                 <div class="about-row"><span>WASM Size</span><span id="about-wasm-size">--</span></div>
             </div>
-            <p class="about-link"><a href="https://github.com/pixel-clover/sandopolis">github.com/pixel-clover/sandopolis</a>
-            </p>
+            <p class="about-donate">If you enjoy Sandopolis, please consider supporting the project by giving it a <a href="https://github.com/pixel-clover/sandopolis">star</a> and making a <a href="https://github.com/sponsors/habedi">donation</a> to help keep development going.</p>
         </div>
         <button id="about-close">CLOSE</button>
     </div>
