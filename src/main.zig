@@ -12,6 +12,8 @@ const keyboard = @import("input/keyboard.zig");
 const binding_editor_module = @import("input/binding_editor.zig");
 const Machine = @import("machine.zig").Machine;
 const SystemMachine = @import("system_machine.zig").SystemMachine;
+const SmsMachine = @import("sms/machine.zig").SmsMachine;
+const SmsVdp = @import("sms/vdp.zig").SmsVdp;
 const system_detect = @import("system.zig");
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
@@ -251,6 +253,14 @@ fn frameDurationNs(is_pal: bool, master_cycles_per_frame: u32) u64 {
     return @intCast((@as(u128, master_cycles_per_frame) * std.time.ns_per_s) / master_clock);
 }
 
+fn smsFrameDurationNs(is_pal: bool) u64 {
+    const sms_clock = @import("sms/clock.zig");
+    const master_clock: u32 = if (is_pal) sms_clock.pal_master_clock else sms_clock.ntsc_master_clock;
+    const lines: u32 = if (is_pal) sms_clock.pal_lines_per_frame else sms_clock.ntsc_lines_per_frame;
+    const master_cycles: u32 = lines * sms_clock.master_cycles_per_line;
+    return @intCast((@as(u128, master_cycles) * std.time.ns_per_s) / master_clock);
+}
+
 fn uncappedBootFrames(audio_enabled: bool) u32 {
     return if (audio_enabled) 0 else 240;
 }
@@ -353,6 +363,28 @@ fn refreshSaveManager(
             std.debug.print("Failed to refresh save manager metadata: {s}\n", .{@errorName(err)});
             notifyFrontend(notifications, .failure, "FAILED TO REFRESH SAVE MANAGER", .{});
         };
+    } else if (machine.sourcePath()) |source_path| {
+        // SMS: refresh using source path for slot resolution
+        for (0..save_manager_slot_count) |slot_index| {
+            const slot_number: u8 = @intCast(slot_index + 1);
+            const path = rom_paths.statePath(allocator, source_path, slot_number) catch continue;
+            defer allocator.free(path);
+            var metadata = saves_module.SlotMetadata{};
+            metadata.path.set(path);
+            const file = std.fs.cwd().openFile(path, .{}) catch {
+                save_manager.slots[slot_index] = metadata;
+                continue;
+            };
+            defer file.close();
+            const stat = file.stat() catch {
+                save_manager.slots[slot_index] = metadata;
+                continue;
+            };
+            metadata.exists = true;
+            metadata.size_bytes = stat.size;
+            metadata.modified_ns = stat.mtime;
+            save_manager.slots[slot_index] = metadata;
+        }
     }
 }
 
@@ -375,9 +407,7 @@ fn deletePersistentStateFile(
     persistent_state_slot: u8,
     notifications: FrontendNotifications,
 ) bool {
-    const gen = machine.asGenesisConst() orelse return true;
-    const state_path = resolvePersistentStatePath(allocator, gen, explicit_state_path, persistent_state_slot) catch |err| {
-        std.debug.print("Failed to resolve state-file path for delete: {s}\n", .{@errorName(err)});
+    const state_path = resolveStatePathForSystem(allocator, machine, explicit_state_path, persistent_state_slot) orelse {
         notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
         return true;
     };
@@ -1931,9 +1961,8 @@ fn handlePersistentStateAction(
     if (action == .next_state_slot) {
         persistent_state_slot.* = StateFile.nextPersistentStateSlot(persistent_state_slot.*);
 
-        const gen_for_slot = machine.asGenesisConst() orelse return .handled;
-        const state_path = resolvePersistentStatePath(allocator, gen_for_slot, explicit_state_path, persistent_state_slot.*) catch |err| {
-            std.debug.print("Failed to resolve state-file slot path: {s}\n", .{@errorName(err)});
+        // Resolve path using source path from either system
+        const state_path = resolveStatePathForSystem(allocator, machine, explicit_state_path, persistent_state_slot.*) orelse {
             notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE SLOT", .{});
             return .handled;
         };
@@ -1951,67 +1980,78 @@ fn handlePersistentStateAction(
         return .handled;
     }
 
-    var owned_state_path: ?[]u8 = null;
-    defer if (owned_state_path) |path| allocator.free(path);
-
-    const gen_for_state = machine.asGenesisConst() orelse {
-        notifyFrontend(notifications, .info, "SAVE STATES NOT YET SUPPORTED FOR SMS", .{});
-        return .handled;
-    };
-    owned_state_path = resolvePersistentStatePath(allocator, gen_for_state, explicit_state_path, persistent_state_slot.*) catch |err| {
-        std.debug.print("Failed to resolve state-file path: {s}\n", .{@errorName(err)});
+    const state_path = resolveStatePathForSystem(allocator, machine, explicit_state_path, persistent_state_slot.*) orelse {
         notifyFrontend(notifications, .failure, "FAILED TO RESOLVE STATE FILE", .{});
         return .handled;
     };
-    const state_path = owned_state_path.?;
+    defer allocator.free(state_path);
 
     switch (action) {
         .save_state_file => {
-            const gen = machine.asGenesis() orelse {
-                notifyFrontend(notifications, .info, "SAVE STATES NOT YET SUPPORTED FOR SMS", .{});
-                return .handled;
-            };
-            StateFile.saveToFile(gen, state_path) catch |err| {
-                std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
-                return .handled;
-            };
-            if (machine.asGenesisConst()) |gen_for_preview| saveStatePreviewFile(allocator, gen_for_preview, state_path) catch |err| {
-                std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
-            };
+            switch (machine.*) {
+                .genesis => |*gen| {
+                    StateFile.saveToFile(gen, state_path) catch |err| {
+                        std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                        notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
+                        return .handled;
+                    };
+                    saveStatePreviewFile(allocator, gen, state_path) catch |err| {
+                        std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
+                    };
+                },
+                .sms => |*sms| {
+                    saveSmsStateFile(allocator, sms, state_path) catch |err| {
+                        std.debug.print("Failed to save SMS state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                        notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
+                        return .handled;
+                    };
+                },
+            }
             std.debug.print("Saved state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE SAVED", .{});
             return .handled;
         },
         .load_state_file => {
-            if (machine.systemType() == .sms) {
-                notifyFrontend(notifications, .info, "SAVE STATES NOT YET SUPPORTED FOR SMS", .{});
-                return .handled;
-            }
-            var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
-                if (err == error.FileNotFound) {
-                    notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
-                } else {
-                    std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                    notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
-                }
-                return .handled;
-            };
-            errdefer next_machine.deinit(allocator);
+            switch (machine.*) {
+                .genesis => {
+                    var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
+                        if (err == error.FileNotFound) {
+                            notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
+                        } else {
+                            std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                            notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
+                        }
+                        return .handled;
+                    };
+                    errdefer next_machine.deinit(allocator);
 
-            stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
-            stopWavRecording(audio, wav_recorder, "WAV recording stopped for state-file load");
-            if (audio) |a| {
-                resetAudioOutput(a, null);
-            }
+                    stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
+                    stopWavRecording(audio, wav_recorder, "WAV recording stopped for state-file load");
+                    if (audio) |a| resetAudioOutput(a, null);
 
-            var old_machine = machine.*;
-            machine.* = .{ .genesis = next_machine };
-            machine.rebindRuntimePointers();
-            old_machine.deinit(allocator);
+                    var old_machine = machine.*;
+                    machine.* = .{ .genesis = next_machine };
+                    machine.rebindRuntimePointers();
+                    old_machine.deinit(allocator);
 
-            if (audio) |a| {
-                if (machine.audioZ80()) |z80| a.output.syncYmStateFromZ80(z80);
+                    if (audio) |a| {
+                        if (machine.audioZ80()) |z80| a.output.syncYmStateFromZ80(z80);
+                    }
+                },
+                .sms => |*sms| {
+                    loadSmsStateFile(allocator, sms, state_path) catch |err| {
+                        if (err == error.FileNotFound) {
+                            notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
+                        } else {
+                            std.debug.print("Failed to load SMS state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                            notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
+                        }
+                        return .handled;
+                    };
+                    stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
+                    stopWavRecording(audio, wav_recorder, "WAV recording stopped for state-file load");
+                    if (audio) |a| resetAudioOutput(a, null);
+                },
             }
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
@@ -2020,6 +2060,139 @@ fn handlePersistentStateAction(
         },
         else => return .ignored,
     }
+}
+
+/// Resolve the persistent state file path for either Genesis or SMS.
+fn resolveStatePathForSystem(
+    allocator: std.mem.Allocator,
+    machine: *const SystemMachine,
+    explicit_state_path: ?[]const u8,
+    slot: u8,
+) ?[]u8 {
+    const normalized = StateFile.normalizePersistentStateSlot(slot);
+    if (explicit_state_path) |path| {
+        return rom_paths.statePath(allocator, path, normalized) catch null;
+    }
+    // Use source path from either system
+    if (machine.sourcePath()) |source_path| {
+        return rom_paths.statePath(allocator, source_path, normalized) catch null;
+    }
+    // Genesis fallback: use Machine-specific path derivation
+    if (machine.asGenesisConst()) |gen| {
+        return StateFile.pathForMachineSlot(allocator, gen, normalized) catch null;
+    }
+    return null;
+}
+
+const sms_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'M', 'S', 'S', 'T' };
+const sms_state_version: u16 = 2;
+
+fn saveSmsStateFile(allocator: std.mem.Allocator, sms: *const SmsMachine, path: []const u8) !void {
+    var snapshot = try sms.captureSnapshot(allocator);
+    defer snapshot.deinit(allocator);
+
+    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    var buf: [4096]u8 = undefined;
+    var bw = file.writer(&buf);
+    const writer = &bw.interface;
+
+    try writer.writeAll(&sms_state_magic);
+    try writer.writeInt(u16, sms_state_version, .little);
+    try writer.writeInt(u32, @intCast(snapshot.machine.bus.rom.len), .little);
+
+    // Serialize Z80 state
+    const z80_state = snapshot.machine.z80.captureState();
+    try writer.writeAll(std.mem.asBytes(&z80_state));
+
+    // Serialize VDP state
+    try writer.writeAll(std.mem.asBytes(&snapshot.machine.bus.vdp));
+
+    // Serialize bus RAM, mapper, and cartridge RAM
+    try writer.writeAll(&snapshot.machine.bus.ram);
+    try writer.writeAll(&snapshot.machine.bus.page);
+    try writer.writeByte(@intFromBool(snapshot.machine.bus.ram_bank_enabled));
+    try writer.writeByte(@as(u8, snapshot.machine.bus.ram_bank));
+    try writer.writeAll(&snapshot.machine.bus.cartridge_ram);
+
+    // Serialize machine-level state
+    try writer.writeByte(@intFromBool(snapshot.machine.pal_mode));
+    try writer.writeInt(u32, snapshot.machine.z80_cycle_count, .little);
+
+    // Write ROM data last
+    try writer.writeAll(snapshot.machine.bus.rom);
+    try writer.flush();
+}
+
+fn loadSmsStateFile(allocator: std.mem.Allocator, sms: *SmsMachine, path: []const u8) !void {
+    const file_data = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
+    defer allocator.free(file_data);
+    var pos: usize = 0;
+
+    const readBytes = struct {
+        fn f(data: []const u8, p: *usize, len: usize) ![]const u8 {
+            if (p.* + len > data.len) return error.EndOfStream;
+            const slice = data[p.*..][0..len];
+            p.* += len;
+            return slice;
+        }
+    }.f;
+
+    // Verify header
+    const magic = try readBytes(file_data, &pos, 8);
+    if (!std.mem.eql(u8, magic, &sms_state_magic)) return error.InvalidSaveState;
+    const version = std.mem.readInt(u16, (try readBytes(file_data, &pos, 2))[0..2], .little);
+    if (version != sms_state_version) return error.UnsupportedSaveStateVersion;
+    const rom_len = std.mem.readInt(u32, (try readBytes(file_data, &pos, 4))[0..4], .little);
+
+    // Read Z80 state (copy into aligned local to avoid alignment panic)
+    const z80_bytes = try readBytes(file_data, &pos, @sizeOf(Z80.State));
+    var z80_state: Z80.State = undefined;
+    @memcpy(std.mem.asBytes(&z80_state), z80_bytes);
+
+    // Read VDP state into temporary aligned storage
+    const vdp_bytes = try readBytes(file_data, &pos, @sizeOf(SmsVdp));
+
+    // Read bus state
+    const ram = try readBytes(file_data, &pos, 8 * 1024);
+    const page_regs = try readBytes(file_data, &pos, 3);
+    const ram_bank_enabled = (try readBytes(file_data, &pos, 1))[0] != 0;
+    const ram_bank: u1 = @truncate((try readBytes(file_data, &pos, 1))[0]);
+    const cartridge_ram = try readBytes(file_data, &pos, 2 * 16 * 1024);
+
+    // Read machine state
+    const pal_mode = (try readBytes(file_data, &pos, 1))[0] != 0;
+    const z80_cycle_count = std.mem.readInt(u32, (try readBytes(file_data, &pos, 4))[0..4], .little);
+
+    // Read ROM
+    const rom_data = try readBytes(file_data, &pos, rom_len);
+
+    // Build new SMS machine from loaded state
+    var new_machine = try SmsMachine.initFromRomBytes(allocator, rom_data);
+    errdefer new_machine.deinit(allocator);
+
+    // Copy source path from current machine
+    if (sms.bus.sourcePath()) |sp| {
+        try new_machine.bus.setSourcePath(allocator, sp);
+    }
+
+    // Apply loaded state (use @memcpy for unaligned source data)
+    @memcpy(&new_machine.bus.ram, ram);
+    @memcpy(std.mem.asBytes(&new_machine.bus.vdp), vdp_bytes);
+    @memcpy(&new_machine.bus.page, page_regs);
+    new_machine.bus.ram_bank_enabled = ram_bank_enabled;
+    new_machine.bus.ram_bank = ram_bank;
+    @memcpy(&new_machine.bus.cartridge_ram, cartridge_ram);
+    new_machine.pal_mode = pal_mode;
+    new_machine.z80_cycle_count = z80_cycle_count;
+    new_machine.z80.restoreState(&z80_state);
+    new_machine.bound = false; // rebind after move to final location
+
+    // Swap in the new machine
+    var old = sms.*;
+    sms.* = new_machine;
+    sms.bindPointers();
+    old.deinit(allocator);
 }
 
 // Re-export gamepad input functions from input/gamepad.zig
@@ -3553,6 +3726,9 @@ pub fn main() !void {
                                             frontend_ui.resumeGame();
                                         } else if (frontend_ui.overlay == .none or frontend_ui.overlay == .performance_hud) {
                                             frontend_ui.overlay = .pause;
+                                            if (audio) |*a| {
+                                                zsdl3.clearAudioStream(a.stream) catch {};
+                                            }
                                         }
                                     }
                                 },
@@ -3614,8 +3790,9 @@ pub fn main() !void {
                                             continue;
                                         };
                                         const path_str = std.mem.sliceTo(&path, 0);
-                                        const framebuffer_height: u16 = @intCast(machine.framebuffer().len / Vdp.framebuffer_width);
-                                        gif_recorder = GifRecorder.start(path_str, fps, framebuffer_height) catch |err| {
+                                        const fb_width = machine.framebufferWidth();
+                                        const framebuffer_height: u16 = @intCast(machine.framebuffer().len / fb_width);
+                                        gif_recorder = GifRecorder.start(path_str, fps, fb_width, framebuffer_height) catch |err| {
                                             std.debug.print("Failed to start GIF recording: {}\n", .{err});
                                             notifyFrontend(notifications, .failure, "FAILED TO START GIF RECORDING", .{});
                                             continue;
@@ -3664,8 +3841,9 @@ pub fn main() !void {
                                     };
                                     const path_str = std.mem.sliceTo(&path, 0);
                                     const framebuffer = machine.framebuffer();
-                                    const framebuffer_height: u32 = @intCast(framebuffer.len / Vdp.framebuffer_width);
-                                    screenshot.saveBmp(path_str, framebuffer, Vdp.framebuffer_width, framebuffer_height) catch |err| {
+                                    const active_width: u32 = machine.framebufferWidth();
+                                    const framebuffer_height: u32 = @intCast(framebuffer.len / active_width);
+                                    screenshot.saveBmp(path_str, framebuffer, active_width, framebuffer_height) catch |err| {
                                         std.debug.print("Failed to save screenshot: {}\n", .{err});
                                         notifyFrontend(notifications, .failure, "FAILED TO SAVE SCREENSHOT", .{});
                                         continue;
@@ -3770,7 +3948,10 @@ pub fn main() !void {
         var target_frame_ns: ?u64 = null;
         const sample_core_counters = shouldSampleCoreCounters(frontend_ui.overlay == .performance_hud, frame_counter, core_profile_frames_remaining);
         if (!emulation_paused) {
-            target_frame_ns = frameDurationNs(machine.palMode(), machine.frameMasterCycles());
+            target_frame_ns = if (machine.systemType() == .sms)
+                smsFrameDurationNs(machine.palMode())
+            else
+                frameDurationNs(machine.palMode(), machine.frameMasterCycles());
             const emulation_start = std.time.Instant.now() catch frame_timer;
             if (sample_core_counters) {
                 machine.runFrameProfiled(&core_counters);
@@ -3825,9 +4006,11 @@ pub fn main() !void {
                 const pending = machine.takePendingAudio();
                 const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
                 try a.handlePending(pending, z80, machine.palMode(), wav_rec_ptr);
-            } else if (machine.smsAudioBuffer()) |sms_samples| {
-                // SMS: audio already rendered in runFrame; queue to SDL
-                try a.queueRawSamples(sms_samples);
+            } else if (!emulation_paused) {
+                if (machine.smsAudioBuffer()) |sms_samples| {
+                    // SMS: audio already rendered in runFrame; queue to SDL
+                    try a.queueRawSamples(sms_samples);
+                }
             }
             frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
         } else {
@@ -3847,17 +4030,13 @@ pub fn main() !void {
         const framebuffer = machine.framebuffer();
         const fb_stride = machine.framebufferStride();
         const framebuffer_height: i32 = @intCast(framebuffer.len / @as(usize, fb_stride));
-        if (frame_counter == 600 and machine.systemType() == .sms) {
+        if ((frame_counter >= 30 and frame_counter <= 40) and machine.systemType() == .sms) {
             const sms = &machine.sms;
+            // Check mapper state and verify page 2 reads correctly
             const z80s = sms.z80.captureState();
-            // Read D802-D803 (decompression end pointer)
-            const d802 = @as(u16, sms.bus.read(0xD802)) | (@as(u16, sms.bus.read(0xD803)) << 8);
-            std.debug.print("SMS @600: pc={X:0>4} hl={X:0>4} page2={d} d802(end_ptr)={X:0>4} sp={X:0>4} iff={d}\n", .{
-                z80s.pc, z80s.hl, sms.bus.page[2], d802, z80s.sp, z80s.iff1,
-            });
-            // Check VDP addr and code
-            std.debug.print("  vdp: code={d} addr={X:0>4} regs[1]={X:0>2}\n", .{
-                sms.bus.vdp.code, @as(u16, sms.bus.vdp.addr), sms.bus.vdp.regs[1],
+            const d800 = @as(u16, sms.bus.read(0xD800)) | (@as(u16, sms.bus.read(0xD801)) << 8);
+            std.debug.print("SMS f={d}: pc={X:0>4} hl={X:0>4} page2={d} d800={X:0>4}\n", .{
+                frame_counter, z80s.pc, z80s.hl, sms.bus.page[2], d800,
             });
         }
         const update_rect = zsdl3.Rect{
@@ -5489,6 +5668,15 @@ test "frame duration uses console master clock" {
 test "frame duration accepts interlace-sized fields" {
     const interlace_ntsc_master_cycles = clock.ntsc_master_cycles_per_frame + clock.ntsc_master_cycles_per_line;
     try std.testing.expectEqual(@as(u64, 16_751_849), frameDurationNs(false, interlace_ntsc_master_cycles));
+}
+
+test "sms frame duration targets 60 Hz NTSC and 50 Hz PAL" {
+    const ntsc_ns = smsFrameDurationNs(false);
+    const pal_ns = smsFrameDurationNs(true);
+    // NTSC: ~16.69 ms (59.9 Hz)
+    try std.testing.expect(ntsc_ns > 16_600_000 and ntsc_ns < 16_800_000);
+    // PAL: ~20.13 ms (49.7 Hz)
+    try std.testing.expect(pal_ns > 20_000_000 and pal_ns < 20_200_000);
 }
 
 test "audio-enabled runs do not use uncapped boot frames" {

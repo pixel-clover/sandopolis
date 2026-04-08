@@ -45,6 +45,7 @@ pub const SystemMachine = union(enum) {
                 // For SMS: we already have the ROM data, use it directly.
                 var sms = try SmsMachine.initFromRomBytes(allocator, rom_data);
                 allocator.free(rom_data);
+                try sms.bus.setSourcePath(allocator, path);
                 sms.bindPointers();
                 return .{ .sms = sms };
             }
@@ -372,7 +373,7 @@ pub const SystemMachine = union(enum) {
     pub fn sourcePath(self: *const SystemMachine) ?[]const u8 {
         return switch (self.*) {
             .genesis => |*g| g.bus.sourcePath(),
-            .sms => null,
+            .sms => |*s| s.bus.sourcePath(),
         };
     }
 

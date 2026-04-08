@@ -24,6 +24,44 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
         }
 
         if (vdp_halts_cpu) {
+            if (clock.enable_dma_refresh_windows) {
+                // Check how far we are from the next refresh slot.
+                const gap = bus.dmaRefreshGapMasterCycles();
+                if (gap > 0) {
+                    // Not in a refresh slot: stall until one begins.
+                    bus.resetRefreshCounter();
+                    const stall = @min(remaining, gap);
+                    remaining -= stall;
+                    bus.stepMaster(m68k_sync.flushStalledMaster(stall));
+                    continue;
+                }
+                // Inside a refresh slot: run the 68K. Each bus access
+                // within noteBusAccessWait injects DMA contention wait
+                // cycles via projectedDmaWaitMasterCycles, so the 68K
+                // instruction naturally stretches across refresh slots
+                // if it requires multiple bus accesses.
+                if (remaining >= clock.m68k_divider) {
+                    const step = cpu.stepInstruction(&memory);
+                    const stepped_master = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles;
+                    if (stepped_master == 0) {
+                        bus.resetRefreshCounter();
+                        const quantum = @min(remaining, idle_master_quantum);
+                        remaining -= quantum;
+                        bus.stepMaster(m68k_sync.commitMasterCycles(quantum));
+                        continue;
+                    }
+                    bus.recordRefreshCycles(step.m68k_cycles, step.ppc);
+                    bus.stepMaster(m68k_sync.commitMasterCycles(stepped_master));
+                    if (stepped_master > remaining) {
+                        m68k_sync.addDebt(stepped_master - remaining);
+                        remaining = 0;
+                    } else {
+                        remaining -= stepped_master;
+                    }
+                    continue;
+                }
+            }
+            // Fallback (or refresh windows disabled): monolithic halt.
             bus.resetRefreshCounter();
             const quantum = @min(remaining, bus.dmaHaltQuantum());
             remaining -= quantum;

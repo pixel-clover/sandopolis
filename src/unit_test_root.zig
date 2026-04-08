@@ -12,6 +12,8 @@ const input_mapping = @import("input/mapping.zig");
 const recording_gif = @import("recording/gif.zig");
 const recording_screenshot = @import("recording/screenshot.zig");
 const rom_paths_mod = @import("rom_paths.zig");
+const scheduler_frame = @import("scheduler/frame_scheduler.zig");
+const scheduler_runtime = @import("scheduler/runtime.zig");
 const state_file = @import("state_file.zig");
 const video_fifo = @import("video/fifo.zig");
 const video_timing = @import("video/timing.zig");
@@ -40,6 +42,8 @@ comptime {
     _ = recording_gif;
     _ = recording_screenshot;
     _ = rom_paths_mod;
+    _ = scheduler_frame;
+    _ = scheduler_runtime;
     _ = state_file;
     _ = video_fifo;
     _ = video_timing;

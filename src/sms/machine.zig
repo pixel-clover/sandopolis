@@ -21,7 +21,6 @@ pub const SmsMachine = struct {
 
     bound: bool = false,
 
-
     pub fn initFromRomBytes(alloc: std.mem.Allocator, rom: []const u8) !SmsMachine {
         return SmsMachine{
             .bus = try SmsBus.initOwned(alloc, rom),
@@ -69,12 +68,23 @@ pub const SmsMachine = struct {
             .write_fn = psgWriteCallback,
         };
 
+        // Set up IRQ clear callback: reading VDP status de-asserts Z80 IRQ immediately
+        self.bus.io.irq_clear_callback = .{
+            .ctx = @ptrCast(&self.z80),
+            .clear_fn = irqClearCallback,
+        };
+
         self.bound = true;
     }
 
     fn psgWriteCallback(ctx: ?*anyopaque, value: u8) void {
         const audio: *SmsAudio = @ptrCast(@alignCast(ctx orelse return));
         audio.pushPsgCommand(0, value);
+    }
+
+    fn irqClearCallback(ctx: ?*anyopaque) void {
+        const z80: *Z80 = @ptrCast(@alignCast(ctx orelse return));
+        z80.clearIrq();
     }
 
     pub fn reset(self: *SmsMachine) void {
@@ -260,6 +270,27 @@ test "sms machine save and restore state" {
     try testing.expectEqual(@as(u8, 0xE0), machine.bus.vdp.regs[1]);
 }
 
+test "sms aladdin shows graphics after extended init" {
+    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Disney's Aladdin (Europe).sms", 8 * 1024 * 1024) catch return;
+    defer testing.allocator.free(rom_data);
+
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+
+    // Aladdin's init decompresses tiles (~112 frames), then enables display.
+    // The game requires proper VDP IRQ de-assertion on status read to avoid
+    // spurious interrupt re-triggering after the handler reads VDP status.
+    for (0..200) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    var nonblack: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0 and pixel != 0xFF000000) nonblack += 1;
+    }
+    try testing.expect(nonblack > 100);
+}
+
 test "sms vdp register write via z80 port" {
     // ROM that writes VDP register 1 = 0xE0 (display enable + frame interrupt + Mode 4)
     // Z80 instructions: OUT (0xBF), A (= data), then OUT (0xBF), A (= reg command)
@@ -280,7 +311,7 @@ test "sms vdp register write via z80 port" {
     defer machine.deinit(testing.allocator);
     machine.bindPointers();
 
-    // Run one frame — the Z80 should execute the OUT instructions
+    // Run one frame; the Z80 should execute the OUT instructions
     machine.runFrame();
 
     // VDP register 1 should now be 0xE0

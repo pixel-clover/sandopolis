@@ -371,7 +371,17 @@ pub const Cpu = struct {
         // non-VDP/non-Z80 addresses have zero wait cycles and no port side
         // effects. Skip the vtable call and VDP address checks entirely.
         const addr = address & 0xFFFFFF;
-        if (addr < 0xA00000 or addr >= 0xE00000) return;
+        if (addr < 0xA00000 or addr >= 0xE00000) {
+            // During DMA, ROM/RAM accesses are contended by VDP bus ownership.
+            // The 68K can only access the bus during refresh slot windows.
+            if (clock.enable_dma_refresh_windows and memory.shouldHaltCpu()) {
+                const m68k_raw = c.m68k_cycles_run(&self.core);
+                const m68k_run: u32 = if (m68k_raw > 0) @intCast(m68k_raw) else 0;
+                const elapsed = clock.m68kCyclesToMaster(m68k_run) + self.pending_wait_master_cycles;
+                self.addBusWaitMaster(memory.projectedDmaWaitMasterCycles(elapsed));
+            }
+            return;
+        }
 
         // Sub-instruction Z80 advancement: advance Z80 timing up to the
         // current point within this 68K instruction so that the Z80 doesn't

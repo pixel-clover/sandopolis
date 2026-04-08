@@ -18,7 +18,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Sub-instruction Z80 timing advancement during 68K multi-access instructions
 - [x] Deferred Z80 burst execution per scheduler slice, matching the per-line model
 - [x] Z80 bank-access stall and M68K contention aligned with expected cycle counts
-- [ ] Dynamic arbitration during VDP DMA with shared bus windows
+- [x] Dynamic arbitration during VDP DMA with shared bus windows (feature-gated; matches reference's complete-halt model by default, with optional
+  per-refresh-slot 68K bus windows via `clock.enable_dma_refresh_windows`)
 
 ### Video Display Processor
 
@@ -129,11 +130,12 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] VDP rendering accuracy: horizontal scroll, vertical scroll wrapping, scroll lock columns
 - [x] Extended display modes (224-line and 240-line) with mode detection
 - [x] I/O control register (port 0x3F) TH pin direction/level reflected in port 0xDD reads (region/nationality detection)
-- [ ] VDP rendering accuracy: fine scroll sub-tile edge cases
-- [ ] Game-specific: Disney's Aladdin init sequence (OUTI RAM code, interrupt-driven palette loading)
+- [x] VDP rendering accuracy: fine scroll sub-tile edge cases
+- [x] Game-specific: Disney's Aladdin black screen fix via immediate Z80 IRQ de-assertion on VDP status read (prevents spurious interrupt re-trigger
+  from stale level-triggered assertion)
 - [ ] Game Gear support (GG uses SMS hardware with different CRAM format and viewport)
 - [x] SMS quick save states (in-memory capture and restore of Z80, VDP, bus, and audio state)
-- [ ] SMS persistent save states (file-based serialization)
+- [x] SMS persistent save states (file-based serialization with source path, Z80, VDP, bus, and audio state)
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
 - [ ] BIOS/boot ROM support
 - [ ] FM sound unit (YM2413) for Japanese SMS and Mark III

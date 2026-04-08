@@ -22,7 +22,6 @@ pub const SmsVdp = struct {
     hint_pending: bool = false,
     line_counter: u8 = 0,
 
-
     // Frame state
     scanline: u16 = 0,
     pal_mode: bool = false,
@@ -114,7 +113,8 @@ pub const SmsVdp = struct {
         if (!self.control_latch) {
             self.control_latch = true;
             self.control_word = (self.control_word & 0xFF00) | @as(u16, value);
-            // Do NOT update addr here; it is only valid after both bytes are written.
+            // First byte immediately updates the low byte of the address register
+            self.addr = (self.addr & 0x3F00) | @as(u14, value);
         } else {
             self.control_latch = false;
             self.control_word = (@as(u16, value) << 8) | (self.control_word & 0x00FF);
@@ -231,8 +231,17 @@ pub const SmsVdp = struct {
             } else {
                 self.line_counter -= 1;
             }
+        } else if (self.scanline == total - 1) {
+            // Last line of frame: decrement line counter (not reload)
+            // per jgenesis reference: HINT can fire on the frame boundary
+            if (self.line_counter == 0) {
+                self.line_counter = self.regs[10];
+                self.hint_pending = true;
+            } else {
+                self.line_counter -= 1;
+            }
         } else {
-            // Vblank: reload line counter each line
+            // Vblank (except last line): reload line counter each line
             self.line_counter = self.regs[10];
         }
 
@@ -332,37 +341,40 @@ pub const SmsVdp = struct {
         const name_base = self.nameTableBase();
         const visible_lines = self.activeVisibleLines();
 
-        // Horizontal and vertical scroll
-        const hscroll: u16 = self.regs[8];
         const vscroll: u16 = self.regs[9];
+        const hscroll_locked = (self.regs[0] & 0x40) != 0 and line < 16;
+        const hscroll: u16 = if (hscroll_locked) 0 else self.regs[8];
+        const coarse_hscroll: u16 = (hscroll >> 3) & 0x1F;
+        const fine_hscroll: u16 = hscroll & 0x7;
+        const vertical_wrap: u16 = if (visible_lines > 192) 256 else 224;
 
-        const effective_y = (line +% vscroll) % (if (visible_lines > 192) @as(u16, 256) else @as(u16, 224));
+        for (0..framebuffer_width) |screen_x_idx| {
+            const screen_x: u16 = @intCast(screen_x_idx);
+            const screen_col = screen_x / 8;
 
-        const row = effective_y / 8;
-        const fine_y = @as(u3, @truncate(effective_y));
+            // Fine horizontal scrolling does not wrap partial pixels from the
+            // right edge into the leftmost 1-7 pixels. Those pixels remain in
+            // the backdrop color unless the top two rows disable scroll.
+            if (!hscroll_locked and fine_hscroll != 0 and screen_x < fine_hscroll) continue;
 
-        for (0..32) |col_idx| {
-            const col: u16 = @intCast(col_idx);
-            // Horizontal scroll: shift columns right by hscroll pixels
-            // The first two columns (0-1) are optionally not scrolled (register 0 bit 6)
-            var screen_x: u16 = undefined;
-            if (col_idx < 2 and (self.regs[0] & 0x40) != 0) {
-                screen_x = col * 8;
-            } else {
-                screen_x = (col *% 8 +% hscroll) % 256;
+            const scrolled_x: u16 = if (hscroll_locked)
+                screen_x
+            else
+                screen_x - fine_hscroll;
+            const source_col: u16 = if (hscroll_locked)
+                screen_col
+            else
+                @intCast((@as(u32, scrolled_x / 8) + 32 - coarse_hscroll) % 32);
+
+            var effective_y = line;
+            if (!((self.regs[0] & 0x80) != 0 and screen_col >= 24)) {
+                effective_y = (line +% vscroll) % vertical_wrap;
             }
 
-            // For vertical scroll: right two columns (24-31) can be locked
-            var tile_row = row;
-            var tile_fine_y = fine_y;
-            if (col_idx >= 24 and (self.regs[0] & 0x80) != 0) {
-                // No vertical scroll for right columns
-                tile_row = line / 8;
-                tile_fine_y = @truncate(line);
-            }
+            const tile_row = effective_y / 8;
+            const tile_fine_y: u3 = @truncate(effective_y);
 
-            // Read name table entry
-            const nt_offset = name_base + (tile_row * 64) + (col * 2);
+            const nt_offset = name_base + (tile_row * 64) + (source_col * 2);
             const entry_lo: u16 = self.vram[nt_offset & 0x3FFF];
             const entry_hi: u16 = self.vram[(nt_offset + 1) & 0x3FFF];
             const entry = entry_lo | (entry_hi << 8);
@@ -373,7 +385,6 @@ pub const SmsVdp = struct {
             const palette: u8 = if ((entry & 0x0800) != 0) 16 else 0;
             const priority = (entry & 0x1000) != 0;
 
-            // Get tile row data (4bpp planar: 4 bytes per row)
             const y_in_tile: u16 = if (v_flip) 7 - @as(u16, tile_fine_y) else @as(u16, tile_fine_y);
             const tile_addr = (tile_index * 32) + (y_in_tile * 4);
 
@@ -382,23 +393,21 @@ pub const SmsVdp = struct {
             const b2 = self.vram[(tile_addr + 2) & 0x3FFF];
             const b3 = self.vram[(tile_addr + 3) & 0x3FFF];
 
-            for (0..8) |px_idx| {
-                const bit: u3 = if (h_flip)
-                    @intCast(px_idx)
-                else
-                    @intCast(7 - px_idx);
+            const x_in_tile: u3 = @truncate(scrolled_x);
+            const bit: u3 = if (h_flip)
+                x_in_tile
+            else
+                @intCast(7 - x_in_tile);
 
-                const p0: u8 = (b0 >> bit) & 1;
-                const p1: u8 = (b1 >> bit) & 1;
-                const p2: u8 = (b2 >> bit) & 1;
-                const p3: u8 = (b3 >> bit) & 1;
-                const color_index = p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
+            const p0: u8 = (b0 >> bit) & 1;
+            const p1: u8 = (b1 >> bit) & 1;
+            const p2: u8 = (b2 >> bit) & 1;
+            const p3: u8 = (b3 >> bit) & 1;
+            const color_index = p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
 
-                const sx = (screen_x +% @as(u16, @intCast(px_idx))) % 256;
-                if (color_index != 0) {
-                    line_buf[sx] = cramToRgba(self.cram[palette + color_index]);
-                    priority_buf[sx] = priority;
-                }
+            if (color_index != 0) {
+                line_buf[screen_x_idx] = cramToRgba(self.cram[palette + color_index]);
+                priority_buf[screen_x_idx] = priority;
             }
         }
     }
@@ -475,15 +484,15 @@ pub const SmsVdp = struct {
                 const sx = x +% @as(u16, @intCast(px_idx));
                 if (sx >= 256) continue;
 
-                // Priority: BG tiles with priority bit set are in front of sprites
-                if (priority_buf[sx]) continue;
-
-                // Sprite collision detection: if a sprite pixel was already drawn here
+                // Sprite collision detection: occurs regardless of BG priority
                 if (sprite_drawn[sx]) {
                     self.status |= status_sprite_collision;
                 } else {
                     sprite_drawn[sx] = true;
                 }
+
+                // Priority: BG tiles with priority bit set are in front of sprites
+                if (priority_buf[sx]) continue;
 
                 line_buf[sx] = cramToRgba(self.cram[16 + color_index]);
             }
@@ -663,6 +672,105 @@ test "sms vdp horizontal scroll shifts background right" {
     try testing.expect(vdp.framebuffer[0] != white);
     // X=16 should be white (column 0 shifted right by 16)
     try testing.expectEqual(white, vdp.framebuffer[16]);
+}
+
+test "sms vdp fine horizontal scroll leaves the left edge in backdrop color" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40; // Display enabled
+
+    const nt_base = vdp.nameTableBase();
+
+    // Tile 1: solid white
+    vdp.vram[32] = 0xFF;
+    vdp.vram[33] = 0x00;
+    vdp.vram[34] = 0x00;
+    vdp.vram[35] = 0x00;
+
+    // Tile 2: solid red
+    vdp.vram[64] = 0x00;
+    vdp.vram[65] = 0xFF;
+    vdp.vram[66] = 0x00;
+    vdp.vram[67] = 0x00;
+
+    const white_idx: u8 = 1;
+    const red_idx: u8 = 2;
+    const backdrop_idx: u8 = 0x10;
+    vdp.cram[white_idx] = 0x3F;
+    vdp.cram[red_idx] = 0x03;
+    vdp.cram[backdrop_idx] = 0x30;
+    vdp.regs[7] = 0x00;
+
+    // Rightmost nametable column uses white; column 0 uses red.
+    const last_col_offset = nt_base + (31 * 2);
+    vdp.vram[last_col_offset] = 0x01;
+    vdp.vram[last_col_offset + 1] = 0x00;
+    vdp.vram[nt_base] = 0x02;
+    vdp.vram[nt_base + 1] = 0x00;
+
+    vdp.regs[8] = 3; // fine scroll by 3 pixels
+    vdp.scanline = 0;
+    _ = vdp.stepScanline();
+
+    const backdrop = SmsVdp.cramToRgba(vdp.cram[backdrop_idx]);
+    const red = SmsVdp.cramToRgba(vdp.cram[red_idx]);
+    const white = SmsVdp.cramToRgba(vdp.cram[white_idx]);
+
+    try testing.expectEqual(backdrop, vdp.framebuffer[0]);
+    try testing.expectEqual(backdrop, vdp.framebuffer[1]);
+    try testing.expectEqual(backdrop, vdp.framebuffer[2]);
+    try testing.expectEqual(red, vdp.framebuffer[3]);
+    try testing.expect(vdp.framebuffer[0] != white);
+}
+
+test "sms vdp horizontal scroll lock applies to the top two rows only" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40; // Display enabled
+    vdp.regs[0] |= 0x40; // top two rows ignore horizontal scroll
+
+    const nt_base = vdp.nameTableBase();
+
+    // Tile 1: solid white
+    vdp.vram[32] = 0xFF;
+    vdp.vram[33] = 0x00;
+    vdp.vram[34] = 0x00;
+    vdp.vram[35] = 0x00;
+
+    // Tile 2: solid red
+    vdp.vram[64] = 0x00;
+    vdp.vram[65] = 0xFF;
+    vdp.vram[66] = 0x00;
+    vdp.vram[67] = 0x00;
+
+    const white_idx: u8 = 1;
+    const red_idx: u8 = 2;
+    vdp.cram[white_idx] = 0x3F;
+    vdp.cram[red_idx] = 0x03;
+
+    // Column 31 = white, column 0 = red.
+    const last_col_offset = nt_base + (31 * 2);
+    vdp.vram[last_col_offset] = 0x01;
+    vdp.vram[last_col_offset + 1] = 0x00;
+    vdp.vram[nt_base] = 0x02;
+    vdp.vram[nt_base + 1] = 0x00;
+    const row2_base = nt_base + (2 * 64);
+    const row2_last_col = row2_base + (31 * 2);
+    vdp.vram[row2_last_col] = 0x01;
+    vdp.vram[row2_last_col + 1] = 0x00;
+    vdp.vram[row2_base] = 0x02;
+    vdp.vram[row2_base + 1] = 0x00;
+
+    vdp.regs[8] = 8; // coarse scroll by one tile
+
+    vdp.scanline = 0;
+    _ = vdp.stepScanline();
+
+    const red = SmsVdp.cramToRgba(vdp.cram[red_idx]);
+    const white = SmsVdp.cramToRgba(vdp.cram[white_idx]);
+    try testing.expectEqual(red, vdp.framebuffer[0]);
+
+    vdp.scanline = 16;
+    _ = vdp.stepScanline();
+    try testing.expectEqual(white, vdp.framebuffer[16 * SmsVdp.framebuffer_width]);
 }
 
 test "sms vdp vertical scroll wraps at 224 in mode 192" {

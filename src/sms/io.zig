@@ -10,12 +10,18 @@ pub const SmsIo = struct {
     vdp: *SmsVdp,
     input: *SmsInput,
     psg_callback: ?PsgCallback = null,
+    irq_clear_callback: ?IrqClearCallback = null,
     memory_control: u8 = 0,
     io_control: u8 = 0,
 
     pub const PsgCallback = struct {
         ctx: ?*anyopaque,
         write_fn: *const fn (ctx: ?*anyopaque, value: u8) void,
+    };
+
+    pub const IrqClearCallback = struct {
+        ctx: ?*anyopaque,
+        clear_fn: *const fn (ctx: ?*anyopaque) void,
     };
 
     pub fn portIn(self: *SmsIo, port: u16) u8 {
@@ -36,7 +42,14 @@ pub const SmsIo = struct {
         }
         if (p & 0xC1 == 0x81) {
             // 0x80-0xBF odd: VDP control/status
-            return self.vdp.readControl();
+            const result = self.vdp.readControl();
+            // Reading VDP status clears interrupt flags. Immediately de-assert
+            // the Z80 IRQ line to prevent spurious re-trigger before the next
+            // scanline boundary IRQ update.
+            if (self.irq_clear_callback) |cb| {
+                cb.clear_fn(cb.ctx);
+            }
+            return result;
         }
         if (p & 0xC1 == 0xC0) {
             // 0xC0-0xFF even: I/O port A (controller 1)
@@ -163,14 +176,14 @@ test "sms io nationality detection pattern" {
     var input = SmsInput{};
     var io = SmsIo{ .vdp = &vdp, .input = &input };
 
-    // Step 1: Write 0x55 — TH-A/TH-B as OUTPUT (bits 1,3=0), levels LOW (bits 5,7=0)
+    // Step 1: Write 0x55: TH-A/TH-B as OUTPUT (bits 1,3=0), levels LOW (bits 5,7=0)
     // 0x55 = 0101_0101: bit1=0(TH-A out), bit3=0(TH-B out), bit5=0(low), bit7=0(low)
     io.portOut(0x3F, 0x55);
     const dd1 = io.portIn(0xDD);
     // TH is output with level low → bits 6-7 = 0
     try testing.expectEqual(@as(u8, 0x00), dd1 & 0xC0);
 
-    // Step 2: Write 0xAA — TH-A/TH-B as INPUT (bits 1,3=1)
+    // Step 2: Write 0xAA: TH-A/TH-B as INPUT (bits 1,3=1)
     // 0xAA = 1010_1010: bit1=1(TH-A in), bit3=1(TH-B in)
     io.portOut(0x3F, 0xAA);
     const dd2 = io.portIn(0xDD);

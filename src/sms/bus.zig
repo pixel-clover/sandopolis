@@ -16,6 +16,8 @@ const SmsInput = @import("input.zig").SmsInput;
 pub const SmsBus = struct {
     rom: []const u8,
     rom_owned: bool = false,
+    source_path: ?[]const u8 = null,
+    source_path_owned: bool = false,
     ram: [8 * 1024]u8 = [_]u8{0} ** (8 * 1024),
     vdp: SmsVdp = SmsVdp.init(),
     input: SmsInput = SmsInput{},
@@ -25,7 +27,7 @@ pub const SmsBus = struct {
     page: [3]u8 = .{ 0, 1, 2 },
     ram_bank_enabled: bool = false,
     ram_bank: u1 = 0,
-    cartridge_ram: [2 * 8 * 1024]u8 = [_]u8{0} ** (2 * 8 * 1024),
+    cartridge_ram: [2 * 16 * 1024]u8 = [_]u8{0} ** (2 * 16 * 1024),
 
     /// Create a bus with a borrowed ROM slice (caller keeps ownership).
     pub fn init(rom: []const u8) SmsBus {
@@ -43,7 +45,25 @@ pub const SmsBus = struct {
         return bus;
     }
 
+    pub fn setSourcePath(self: *SmsBus, alloc: std.mem.Allocator, path: []const u8) !void {
+        if (self.source_path_owned) {
+            if (self.source_path) |old| alloc.free(@constCast(old));
+        }
+        const copy = try alloc.dupe(u8, path);
+        self.source_path = copy;
+        self.source_path_owned = true;
+    }
+
+    pub fn sourcePath(self: *const SmsBus) ?[]const u8 {
+        return self.source_path;
+    }
+
     pub fn deinit(self: *SmsBus, alloc: std.mem.Allocator) void {
+        if (self.source_path_owned) {
+            if (self.source_path) |p| alloc.free(@constCast(p));
+            self.source_path = null;
+            self.source_path_owned = false;
+        }
         if (self.rom_owned) {
             alloc.free(@constCast(self.rom));
             self.rom = &.{};
@@ -54,9 +74,12 @@ pub const SmsBus = struct {
     pub fn clone(self: *const SmsBus, alloc: std.mem.Allocator) !SmsBus {
         const rom_copy = try alloc.alloc(u8, self.rom.len);
         @memcpy(rom_copy, self.rom);
+        const path_copy: ?[]const u8 = if (self.source_path) |p| try alloc.dupe(u8, p) else null;
         return SmsBus{
             .rom = rom_copy,
             .rom_owned = true,
+            .source_path = path_copy,
+            .source_path_owned = path_copy != null,
             .ram = self.ram,
             .vdp = self.vdp,
             .input = self.input,
@@ -179,6 +202,29 @@ pub const SmsBus = struct {
 };
 
 // -- Tests --
+
+test "sms bus cartridge ram bank 1 access" {
+    var rom_buf = [_]u8{0} ** 1024;
+    var bus = SmsBus.init(&rom_buf);
+
+    // Enable cartridge RAM bank 1: bit 3=1 (enable), bit 2=1 (bank 1)
+    bus.write(0xFFFC, 0x0C);
+    try testing.expect(bus.ram_bank_enabled);
+    try testing.expectEqual(@as(u1, 1), bus.ram_bank);
+
+    // Write to cart RAM bank 1 at 0x8000
+    bus.write(0x8000, 0xAA);
+    try testing.expectEqual(@as(u8, 0xAA), bus.read(0x8000));
+
+    // Write to end of cart RAM bank 1
+    bus.write(0xBFFF, 0xBB);
+    try testing.expectEqual(@as(u8, 0xBB), bus.read(0xBFFF));
+
+    // Switch to bank 0: data should be different
+    bus.write(0xFFFC, 0x08);
+    try testing.expectEqual(@as(u1, 0), bus.ram_bank);
+    try testing.expectEqual(@as(u8, 0x00), bus.read(0x8000)); // bank 0 was not written
+}
 
 test "sms bus read rom page 0" {
     var rom_buf = [_]u8{0} ** (32 * 1024);
