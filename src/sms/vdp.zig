@@ -5,7 +5,7 @@ const testing = std.testing;
 /// 16KB VRAM, 32-byte CRAM, 11 registers, 256-pixel-wide output.
 pub const SmsVdp = struct {
     vram: [16 * 1024]u8 = [_]u8{0} ** (16 * 1024),
-    cram: [32]u8 = [_]u8{0} ** 32,
+    cram: [64]u8 = [_]u8{0} ** 64, // SMS: 32 bytes (1 per color), GG: 64 bytes (2 per color)
     regs: [11]u8 = default_regs,
     framebuffer: [framebuffer_width * max_framebuffer_height]u32 = [_]u32{0} ** (framebuffer_width * max_framebuffer_height),
 
@@ -25,6 +25,8 @@ pub const SmsVdp = struct {
     // Frame state
     scanline: u16 = 0,
     pal_mode: bool = false,
+    is_game_gear: bool = false,
+    gg_cram_latch: u8 = 0, // GG CRAM even-byte latch for two-byte writes
 
     pub const framebuffer_width: usize = 256;
     pub const max_framebuffer_height: usize = 240;
@@ -46,6 +48,9 @@ pub const SmsVdp = struct {
 
     // -- Display mode queries --
 
+    /// Internal visible lines for VDP timing and interrupts.
+    /// On GG, the VDP still runs in 192-line SMS mode internally;
+    /// the 144-line viewport is applied only during rendering.
     pub fn activeVisibleLines(self: *const SmsVdp) u16 {
         return switch (self.displayMode()) {
             .mode_192 => 192,
@@ -54,12 +59,18 @@ pub const SmsVdp = struct {
         };
     }
 
+    /// Display height as seen by the frontend (after GG viewport crop).
+    pub fn displayHeight(self: *const SmsVdp) u16 {
+        if (self.is_game_gear) return gg_visible_height;
+        return self.activeVisibleLines();
+    }
+
     pub fn totalLines(self: *const SmsVdp) u16 {
         return if (self.pal_mode) 313 else 262;
     }
 
-    pub fn screenWidth(_: *const SmsVdp) u16 {
-        return 256;
+    pub fn screenWidth(self: *const SmsVdp) u16 {
+        return if (self.is_game_gear) 160 else 256;
     }
 
     const DisplayMode = enum { mode_192, mode_224, mode_240 };
@@ -93,7 +104,20 @@ pub const SmsVdp = struct {
                 self.vram[@as(u16, self.addr)] = value;
             },
             3 => {
-                self.cram[@as(u16, self.addr) & 0x1F] = value;
+                if (self.is_game_gear) {
+                    // GG CRAM: two-byte sequential writes (little-endian).
+                    // Even address: latch LSB. Odd address: combine and write both bytes.
+                    const byte_addr = @as(u16, self.addr);
+                    if (byte_addr & 1 == 0) {
+                        self.gg_cram_latch = value;
+                    } else {
+                        const word_addr = byte_addr & 0x3E;
+                        self.cram[word_addr] = self.gg_cram_latch;
+                        self.cram[word_addr + 1] = value;
+                    }
+                } else {
+                    self.cram[@as(u16, self.addr) & 0x1F] = value;
+                }
             },
         }
         self.read_buffer = value;
@@ -293,7 +317,7 @@ pub const SmsVdp = struct {
 
     fn backdropColor(self: *const SmsVdp) u32 {
         const index = (self.regs[7] & 0x0F) | 0x10; // Always palette 1
-        return cramToRgba(self.cram[index]);
+        return self.paletteColor(index);
     }
 
     // -- Color conversion --
@@ -306,16 +330,47 @@ pub const SmsVdp = struct {
         return (0xFF << 24) | (r << 16) | (g << 8) | b;
     }
 
+    fn ggCramToRgba(lo: u8, hi: u8) u32 {
+        // GG CRAM: ----BBBBGGGGRRRR (12-bit, 4 bits per channel)
+        const data: u16 = @as(u16, hi) << 8 | @as(u16, lo);
+        const r: u32 = @as(u32, data & 0x0F) * 17; // Scale 0-15 to 0-255
+        const g: u32 = @as(u32, (data >> 4) & 0x0F) * 17;
+        const b: u32 = @as(u32, (data >> 8) & 0x0F) * 17;
+        return (0xFF << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    fn paletteColor(self: *const SmsVdp, index: u8) u32 {
+        if (self.is_game_gear) {
+            const byte_offset = @as(usize, index) * 2;
+            return ggCramToRgba(self.cram[byte_offset], self.cram[byte_offset + 1]);
+        }
+        return cramToRgba(self.cram[index]);
+    }
+
     // -- Rendering --
 
     fn renderBlankLine(self: *SmsVdp, line: u16) void {
-        const offset = @as(usize, line) * framebuffer_width;
         const bg = self.backdropColor();
-        @memset(self.framebuffer[offset..][0..framebuffer_width], bg);
+        if (self.is_game_gear) {
+            if (line >= gg_top and line < gg_top + gg_visible_height) {
+                const gg_line = line - gg_top;
+                const offset = @as(usize, gg_line) * gg_visible_width;
+                @memset(self.framebuffer[offset..][0..gg_visible_width], bg);
+            }
+        } else {
+            const offset = @as(usize, line) * framebuffer_width;
+            @memset(self.framebuffer[offset..][0..framebuffer_width], bg);
+        }
     }
 
+    // GG viewport: 160x144 centered in 256x192
+    const gg_left: usize = 48;
+    const gg_right: usize = 208; // 48 + 160
+    const gg_top: u16 = 24;
+    pub const gg_visible_width: usize = 160;
+    pub const gg_visible_height: u16 = 144;
+
     fn renderScanline(self: *SmsVdp, line: u16) void {
-        const offset = @as(usize, line) * framebuffer_width;
         var line_buf: [framebuffer_width]u32 = undefined;
         var priority_buf: [framebuffer_width]bool = [_]bool{false} ** framebuffer_width;
 
@@ -334,7 +389,18 @@ pub const SmsVdp = struct {
             @memset(line_buf[0..8], bg);
         }
 
-        @memcpy(self.framebuffer[offset..][0..framebuffer_width], &line_buf);
+        if (self.is_game_gear) {
+            // GG: write only the center 160 pixels of visible lines into a
+            // compact 160-wide framebuffer.
+            if (line >= gg_top and line < gg_top + gg_visible_height) {
+                const gg_line = line - gg_top;
+                const offset = @as(usize, gg_line) * gg_visible_width;
+                @memcpy(self.framebuffer[offset..][0..gg_visible_width], line_buf[gg_left..gg_right]);
+            }
+        } else {
+            const offset = @as(usize, line) * framebuffer_width;
+            @memcpy(self.framebuffer[offset..][0..framebuffer_width], &line_buf);
+        }
     }
 
     fn renderBackground(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32, priority_buf: *[framebuffer_width]bool) void {
@@ -406,7 +472,7 @@ pub const SmsVdp = struct {
             const color_index = p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
 
             if (color_index != 0) {
-                line_buf[screen_x_idx] = cramToRgba(self.cram[palette + color_index]);
+                line_buf[screen_x_idx] = self.paletteColor(palette + color_index);
                 priority_buf[screen_x_idx] = priority;
             }
         }
@@ -494,7 +560,7 @@ pub const SmsVdp = struct {
                 // Priority: BG tiles with priority bit set are in front of sprites
                 if (priority_buf[sx]) continue;
 
-                line_buf[sx] = cramToRgba(self.cram[16 + color_index]);
+                line_buf[sx] = self.paletteColor(16 + color_index);
             }
 
             sprite_count += 1;
@@ -832,4 +898,39 @@ test "sms vdp stepScanline enters vblank at line 192" {
     try testing.expect(entering_vblank);
     try testing.expect(vdp.vint_pending);
     try testing.expect((vdp.status & SmsVdp.status_vint) != 0);
+}
+
+test "gg vdp viewport dimensions" {
+    var vdp = SmsVdp.init();
+    vdp.is_game_gear = true;
+    try testing.expectEqual(@as(u16, 160), vdp.screenWidth());
+    try testing.expectEqual(@as(u16, 144), vdp.displayHeight());
+    // Internal VDP timing still uses 192 lines
+    try testing.expectEqual(@as(u16, 192), vdp.activeVisibleLines());
+}
+
+test "gg vdp cram two-byte write" {
+    var vdp = SmsVdp.init();
+    vdp.is_game_gear = true;
+    // Set up CRAM write mode: code=3, addr=0
+    vdp.code = 3;
+    vdp.addr = 0;
+    // Write color 0: 0x0F0A = R=10, G=0, B=15
+    vdp.writeData(0x0A); // Even byte: latched
+    vdp.writeData(0x0F); // Odd byte: combined and written
+    try testing.expectEqual(@as(u8, 0x0A), vdp.cram[0]);
+    try testing.expectEqual(@as(u8, 0x0F), vdp.cram[1]);
+    // Verify RGBA conversion: R=10*17=170, G=0, B=15*17=255
+    const rgba = SmsVdp.ggCramToRgba(0x0A, 0x0F);
+    try testing.expectEqual(@as(u32, 0xFF00_00FF | (170 << 16)), rgba);
+}
+
+test "gg vdp display height is always 144" {
+    var vdp = SmsVdp.init();
+    vdp.is_game_gear = true;
+    // Set mode bits that would enable 224-line mode on SMS
+    vdp.regs[0] = 0x06; // M4=1, M2=1
+    vdp.regs[1] = 0x98; // M1=1, M3=1
+    // GG display height should still return 144
+    try testing.expectEqual(@as(u16, 144), vdp.displayHeight());
 }

@@ -82,9 +82,11 @@ fn initWasmEmulator(alloc: std.mem.Allocator, rom_bytes: []const u8) !WasmEmulat
                 .last_save_len = 0,
             };
         },
-        .sms => {
+        .sms, .game_gear => {
+            var sms = try SmsMachine.initFromRomBytes(alloc, rom_bytes);
+            sms.is_game_gear = (sys == .game_gear);
             return .{
-                .system = .{ .sms = try SmsMachine.initFromRomBytes(alloc, rom_bytes) },
+                .system = .{ .sms = sms },
                 .audio_buffer = [_]i16{0} ** 8192,
                 .audio_sample_count = 0,
                 .last_save_buf = null,
@@ -186,8 +188,11 @@ export fn sandopolis_set_button(emu: *WasmEmulator, port: u32, button: u16, pres
                 Io.Button.A, Io.Button.B => .button1,
                 Io.Button.C => .button2,
                 Io.Button.Start => blk: {
-                    // Start maps to pause (NMI) on SMS
-                    if (pressed) s.bus.input.pause_pressed = true;
+                    if (s.is_game_gear) {
+                        s.bus.input.start_pressed = pressed;
+                    } else if (pressed) {
+                        s.bus.input.pause_pressed = true;
+                    }
                     break :blk null;
                 },
                 else => null,
@@ -419,7 +424,7 @@ export fn sandopolis_display_mode(emu: *const WasmEmulator) u32 {
 export fn sandopolis_system_type(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
         .genesis => 0,
-        .sms => 1,
+        .sms => |*s| if (s.is_game_gear) @as(u32, 2) else 1,
     };
 }
 

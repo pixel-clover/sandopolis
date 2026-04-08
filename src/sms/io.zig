@@ -10,9 +10,12 @@ pub const SmsIo = struct {
     vdp: *SmsVdp,
     input: *SmsInput,
     psg_callback: ?PsgCallback = null,
+    psg_stereo_callback: ?PsgCallback = null, // GG port 0x06 stereo panning
     irq_clear_callback: ?IrqClearCallback = null,
     memory_control: u8 = 0,
     io_control: u8 = 0,
+    is_game_gear: bool = false,
+    gg_regs: [7]u8 = .{ 0xC0, 0x7F, 0xFF, 0x00, 0xFF, 0x00, 0xFF },
 
     pub const PsgCallback = struct {
         ctx: ?*anyopaque,
@@ -26,6 +29,18 @@ pub const SmsIo = struct {
 
     pub fn portIn(self: *SmsIo, port: u16) u8 {
         const p = @as(u8, @truncate(port));
+
+        // GG-specific ports 0x00-0x06
+        if (self.is_game_gear and p < 0x07) {
+            if (p == 0x00) {
+                // Port 0x00: START button in bit 7 (active low)
+                return if (self.input.start_pressed)
+                    self.gg_regs[0] & ~@as(u8, 0x80)
+                else
+                    self.gg_regs[0];
+            }
+            return self.gg_regs[p];
+        }
 
         // Partial decoding: check bit patterns
         if (p & 0xC1 == 0x40) {
@@ -89,6 +104,18 @@ pub const SmsIo = struct {
 
     pub fn portOut(self: *SmsIo, port: u16, value: u8) void {
         const p = @as(u8, @truncate(port));
+
+        // GG-specific ports 0x00-0x06 (serial, stereo, etc.)
+        if (self.is_game_gear and p < 0x07) {
+            self.gg_regs[p] = value;
+            if (p == 0x06) {
+                // Port 0x06: PSG stereo panning
+                if (self.psg_stereo_callback) |cb| {
+                    cb.write_fn(cb.ctx, value);
+                }
+            }
+            return;
+        }
 
         if (p & 0xC1 == 0x00) {
             // 0x00-0x3F even: Memory control
@@ -198,4 +225,25 @@ test "sms io nationality detection pattern" {
     io.portOut(0x3F, 0xA0);
     const dd3 = io.portIn(0xDD);
     try testing.expectEqual(@as(u8, 0xC0), dd3 & 0xC0);
+}
+
+test "gg io port 0x00 start button" {
+    var vdp = SmsVdp.init();
+    var input = SmsInput{};
+    var io = SmsIo{ .vdp = &vdp, .input = &input, .is_game_gear = true };
+    // START not pressed: bit 7 = 1
+    const val1 = io.portIn(0x00);
+    try testing.expect((val1 & 0x80) != 0);
+    // START pressed: bit 7 = 0
+    input.start_pressed = true;
+    const val2 = io.portIn(0x00);
+    try testing.expectEqual(@as(u8, 0), val2 & 0x80);
+}
+
+test "gg io port 0x06 stereo write" {
+    var vdp = SmsVdp.init();
+    var input = SmsInput{};
+    var io = SmsIo{ .vdp = &vdp, .input = &input, .is_game_gear = true };
+    io.portOut(0x06, 0x55);
+    try testing.expectEqual(@as(u8, 0x55), io.gg_regs[6]);
 }

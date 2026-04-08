@@ -700,7 +700,7 @@ const SdlDialogFileFilter = extern struct {
 };
 
 const rom_dialog_filters = [_]SdlDialogFileFilter{
-    .{ .name = "ROM files", .pattern = "bin;md;smd;gen;sms" },
+    .{ .name = "ROM files", .pattern = "bin;md;smd;gen;sms;gg" },
     .{ .name = "All files", .pattern = "*" },
 };
 
@@ -1734,7 +1734,13 @@ fn applySmsKeyboardInput(machine: *SystemMachine, input: InputBindings.KeyboardI
         machine.setSmsButton(mapping.port, btn, pressed);
     } else if (mapping.pause and pressed) {
         switch (machine.*) {
-            .sms => |*s| s.bus.input.pause_pressed = true,
+            .sms => |*s| {
+                if (s.is_game_gear) {
+                    s.bus.input.start_pressed = true;
+                } else {
+                    s.bus.input.pause_pressed = true;
+                }
+            },
             else => {},
         }
     }
@@ -1755,11 +1761,15 @@ fn applySmsGamepadInput(machine: *SystemMachine, port: u1, input: InputBindings.
         .south, .west => .button1,
         .east, .north => .button2,
         .start => {
-            if (pressed) {
-                switch (machine.*) {
-                    .sms => |*s| s.bus.input.pause_pressed = true,
-                    else => {},
-                }
+            switch (machine.*) {
+                .sms => |*s| {
+                    if (s.is_game_gear) {
+                        s.bus.input.start_pressed = pressed;
+                    } else if (pressed) {
+                        s.bus.input.pause_pressed = true;
+                    }
+                },
+                else => {},
             }
             return;
         },
@@ -3948,7 +3958,8 @@ pub fn main() !void {
         var target_frame_ns: ?u64 = null;
         const sample_core_counters = shouldSampleCoreCounters(frontend_ui.overlay == .performance_hud, frame_counter, core_profile_frames_remaining);
         if (!emulation_paused) {
-            target_frame_ns = if (machine.systemType() == .sms)
+            const sys = machine.systemType();
+            target_frame_ns = if (sys == .sms or sys == .game_gear)
                 smsFrameDurationNs(machine.palMode())
             else
                 frameDurationNs(machine.palMode(), machine.frameMasterCycles());
@@ -4030,7 +4041,7 @@ pub fn main() !void {
         const framebuffer = machine.framebuffer();
         const fb_stride = machine.framebufferStride();
         const framebuffer_height: i32 = @intCast(framebuffer.len / @as(usize, fb_stride));
-        if ((frame_counter >= 30 and frame_counter <= 40) and machine.systemType() == .sms) {
+        if ((frame_counter >= 30 and frame_counter <= 40) and (machine.systemType() == .sms or machine.systemType() == .game_gear)) {
             const sms = &machine.sms;
             // Check mapper state and verify page 2 reads correctly
             const z80s = sms.z80.captureState();

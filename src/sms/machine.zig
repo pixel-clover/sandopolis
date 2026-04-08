@@ -13,6 +13,7 @@ pub const SmsMachine = struct {
     z80: Z80,
     audio: SmsAudio = SmsAudio.init(),
     pal_mode: bool = false,
+    is_game_gear: bool = false,
     z80_cycle_count: u32 = 0,
 
     // Audio buffer for frame output
@@ -40,6 +41,10 @@ pub const SmsMachine = struct {
     /// the SmsMachine reaches its final memory location (e.g., after being
     /// assigned into a heap-allocated WasmEmulator).
     pub fn bindPointers(self: *SmsMachine) void {
+        // Propagate GG flag to VDP and I/O
+        self.bus.vdp.is_game_gear = self.is_game_gear;
+        self.bus.io.is_game_gear = self.is_game_gear;
+
         // Fix SmsBus internal pointers (io.vdp, io.input)
         self.bus.rebindPointers();
 
@@ -68,6 +73,14 @@ pub const SmsMachine = struct {
             .write_fn = psgWriteCallback,
         };
 
+        // Wire GG stereo panning callback
+        if (self.is_game_gear) {
+            self.bus.io.psg_stereo_callback = .{
+                .ctx = @ptrCast(&self.audio),
+                .write_fn = psgStereoCallback,
+            };
+        }
+
         // Set up IRQ clear callback: reading VDP status de-asserts Z80 IRQ immediately
         self.bus.io.irq_clear_callback = .{
             .ctx = @ptrCast(&self.z80),
@@ -80,6 +93,11 @@ pub const SmsMachine = struct {
     fn psgWriteCallback(ctx: ?*anyopaque, value: u8) void {
         const audio: *SmsAudio = @ptrCast(@alignCast(ctx orelse return));
         audio.pushPsgCommand(0, value);
+    }
+
+    fn psgStereoCallback(ctx: ?*anyopaque, value: u8) void {
+        const audio: *SmsAudio = @ptrCast(@alignCast(ctx orelse return));
+        audio.psg.setPanning(value);
     }
 
     fn irqClearCallback(ctx: ?*anyopaque) void {
@@ -130,8 +148,8 @@ pub const SmsMachine = struct {
             self.z80.clearIrq();
         }
 
-        // Handle pause button NMI
-        if (self.bus.input.pause_pressed) {
+        // Handle pause button NMI (SMS only; GG START is read via port 0x00)
+        if (!self.is_game_gear and self.bus.input.pause_pressed) {
             self.z80.assertNmi();
             self.bus.input.pause_pressed = false;
         }
@@ -140,8 +158,9 @@ pub const SmsMachine = struct {
     // -- Public interface matching Genesis Machine --
 
     pub fn framebuffer(self: *const SmsMachine) []const u32 {
-        const height = self.bus.vdp.activeVisibleLines();
-        return self.bus.vdp.framebuffer[0 .. SmsVdp.framebuffer_width * @as(usize, height)];
+        const w: usize = self.bus.vdp.screenWidth();
+        const h: usize = self.bus.vdp.displayHeight();
+        return self.bus.vdp.framebuffer[0 .. w * h];
     }
 
     pub fn framebufferWidth(self: *const SmsMachine) u16 {
@@ -149,7 +168,7 @@ pub const SmsMachine = struct {
     }
 
     pub fn screenHeight(self: *const SmsMachine) u16 {
-        return self.bus.vdp.activeVisibleLines();
+        return self.bus.vdp.displayHeight();
     }
 
     pub fn isPal(self: *const SmsMachine) bool {
@@ -184,6 +203,7 @@ pub const SmsMachine = struct {
             .z80 = try self.z80.clone(),
             .audio = self.audio,
             .pal_mode = self.pal_mode,
+            .is_game_gear = self.is_game_gear,
             .z80_cycle_count = self.z80_cycle_count,
             .audio_buffer = self.audio_buffer,
             .audio_sample_count = self.audio_sample_count,
@@ -318,4 +338,115 @@ test "sms vdp register write via z80 port" {
     try testing.expectEqual(@as(u8, 0xE0), machine.bus.vdp.regs[1]);
     // Display should be enabled
     try testing.expect(machine.bus.vdp.isDisplayEnabled());
+}
+
+test "gg aerial assault detected and produces visible output" {
+    const system_detect = @import("../system.zig");
+    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Aerial Assault (World).gg", 8 * 1024 * 1024) catch return;
+    defer testing.allocator.free(rom_data);
+
+    try testing.expectEqual(system_detect.SystemType.game_gear, system_detect.detectSystem(rom_data));
+
+    var machine = SmsMachine{
+        .bus = try SmsBus.initOwned(testing.allocator, rom_data),
+        .z80 = Z80.init(),
+        .is_game_gear = true,
+    };
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+
+    try testing.expectEqual(@as(u16, 160), machine.framebufferWidth());
+    try testing.expectEqual(@as(u16, 144), machine.screenHeight());
+
+    for (0..200) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    try testing.expectEqual(@as(usize, 160 * 144), fb.len);
+
+    var nonblack: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0 and pixel != 0xFF000000) nonblack += 1;
+    }
+    try testing.expect(nonblack > 100);
+}
+
+test "gg addams family detected and produces visible output" {
+    const system_detect = @import("../system.zig");
+    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Addams Family, The (World).gg", 8 * 1024 * 1024) catch return;
+    defer testing.allocator.free(rom_data);
+
+    try testing.expectEqual(system_detect.SystemType.game_gear, system_detect.detectSystem(rom_data));
+
+    var machine = SmsMachine{
+        .bus = try SmsBus.initOwned(testing.allocator, rom_data),
+        .z80 = Z80.init(),
+        .is_game_gear = true,
+    };
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+
+    for (0..600) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    try testing.expectEqual(@as(usize, 160 * 144), fb.len);
+
+    var nonblack: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0 and pixel != 0xFF000000) nonblack += 1;
+    }
+    try testing.expect(nonblack > 100);
+}
+
+test "gg 5 in one funpak detected and produces visible output" {
+    const system_detect = @import("../system.zig");
+    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/5 in One FunPak (USA).gg", 8 * 1024 * 1024) catch return;
+    defer testing.allocator.free(rom_data);
+
+    try testing.expectEqual(system_detect.SystemType.game_gear, system_detect.detectSystem(rom_data));
+
+    var machine = SmsMachine{
+        .bus = try SmsBus.initOwned(testing.allocator, rom_data),
+        .z80 = Z80.init(),
+        .is_game_gear = true,
+    };
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+
+    for (0..200) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    try testing.expectEqual(@as(usize, 160 * 144), fb.len);
+
+    var nonblack: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0 and pixel != 0xFF000000) nonblack += 1;
+    }
+    try testing.expect(nonblack > 100);
+}
+
+test "gg batman robin detected and produces visible output" {
+    const system_detect = @import("../system.zig");
+    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Adventures of Batman & Robin, The (USA, Europe) (Beta) (1995-05-02).gg", 8 * 1024 * 1024) catch return;
+    defer testing.allocator.free(rom_data);
+
+    try testing.expectEqual(system_detect.SystemType.game_gear, system_detect.detectSystem(rom_data));
+
+    var machine = SmsMachine{
+        .bus = try SmsBus.initOwned(testing.allocator, rom_data),
+        .z80 = Z80.init(),
+        .is_game_gear = true,
+    };
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+
+    for (0..200) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    try testing.expectEqual(@as(usize, 160 * 144), fb.len);
+
+    var nonblack: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0 and pixel != 0xFF000000) nonblack += 1;
+    }
+    try testing.expect(nonblack > 100);
 }

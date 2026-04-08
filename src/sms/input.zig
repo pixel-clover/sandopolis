@@ -9,6 +9,7 @@ pub const SmsInput = struct {
     port1: Buttons = .{},
     port2: Buttons = .{},
     pause_pressed: bool = false,
+    start_pressed: bool = false, // GG START button (read via port 0x00, not NMI)
 
     pub const Buttons = struct {
         up: bool = false,
@@ -45,6 +46,13 @@ pub const SmsInput = struct {
     }
 
     pub fn setButton(self: *SmsInput, port: u1, button: Button, pressed: bool) void {
+        switch (button) {
+            .start => {
+                self.start_pressed = pressed;
+                return;
+            },
+            else => {},
+        }
         const btns = if (port == 0) &self.port1 else &self.port2;
         switch (button) {
             .up => btns.up = pressed,
@@ -53,10 +61,11 @@ pub const SmsInput = struct {
             .right => btns.right = pressed,
             .button1 => btns.button1 = pressed,
             .button2 => btns.button2 = pressed,
+            .start => unreachable,
         }
     }
 
-    pub const Button = enum { up, down, left, right, button1, button2 };
+    pub const Button = enum { up, down, left, right, button1, button2, start };
 };
 
 test "sms input port DC all released" {

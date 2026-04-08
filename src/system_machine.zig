@@ -41,9 +41,10 @@ pub const SystemMachine = union(enum) {
         if (rom_path) |path| {
             // Read the file to detect system type.
             const rom_data = try std.fs.cwd().readFileAlloc(allocator, path, 8 * 1024 * 1024);
-            if (system_detect.detectSystem(rom_data) == .sms) {
-                // For SMS: we already have the ROM data, use it directly.
+            const sys = system_detect.detectSystem(rom_data);
+            if (sys == .sms or sys == .game_gear) {
                 var sms = try SmsMachine.initFromRomBytes(allocator, rom_data);
+                sms.is_game_gear = (sys == .game_gear);
                 allocator.free(rom_data);
                 try sms.bus.setSourcePath(allocator, path);
                 sms.bindPointers();
@@ -68,7 +69,7 @@ pub const SystemMachine = union(enum) {
     pub fn systemType(self: *const SystemMachine) SystemType {
         return switch (self.*) {
             .genesis => .genesis,
-            .sms => .sms,
+            .sms => |*s| if (s.is_game_gear) .game_gear else .sms,
         };
     }
 
@@ -113,7 +114,7 @@ pub const SystemMachine = union(enum) {
     pub fn framebufferStride(self: *const SystemMachine) u16 {
         return switch (self.*) {
             .genesis => Vdp.framebuffer_width,
-            .sms => @import("sms/vdp.zig").SmsVdp.framebuffer_width,
+            .sms => |*s| s.framebufferWidth(),
         };
     }
 
