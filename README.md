@@ -8,10 +8,11 @@
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/pixel-clover/sandopolis/tests.yml?label=tests&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-007ec6?style=flat&labelColor=282c34&logo=open-source-initiative)](https://github.com/pixel-clover/sandopolis/blob/main/LICENSE)
+[![Zig](https://img.shields.io/badge/zig-0.15.2-F7A41D?style=flat&labelColor=282c34&logo=zig)](https://ziglang.org/download/)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 [![Play Online](https://img.shields.io/badge/play%20online-browser-007ec6?style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
-[![Zig](https://img.shields.io/badge/zig-0.15.2-F7A41D?style=flat&labelColor=282c34&logo=zig)](https://ziglang.org/download/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
+<br>
 [![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20SMS%20%7C%20Game%20Gear-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
