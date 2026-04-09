@@ -1,7 +1,6 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
-const Vdp = @import("../video/vdp.zig").Vdp;
 
 // Configuration constants
 pub const config_file_name = "sandopolis_frontend.cfg";
@@ -460,8 +459,9 @@ test "PathCopy set truncates long paths" {
     try t.expectEqualStrings("short.md", pc.slice());
 
     // Fill to capacity
-    var long: [PathCopy.capacity + 10]u8 = undefined;
+    const max = std.fs.max_path_bytes;
+    var long: [max + 10]u8 = undefined;
     @memset(&long, 'x');
     pc.set(&long);
-    try t.expectEqual(PathCopy.capacity, pc.slice().len);
+    try t.expectEqual(max, pc.slice().len);
 }

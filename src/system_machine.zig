@@ -5,7 +5,6 @@ const SmsInput = @import("sms/input.zig").SmsInput;
 const system_detect = @import("system.zig");
 const rom_loader = @import("rom_loader.zig");
 const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
-const AudioOutput = @import("audio/output.zig").AudioOutput;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const Z80 = @import("cpu/z80.zig").Z80;
@@ -270,6 +269,21 @@ pub const SystemMachine = union(enum) {
         switch (self.*) {
             .genesis => {},
             .sms => |*s| s.setButton(port, button, pressed),
+        }
+    }
+
+    /// Set SMS/GG pause or start button. On SMS, pause triggers NMI (edge-triggered).
+    /// On Game Gear, start is readable via I/O port 0x00. For Genesis, this is a no-op.
+    pub fn setSmsStartOrPause(self: *SystemMachine, pressed: bool) void {
+        switch (self.*) {
+            .genesis => {},
+            .sms => |*s| {
+                if (s.is_game_gear) {
+                    s.bus.input.start_pressed = pressed;
+                } else if (pressed) {
+                    s.bus.input.pause_pressed = true;
+                }
+            },
         }
     }
 

@@ -2,7 +2,6 @@ const std = @import("std");
 const testing = std.testing;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const SmsBus = @import("bus.zig").SmsBus;
-const SmsVdp = @import("vdp.zig").SmsVdp;
 const SmsAudio = @import("audio.zig").SmsAudio;
 const SmsInput = @import("input.zig").SmsInput;
 const sms_clock = @import("clock.zig");

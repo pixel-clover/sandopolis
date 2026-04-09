@@ -13,7 +13,6 @@ const binding_editor_module = @import("input/binding_editor.zig");
 const Machine = @import("machine.zig").Machine;
 const SystemMachine = @import("system_machine.zig").SystemMachine;
 const SmsMachine = @import("sms/machine.zig").SmsMachine;
-const SmsVdp = @import("sms/vdp.zig").SmsVdp;
 const system_detect = @import("system.zig");
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
@@ -1733,16 +1732,7 @@ fn applySmsKeyboardInput(machine: *SystemMachine, input: InputBindings.KeyboardI
     if (mapping.button) |btn| {
         machine.setSmsButton(mapping.port, btn, pressed);
     } else if (mapping.pause and pressed) {
-        switch (machine.*) {
-            .sms => |*s| {
-                if (s.is_game_gear) {
-                    s.bus.input.start_pressed = true;
-                } else {
-                    s.bus.input.pause_pressed = true;
-                }
-            },
-            else => {},
-        }
+        machine.setSmsStartOrPause(true);
     }
 }
 
@@ -1761,16 +1751,7 @@ fn applySmsGamepadInput(machine: *SystemMachine, port: u1, input: InputBindings.
         .south, .west => .button1,
         .east, .north => .button2,
         .start => {
-            switch (machine.*) {
-                .sms => |*s| {
-                    if (s.is_game_gear) {
-                        s.bus.input.start_pressed = pressed;
-                    } else if (pressed) {
-                        s.bus.input.pause_pressed = true;
-                    }
-                },
-                else => {},
-            }
+            machine.setSmsStartOrPause(pressed);
             return;
         },
         else => null,
@@ -2095,7 +2076,6 @@ fn resolveStatePathForSystem(
 }
 
 const sms_state_file = @import("sms/state_file.zig");
-const sms_state_magic = sms_state_file.magic;
 
 fn saveSmsStateFile(allocator: std.mem.Allocator, sms: *const SmsMachine, path: []const u8) !void {
     const data = try sms_state_file.saveToBuffer(allocator, sms);
@@ -3962,15 +3942,6 @@ pub fn main() !void {
         const framebuffer = machine.framebuffer();
         const fb_stride = machine.framebufferStride();
         const framebuffer_height: i32 = @intCast(framebuffer.len / @as(usize, fb_stride));
-        if ((frame_counter >= 30 and frame_counter <= 40) and (machine.systemType() == .sms or machine.systemType() == .gg)) {
-            const sms = &machine.sms;
-            // Check mapper state and verify page 2 reads correctly
-            const z80s = sms.z80.captureState();
-            const d800 = @as(u16, sms.bus.read(0xD800)) | (@as(u16, sms.bus.read(0xD801)) << 8);
-            std.debug.print("SMS f={d}: pc={X:0>4} hl={X:0>4} page2={d} d800={X:0>4}\n", .{
-                frame_counter, z80s.pc, z80s.hl, sms.bus.page[2], d800,
-            });
-        }
         const update_rect = zsdl3.Rect{
             .x = 0,
             .y = 0,
