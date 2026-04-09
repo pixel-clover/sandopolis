@@ -77,7 +77,7 @@ fn exec(ctx: chilli.CommandContext) !void {
 pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     var cmd = try chilli.Command.init(allocator, .{
         .name = "sandopolis",
-        .description = "A Sega Genesis/Mega Drive emulator written in Zig and C",
+        .description = "A Sega Genesis/Mega Drive, Master System, and Game Gear emulator written in Zig and C",
         .exec = exec,
     });
 
@@ -125,7 +125,7 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     });
     try cmd.addPositional(.{
         .name = "rom_file",
-        .description = "Path to a ROM file (.bin, .md, or .smd)",
+        .description = "Path to a ROM file (.bin, .md, .smd, .gen, .sms, or .gg)",
         .default_value = .{ .String = "" },
     });
 
