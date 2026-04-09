@@ -221,7 +221,7 @@ pub fn applyTransitions(
     }
 }
 
-// Apply only release transitions — used to clear stuck buttons when emulation
+// Apply only release transitions: used to clear stuck buttons when emulation
 // is paused while an axis/hat direction is held.
 pub fn applyReleaseTransitionsOnly(
     bindings: *const InputBindings.Bindings,
@@ -354,4 +354,68 @@ pub fn removeJoystickSlot(
             }
         }
     }
+}
+
+const testing = @import("std").testing;
+
+test "inputFromJoystickButton maps standard buttons" {
+    try testing.expectEqual(InputBindings.GamepadInput.south, inputFromJoystickButton(0).?);
+    try testing.expectEqual(InputBindings.GamepadInput.east, inputFromJoystickButton(1).?);
+    try testing.expectEqual(InputBindings.GamepadInput.west, inputFromJoystickButton(2).?);
+    try testing.expectEqual(InputBindings.GamepadInput.north, inputFromJoystickButton(3).?);
+    try testing.expectEqual(InputBindings.GamepadInput.start, inputFromJoystickButton(7).?);
+    try testing.expect(inputFromJoystickButton(8) == null);
+    try testing.expect(inputFromJoystickButton(255) == null);
+}
+
+test "updateAxisPair generates transitions on threshold crossing" {
+    var neg = false;
+    var pos = false;
+    // Push axis right (positive)
+    const t1 = updateAxisPair(&neg, &pos, 20000, 8000, .dpad_left, .dpad_right);
+    try testing.expectEqual(InputBindings.GamepadInput.dpad_right, t1[0].?.input);
+    try testing.expect(t1[0].?.pressed);
+    try testing.expect(pos);
+    // Release
+    const t2 = updateAxisPair(&neg, &pos, 0, 8000, .dpad_left, .dpad_right);
+    try testing.expectEqual(InputBindings.GamepadInput.dpad_right, t2[0].?.input);
+    try testing.expect(!t2[0].?.pressed);
+    // No change when staying in neutral
+    const t3 = updateAxisPair(&neg, &pos, 100, 8000, .dpad_left, .dpad_right);
+    try testing.expect(t3[0] == null);
+}
+
+test "updateHatState generates transitions for hat directions" {
+    var state = DirectionState{};
+    // Press up
+    const t1 = updateHatState(&state, hat_up);
+    try testing.expectEqual(InputBindings.GamepadInput.dpad_up, t1[0].?.input);
+    try testing.expect(t1[0].?.pressed);
+    try testing.expect(t1[1] == null);
+    // Release up, press down+right
+    const t2 = updateHatState(&state, hat_down | hat_right);
+    var found_up_release = false;
+    var found_down_press = false;
+    var found_right_press = false;
+    for (t2) |maybe| {
+        if (maybe) |tr| {
+            if (tr.input == .dpad_up and !tr.pressed) found_up_release = true;
+            if (tr.input == .dpad_down and tr.pressed) found_down_press = true;
+            if (tr.input == .dpad_right and tr.pressed) found_right_press = true;
+        }
+    }
+    try testing.expect(found_up_release);
+    try testing.expect(found_down_press);
+    try testing.expect(found_right_press);
+}
+
+test "updateTriggerState fires on threshold" {
+    var state = false;
+    const t1 = updateTriggerState(&state, 30000, 8000, .left_trigger);
+    try testing.expectEqual(InputBindings.GamepadInput.left_trigger, t1[0].?.input);
+    try testing.expect(t1[0].?.pressed);
+    const t2 = updateTriggerState(&state, 25000, 8000, .left_trigger);
+    try testing.expect(t2[0] == null);
+    const t3 = updateTriggerState(&state, 0, 8000, .left_trigger);
+    try testing.expect(!t3[0].?.pressed);
 }

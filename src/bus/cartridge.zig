@@ -294,7 +294,7 @@ const Ram = struct {
         };
     }
 
-    fn hasStorage(self: *const Ram) bool {
+    pub fn hasStorage(self: *const Ram) bool {
         return self.data != null;
     }
 
@@ -506,11 +506,11 @@ pub const Cartridge = struct {
         }
     }
 
-    fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
+    pub fn savePathForRom(allocator: std.mem.Allocator, rom_path: []const u8) ![]u8 {
         return rom_paths.sramPath(allocator, rom_path);
     }
 
-    fn loadPersistentStorage(self: *Cartridge) !void {
+    pub fn loadPersistentStorage(self: *Cartridge) !void {
         const save_path = self.save_path orelse return;
 
         const file = std.fs.cwd().openFile(save_path, .{}) catch |err| switch (err) {

@@ -76,19 +76,23 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-linux-gnu
-            artifact_name: sandopolis-linux-x86_64.zip
-            asset_content_type: application/zip
+            artifact_name: sandopolis-linux-x86_64.gz
+            asset_content_type: application/gzip
           - os: ubuntu-24.04-arm
             target: aarch64-linux-gnu
-            artifact_name: sandopolis-linux-aarch64.zip
-            asset_content_type: application/zip
+            artifact_name: sandopolis-linux-aarch64.gz
+            asset_content_type: application/gzip
           - os: macos-latest
             target: ""
-            artifact_name: sandopolis-macos-aarch64.zip
-            asset_content_type: application/zip
+            artifact_name: sandopolis-macos-aarch64.gz
+            asset_content_type: application/gzip
           - os: windows-latest
             target: x86_64-windows-gnu
             artifact_name: sandopolis-windows-x86_64.zip
+            asset_content_type: application/zip
+          - os: windows-latest
+            target: aarch64-windows-gnu
+            artifact_name: sandopolis-windows-aarch64.zip
             asset_content_type: application/zip
 
     steps:
@@ -150,10 +154,7 @@ jobs:
       - name: Prepare artifact (Unix)
         if: runner.os != 'Windows'
         run: |
-          RELEASE_DIR="release-${{ matrix.target }}-${{ github.run_id }}"
-          mkdir -p "$RELEASE_DIR"
-          cp -a zig-out/bin/sandopolis "$RELEASE_DIR"/
-          (cd "$RELEASE_DIR" && zip -r "../${{ matrix.artifact_name }}" .)
+          gzip -c zig-out/bin/sandopolis > "${{ matrix.artifact_name }}"
 
       - name: Prepare artifact (Windows)
         if: runner.os == 'Windows'

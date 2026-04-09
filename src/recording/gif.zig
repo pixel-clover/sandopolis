@@ -5,21 +5,23 @@ pub const GifRecorder = struct {
     file: std.fs.File,
     frame_count: u32,
     delay_cs: u16,
+    width: u16,
     height: u16,
 
     out_buf: [out_buf_size]u8 = undefined,
     out_len: usize = 0,
 
-    const width = 320;
+    const max_width = 320;
     const max_height = 240;
-    const max_pixel_count = width * max_height;
+    const max_pixel_count = max_width * max_height;
     const max_colors: u16 = 256;
     const color_depth: u3 = 7;
     const min_code_size: u8 = 8;
     const out_buf_size = 64 * 1024;
 
-    pub fn start(path: []const u8, fps: u16, height: u16) !GifRecorder {
+    pub fn start(path: []const u8, fps: u16, fb_width: u16, height: u16) !GifRecorder {
         if (height == 0 or height > max_height) return error.InvalidFrameHeight;
+        if (fb_width == 0 or fb_width > max_width) return error.InvalidFrameWidth;
 
         const file = try std.fs.cwd().createFile(path, .{});
         errdefer file.close();
@@ -30,12 +32,13 @@ pub const GifRecorder = struct {
             .file = file,
             .frame_count = 0,
             .delay_cs = delay_cs,
+            .width = fb_width,
             .height = height,
         };
 
         self.bufWrite("GIF89a");
 
-        self.bufWriteU16(@intCast(width));
+        self.bufWriteU16(fb_width);
         self.bufWriteU16(height);
         self.bufWriteByte(0x80 | (@as(u8, color_depth) << 4) | color_depth);
         self.bufWriteByte(0);
@@ -52,7 +55,7 @@ pub const GifRecorder = struct {
     }
 
     pub fn addFrame(self: *GifRecorder, framebuffer: []const u32) !void {
-        const pixel_count = width * @as(usize, self.height);
+        const pixel_count = @as(usize, self.width) * @as(usize, self.height);
         if (framebuffer.len != pixel_count) return error.InvalidFrameSize;
 
         if (self.frame_count > 0) {
@@ -80,7 +83,7 @@ pub const GifRecorder = struct {
         self.bufWriteByte(0x2C);
         self.bufWriteU16(0);
         self.bufWriteU16(0);
-        self.bufWriteU16(@intCast(width));
+        self.bufWriteU16(self.width);
         self.bufWriteU16(self.height);
         self.bufWriteByte(0x80 | @as(u8, color_depth));
 
@@ -332,7 +335,7 @@ test "GIF recorder creates valid single-frame GIF" {
 
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_output.gif");
     defer testing.allocator.free(tmp_path);
-    var recorder = try GifRecorder.start(tmp_path, 60, 224);
+    var recorder = try GifRecorder.start(tmp_path, 60, 320, 224);
     try recorder.addFrame(framebuffer[0..]);
     recorder.finish();
 
@@ -352,7 +355,7 @@ test "GIF recorder handles multiple frames" {
 
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_multi.gif");
     defer testing.allocator.free(tmp_path);
-    var recorder = try GifRecorder.start(tmp_path, 30, 224);
+    var recorder = try GifRecorder.start(tmp_path, 30, 320, 224);
 
     var fb: [320 * 224]u32 = undefined;
     for (0..3) |frame| {
@@ -376,7 +379,7 @@ test "GIF recorder handles noisy framebuffer without overflow" {
 
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_noisy.gif");
     defer testing.allocator.free(tmp_path);
-    var recorder = try GifRecorder.start(tmp_path, 60, 224);
+    var recorder = try GifRecorder.start(tmp_path, 60, 320, 224);
 
     var fb: [320 * 224]u32 = undefined;
     for (0..fb.len) |i| {
@@ -398,7 +401,7 @@ test "GIF recorder accepts 240-line frames" {
 
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_240.gif");
     defer testing.allocator.free(tmp_path);
-    var recorder = try GifRecorder.start(tmp_path, 50, 240);
+    var recorder = try GifRecorder.start(tmp_path, 50, 320, 240);
 
     var fb: [320 * 240]u32 = undefined;
     for (0..240) |y| {

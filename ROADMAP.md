@@ -18,7 +18,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Sub-instruction Z80 timing advancement during 68K multi-access instructions
 - [x] Deferred Z80 burst execution per scheduler slice, matching the per-line model
 - [x] Z80 bank-access stall and M68K contention aligned with expected cycle counts
-- [ ] Dynamic arbitration during VDP DMA with shared bus windows
+- [x] Dynamic arbitration during VDP DMA with shared bus windows (feature-gated; matches reference's complete-halt model by default, with optional
+  per-refresh-slot 68K bus windows via `clock.enable_dma_refresh_windows`)
 
 ### Video Display Processor
 
@@ -47,7 +48,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Audio timing with master-clock accumulation and rate conversion
 - [x] Output pipeline with timestamped event application, cubic hermite resampling, stereo mixing, and SDL3 playback
 - [x] Band-limited sample buffer (blip_buf) ported to Zig for use as an alternative resampler
-- [x] Add a 3-band parametric equalizer (low/mid/high gain), available as an optional post-processing stage
+- [x] 3-band parametric equalizer (low/mid/high gain) as an optional post-processing stage
 - [x] SN76489 PSG with chip-accurate emulation, stereo panning, reachable from both Z80 and M68K paths
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM
   tables
@@ -60,8 +61,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
   match)
 - [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
 - [x] ROM-backed YM2612 register stream comparison for a few titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
-- [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
-- [x] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
+- [x] CSM mode synthesis validation against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, and all algorithms)
+- [x] Active rendering path switch from cubic hermite resampling to blip-buffer band-limited synthesis
 - [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
 
 ### Input and Interaction
@@ -96,7 +97,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
   DisableRegTestROM)
 - [x] ROM header checksum validation and product code extraction
 - [x] Game database lookup for extended metadata (26 titles by product code)
-- [ ] Expand the regression suite with Ings VDP tests
+- [ ] Regression suite expansion with Ings VDP tests
 
 ### Future Goals
 
@@ -109,4 +110,33 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
-- [ ] Sega Master System support
+
+### Sega Master System
+
+- [x] Z80 bridge SMS mode: host-routed memory, I/O port callbacks, NMI assertion (`jgz80_bridge.c`)
+- [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background, and sprite rendering
+- [x] SMS bus with Sega mapper (3 page registers, cartridge RAM banking)
+- [x] SMS I/O port dispatch with partial address decoding (VDP, PSG, controllers)
+- [x] SMS controller input (2 buttons per player, pause via NMI)
+- [x] SMS cartridge detection ("TMR SEGA" header) and system auto-detection (`system.zig`)
+- [x] SMS machine coordinator with Z80-only frame loop (228 cycles per scanline, 262/313 lines)
+- [x] PSG-only audio pipeline reusing the existing SN76489 implementation
+- [x] SystemMachine tagged union abstracting Genesis and SMS for the SDL frontend
+- [x] WASM layer SMS support with system auto-detection and button mapping
+- [x] Web and desktop file dialogs accept `.sms` extension
+- [x] VDP sprite collision flag and overflow detection
+- [x] Sprite pattern base address fix (bit 2 of register 6 selects 0x0000/0x2000)
+- [x] SMS-specific keyboard and gamepad input binding in the SDL frontend
+- [x] VDP rendering accuracy: horizontal scroll, vertical scroll wrapping, scroll lock columns
+- [x] Extended display modes (224-line and 240-line) with mode detection
+- [x] I/O control register (port 0x3F) TH pin direction/level reflected in port 0xDD reads (region/nationality detection)
+- [x] VDP rendering accuracy: fine scroll sub-tile edge cases
+- [x] Game-specific: Disney's Aladdin black screen fix via immediate Z80 IRQ de-assertion on VDP status read (prevents spurious interrupt re-trigger
+  from stale level-triggered assertion)
+- [x] Game Gear support: 12-bit CRAM (two-byte sequential writes), 160x144 viewport, START button via port 0x00, PSG stereo via port 0x06, system
+  auto-detection from cartridge region codes
+- [x] SMS quick save states (in-memory capture and restore of Z80, VDP, bus, and audio state)
+- [x] SMS persistent save states (file-based serialization with source path, Z80, VDP, bus, and audio state)
+- [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
+- [ ] BIOS/boot ROM support
+- [ ] FM sound unit (YM2413) for Japanese SMS and Mark III

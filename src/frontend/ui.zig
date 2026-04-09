@@ -23,18 +23,18 @@ const BindingEditorState = binding_editor.State;
 const bindingEditorRowText = binding_editor.rowText;
 const bindingEditorTargetForIndex = binding_editor.targetForIndex;
 
-// Centralized UI color system — Zig orange + C blue inspired palette.
+// Centralized UI color system: Zig orange + C blue inspired palette.
 pub const Colors = struct {
     // Panel backgrounds
     pub const panel_primary: zsdl3.Color = .{ .r = 0x0D, .g = 0x11, .b = 0x17, .a = 0xE8 };
     pub const panel_secondary: zsdl3.Color = .{ .r = 0x0E, .g = 0x14, .b = 0x19, .a = 0xEE };
     pub const panel_overlay: zsdl3.Color = .{ .r = 0x0F, .g = 0x13, .b = 0x18, .a = 0xD8 }; // HUD
 
-    // Primary accent — Zig orange (#F7A41D family)
+    // Primary accent: Zig orange (#F7A41D family)
     pub const orange: zsdl3.Color = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D, .a = 0xFF }; // Zig logo orange
     pub const gold: zsdl3.Color = .{ .r = 0xF5, .g = 0xC6, .b = 0x42, .a = 0xFF }; // lighter warm accent
 
-    // Secondary accent — C blue (#5B8DBE family)
+    // Secondary accent: C blue (#5B8DBE family)
     pub const blue: zsdl3.Color = .{ .r = 0x5B, .g = 0x8D, .b = 0xBE, .a = 0xFF }; // C logo blue
     pub const cyan: zsdl3.Color = .{ .r = 0x6E, .g = 0xB8, .b = 0xD4, .a = 0xFF }; // lighter complement
 

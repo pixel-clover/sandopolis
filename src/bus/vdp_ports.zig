@@ -96,6 +96,18 @@ pub fn writeWord(vdp: *Vdp, address: u32, value: u16) void {
     }
 }
 
+test "splitWordByte extracts correct byte for even and odd addresses" {
+    const t = @import("std").testing;
+    // Even address returns MSB, odd address returns LSB
+    try t.expectEqual(@as(u8, 0xAB), splitWordByte(0xABCD, 0x00));
+    try t.expectEqual(@as(u8, 0xCD), splitWordByte(0xABCD, 0x01));
+    try t.expectEqual(@as(u8, 0x00), splitWordByte(0x00FF, 0x00));
+    try t.expectEqual(@as(u8, 0xFF), splitWordByte(0x00FF, 0x01));
+    // Higher address bits are ignored; only bit 0 matters
+    try t.expectEqual(@as(u8, 0xAB), splitWordByte(0xABCD, 0xC00004));
+    try t.expectEqual(@as(u8, 0xCD), splitWordByte(0xABCD, 0xC00005));
+}
+
 pub fn writeLong(vdp: *Vdp, address: u32, value: u32) void {
     writeWord(vdp, address, @intCast((value >> 16) & 0xFFFF));
     writeWord(vdp, address + 2, @intCast(value & 0xFFFF));

@@ -267,3 +267,18 @@ pub fn formatSlotLine(
 pub fn formatPathLine(buffer: []u8, metadata: *const SlotMetadata) ![]const u8 {
     return std.fmt.bufPrint(buffer, "FILE {s}", .{std.fs.path.basename(metadata.path.slice())});
 }
+
+const testing = std.testing;
+
+test "previousSlot wraps from first to last" {
+    // Default slot is 1, max is 3 (persistent_state_slot_count)
+    try testing.expectEqual(@as(u8, 3), previousSlot(1));
+    try testing.expectEqual(@as(u8, 1), previousSlot(2));
+    try testing.expectEqual(@as(u8, 2), previousSlot(3));
+}
+
+test "resolvePreviewPath appends preview extension" {
+    const path = try resolvePreviewPath(testing.allocator, "roms/sonic/slot1.state");
+    defer testing.allocator.free(path);
+    try testing.expectEqualStrings("roms/sonic/slot1.state.preview", path);
+}

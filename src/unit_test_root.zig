@@ -12,10 +12,20 @@ const input_mapping = @import("input/mapping.zig");
 const recording_gif = @import("recording/gif.zig");
 const recording_screenshot = @import("recording/screenshot.zig");
 const rom_paths_mod = @import("rom_paths.zig");
+const scheduler_frame = @import("scheduler/frame_scheduler.zig");
+const scheduler_runtime = @import("scheduler/runtime.zig");
 const state_file = @import("state_file.zig");
 const video_fifo = @import("video/fifo.zig");
 const video_timing = @import("video/timing.zig");
 const wasm = @import("wasm.zig");
+const system_detect = @import("system.zig");
+const sms_vdp = @import("sms/vdp.zig");
+const sms_bus = @import("sms/bus.zig");
+const sms_io = @import("sms/io.zig");
+const sms_input = @import("sms/input.zig");
+const sms_machine = @import("sms/machine.zig");
+const sms_audio = @import("sms/audio.zig");
+const sms_cartridge = @import("sms/cartridge.zig");
 
 comptime {
     _ = audio_blip_buf;
@@ -32,8 +42,18 @@ comptime {
     _ = recording_gif;
     _ = recording_screenshot;
     _ = rom_paths_mod;
+    _ = scheduler_frame;
+    _ = scheduler_runtime;
     _ = state_file;
     _ = video_fifo;
     _ = video_timing;
     _ = wasm;
+    _ = system_detect;
+    _ = sms_vdp;
+    _ = sms_bus;
+    _ = sms_io;
+    _ = sms_input;
+    _ = sms_machine;
+    _ = sms_audio;
+    _ = sms_cartridge;
 }

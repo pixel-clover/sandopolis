@@ -22,6 +22,11 @@ pub const psg_master_cycles_per_sample: u16 = @as(u16, z80_divider) * 16;
 
 pub const refresh_interval: u32 = 128;
 
+/// When true, the 68K gets periodic bus access windows during Memory-to-VRAM
+/// DMA at VDP refresh slots, matching real hardware behavior. When false, the
+/// 68K is fully halted for the entire DMA duration (legacy behavior).
+pub const enable_dma_refresh_windows: bool = false;
+
 /// Wait cycles added per refresh event, indexed by (ppc >> 21) & 7.
 /// ROM regions get 2, RAM gets 3, I/O gets 0.
 pub const refresh_wait_by_region: [8]u32 = .{ 2, 2, 2, 2, 0, 0, 0, 3 };

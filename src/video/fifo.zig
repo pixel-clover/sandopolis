@@ -1607,7 +1607,7 @@ pub fn writeControl(self: *Vdp, value: u16) void {
     // even during active DMA.  Only the second word of a 2-word command
     // is cached during 68K-bus DMA, matching hardware behavior.
     if (!self.pending_command and (value & 0xE000) == 0x8000) {
-        // Register write — never buffered
+        // Register write: never buffered
     } else if (shouldBufferPortWrite(self)) {
         pushPendingPortWrite(self, .{ .control = value });
         return;

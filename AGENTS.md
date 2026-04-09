@@ -4,7 +4,7 @@ This file provides guidance to coding agents collaborating on this repository.
 
 ## Mission
 
-Sandopolis is a Sega Genesis/Mega Drive emulator written in Zig (and C).
+Sandopolis is a portable and accurate multi-system Sega emulator for Genesis, Master System, and Game Gear, written in Zig (and C).
 Priorities, in order:
 
 1. Correct emulation behavior and compatibility.
@@ -55,11 +55,16 @@ Quick examples:
 - `src/input/`: controller I/O and configurable input mapping.
 - `src/recording/`: GIF animation recording with LZW compression and crash-safe output, WAV audio recording, and BMP screenshot capture.
 - `src/video/`: VDP and video timing/rendering logic.
+- `src/sms/`: Sega Master System and Game Gear emulation: VDP Mode 4, memory bus with Sega mapper, I/O port dispatch, Z80-based machine, PSG-only
+  audio, GG 12-bit CRAM, and GG viewport cropping.
 - `src/frontend/`: SDL frontend helpers including config, UI state, save manager, menu, dialog, toast, and performance overlay logic.
 - `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
 - `src/wasm.zig`: WebAssembly export layer wrapping the Machine API for browser deployment.
 - `src/wasm_stubs.c`: minimal C stubs (setjmp/longjmp and main) needed for WASM builds.
 - `src/libretro.zig`: Libretro core shared library wrapping the Machine API for RetroArch and other Libretro frontends.
+- `src/system.zig`: system type detection (Genesis, SMS, or Game Gear) from ROM headers and cartridge region codes.
+- `src/system_machine.zig`: `SystemMachine` tagged union abstracting Genesis and SMS/GG for the SDL frontend.
+- `src/rom_loader.zig`: ROM file loading with ZIP archive extraction (deflate and stored).
 - `src/`: remaining core emulator modules (`machine.zig`, `cli.zig`, `performance_profile.zig`, `rom_metadata.zig`, `state_file.zig`, etc.).
 - `tests/`: non-unit suites only:
     - `integration_tests.zig`
@@ -101,7 +106,7 @@ Quick examples:
     - `Cpu.stepInstruction()`
     - `Vdp.progressTransfers()`
     - `AudioTiming.consumeMaster()` and `Z80.setAudioMasterOffset()` (audio event timestamps)
-- The jgz80 C bridge (`src/cpu/jgz80_bridge.c`) owns the YM/PSG event ring buffers and register shadows. Audio event flow crosses a Zig/C boundary —
+- The jgz80 C bridge (`src/cpu/jgz80_bridge.c`) owns the YM/PSG event ring buffers and register shadows. Audio event flow crosses a Zig/C boundary;
   changes to audio event capture or draining must account for both sides.
 - The PSG is reachable from both the Z80 (address `0x7F11`) and the M68K (VDP port `0xC00011`). Both paths must push timestamped events through the
   Z80 bridge.
@@ -164,7 +169,7 @@ Optimize mode guidance:
 
 ## Documentation Expectations
 
-- Public-facing API docs are generated from `src/api.zig`. Keep it focused on deliberate public surfaces — do not re-export raw internal coordination
+- Public-facing API docs are generated from `src/api.zig`. Keep it focused on deliberate public surfaces: do not re-export raw internal coordination
   types like `Bus`, `Cpu`, `Vdp`, or `Z80`; add facade/view types instead.
 - User workflow changes should update `README.md`.
 - Progress/completeness changes should update `ROADMAP.md`.

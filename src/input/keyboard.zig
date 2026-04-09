@@ -117,3 +117,52 @@ pub fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.Keyboa
         else => null,
     };
 }
+
+const testing = @import("std").testing;
+
+test "isHotkeyModifierScancode identifies all modifiers" {
+    try testing.expect(isHotkeyModifierScancode(.lshift));
+    try testing.expect(isHotkeyModifierScancode(.rshift));
+    try testing.expect(isHotkeyModifierScancode(.lctrl));
+    try testing.expect(isHotkeyModifierScancode(.rctrl));
+    try testing.expect(isHotkeyModifierScancode(.lalt));
+    try testing.expect(isHotkeyModifierScancode(.ralt));
+    try testing.expect(isHotkeyModifierScancode(.lgui));
+    try testing.expect(isHotkeyModifierScancode(.rgui));
+    try testing.expect(!isHotkeyModifierScancode(.a));
+    try testing.expect(!isHotkeyModifierScancode(.space));
+    try testing.expect(!isHotkeyModifierScancode(.f1));
+}
+
+test "keyboardInputFromScancode maps arrows and letters" {
+    try testing.expectEqual(InputBindings.KeyboardInput.up, keyboardInputFromScancode(.up).?);
+    try testing.expectEqual(InputBindings.KeyboardInput.down, keyboardInputFromScancode(.down).?);
+    try testing.expectEqual(InputBindings.KeyboardInput.a, keyboardInputFromScancode(.a).?);
+    try testing.expectEqual(InputBindings.KeyboardInput.f1, keyboardInputFromScancode(.f1).?);
+    try testing.expectEqual(InputBindings.KeyboardInput.@"return", keyboardInputFromScancode(.@"return").?);
+    try testing.expect(keyboardInputFromScancode(.home) == null);
+}
+
+test "hotkeyActionDescription returns non-empty strings for all actions" {
+    const actions = [_]InputBindings.HotkeyAction{
+        .toggle_help,            .toggle_pause,          .open_rom,
+        .restart_rom,            .reload_rom,            .open_keyboard_editor,
+        .toggle_performance_hud, .reset_performance_hud, .save_quick_state,
+        .load_quick_state,       .save_state_file,       .load_state_file,
+        .next_state_slot,        .record_gif,            .record_wav,
+        .screenshot,             .toggle_fullscreen,     .quit,
+    };
+    for (actions) |action| {
+        try testing.expect(hotkeyActionDescription(action).len > 0);
+    }
+}
+
+test "keyboardStatePressed handles bounds correctly" {
+    var state = [_]bool{false} ** 16;
+    state[5] = true;
+    // In-bounds access
+    try testing.expect(keyboardStatePressed(&state, @enumFromInt(5)));
+    try testing.expect(!keyboardStatePressed(&state, @enumFromInt(0)));
+    // Out-of-bounds returns false
+    try testing.expect(!keyboardStatePressed(&state, @enumFromInt(100)));
+}

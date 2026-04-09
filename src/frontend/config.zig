@@ -1,7 +1,6 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
-const Vdp = @import("../video/vdp.zig").Vdp;
 
 // Configuration constants
 pub const config_file_name = "sandopolis_frontend.cfg";
@@ -409,4 +408,60 @@ pub fn computeVideoDestinationRect(
         .w = dest_w,
         .h = dest_h,
     };
+}
+
+const t = @import("std").testing;
+
+test "VideoAspectMode parse accepts valid modes" {
+    try t.expectEqual(VideoAspectMode.stretch, try VideoAspectMode.parse("stretch"));
+    try t.expectEqual(VideoAspectMode.four_three, try VideoAspectMode.parse("4:3"));
+    try t.expectEqual(VideoAspectMode.square_pixels, try VideoAspectMode.parse("square"));
+    try t.expectError(error.InvalidVideoAspect, VideoAspectMode.parse("invalid"));
+}
+
+test "VideoAspectMode cycle wraps around" {
+    try t.expectEqual(VideoAspectMode.four_three, VideoAspectMode.stretch.cycle(1));
+    try t.expectEqual(VideoAspectMode.square_pixels, VideoAspectMode.stretch.cycle(-1));
+    try t.expectEqual(VideoAspectMode.stretch, VideoAspectMode.stretch.cycle(3));
+    try t.expectEqual(VideoAspectMode.stretch, VideoAspectMode.stretch.cycle(0));
+}
+
+test "VideoScaleMode parse accepts valid modes and alias" {
+    try t.expectEqual(VideoScaleMode.fit, try VideoScaleMode.parse("fit"));
+    try t.expectEqual(VideoScaleMode.whole_pixels, try VideoScaleMode.parse("whole_pixels"));
+    try t.expectEqual(VideoScaleMode.whole_pixels, try VideoScaleMode.parse("whole"));
+    try t.expectError(error.InvalidVideoScale, VideoScaleMode.parse("bad"));
+}
+
+test "VideoScaleMode cycle wraps between two modes" {
+    try t.expectEqual(VideoScaleMode.whole_pixels, VideoScaleMode.fit.cycle(1));
+    try t.expectEqual(VideoScaleMode.whole_pixels, VideoScaleMode.fit.cycle(-1));
+    try t.expectEqual(VideoScaleMode.fit, VideoScaleMode.fit.cycle(2));
+}
+
+test "FontFace parse accepts all faces" {
+    try t.expectEqual(FontFace.jbm_regular, try FontFace.parse("jbm_regular"));
+    try t.expectEqual(FontFace.jbm_light, try FontFace.parse("jbm_light"));
+    try t.expectEqual(FontFace.jbm_medium, try FontFace.parse("jbm_medium"));
+    try t.expectEqual(FontFace.jbm_thin, try FontFace.parse("jbm_thin"));
+    try t.expectError(error.InvalidFontFace, FontFace.parse("comic_sans"));
+}
+
+test "FontFace cycle wraps through all four faces" {
+    try t.expectEqual(FontFace.jbm_light, FontFace.jbm_regular.cycle(1));
+    try t.expectEqual(FontFace.jbm_thin, FontFace.jbm_regular.cycle(-1));
+    try t.expectEqual(FontFace.jbm_regular, FontFace.jbm_regular.cycle(4));
+}
+
+test "PathCopy set truncates long paths" {
+    var pc = PathCopy{};
+    pc.set("short.md");
+    try t.expectEqualStrings("short.md", pc.slice());
+
+    // Fill to capacity
+    const max = std.fs.max_path_bytes;
+    var long: [max + 10]u8 = undefined;
+    @memset(&long, 'x');
+    pc.set(&long);
+    try t.expectEqual(max, pc.slice().len);
 }

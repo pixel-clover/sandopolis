@@ -505,3 +505,47 @@ pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const H
         y += line_height;
     }
 }
+
+const testing = @import("std").testing;
+
+test "queuedAudioNsFromBytes converts correctly" {
+    try testing.expectEqual(@as(u64, 0), queuedAudioNsFromBytes(0));
+    // 48000 Hz * 2 channels * 2 bytes = 192000 bytes per second
+    // 192000 bytes = 1 second = 1_000_000_000 ns
+    try testing.expectEqual(@as(u64, std.time.ns_per_s), queuedAudioNsFromBytes(192000));
+}
+
+test "queueIsBackloggedForBudget compares correctly" {
+    try testing.expect(!queueIsBackloggedForBudget(100, 200));
+    try testing.expect(queueIsBackloggedForBudget(200, 200));
+    try testing.expect(queueIsBackloggedForBudget(300, 200));
+}
+
+test "formatDurationMsTenths formats nanoseconds as milliseconds" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("0.0", try formatDurationMsTenths(&buf, 0));
+    try testing.expectEqualStrings("1.0", try formatDurationMsTenths(&buf, 1_000_000));
+    try testing.expectEqualStrings("16.6", try formatDurationMsTenths(&buf, 16_600_000));
+}
+
+test "formatRateHzTenths formats nanoseconds as Hz" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("0.0", try formatRateHzTenths(&buf, 0));
+    // 16,666,666 ns per frame = ~60.0 Hz
+    try testing.expectEqualStrings("60.0", try formatRateHzTenths(&buf, 16_666_667));
+}
+
+test "formatPercentTenths formats tenths of percent" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("0.0", try formatPercentTenths(&buf, 0));
+    try testing.expectEqualStrings("10.0", try formatPercentTenths(&buf, 100));
+    try testing.expectEqualStrings("5.5", try formatPercentTenths(&buf, 55));
+}
+
+test "isThresholdSlowFrame detects spikes above 4ms" {
+    var perf = std.mem.zeroes(HudState);
+    perf.last_overrun_ns = 3_000_000; // 3ms
+    try testing.expect(!isThresholdSlowFrame(&perf));
+    perf.last_overrun_ns = 5_000_000; // 5ms
+    try testing.expect(isThresholdSlowFrame(&perf));
+}

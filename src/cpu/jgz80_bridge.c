@@ -118,6 +118,10 @@ struct Jgz80Handle {
     uint16_t instruction_trace_read_index;
     uint16_t instruction_trace_count;
     bool instruction_trace_enabled;
+    bool sms_mode;
+    Jgz80HostPortInFunc host_port_in;
+    Jgz80HostPortOutFunc host_port_out;
+    void *port_userdata;
 };
 
 static uint8_t peek_mapped_byte_no_side_effects(Jgz80Handle *h, uint16_t addr) {
@@ -1246,24 +1250,39 @@ static void mapped_write_byte(Jgz80Handle *h, uint16_t addr, uint8_t val) {
 
 static uint8_t bridge_read_byte(void *userdata, uint16_t addr) {
     Jgz80Handle *h = (Jgz80Handle *) userdata;
+    if (h->sms_mode) {
+        if (h->host_read != NULL) {
+            return h->host_read(h->host_userdata, (uint32_t)(addr & 0xFFFFu));
+        }
+        return 0xFFu;
+    }
     return mapped_read_byte(h, addr);
 }
 
 static void bridge_write_byte(void *userdata, uint16_t addr, uint8_t val) {
     Jgz80Handle *h = (Jgz80Handle *) userdata;
+    if (h->sms_mode) {
+        if (h->host_write != NULL) {
+            h->host_write(h->host_userdata, (uint32_t)(addr & 0xFFFFu), val);
+        }
+        return;
+    }
     mapped_write_byte(h, addr, val);
 }
 
 static uint8_t bridge_port_in(z80 *z, uint16_t port) {
-    (void) z;
-    (void) port;
+    Jgz80Handle *h = (Jgz80Handle *) z->userdata;
+    if (h->host_port_in != NULL) {
+        return h->host_port_in(h->port_userdata, port);
+    }
     return 0xFFu;
 }
 
 static void bridge_port_out(z80 *z, uint16_t port, uint8_t val) {
-    (void) z;
-    (void) port;
-    (void) val;
+    Jgz80Handle *h = (Jgz80Handle *) z->userdata;
+    if (h->host_port_out != NULL) {
+        h->host_port_out(h->port_userdata, port, val);
+    }
 }
 
 static void bind_callbacks(Jgz80Handle *h) {
@@ -1895,4 +1914,26 @@ uint16_t jgz80_take_instruction_trace(Jgz80Handle *handle, Jgz80InstructionTrace
         taken++;
     }
     return taken;
+}
+
+void jgz80_set_sms_mode(Jgz80Handle *handle, uint8_t enabled) {
+    if (!handle) return;
+    handle->sms_mode = enabled != 0u;
+}
+
+void jgz80_set_port_callbacks(
+    Jgz80Handle *handle,
+    Jgz80HostPortInFunc port_in,
+    Jgz80HostPortOutFunc port_out,
+    void *userdata
+) {
+    if (!handle) return;
+    handle->host_port_in = port_in;
+    handle->host_port_out = port_out;
+    handle->port_userdata = userdata;
+}
+
+void jgz80_assert_nmi(Jgz80Handle *handle) {
+    if (!handle) return;
+    handle->core.nmi_pending = 1;
 }

@@ -23,18 +23,19 @@ const textDecoder = new TextDecoder();
 // Display
 let aspectMode = "fit"; // "fit" (4:3), "stretch", "native"
 
+// Mapped by ev.code (physical key position) so layout doesn't matter.
 const KEY_MAP = {
     ArrowUp: "Up",
     ArrowDown: "Down",
     ArrowLeft: "Left",
     ArrowRight: "Right",
-    z: "A", Z: "A",
-    x: "B", X: "B",
-    c: "C", C: "C",
+    KeyA: "A",
+    KeyS: "B",
+    KeyD: "C",
     Enter: "Start",
-    a: "X", A: "X",
-    s: "Y", S: "Y",
-    d: "Z", D: "Z",
+    KeyZ: "X",
+    KeyX: "Y",
+    KeyC: "Z",
 };
 
 const HOTKEYS = {
@@ -103,8 +104,13 @@ async function init() {
     };
 
     document.getElementById("rom-input").addEventListener("change", onFileSelected);
+    document.getElementById("recent-roms").addEventListener("change", (ev) => {
+        if (ev.target.value) loadRecentRom(ev.target.value);
+        ev.target.selectedIndex = 0;
+    });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
+    document.getElementById("screen").addEventListener("click", togglePause);
 
     // Drag and drop
     const dropZone = document.getElementById("drop-zone");
@@ -122,12 +128,6 @@ async function init() {
     // Settings UI
     document.getElementById("audio-toggle").addEventListener("click", toggleAudio);
     document.getElementById("master-volume").addEventListener("input", onMasterVolumeChange);
-    document.getElementById("audio-mode").addEventListener("change", onAudioModeChange);
-    document.getElementById("psg-volume").addEventListener("input", onPsgVolumeChange);
-    document.getElementById("eq-enabled").addEventListener("change", onEqChange);
-    document.getElementById("eq-low").addEventListener("input", onEqChange);
-    document.getElementById("eq-mid").addEventListener("input", onEqChange);
-    document.getElementById("eq-high").addEventListener("input", onEqChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
@@ -173,6 +173,7 @@ async function init() {
 
     loadSettings();
     db = await openDB();
+    await populateRecentRoms();
     setStatus("We are ready. Load a ROM to start playing!");
 }
 
@@ -180,8 +181,12 @@ async function init() {
 
 function openDB() {
     return new Promise((resolve, reject) => {
-        const req = indexedDB.open("sandopolis-saves", 1);
-        req.onupgradeneeded = () => req.result.createObjectStore("states");
+        const req = indexedDB.open("sandopolis-saves", 2);
+        req.onupgradeneeded = (ev) => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains("states")) db.createObjectStore("states");
+            if (!db.objectStoreNames.contains("roms")) db.createObjectStore("roms");
+        };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
@@ -205,18 +210,93 @@ function dbGet(key) {
     });
 }
 
+// Recent ROMs (cached in IndexedDB, max 10)
+
+const MAX_RECENT_ROMS = 10;
+
+async function saveRecentRom(name, bytes) {
+    const tx = db.transaction("roms", "readwrite");
+    const store = tx.objectStore("roms");
+    store.put({ name, bytes, timestamp: Date.now() }, name);
+    // Prune old entries beyond MAX_RECENT_ROMS
+    const allKeys = await new Promise((resolve, reject) => {
+        const req = store.getAllKeys();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    if (allKeys.length > MAX_RECENT_ROMS) {
+        const allEntries = await new Promise((resolve, reject) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        allEntries.sort((a, b) => b.timestamp - a.timestamp);
+        for (const old of allEntries.slice(MAX_RECENT_ROMS)) {
+            store.delete(old.name);
+        }
+    }
+}
+
+async function getRecentRoms() {
+    try {
+        const tx = db.transaction("roms", "readonly");
+        const store = tx.objectStore("roms");
+        const entries = await new Promise((resolve, reject) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        entries.sort((a, b) => b.timestamp - a.timestamp);
+        return entries;
+    } catch (_) {
+        return [];
+    }
+}
+
+async function populateRecentRoms() {
+    const entries = await getRecentRoms();
+    const select = document.getElementById("recent-roms");
+    // Clear existing options except the placeholder
+    while (select.options.length > 1) select.remove(1);
+    if (entries.length === 0) {
+        select.style.display = "none";
+        return;
+    }
+    for (const entry of entries) {
+        const opt = document.createElement("option");
+        opt.value = entry.name;
+        opt.textContent = entry.name;
+        select.appendChild(opt);
+    }
+    select.style.display = "";
+}
+
+async function loadRecentRom(name) {
+    const tx = db.transaction("roms", "readonly");
+    const store = tx.objectStore("roms");
+    const entry = await new Promise((resolve, reject) => {
+        const req = store.get(name);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    if (!entry) return;
+    // Update timestamp
+    const txW = db.transaction("roms", "readwrite");
+    txW.objectStore("roms").put({ ...entry, timestamp: Date.now() }, name);
+    // Create a fake File-like object
+    const blob = new Blob([entry.bytes]);
+    blob.name = entry.name;
+    blob.arrayBuffer = () => Promise.resolve(entry.bytes.buffer.slice(
+        entry.bytes.byteOffset, entry.bytes.byteOffset + entry.bytes.byteLength));
+    await loadRom(blob);
+}
+
 // Settings
 
 function loadSettings() {
     try {
         const saved = JSON.parse(localStorage.getItem("sandopolis-settings") || "{}");
         if (saved.audioEnabled !== undefined) audioEnabled = saved.audioEnabled;
-        if (saved.audioMode !== undefined) document.getElementById("audio-mode").value = saved.audioMode;
-        if (saved.psgVolume !== undefined) document.getElementById("psg-volume").value = saved.psgVolume;
-        if (saved.eqEnabled !== undefined) document.getElementById("eq-enabled").checked = saved.eqEnabled;
-        if (saved.eqLow !== undefined) document.getElementById("eq-low").value = saved.eqLow;
-        if (saved.eqMid !== undefined) document.getElementById("eq-mid").value = saved.eqMid;
-        if (saved.eqHigh !== undefined) document.getElementById("eq-high").value = saved.eqHigh;
         if (saved.controllerType !== undefined) document.getElementById("controller-type").value = saved.controllerType;
         if (saved.slot !== undefined) {
             currentSlot = saved.slot;
@@ -234,10 +314,6 @@ function loadSettings() {
     } catch (_) {
     }
     updateAudioToggleLabel();
-    document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
-    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
-    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
-    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
     document.getElementById("master-volume-label").textContent = masterVolume + "%";
     applyAspectMode();
 }
@@ -245,12 +321,6 @@ function loadSettings() {
 function saveSettings() {
     localStorage.setItem("sandopolis-settings", JSON.stringify({
         audioEnabled,
-        audioMode: document.getElementById("audio-mode").value,
-        psgVolume: document.getElementById("psg-volume").value,
-        eqEnabled: document.getElementById("eq-enabled").checked,
-        eqLow: document.getElementById("eq-low").value,
-        eqMid: document.getElementById("eq-mid").value,
-        eqHigh: document.getElementById("eq-high").value,
         controllerType: document.getElementById("controller-type").value,
         slot: currentSlot,
         aspectMode,
@@ -262,33 +332,7 @@ function saveSettings() {
 function applySettings() {
     if (!emu) return;
     const e = wasm.instance.exports;
-    e.sandopolis_set_audio_mode(emu, parseInt(document.getElementById("audio-mode").value));
-    e.sandopolis_set_psg_volume(emu, parseInt(document.getElementById("psg-volume").value));
-    e.sandopolis_set_eq_enabled(emu, document.getElementById("eq-enabled").checked ? 1 : 0);
-    e.sandopolis_set_eq_gains(emu,
-        parseInt(document.getElementById("eq-low").value) / 100,
-        parseInt(document.getElementById("eq-mid").value) / 100,
-        parseInt(document.getElementById("eq-high").value) / 100);
     e.sandopolis_set_controller_type(emu, 0, parseInt(document.getElementById("controller-type").value));
-}
-
-function onAudioModeChange() {
-    applySettings();
-    saveSettings();
-}
-
-function onPsgVolumeChange() {
-    document.getElementById("psg-volume-label").textContent = document.getElementById("psg-volume").value + "%";
-    applySettings();
-    saveSettings();
-}
-
-function onEqChange() {
-    document.getElementById("eq-low-label").textContent = document.getElementById("eq-low").value + "%";
-    document.getElementById("eq-mid-label").textContent = document.getElementById("eq-mid").value + "%";
-    document.getElementById("eq-high-label").textContent = document.getElementById("eq-high").value + "%";
-    applySettings();
-    saveSettings();
 }
 
 function onControllerTypeChange() {
@@ -318,7 +362,7 @@ function toggleTheme() {
 
 function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
-    document.getElementById("theme-toggle").textContent = theme === "dark" ? "Light" : "Dark";
+    document.getElementById("theme-toggle").textContent = theme === "dark" ? "Dark" : "Light";
 }
 
 function readWasmString(ptrFn, lenFn) {
@@ -353,12 +397,29 @@ function updateAboutInfo() {
     const width = e.sandopolis_video_width();
     const height = emu ? e.sandopolis_screen_height(emu) : 224;
     videoEl.textContent = `${width}x${height} ARGB Canvas`;
+
+    document.getElementById("about-save-version").textContent = "v" + e.sandopolis_save_state_version();
 }
 
 // Help overlay
 
 let helpOpen = false;
 let wasRunningBeforeHelp = false;
+
+function togglePause() {
+    if (!emu) return;
+    if (running) {
+        running = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        if (audioCtx) audioCtx.suspend();
+        setStatus("Paused");
+    } else {
+        running = true;
+        resumeFrame();
+        if (audioCtx && audioEnabled) audioCtx.resume();
+        setStatus("Playing now: " + currentRomName);
+    }
+}
 
 function pauseForOverlay() {
     if (!running) return;
@@ -410,10 +471,54 @@ function togglePerf() {
 }
 
 function updatePerf() {
+    const e = wasm ? wasm.instance.exports : null;
     const fps = document.getElementById("fps-display").textContent || "--";
     document.getElementById("perf-fps").textContent = fps;
     const fpsNum = parseInt(fps);
     document.getElementById("perf-frame-ms").textContent = fpsNum > 0 ? (1000 / fpsNum).toFixed(1) + " ms" : "--";
+
+    if (e && emu) {
+        // Resolution & display mode
+        const w = e.sandopolis_screen_width(emu);
+        const h = e.sandopolis_screen_height(emu);
+        const isPal = e.sandopolis_is_pal(emu);
+        document.getElementById("perf-resolution").textContent = w + "x" + h;
+
+        const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
+        const sysName = sysType === 1 ? "SMS" : "Genesis";
+        const mode = e.sandopolis_display_mode(emu);
+        const parts = [sysName];
+        if (sysType === 0) parts.push((mode & 1) ? "H40" : "H32");
+        parts.push(isPal ? "PAL" : "NTSC");
+        if (mode & 2) parts.push("Interlace");
+        if (mode & 4) parts.push("S/H");
+        document.getElementById("perf-display").textContent = parts.join(" ");
+
+        // ROM info
+        const titlePtr = e.sandopolis_rom_title_ptr(emu);
+        if (titlePtr) {
+            const titleLen = e.sandopolis_rom_title_len();
+            const titleBytes = new Uint8Array(e.memory.buffer, titlePtr, titleLen);
+            document.getElementById("perf-rom-title").textContent = textDecoder.decode(titleBytes).trim();
+        } else {
+            document.getElementById("perf-rom-title").textContent = "N/A";
+        }
+        const romSize = e.sandopolis_rom_size(emu);
+        if (romSize >= 1048576) {
+            document.getElementById("perf-rom-size").textContent = (romSize / 1048576).toFixed(1) + " MB";
+        } else {
+            document.getElementById("perf-rom-size").textContent = (romSize / 1024).toFixed(0) + " KB";
+        }
+        document.getElementById("perf-checksum").textContent = e.sandopolis_rom_checksum_valid(emu) ? "OK" : "MISMATCH";
+
+        // Frame count
+        const frames = e.sandopolis_frame_count(emu);
+        const seconds = frames / (isPal ? 50 : 60);
+        const mm = Math.floor(seconds / 60).toString().padStart(2, "0");
+        const ss = Math.floor(seconds % 60).toString().padStart(2, "0");
+        document.getElementById("perf-frame-count").textContent = frames + " (" + mm + ":" + ss + ")";
+    }
+
     if (wasm) {
         const bytes = wasm.instance.exports.memory.buffer.byteLength;
         document.getElementById("perf-wasm-mem").textContent = (bytes / 1048576).toFixed(1) + " MB";
@@ -424,7 +529,7 @@ function updatePerf() {
         document.getElementById("perf-js-heap").textContent = "N/A";
     }
     if (audioCtx && audioNode) {
-        document.getElementById("perf-audio").textContent = audioCtx.state + " " + masterVolume + "%";
+        document.getElementById("perf-audio").textContent = audioCtx.state + " @ " + audioCtx.sampleRate + "Hz";
     } else {
         document.getElementById("perf-audio").textContent = "OFF";
     }
@@ -644,6 +749,7 @@ async function loadRom(file) {
     }
 
     currentRomName = file.name;
+    saveRecentRom(file.name, romBytes).then(populateRecentRoms).catch(() => {});
     applySettings();
 
     // Resume AudioContext on user gesture (required by browsers)
@@ -652,7 +758,9 @@ async function loadRom(file) {
     }
 
     const isPal = e.sandopolis_is_pal(emu);
-    setStatus(`Playing now: ${file.name} (${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
+    const sysLabel = sysType === 1 ? "SMS" : "Genesis";
+    setStatus(`Playing now: ${file.name} (${sysLabel} ${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
 
     running = true;
@@ -741,7 +849,7 @@ function onKeyDown(ev) {
         return;
     }
     if (!emu) return;
-    const btn = KEY_MAP[ev.key];
+    const btn = KEY_MAP[ev.code] || KEY_MAP[ev.key];
     if (btn && BUTTONS[btn] !== undefined) {
         ev.preventDefault();
         wasm.instance.exports.sandopolis_set_button(emu, 0, BUTTONS[btn], true);
@@ -750,7 +858,7 @@ function onKeyDown(ev) {
 
 function onKeyUp(ev) {
     if (!emu) return;
-    const btn = KEY_MAP[ev.key];
+    const btn = KEY_MAP[ev.code] || KEY_MAP[ev.key];
     if (btn && BUTTONS[btn] !== undefined) {
         ev.preventDefault();
         wasm.instance.exports.sandopolis_set_button(emu, 0, BUTTONS[btn], false);
