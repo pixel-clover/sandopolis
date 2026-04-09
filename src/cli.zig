@@ -77,7 +77,7 @@ fn exec(ctx: chilli.CommandContext) !void {
 pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     var cmd = try chilli.Command.init(allocator, .{
         .name = "sandopolis",
-        .description = "A Sega Genesis/Mega Drive, Master System, and Game Gear emulator written in Zig and C",
+        .description = "A portable multi-system Sega emulator for Genesis, Master System, and Game Gear",
         .exec = exec,
     });
 

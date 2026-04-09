@@ -13,7 +13,7 @@
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?label=docker&style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 
-A Sega Genesis/Mega Drive emulator written in Zig and C
+A portable multi-system Sega emulator for Genesis, Master System, and Game Gear
 
 </div>
 
@@ -120,7 +120,7 @@ Run `sandopolis --help` to see the list of available command-line options.
 Example output:
 
 ```
-A Sega Genesis/Mega Drive emulator written in Zig and C
+A portable multi-system Sega emulator for Genesis, Master System, and Game Gear
 
 Usage:
   sandopolis [flags] [rom_file]

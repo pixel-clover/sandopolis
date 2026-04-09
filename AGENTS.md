@@ -4,7 +4,7 @@ This file provides guidance to coding agents collaborating on this repository.
 
 ## Mission
 
-Sandopolis is a Sega Genesis/Mega Drive emulator written in Zig (and C).
+Sandopolis is a portable and accurate multi-system Sega emulator for Genesis, Master System, and Game Gear, written in Zig (and C).
 Priorities, in order:
 
 1. Correct emulation behavior and compatibility.
