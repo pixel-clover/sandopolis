@@ -700,7 +700,7 @@ const SdlDialogFileFilter = extern struct {
 };
 
 const rom_dialog_filters = [_]SdlDialogFileFilter{
-    .{ .name = "ROM files", .pattern = "bin;md;smd;gen;sms;gg" },
+    .{ .name = "ROM files", .pattern = "bin;md;smd;gen;sms;gg;zip" },
     .{ .name = "All files", .pattern = "*" },
 };
 
@@ -3959,7 +3959,7 @@ pub fn main() !void {
         const sample_core_counters = shouldSampleCoreCounters(frontend_ui.overlay == .performance_hud, frame_counter, core_profile_frames_remaining);
         if (!emulation_paused) {
             const sys = machine.systemType();
-            target_frame_ns = if (sys == .sms or sys == .game_gear)
+            target_frame_ns = if (sys == .sms or sys == .gg)
                 smsFrameDurationNs(machine.palMode())
             else
                 frameDurationNs(machine.palMode(), machine.frameMasterCycles());
@@ -4041,7 +4041,7 @@ pub fn main() !void {
         const framebuffer = machine.framebuffer();
         const fb_stride = machine.framebufferStride();
         const framebuffer_height: i32 = @intCast(framebuffer.len / @as(usize, fb_stride));
-        if ((frame_counter >= 30 and frame_counter <= 40) and (machine.systemType() == .sms or machine.systemType() == .game_gear)) {
+        if ((frame_counter >= 30 and frame_counter <= 40) and (machine.systemType() == .sms or machine.systemType() == .gg)) {
             const sms = &machine.sms;
             // Check mapper state and verify page 2 reads correctly
             const z80s = sms.z80.captureState();

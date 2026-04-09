@@ -5,7 +5,7 @@ const sms_cartridge = @import("sms/cartridge.zig");
 pub const SystemType = enum {
     genesis,
     sms,
-    game_gear,
+    gg,
 };
 
 /// Detect whether a ROM belongs to a Genesis or SMS system.
@@ -16,7 +16,7 @@ pub fn detectSystem(rom: []const u8) SystemType {
         // Check region code to distinguish Game Gear from SMS.
         const meta = sms_cartridge.parseMetadata(rom);
         return switch (meta.region) {
-            .game_gear_japanese, .game_gear_export, .game_gear_international => .game_gear,
+            .game_gear_japanese, .game_gear_export, .game_gear_international => .gg,
             else => .sms,
         };
     }
@@ -42,7 +42,7 @@ test "detect system game gear" {
     var rom = [_]u8{0} ** 0x8000;
     @memcpy(rom[0x7FF0..][0..8], "TMR SEGA");
     rom[0x7FFF] = 0x6C; // Region=game_gear_export(6), size=C
-    try testing.expectEqual(SystemType.game_gear, detectSystem(&rom));
+    try testing.expectEqual(SystemType.gg, detectSystem(&rom));
 }
 
 test "detect system unknown defaults to genesis" {

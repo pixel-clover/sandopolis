@@ -3,6 +3,7 @@ const Machine = @import("machine.zig").Machine;
 const SmsMachine = @import("sms/machine.zig").SmsMachine;
 const SmsInput = @import("sms/input.zig").SmsInput;
 const system_detect = @import("system.zig");
+const rom_loader = @import("rom_loader.zig");
 const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
@@ -37,23 +38,41 @@ pub const SystemMachine = union(enum) {
     // -- Lifecycle --
 
     /// Initialize from a ROM file path. Detects system type automatically.
+    /// Strip a trailing ".zip" extension so that state/SRAM paths resolve
+    /// identically whether the ROM was loaded from a ZIP or directly.
+    fn effectiveRomPath(path: []const u8) []const u8 {
+        if (path.len > 4 and std.ascii.eqlIgnoreCase(path[path.len - 4 ..], ".zip")) {
+            return path[0 .. path.len - 4];
+        }
+        return path;
+    }
+
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !SystemMachine {
         if (rom_path) |path| {
-            // Read the file to detect system type.
-            const rom_data = try std.fs.cwd().readFileAlloc(allocator, path, 8 * 1024 * 1024);
+            // Read the file (with ZIP extraction support) and detect system type.
+            const rom_data = try rom_loader.readRomFile(allocator, path, 8 * 1024 * 1024);
+            const effective_path = effectiveRomPath(path);
             const sys = system_detect.detectSystem(rom_data);
-            if (sys == .sms or sys == .game_gear) {
+            if (sys == .sms or sys == .gg) {
                 var sms = try SmsMachine.initFromRomBytes(allocator, rom_data);
-                sms.is_game_gear = (sys == .game_gear);
+                sms.is_game_gear = (sys == .gg);
                 allocator.free(rom_data);
-                try sms.bus.setSourcePath(allocator, path);
+                try sms.bus.setSourcePath(allocator, effective_path);
                 sms.bindPointers();
                 return .{ .sms = sms };
             }
-            // Genesis: let Machine.init handle everything (it reads the file again,
-            // but also sets up SRAM paths, mappers, etc.).
+            // Genesis: init from extracted ROM bytes (handles ZIP transparently)
+            // and set source path for SRAM resolution.
+            var genesis = try Machine.initFromRomBytes(allocator, rom_data);
             allocator.free(rom_data);
-            return .{ .genesis = try Machine.init(allocator, path) };
+            const source_copy = try allocator.dupe(u8, effective_path);
+            const Cartridge = @import("bus/cartridge.zig").Cartridge;
+            const save_copy = Cartridge.savePathForRom(allocator, effective_path) catch null;
+            genesis.bus.replaceStoragePaths(allocator, save_copy, source_copy);
+            if (genesis.bus.cartridge.ram.persistent and genesis.bus.cartridge.ram.hasStorage()) {
+                genesis.bus.cartridge.loadPersistentStorage() catch {};
+            }
+            return .{ .genesis = genesis };
         }
         // No ROM path: Genesis dummy/idle mode.
         return .{ .genesis = try Machine.init(allocator, null) };
@@ -69,7 +88,7 @@ pub const SystemMachine = union(enum) {
     pub fn systemType(self: *const SystemMachine) SystemType {
         return switch (self.*) {
             .genesis => .genesis,
-            .sms => |*s| if (s.is_game_gear) .game_gear else .sms,
+            .sms => |*s| if (s.is_game_gear) .gg else .sms,
         };
     }
 
@@ -386,3 +405,28 @@ pub const SystemMachine = union(enum) {
         };
     }
 };
+
+const testing_alloc = @import("std").testing.allocator;
+
+test "load gg rom from zip" {
+    var machine = SystemMachine.init(testing_alloc, "roms/Aerial Assault (World).gg.zip") catch return;
+    defer machine.deinit(testing_alloc);
+    try @import("std").testing.expectEqual(system_detect.SystemType.gg, machine.systemType());
+    machine.runFrame();
+    try @import("std").testing.expectEqual(@as(u16, 160), machine.framebufferWidth());
+}
+
+test "load sms rom from zip" {
+    var machine = SystemMachine.init(testing_alloc, "roms/Paperboy (USA).sms.zip") catch return;
+    defer machine.deinit(testing_alloc);
+    try @import("std").testing.expectEqual(system_detect.SystemType.sms, machine.systemType());
+    machine.runFrame();
+    try @import("std").testing.expectEqual(@as(u16, 256), machine.framebufferWidth());
+}
+
+test "load genesis smd rom from zip" {
+    var machine = SystemMachine.init(testing_alloc, "roms/ros.smd.zip") catch return;
+    defer machine.deinit(testing_alloc);
+    try @import("std").testing.expectEqual(system_detect.SystemType.genesis, machine.systemType());
+    machine.runFrame();
+}

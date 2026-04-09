@@ -7,6 +7,7 @@ const Io = @import("input/io.zig").Io;
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const state_file = @import("state_file.zig");
 const system_detect = @import("system.zig");
+const rom_loader = @import("rom_loader.zig");
 const SmsMachine = @import("sms/machine.zig").SmsMachine;
 const SmsInput = @import("sms/input.zig").SmsInput;
 
@@ -64,7 +65,11 @@ const WasmAudioSink = struct {
     }
 };
 
-fn initWasmEmulator(alloc: std.mem.Allocator, rom_bytes: []const u8) !WasmEmulator {
+fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8) !WasmEmulator {
+    // Extract ROM from ZIP if needed.
+    const rom_bytes = try rom_loader.extractRomBytes(alloc, raw_bytes);
+    defer alloc.free(rom_bytes);
+
     const sys = system_detect.detectSystem(rom_bytes);
     switch (sys) {
         .genesis => {
@@ -82,9 +87,9 @@ fn initWasmEmulator(alloc: std.mem.Allocator, rom_bytes: []const u8) !WasmEmulat
                 .last_save_len = 0,
             };
         },
-        .sms, .game_gear => {
+        .sms, .gg => {
             var sms = try SmsMachine.initFromRomBytes(alloc, rom_bytes);
-            sms.is_game_gear = (sys == .game_gear);
+            sms.is_game_gear = (sys == .gg);
             return .{
                 .system = .{ .sms = sms },
                 .audio_buffer = [_]i16{0} ** 8192,
