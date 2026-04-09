@@ -43,13 +43,23 @@ const WasmEmulator = struct {
 
     const SystemInstance = union(enum) {
         genesis: GenesisInstance,
-        sms: SmsMachine,
+        sms: SmsInstance,
     };
 
     const GenesisInstance = struct {
         machine: Machine,
         audio: AudioOutput,
         snapshot: ?Machine.Snapshot,
+    };
+
+    const SmsInstance = struct {
+        machine: SmsMachine,
+        snapshot: ?SmsMachine.Snapshot = null,
+
+        pub fn deinit(self: *SmsInstance, alloc: std.mem.Allocator) void {
+            if (self.snapshot) |*snap| snap.deinit(alloc);
+            self.machine.deinit(alloc);
+        }
     };
 };
 
@@ -91,7 +101,7 @@ fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8) !WasmEmulat
             var sms = try SmsMachine.initFromRomBytes(alloc, rom_bytes);
             sms.is_game_gear = (sys == .gg);
             return .{
-                .system = .{ .sms = sms },
+                .system = .{ .sms = .{ .machine = sms } },
                 .audio_buffer = [_]i16{0} ** 8192,
                 .audio_sample_count = 0,
                 .last_save_buf = null,
@@ -140,7 +150,7 @@ export fn sandopolis_destroy(emu: *WasmEmulator) void {
 export fn sandopolis_run_frame(emu: *WasmEmulator) void {
     switch (emu.system) {
         .genesis => |*g| g.machine.runFrame(),
-        .sms => |*s| s.runFrame(),
+        .sms => |*s| s.machine.runFrame(),
     }
     emu.frame_count += 1;
 }
@@ -150,28 +160,28 @@ export fn sandopolis_run_frame(emu: *WasmEmulator) void {
 export fn sandopolis_framebuffer_ptr(emu: *const WasmEmulator) [*]const u32 {
     return switch (emu.system) {
         .genesis => |*g| g.machine.framebuffer().ptr,
-        .sms => |*s| s.framebuffer().ptr,
+        .sms => |*s| s.machine.framebuffer().ptr,
     };
 }
 
 export fn sandopolis_framebuffer_len(emu: *const WasmEmulator) usize {
     return switch (emu.system) {
         .genesis => |*g| g.machine.framebuffer().len,
-        .sms => |*s| s.framebuffer().len,
+        .sms => |*s| s.machine.framebuffer().len,
     };
 }
 
 export fn sandopolis_screen_width(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
         .genesis => |*g| g.machine.bus.vdp.screenWidth(),
-        .sms => |*s| s.framebufferWidth(),
+        .sms => |*s| s.machine.framebufferWidth(),
     };
 }
 
 export fn sandopolis_screen_height(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
         .genesis => |*g| g.machine.bus.vdp.activeVisibleLines(),
-        .sms => |*s| s.screenHeight(),
+        .sms => |*s| s.machine.screenHeight(),
     };
 }
 
@@ -181,9 +191,7 @@ export fn sandopolis_set_button(emu: *WasmEmulator, port: u32, button: u16, pres
     switch (emu.system) {
         .genesis => |*g| g.machine.bus.io.setButton(@intCast(port), button, pressed),
         .sms => |*s| {
-            // Map Genesis button IDs to SMS buttons.
-            // SMS has: Up, Down, Left, Right, Button1, Button2.
-            // Genesis Up/Down/Left/Right/A/B map naturally.
+            const m = &s.machine;
             const sms_port: u1 = @intCast(@min(port, 1));
             const sms_btn: ?SmsInput.Button = switch (button) {
                 Io.Button.Up => .up,
@@ -193,16 +201,16 @@ export fn sandopolis_set_button(emu: *WasmEmulator, port: u32, button: u16, pres
                 Io.Button.A, Io.Button.B => .button1,
                 Io.Button.C => .button2,
                 Io.Button.Start => blk: {
-                    if (s.is_game_gear) {
-                        s.bus.input.start_pressed = pressed;
+                    if (m.is_game_gear) {
+                        m.bus.input.start_pressed = pressed;
                     } else if (pressed) {
-                        s.bus.input.pause_pressed = true;
+                        m.bus.input.pause_pressed = true;
                     }
                     break :blk null;
                 },
                 else => null,
             };
-            if (sms_btn) |btn| s.setButton(sms_port, btn, pressed);
+            if (sms_btn) |btn| m.setButton(sms_port, btn, pressed);
         },
     }
 }
@@ -212,14 +220,14 @@ export fn sandopolis_set_button(emu: *WasmEmulator, port: u32, button: u16, pres
 export fn sandopolis_reset(emu: *WasmEmulator) void {
     switch (emu.system) {
         .genesis => |*g| g.machine.softReset(),
-        .sms => |*s| s.softReset(),
+        .sms => |*s| s.machine.softReset(),
     }
 }
 
 export fn sandopolis_is_pal(emu: *const WasmEmulator) bool {
     return switch (emu.system) {
         .genesis => |*g| g.machine.palMode(),
-        .sms => |*s| s.isPal(),
+        .sms => |*s| s.machine.isPal(),
     };
 }
 
@@ -238,7 +246,7 @@ export fn sandopolis_audio_render(emu: *WasmEmulator) usize {
         },
         .sms => |*s| {
             // SMS audio is rendered during runFrame; copy from SMS audio buffer
-            const src = s.audioBuffer();
+            const src = s.machine.audioBuffer();
             const n = @min(src.len, emu.audio_buffer.len);
             @memcpy(emu.audio_buffer[0..n], src[0..n]);
             emu.audio_sample_count = n / 2; // stereo pairs
@@ -387,7 +395,7 @@ export fn sandopolis_frame_count(emu: *const WasmEmulator) u32 {
 export fn sandopolis_rom_size(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
         .genesis => |*g| @intCast(g.machine.bus.rom.len),
-        .sms => |*s| @intCast(s.bus.rom.len),
+        .sms => |*s| @intCast(s.machine.bus.rom.len),
     };
 }
 
@@ -429,7 +437,7 @@ export fn sandopolis_display_mode(emu: *const WasmEmulator) u32 {
 export fn sandopolis_system_type(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
         .genesis => 0,
-        .sms => |*s| if (s.is_game_gear) @as(u32, 2) else 1,
+        .sms => |*s| if (s.machine.is_game_gear) @as(u32, 2) else 1,
     };
 }
 
@@ -474,7 +482,14 @@ export fn sandopolis_quick_save(emu: *WasmEmulator) bool {
             };
             return true;
         },
-        .sms => return false, // SMS save states not yet supported
+        .sms => |*s| {
+            if (s.snapshot) |*old| old.deinit(allocator);
+            s.snapshot = s.machine.captureSnapshot(allocator) catch {
+                s.snapshot = null;
+                return false;
+            };
+            return true;
+        },
     }
 }
 
@@ -487,7 +502,11 @@ export fn sandopolis_quick_load(emu: *WasmEmulator) bool {
             g.audio.syncYmStateFromZ80(&g.machine.bus.z80);
             return true;
         },
-        .sms => return false,
+        .sms => |*s| {
+            const snap = &(s.snapshot orelse return false);
+            s.machine.restoreSnapshot(allocator, snap) catch return false;
+            return true;
+        },
     }
 }
 
