@@ -55,7 +55,8 @@ Quick examples:
 - `src/input/`: controller I/O and configurable input mapping.
 - `src/recording/`: GIF animation recording with LZW compression and crash-safe output, WAV audio recording, and BMP screenshot capture.
 - `src/video/`: VDP and video timing/rendering logic.
-- `src/sms/`: Sega Master System and Game Gear emulation: VDP Mode 4, memory bus with Sega mapper, I/O port dispatch, Z80-based machine, PSG-only audio, GG 12-bit CRAM, and GG viewport cropping.
+- `src/sms/`: Sega Master System and Game Gear emulation: VDP Mode 4, memory bus with Sega mapper, I/O port dispatch, Z80-based machine, PSG-only
+  audio, GG 12-bit CRAM, and GG viewport cropping.
 - `src/frontend/`: SDL frontend helpers including config, UI state, save manager, menu, dialog, toast, and performance overlay logic.
 - `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
 - `src/wasm.zig`: WebAssembly export layer wrapping the Machine API for browser deployment.
