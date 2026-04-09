@@ -794,11 +794,11 @@ test "z80 68k-bus stall is applied before the next instruction" {
 
     bus.z80.reset();
     bus.syncZ80RunCache();
-    // LD A,(0x8000) — bank access, 13 Z80 cycles + 45 master stall
+    // LD A,(0x8000): bank access, 13 Z80 cycles + 45 master stall
     bus.z80.writeByte(0x0000, 0x3A);
     bus.z80.writeByte(0x0001, 0x00);
     bus.z80.writeByte(0x0002, 0x80);
-    // JR -5 — loops back, 12 Z80 cycles
+    // JR -5: loops back, 12 Z80 cycles
     bus.z80.writeByte(0x0003, 0x18);
     bus.z80.writeByte(0x0004, 0xFB);
 

@@ -221,7 +221,7 @@ pub fn applyTransitions(
     }
 }
 
-// Apply only release transitions — used to clear stuck buttons when emulation
+// Apply only release transitions: used to clear stuck buttons when emulation
 // is paused while an axis/hat direction is held.
 pub fn applyReleaseTransitionsOnly(
     bindings: *const InputBindings.Bindings,

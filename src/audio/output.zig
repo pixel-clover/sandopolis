@@ -302,7 +302,7 @@ pub const AudioOutput = struct {
             const p: u1 = @intCast(port);
             const addr_port: u2 = @as(u2, p) * 2;
 
-            // Mode registers (0x20-0x2F) — only port 0
+            // Mode registers (0x20-0x2F): only port 0
             if (port == 0) {
                 // LFO
                 self.ym_sample.write(addr_port, 0x22);
@@ -339,7 +339,7 @@ pub const AudioOutput = struct {
                 self.ym_sample.write(addr_port + 1, z80.getYmRegister(p, @intCast(reg)));
             }
 
-            // Frequency (0xA0-0xAF) — write high byte first (latch)
+            // Frequency (0xA0-0xAF): write high byte first (latch)
             var ch: u16 = 0;
             while (ch < 3) : (ch += 1) {
                 self.ym_sample.write(addr_port, @intCast(0xA4 + ch));

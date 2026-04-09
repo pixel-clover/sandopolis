@@ -566,18 +566,18 @@ test "cpu memory z80 bus window and bus request registers behave as expected" {
     // Z80 is 8-bit: word reads duplicate the byte to both halves
     try testing.expectEqual(@as(u16, 0x5A5A), view.read16(0x00A0_0010));
 
-    // Request bus (already granted) — BUSACK bit 8 = 0
+    // Request bus (already granted): BUSACK bit 8 = 0
     view.write16(0x00A1_1100, 0x0100);
     try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
 
     view.write8(0x00A0_0010, 0x5A);
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A0_0010));
 
-    // Release bus — BUSACK bit 8 = 1, unused bits from prefetch=0
+    // Release bus: BUSACK bit 8 = 1, unused bits from prefetch=0
     view.write16(0x00A1_1100, 0x0000);
     try testing.expectEqual(@as(u16, 0x0100), view.read16(0x00A1_1100));
 
-    // Z80 bus is no longer granted — writes are blocked, reads return prefetch
+    // Z80 bus is no longer granted: writes are blocked, reads return prefetch
     view.write8(0x00A0_0010, 0xA5);
     try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A0_0010));
     try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A0_0010));
@@ -592,7 +592,7 @@ test "cpu memory bus request does not grant z80 bus while reset is held" {
     fixture.initRuntime();
     var view = fixture.view();
 
-    // Hold Z80 in reset then request bus — bus should NOT be granted
+    // Hold Z80 in reset then request bus: bus should NOT be granted
     view.write16(0x00A1_1200, 0x0000);
     view.write16(0x00A1_1100, 0x0100);
 
@@ -604,7 +604,7 @@ test "cpu memory bus request does not grant z80 bus while reset is held" {
     try testing.expectEqual(@as(u8, 0xBE), view.read8(0x00A0_0010));
     try testing.expectEqual(@as(u16, 0xBEEF), view.read16(0x00A0_0010));
 
-    // Release reset — now bus should be granted
+    // Release reset: now bus should be granted
     view.write16(0x00A1_1200, 0x0100);
 
     // Granted: bit 8 cleared
@@ -892,7 +892,7 @@ test "cpu memory io window decode stops at a1001f and higher addresses fall back
     fixture.initRuntime();
     var view = fixture.view();
 
-    // Addresses >= 0xA10020 are unmapped — return instruction prefetch
+    // Addresses >= 0xA10020 are unmapped: return instruction prefetch
     try testing.expectEqual(@as(u8, 0x5A), view.read8(0x00A1_0020));
     try testing.expectEqual(@as(u8, 0x3C), view.read8(0x00A1_0021));
     try testing.expectEqual(@as(u16, 0x5A3C), view.read16(0x00A1_0020));
@@ -1421,7 +1421,7 @@ test "cpu memory writes do not contaminate open-bus prefetch reads" {
 
     // Write a value to RAM, then read from an unmapped region
     view.write16(0x00E0_0000, 0xDEAD);
-    // I/O region above 0xA1001F is unmapped — should return prefetch, not 0xDEAD
+    // I/O region above 0xA1001F is unmapped: should return prefetch, not 0xDEAD
     try testing.expectEqual(@as(u8, 0x4E), view.read8(0x00A1_0020));
     try testing.expectEqual(@as(u8, 0x71), view.read8(0x00A1_0021));
 

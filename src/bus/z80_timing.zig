@@ -93,7 +93,7 @@ pub const View = struct {
     fn recordZ80EarlyAdvancedMaster(self: *View, master_cycles: u32, count_toward_z80_credit: bool) void {
         if (master_cycles == 0) return;
         // During deferred Z80 burst execution, VDP/audio/I/O have already
-        // been advanced for the full slice — skip to avoid double-counting.
+        // been advanced for the full slice: skip to avoid double-counting.
         if (!self.state.z80_in_burst) {
             self.advanceNonZ80Master(master_cycles);
         }
@@ -196,7 +196,7 @@ pub const View = struct {
         // In the deferred model, stepMaster already accumulated the credit.
         // The stall debt would cancel it out during flushDeferredZ80, preventing
         // the Z80 from executing its earned cycles before a control transition.
-        // Skip the debt — the deferred flush handles timing naturally.
+        // Skip the debt: the deferred flush handles timing naturally.
     }
 
     /// Advance Z80 execution for the given master cycles without advancing
@@ -250,7 +250,7 @@ pub const View = struct {
         self.ensureZ80HostWindow();
         var remaining = master_cycles;
 
-        // Consume stall debt first — these cycles were pre-advanced during
+        // Consume stall debt first: these cycles were pre-advanced during
         // a Z80 bus access and must be accounted for before new work.
         if (self.state.z80_stall_master_debt != 0) {
             const consumed = @min(remaining, self.state.z80_stall_master_debt);
@@ -314,7 +314,7 @@ pub const View = struct {
             window_end;
 
         while (self.state.z80_master_credit >= threshold) {
-            // DMA halt check — Z80 bus access may have triggered DMA.
+            // DMA halt check: Z80 bus access may have triggered DMA.
             if (self.state.z80_dma_halted) {
                 if (!self.vdp.shouldHaltCpu()) {
                     self.state.z80_dma_halted = false;
@@ -324,7 +324,7 @@ pub const View = struct {
             }
 
             // Bank-access stall: consume from credit (no VDP/audio advance
-            // needed — those components have already been fully advanced).
+            // needed: those components have already been fully advanced).
             if (self.state.z80_wait_master_cycles != 0) {
                 const stalled: i64 = @intCast(@min(
                     self.state.z80_wait_master_cycles,

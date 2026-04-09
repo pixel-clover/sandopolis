@@ -43,7 +43,7 @@ pub const FontAtlas = struct {
     }
 };
 
-/// Persistent font state — call init() once, then getAtlas() per frame.
+/// Persistent font state: call init() once, then getAtlas() per frame.
 pub const Font = struct {
     info: ?stbtt.stbtt_fontinfo = null,
     atlas: ?FontAtlas = null,

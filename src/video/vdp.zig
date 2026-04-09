@@ -430,7 +430,7 @@ pub const Vdp = struct {
     }
 
     pub fn recordCramDot(self: *Vdp, line_master_cycle: u16, cram_addr: u8, written_word: u16) void {
-        // Allow HBlank writes — TiTAN Overdrive updates CRAM during HBlank
+        // Allow HBlank writes: TiTAN Overdrive updates CRAM during HBlank
         // for palette-per-line effects.  These events get pixel_x >= screen_w
         // so they don't produce visible dots, but the undo/redo logic in
         // renderScanline uses them to restore start-of-line CRAM state.
@@ -461,7 +461,7 @@ pub const Vdp = struct {
     }
 
     pub fn recordRegChange(self: *Vdp, reg_index: u8, new_value: u8) void {
-        // Allow HBlank register changes — games like TiTAN Overdrive
+        // Allow HBlank register changes: games like TiTAN Overdrive
         // change scroll/plane-base/backdrop registers during HBlank for
         // per-scanline raster effects.  Only reject VBlank changes.
         if (self.vblank) return;

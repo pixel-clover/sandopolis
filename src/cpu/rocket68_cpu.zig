@@ -386,7 +386,7 @@ pub const Cpu = struct {
         // Sub-instruction Z80 advancement: advance Z80 timing up to the
         // current point within this 68K instruction so that the Z80 doesn't
         // fall behind during long multi-access instructions.
-        // Skip for Z80 control registers (0xA11100-0xA112FF) — those have
+        // Skip for Z80 control registers (0xA11100-0xA112FF): those have
         // their own sub-instruction advancement via noteZ80ControlStateTransition.
         const is_z80_control = (addr >= 0xA11100 and addr < 0xA11300);
         if (!is_z80_control) {

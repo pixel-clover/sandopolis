@@ -8,7 +8,7 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
     var remaining = total_master_cycles;
     remaining -= m68k_sync.consumeDebt(remaining);
 
-    // Hoist the memory interface outside the loop — the memory map does not
+    // Hoist the memory interface outside the loop: the memory map does not
     // change during a single scheduler slice, so constructing the vtable
     // struct once avoids rebuilding 12 function pointers per instruction.
     var memory = bus.cpuMemory();

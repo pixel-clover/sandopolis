@@ -48,7 +48,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Audio timing with master-clock accumulation and rate conversion
 - [x] Output pipeline with timestamped event application, cubic hermite resampling, stereo mixing, and SDL3 playback
 - [x] Band-limited sample buffer (blip_buf) ported to Zig for use as an alternative resampler
-- [x] Add a 3-band parametric equalizer (low/mid/high gain), available as an optional post-processing stage
+- [x] 3-band parametric equalizer (low/mid/high gain) as an optional post-processing stage
 - [x] SN76489 PSG with chip-accurate emulation, stereo panning, reachable from both Z80 and M68K paths
 - [x] YM2612 FM synthesis with all 8 algorithms, envelope generator, SSG-EG, LFO, channel 3 special mode, DAC, CSM, timers, and die-accurate ROM
   tables
@@ -61,8 +61,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
   match)
 - [x] ROM-backed YM2612 synthesis golden hash from FM Test ROM (120-frame capture, Ym2612Synth replay)
 - [x] ROM-backed YM2612 register stream comparison for a few titles (Sonic & Knuckles, Streets of Rage, and Warsong; 300-frame golden hashes)
-- [x] Validate CSM mode synthesis against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, all algorithms)
-- [x] Switch the active rendering path from cubic hermite resampling to blip-buffer band-limited synthesis
+- [x] CSM mode synthesis validation against Nuked-OPN2 (4 scenarios: basic, rapid retriggering, param change, and all algorithms)
+- [x] Active rendering path switch from cubic hermite resampling to blip-buffer band-limited synthesis
 - [x] PSG/FM gain balance validated via end-to-end audio pipeline golden hash (120-frame FM Test ROM)
 
 ### Input and Interaction
@@ -97,7 +97,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
   DisableRegTestROM)
 - [x] ROM header checksum validation and product code extraction
 - [x] Game database lookup for extended metadata (26 titles by product code)
-- [ ] Expand the regression suite with Ings VDP tests
+- [ ] Regression suite expansion with Ings VDP tests
 
 ### Future Goals
 
@@ -114,7 +114,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 ### Sega Master System
 
 - [x] Z80 bridge SMS mode: host-routed memory, I/O port callbacks, NMI assertion (`jgz80_bridge.c`)
-- [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background and sprite rendering
+- [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background, and sprite rendering
 - [x] SMS bus with Sega mapper (3 page registers, cartridge RAM banking)
 - [x] SMS I/O port dispatch with partial address decoding (VDP, PSG, controllers)
 - [x] SMS controller input (2 buttons per player, pause via NMI)

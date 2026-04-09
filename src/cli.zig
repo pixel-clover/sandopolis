@@ -33,7 +33,7 @@ fn exec(ctx: chilli.CommandContext) !void {
         return;
     }
 
-    // Positional: ROM path — dupe via app_allocator so it outlives
+    // Positional: ROM path: dupe via app_allocator so it outlives
     // the process-arg memory that chilli frees when run() returns.
     const rom_arg = try ctx.getArg("rom_file", []const u8);
     config.rom_path = if (rom_arg.len > 0) try ctx.app_allocator.dupe(u8, rom_arg) else null;
@@ -56,7 +56,7 @@ fn exec(ctx: chilli.CommandContext) !void {
         config.audio_queue_ms_overridden = true;
     }
 
-    // --renderer — dupe for same reason as rom_path
+    // --renderer: dupe for same reason as rom_path
     const renderer_str = try ctx.getFlag("renderer", []const u8);
     config.renderer_name = if (renderer_str.len > 0) try ctx.app_allocator.dupe(u8, renderer_str) else null;
 
