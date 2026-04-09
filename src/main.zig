@@ -2875,7 +2875,9 @@ fn renderFrontendOverlay(
         try zsdl3.renderFillRect(renderer, .{ .x = 0, .y = 0, .w = @floatFromInt(viewport.w), .h = @floatFromInt(viewport.h) });
     }
     if (show_status_bar) {
-        const rom_name = std.fs.path.basename(current_rom_path.?);
+        const rom_basename = std.fs.path.basename(current_rom_path.?);
+        var name_buf: [64]u8 = undefined;
+        const rom_name = rom_paths.displayName(rom_basename, &name_buf, 32);
         try renderStatusBar(renderer, viewport, rom_name, persistent_state_slot, machine.palMode());
     }
     if (show_toast) {

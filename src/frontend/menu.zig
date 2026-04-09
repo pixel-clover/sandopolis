@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
+const rom_paths = @import("../rom_paths.zig");
 
 pub const FrontendConfig = config.FrontendConfig;
 pub const VideoAspectMode = config.VideoAspectMode;
@@ -289,10 +290,12 @@ pub fn formatHomeMenuItem(
     const prefix = if (selected) "> " else "  ";
     return switch (action) {
         .open_rom => std.fmt.bufPrint(buffer, "{s}OPEN ROM", .{prefix}),
-        .recent_rom => |index| std.fmt.bufPrint(buffer, "{s}{s}", .{
-            prefix,
-            std.fs.path.basename(cfg.recentRom(index)),
-        }),
+        .recent_rom => |index| blk: {
+            const basename = std.fs.path.basename(cfg.recentRom(index));
+            var short_buf: [64]u8 = undefined;
+            const short = rom_paths.displayName(basename, &short_buf, 28);
+            break :blk std.fmt.bufPrint(buffer, "{s}{s}", .{ prefix, short });
+        },
         .show_settings => std.fmt.bufPrint(buffer, "{s}SETTINGS", .{prefix}),
         .show_help => std.fmt.bufPrint(buffer, "{s}HELP AND HOTKEYS", .{prefix}),
         .quit => std.fmt.bufPrint(buffer, "{s}QUIT", .{prefix}),

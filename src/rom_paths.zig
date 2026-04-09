@@ -1,5 +1,26 @@
 const std = @import("std");
 
+/// Shorten a filename for display. Names longer than `max_len` are truncated
+/// with an ellipsis in the middle: "Adventures...02).gg"
+pub fn displayName(name: []const u8, buf: []u8, max_len: usize) []const u8 {
+    if (name.len <= max_len) return name;
+    if (max_len < 5) {
+        // Too small for ellipsis; just truncate
+        const n = @min(name.len, buf.len);
+        @memcpy(buf[0..n], name[0..n]);
+        return buf[0..@min(n, max_len)];
+    }
+    const ellipsis = "...";
+    const prefix_len = (max_len - ellipsis.len) / 2;
+    const suffix_len = max_len - ellipsis.len - prefix_len;
+    const total = prefix_len + ellipsis.len + suffix_len;
+    if (total > buf.len) return name;
+    @memcpy(buf[0..prefix_len], name[0..prefix_len]);
+    @memcpy(buf[prefix_len..][0..ellipsis.len], ellipsis);
+    @memcpy(buf[prefix_len + ellipsis.len ..][0..suffix_len], name[name.len - suffix_len ..]);
+    return buf[0..total];
+}
+
 /// Compute the per-ROM data directory path.
 /// For a ROM at "roms/sonic.md", returns "roms/sonic/".
 /// The directory is created if it does not exist.
@@ -82,6 +103,22 @@ test "sram path puts save inside rom data directory" {
     defer std.testing.allocator.free(path);
     try std.testing.expect(std.mem.endsWith(u8, path, "sonic/sonic.sav") or
         std.mem.endsWith(u8, path, "sonic\\sonic.sav"));
+}
+
+test "displayName returns short names unchanged" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("sonic.md", displayName("sonic.md", &buf, 32));
+}
+
+test "displayName truncates long names with ellipsis" {
+    var buf: [64]u8 = undefined;
+    const long = "Adventures of Batman & Robin, The (USA).gg";
+    const short = displayName(long, &buf, 20);
+    try std.testing.expectEqual(@as(usize, 20), short.len);
+    // Should start with prefix and end with suffix
+    try std.testing.expect(std.mem.startsWith(u8, short, "Adventu"));
+    try std.testing.expect(std.mem.endsWith(u8, short, "USA).gg"));
+    try std.testing.expect(std.mem.indexOf(u8, short, "...") != null);
 }
 
 test "state path puts slot inside rom data directory" {
