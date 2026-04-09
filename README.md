@@ -13,7 +13,7 @@
 [![Play Online](https://img.shields.io/badge/play%20online-browser-007ec6?style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
 <br>
-[![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20SMS%20%7C%20Game%20Gear-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
+[![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
 A portable multi-system Sega emulator for Genesis, Master System, and Game Gear
@@ -176,8 +176,3 @@ Sandopolis implementation logic was checked with the following implementations f
 * [clownmdemu-core](https://github.com/Clownacy/clownmdemu-core)
 * [kiwi](https://github.com/drx/kiwi)
 * [jgenesis](https://github.com/jsgroth/jgenesis/tree/master/backend/genesis-core)
-
-#### Other Resources
-
-* [mega-drive-genesis](https://www.copetti.org/writings/consoles/mega-drive-genesis/)
-* [mega-drive-architecture](https://rasterscroll.com/mdgraphics/mega-drive-architecture/)
