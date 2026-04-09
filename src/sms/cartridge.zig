@@ -115,3 +115,37 @@ test "sms cartridge metadata parsing" {
     try testing.expectEqual(@as(u16, 0x1234), meta.checksum);
     try testing.expectEqual(SmsRomMetadata.Region.international, meta.region);
 }
+
+test "decodeBcd converts packed BCD digits" {
+    try testing.expectEqual(@as(u8, 0), decodeBcd(0x00));
+    try testing.expectEqual(@as(u8, 9), decodeBcd(0x09));
+    try testing.expectEqual(@as(u8, 10), decodeBcd(0x10));
+    try testing.expectEqual(@as(u8, 42), decodeBcd(0x42));
+    try testing.expectEqual(@as(u8, 99), decodeBcd(0x99));
+}
+
+test "decodeRegion maps all known codes" {
+    try testing.expectEqual(SmsRomMetadata.Region.japanese, decodeRegion(3));
+    try testing.expectEqual(SmsRomMetadata.Region.international, decodeRegion(4));
+    try testing.expectEqual(SmsRomMetadata.Region.game_gear_japanese, decodeRegion(5));
+    try testing.expectEqual(SmsRomMetadata.Region.game_gear_export, decodeRegion(6));
+    try testing.expectEqual(SmsRomMetadata.Region.game_gear_international, decodeRegion(7));
+    try testing.expectEqual(SmsRomMetadata.Region.unknown, decodeRegion(0));
+    try testing.expectEqual(SmsRomMetadata.Region.unknown, decodeRegion(15));
+}
+
+test "sms cartridge detection at alternate offsets" {
+    // Header at 0x3FF0
+    var rom16k = [_]u8{0} ** 0x4000;
+    @memcpy(rom16k[0x3FF0..][0..8], "TMR SEGA");
+    try testing.expect(isSmsRom(&rom16k));
+
+    // Header at 0x1FF0
+    var rom8k = [_]u8{0} ** 0x2000;
+    @memcpy(rom8k[0x1FF0..][0..8], "TMR SEGA");
+    try testing.expect(isSmsRom(&rom8k));
+
+    // ROM too short for any header
+    const tiny = [_]u8{0} ** 16;
+    try testing.expect(!isSmsRom(&tiny));
+}

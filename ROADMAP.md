@@ -133,7 +133,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] VDP rendering accuracy: fine scroll sub-tile edge cases
 - [x] Game-specific: Disney's Aladdin black screen fix via immediate Z80 IRQ de-assertion on VDP status read (prevents spurious interrupt re-trigger
   from stale level-triggered assertion)
-- [x] Game Gear support: 12-bit CRAM (two-byte sequential writes), 160x144 viewport, START button via port 0x00, PSG stereo via port 0x06, system auto-detection from cartridge region codes
+- [x] Game Gear support: 12-bit CRAM (two-byte sequential writes), 160x144 viewport, START button via port 0x00, PSG stereo via port 0x06, system
+  auto-detection from cartridge region codes
 - [x] SMS quick save states (in-memory capture and restore of Z80, VDP, bus, and audio state)
 - [x] SMS persistent save states (file-based serialization with source path, Z80, VDP, bus, and audio state)
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)

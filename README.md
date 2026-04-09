@@ -126,7 +126,7 @@ Usage:
   sandopolis [flags] [rom_file]
 
 Arguments:
-  rom_file  Path to a ROM file (.bin, .md, or .smd) (optional)
+  rom_file  Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg) or a .zip archive containing one (optional)
 
 Flags:
   -h, --help            Shows help information for this command [Bool] (default: false)

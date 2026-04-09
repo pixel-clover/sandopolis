@@ -430,3 +430,13 @@ test "load genesis smd rom from zip" {
     try @import("std").testing.expectEqual(system_detect.SystemType.genesis, machine.systemType());
     machine.runFrame();
 }
+
+test "effectiveRomPath strips .zip suffix" {
+    const t = @import("std").testing;
+    try t.expectEqualStrings("roms/sonic.md", SystemMachine.effectiveRomPath("roms/sonic.md.zip"));
+    try t.expectEqualStrings("roms/sonic.md", SystemMachine.effectiveRomPath("roms/sonic.md"));
+    try t.expectEqualStrings("game.gg", SystemMachine.effectiveRomPath("game.gg.ZIP"));
+    try t.expectEqualStrings("game.gg", SystemMachine.effectiveRomPath("game.gg.Zip"));
+    try t.expectEqualStrings(".zip", SystemMachine.effectiveRomPath(".zip.zip"));
+    try t.expectEqualStrings("ab", SystemMachine.effectiveRomPath("ab"));
+}
