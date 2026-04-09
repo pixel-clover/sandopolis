@@ -8,6 +8,7 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const state_file = @import("state_file.zig");
 const system_detect = @import("system.zig");
 const rom_loader = @import("rom_loader.zig");
+const sms_state_file = @import("sms/state_file.zig");
 const SmsMachine = @import("sms/machine.zig").SmsMachine;
 const SmsInput = @import("sms/input.zig").SmsInput;
 
@@ -524,7 +525,12 @@ export fn sandopolis_save_state(emu: *WasmEmulator) ?[*]u8 {
             emu.last_save_len = buf.len;
             return buf.ptr;
         },
-        .sms => return null, // SMS save states not yet supported
+        .sms => |*s| {
+            const buf = sms_state_file.saveToBuffer(allocator, &s.machine) catch return null;
+            emu.last_save_buf = buf;
+            emu.last_save_len = buf.len;
+            return buf.ptr;
+        },
     }
 }
 
@@ -547,7 +553,13 @@ export fn sandopolis_load_state(emu: *WasmEmulator, ptr: [*]const u8, len: usize
             g.audio.reset();
             return true;
         },
-        .sms => return false,
+        .sms => |*s| {
+            var new_machine = sms_state_file.loadFromBuffer(allocator, ptr[0..len]) catch return false;
+            new_machine.bindPointers();
+            s.machine.deinit(allocator);
+            s.machine = new_machine;
+            return true;
+        },
     }
 }
 

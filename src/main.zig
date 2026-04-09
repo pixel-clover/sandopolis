@@ -2094,109 +2094,28 @@ fn resolveStatePathForSystem(
     return null;
 }
 
-const sms_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'M', 'S', 'S', 'T' };
-const sms_state_version: u16 = 2;
+const sms_state_file = @import("sms/state_file.zig");
+const sms_state_magic = sms_state_file.magic;
 
 fn saveSmsStateFile(allocator: std.mem.Allocator, sms: *const SmsMachine, path: []const u8) !void {
-    var snapshot = try sms.captureSnapshot(allocator);
-    defer snapshot.deinit(allocator);
-
+    const data = try sms_state_file.saveToBuffer(allocator, sms);
+    defer allocator.free(data);
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
-    var buf: [4096]u8 = undefined;
-    var bw = file.writer(&buf);
-    const writer = &bw.interface;
-
-    try writer.writeAll(&sms_state_magic);
-    try writer.writeInt(u16, sms_state_version, .little);
-    try writer.writeInt(u32, @intCast(snapshot.machine.bus.rom.len), .little);
-
-    // Serialize Z80 state
-    const z80_state = snapshot.machine.z80.captureState();
-    try writer.writeAll(std.mem.asBytes(&z80_state));
-
-    // Serialize VDP state
-    try writer.writeAll(std.mem.asBytes(&snapshot.machine.bus.vdp));
-
-    // Serialize bus RAM, mapper, and cartridge RAM
-    try writer.writeAll(&snapshot.machine.bus.ram);
-    try writer.writeAll(&snapshot.machine.bus.page);
-    try writer.writeByte(@intFromBool(snapshot.machine.bus.ram_bank_enabled));
-    try writer.writeByte(@as(u8, snapshot.machine.bus.ram_bank));
-    try writer.writeAll(&snapshot.machine.bus.cartridge_ram);
-
-    // Serialize machine-level state
-    try writer.writeByte(@intFromBool(snapshot.machine.pal_mode));
-    try writer.writeInt(u32, snapshot.machine.z80_cycle_count, .little);
-
-    // Write ROM data last
-    try writer.writeAll(snapshot.machine.bus.rom);
-    try writer.flush();
+    try file.writeAll(data);
 }
 
 fn loadSmsStateFile(allocator: std.mem.Allocator, sms: *SmsMachine, path: []const u8) !void {
     const file_data = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
     defer allocator.free(file_data);
-    var pos: usize = 0;
 
-    const readBytes = struct {
-        fn f(data: []const u8, p: *usize, len: usize) ![]const u8 {
-            if (p.* + len > data.len) return error.EndOfStream;
-            const slice = data[p.*..][0..len];
-            p.* += len;
-            return slice;
-        }
-    }.f;
-
-    // Verify header
-    const magic = try readBytes(file_data, &pos, 8);
-    if (!std.mem.eql(u8, magic, &sms_state_magic)) return error.InvalidSaveState;
-    const version = std.mem.readInt(u16, (try readBytes(file_data, &pos, 2))[0..2], .little);
-    if (version != sms_state_version) return error.UnsupportedSaveStateVersion;
-    const rom_len = std.mem.readInt(u32, (try readBytes(file_data, &pos, 4))[0..4], .little);
-
-    // Read Z80 state (copy into aligned local to avoid alignment panic)
-    const z80_bytes = try readBytes(file_data, &pos, @sizeOf(Z80.State));
-    var z80_state: Z80.State = undefined;
-    @memcpy(std.mem.asBytes(&z80_state), z80_bytes);
-
-    // Read VDP state into temporary aligned storage
-    const vdp_bytes = try readBytes(file_data, &pos, @sizeOf(SmsVdp));
-
-    // Read bus state
-    const ram = try readBytes(file_data, &pos, 8 * 1024);
-    const page_regs = try readBytes(file_data, &pos, 3);
-    const ram_bank_enabled = (try readBytes(file_data, &pos, 1))[0] != 0;
-    const ram_bank: u1 = @truncate((try readBytes(file_data, &pos, 1))[0]);
-    const cartridge_ram = try readBytes(file_data, &pos, 2 * 16 * 1024);
-
-    // Read machine state
-    const pal_mode = (try readBytes(file_data, &pos, 1))[0] != 0;
-    const z80_cycle_count = std.mem.readInt(u32, (try readBytes(file_data, &pos, 4))[0..4], .little);
-
-    // Read ROM
-    const rom_data = try readBytes(file_data, &pos, rom_len);
-
-    // Build new SMS machine from loaded state
-    var new_machine = try SmsMachine.initFromRomBytes(allocator, rom_data);
+    var new_machine = try sms_state_file.loadFromBuffer(allocator, file_data);
     errdefer new_machine.deinit(allocator);
 
     // Copy source path from current machine
     if (sms.bus.sourcePath()) |sp| {
         try new_machine.bus.setSourcePath(allocator, sp);
     }
-
-    // Apply loaded state (use @memcpy for unaligned source data)
-    @memcpy(&new_machine.bus.ram, ram);
-    @memcpy(std.mem.asBytes(&new_machine.bus.vdp), vdp_bytes);
-    @memcpy(&new_machine.bus.page, page_regs);
-    new_machine.bus.ram_bank_enabled = ram_bank_enabled;
-    new_machine.bus.ram_bank = ram_bank;
-    @memcpy(&new_machine.bus.cartridge_ram, cartridge_ram);
-    new_machine.pal_mode = pal_mode;
-    new_machine.z80_cycle_count = z80_cycle_count;
-    new_machine.z80.restoreState(&z80_state);
-    new_machine.bound = false; // rebind after move to final location
 
     // Swap in the new machine
     var old = sms.*;

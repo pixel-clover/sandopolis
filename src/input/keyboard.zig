@@ -145,13 +145,12 @@ test "keyboardInputFromScancode maps arrows and letters" {
 
 test "hotkeyActionDescription returns non-empty strings for all actions" {
     const actions = [_]InputBindings.HotkeyAction{
-        .toggle_help,       .toggle_pause,     .open_rom,
-        .restart_rom,       .reload_rom,       .open_keyboard_editor,
-        .toggle_performance_hud, .reset_performance_hud,
-        .save_quick_state,  .load_quick_state,
-        .save_state_file,   .load_state_file,  .next_state_slot,
-        .record_gif,        .record_wav,       .screenshot,
-        .toggle_fullscreen, .quit,
+        .toggle_help,            .toggle_pause,          .open_rom,
+        .restart_rom,            .reload_rom,            .open_keyboard_editor,
+        .toggle_performance_hud, .reset_performance_hud, .save_quick_state,
+        .load_quick_state,       .save_state_file,       .load_state_file,
+        .next_state_slot,        .record_gif,            .record_wav,
+        .screenshot,             .toggle_fullscreen,     .quit,
     };
     for (actions) |action| {
         try testing.expect(hotkeyActionDescription(action).len > 0);
