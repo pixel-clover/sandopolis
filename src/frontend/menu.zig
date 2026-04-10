@@ -372,6 +372,22 @@ pub fn formatSettingsActionLine(
     };
 }
 
+// Return a short description for the currently highlighted settings action
+pub fn settingsActionHint(action: SettingsMenuAction) []const u8 {
+    return switch (action) {
+        .video_aspect_mode => "Display aspect ratio: Stretch, 4:3 TV, or square pixels",
+        .video_scale_mode => "Pixel scaling: free fit or integer multiples for even pixels",
+        .fullscreen => "Toggle between windowed and fullscreen display",
+        .audio_render_mode => "Audio mix: normal, FM only, PSG only, or unfiltered",
+        .psg_volume => "Volume of the PSG sound chip relative to the FM chip",
+        .controller_p1_type => "Controller type for player 1",
+        .controller_p2_type => "Controller type for player 2",
+        .performance_hud => "Show or hide the performance overlay",
+        .font_face => "Font used for the emulator UI text",
+        .close => "Close the settings panel",
+    };
+}
+
 // Convert a home screen command to a frontend gamepad command
 pub fn gamepadCommandFromHome(command: HomeScreenCommand) FrontendGamepadCommand {
     return switch (command) {
@@ -564,5 +580,22 @@ test "shouldDimBackdrop for each overlay" {
     const non_dimming = [_]Overlay{ .none, .debugger, .performance_hud };
     for (non_dimming) |o| {
         try std.testing.expect(!o.shouldDimBackdrop());
+    }
+}
+
+test "settingsActionHint returns non-empty text for every action" {
+    for (settings_menu_actions) |action| {
+        const hint = settingsActionHint(action);
+        try std.testing.expect(hint.len > 0);
+    }
+}
+
+test "settingsActionHint returns distinct text for each action" {
+    for (settings_menu_actions, 0..) |a, i| {
+        for (settings_menu_actions[i + 1 ..]) |b| {
+            const ha = settingsActionHint(a);
+            const hb = settingsActionHint(b);
+            try std.testing.expect(!std.mem.eql(u8, ha, hb));
+        }
     }
 }

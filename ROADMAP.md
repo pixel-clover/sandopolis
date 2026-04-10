@@ -98,6 +98,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] ROM header checksum validation and product code extraction
 - [x] Game database lookup for extended metadata (26 titles by product code)
 - [ ] Regression suite expansion with Ings VDP tests
+- [x] Shadow/highlight priority fix: high-priority background and window tiles promote pixels from shadow to normal brightness
+- [x] Street Fighter II Special Champion Edition graphics corruption (lazy SSF mapper activation on bank register write)
+- [ ] Ultimate Mortal Kombat Trilogy romhack loading failure on desktop (works on web)
+- [x] Color cycling artifacts during screen transitions (root cause: VBlank status flag bug on last scanline; fixed alongside Zabu crash)
 
 ### Future Goals
 
@@ -108,10 +112,16 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
+- [x] Browser keyboard remapping UI with localStorage persistence and duplicate-swap
+- [x] Browser integer scaling mode (whole-pixel multiples)
+- [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
+- [x] Tooltip help text on web controls and context-sensitive hint line in desktop settings
+- [ ] Browser CRT shader option
+- [ ] SG-1000 subsystem support
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
 
-### Sega Master System
+### Sega Master System Support
 
 - [x] Z80 bridge SMS mode: host-routed memory, I/O port callbacks, NMI assertion (`jgz80_bridge.c`)
 - [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background, and sprite rendering

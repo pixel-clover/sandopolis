@@ -92,7 +92,7 @@ fn vCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) VCounterS
 
         return .{
             .counter = @truncate(counter_u16),
-            .vblank = counter_u16 >= active_scanlines and counter_u16 != 0x01FF,
+            .vblank = counter_u16 >= active_scanlines,
         };
     }
 
@@ -111,7 +111,7 @@ fn vCounterAt(self: *const Vdp, scanline: u16, line_master_cycle: u16) VCounterS
 
     return .{
         .counter = @truncate(external_counter),
-        .vblank = internal_counter >= active_scanlines and internal_counter != 0x01FF,
+        .vblank = internal_counter >= active_scanlines,
     };
 }
 

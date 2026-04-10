@@ -13,7 +13,6 @@ const binding_editor_module = @import("input/binding_editor.zig");
 const Machine = @import("machine.zig").Machine;
 const SystemMachine = @import("system_machine.zig").SystemMachine;
 const SmsMachine = @import("sms/machine.zig").SmsMachine;
-const system_detect = @import("system.zig");
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
@@ -301,6 +300,7 @@ const Overlay = menu_module.Overlay;
 const formatHomeMenuItem = menu_module.formatHomeMenuItem;
 const homeMenuActionForIndex = menu_module.homeMenuActionForIndex;
 const formatSettingsActionLine = menu_module.formatSettingsActionLine;
+const settingsActionHint = menu_module.settingsActionHint;
 const frontendGamepadCommandFromHome = menu_module.gamepadCommandFromHome;
 const activateHomeMenuSelection = menu_module.activateHomeMenuSelection;
 
@@ -2637,19 +2637,28 @@ fn renderSettingsOverlay(
     const timing_line = if (machine.palMode()) "TIMING PAL 50HZ" else "TIMING NTSC 60HZ";
     const region_line = if (machine.consoleIsOverseas()) "REGION OVERSEAS" else "REGION DOMESTIC";
 
+    // Truncate long config paths to prevent panel overflow
+    var path_display_buf: [64]u8 = undefined;
+    const config_display = if (config_path.len > 56) blk: {
+        const tail = config_path[config_path.len - 53 ..];
+        break :blk std.fmt.bufPrint(&path_display_buf, "...{s}", .{tail}) catch config_path;
+    } else config_path;
+
     var max_width = overlayTextWidth(title, scale);
     max_width = @max(max_width, overlayTextWidth(controls_a, scale));
     max_width = @max(max_width, overlayTextWidth(controls_b, scale));
     for (action_lines) |line| max_width = @max(max_width, overlayTextWidth(line, scale));
-    for ([_][]const u8{ heading_video, heading_audio, heading_system, renderer_line, audio_output_line, timing_line, region_line, config_path }) |line| {
+    for ([_][]const u8{ heading_video, heading_audio, heading_system, renderer_line, audio_output_line, timing_line, region_line, config_display }) |line| {
         max_width = @max(max_width, overlayTextWidth(line, scale));
     }
+    max_width = @max(max_width, overlayTextWidth(settingsActionHint(settings.currentAction()), scale));
 
-    const row_count: usize = 33;
+    // Body line count: 2 control lines + 25 content lines (including gaps and hint)
+    const body_lines: f32 = 27.0;
     const stw: f32 = @floatFromInt(viewport.w);
     const sth: f32 = @floatFromInt(viewport.h);
     const settings_w = @min(max_width + padding * 2.0, stw);
-    const settings_h = @min(padding * 2.0 + 7.0 * scale + 5.0 * scale + line_height * @as(f32, @floatFromInt(row_count)), sth);
+    const settings_h = @min(padding * 2.0 + 12.0 * scale + line_height * body_lines, sth);
     const panel = zsdl3.FRect{
         .x = @max(0.0, (stw - settings_w) * 0.5),
         .y = @max(0.0, (sth - settings_h) * 0.5),
@@ -2732,7 +2741,7 @@ fn renderSettingsOverlay(
     y += line_height;
     try drawOverlayText(renderer, text_x, y, scale, info_color, region_line);
     y += line_height;
-    try drawOverlayText(renderer, text_x, y, scale, info_color, config_path);
+    try drawOverlayText(renderer, text_x, y, scale, info_color, config_display);
     y += line_height * 2.0;
 
     try drawOverlayText(renderer, text_x, y, scale, heading_color, "UI");
@@ -2741,6 +2750,11 @@ fn renderSettingsOverlay(
     y += line_height * 2.0;
 
     try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[9]);
+    y += line_height * 2.0;
+
+    // Hint line for the currently selected action
+    const hint = settingsActionHint(cur);
+    try drawOverlayText(renderer, text_x, y, scale, info_color, hint);
 }
 
 fn renderFrontendOverlay(
@@ -2779,9 +2793,6 @@ fn renderFrontendOverlay(
         const rom_name = rom_paths.displayName(rom_basename, &name_buf, 32);
         try renderStatusBar(renderer, viewport, rom_name, persistent_state_slot, machine.palMode());
     }
-    if (show_toast) {
-        try renderToastOverlay(renderer, viewport, toast, frontend_frame_number);
-    }
     switch (ui.overlay) {
         .none, .debugger, .performance_hud => {},
         .game_info => try renderGameInfoOverlay(renderer, viewport, machine),
@@ -2792,6 +2803,10 @@ fn renderFrontendOverlay(
         .help => try renderHelpOverlay(renderer, viewport, bindings, persistent_state_slot),
         .home => try renderHomeOverlay(renderer, viewport, home_menu, frontend_config, frontend_frame_number),
         .pause => try renderPauseOverlay(renderer, viewport, bindings, persistent_state_slot),
+    }
+    // Toast renders last so it appears on top of all overlays
+    if (show_toast) {
+        try renderToastOverlay(renderer, viewport, toast, frontend_frame_number);
     }
 }
 
@@ -2900,6 +2915,8 @@ pub fn main() !void {
         @intCast(Vdp.max_framebuffer_height),
     );
     defer vdp_texture.destroy();
+    // Nearest-neighbor filtering for pixel-perfect rendering at any scale
+    _ = SDL_SetTextureScaleMode(vdp_texture, 0); // SDL_SCALEMODE_NEAREST = 0
 
     if (rom_path == null) {
         std.debug.print("No ROM file specified. Starting at the frontend home screen.\n", .{});
@@ -5979,6 +5996,7 @@ extern fn SDL_ShowOpenFileDialog(
 ) void;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
 extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;
+extern fn SDL_SetTextureScaleMode(texture: *zsdl3.Texture, mode: c_int) bool;
 extern fn SDL_GetRendererName(renderer: *zsdl3.Renderer) [*c]const u8;
 extern fn SDL_SetWindowFullscreen(window: *zsdl3.Window, fullscreen: bool) bool;
 extern fn SDL_GetWindowFlags(window: *zsdl3.Window) u64;

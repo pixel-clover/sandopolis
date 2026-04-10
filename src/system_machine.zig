@@ -454,3 +454,67 @@ test "effectiveRomPath strips .zip suffix" {
     try t.expectEqualStrings(".zip", SystemMachine.effectiveRomPath(".zip.zip"));
     try t.expectEqualStrings("ab", SystemMachine.effectiveRomPath("ab"));
 }
+
+test "zabu demo boots and renders gameplay" {
+    const rom_loader_mod = @import("rom_loader.zig");
+    const rom_data = rom_loader_mod.readRomFile(testing_alloc, "roms/Zabu_demo_2026-01-24.zip", 8 * 1024 * 1024) catch return;
+    defer testing_alloc.free(rom_data);
+
+    var machine = try Machine.initFromRomBytes(testing_alloc, rom_data);
+    defer machine.deinit(testing_alloc);
+    machine.reset();
+
+    // Press start to get past title screens into gameplay
+    for (0..120) |_| machine.runFrame();
+    machine.bus.io.setButton(0, Io.Button.Start, true);
+    for (0..5) |_| machine.runFrame();
+    machine.bus.io.setButton(0, Io.Button.Start, false);
+    for (0..300) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    var nonblack: usize = 0;
+    for (fb) |p| {
+        if (p != 0 and p != 0xFF000000) nonblack += 1;
+    }
+    try @import("std").testing.expect(nonblack > 1000);
+}
+
+test "golden axe shadow highlight high priority tiles are not darkened" {
+    const screenshot = @import("recording/screenshot.zig");
+    var machine = SystemMachine.init(testing_alloc, "roms/Golden Axe.smd") catch return;
+    defer machine.deinit(testing_alloc);
+    machine.reset();
+
+    // Skip title screens: press start multiple times
+    for (0..5) |_| {
+        for (0..90) |_| machine.runFrame();
+        if (machine.asGenesis()) |g| {
+            g.bus.io.setButton(0, @import("input/io.zig").Io.Button.Start, true);
+        }
+        for (0..5) |_| machine.runFrame();
+        if (machine.asGenesis()) |g| {
+            g.bus.io.setButton(0, @import("input/io.zig").Io.Button.Start, false);
+        }
+    }
+    // Run into gameplay
+    for (0..300) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    const w = machine.framebufferWidth();
+    const h: u32 = @intCast(fb.len / w);
+    screenshot.saveBmp("/tmp/golden_axe_sh.bmp", fb, w, h) catch {};
+
+    // Golden Axe uses S/H mode for character shadows on the ground.
+    // High-priority tiles (HUD, characters) should not be darkened.
+    var bright: usize = 0;
+    for (fb) |pixel| {
+        const r = (pixel >> 16) & 0xFF;
+        const g = (pixel >> 8) & 0xFF;
+        const b = pixel & 0xFF;
+        if (r > 0x80 or g > 0x80 or b > 0x80) bright += 1;
+    }
+    // High-priority tiles (HUD, characters, text) should be at normal
+    // brightness, not shadowed. With correct S/H priority handling,
+    // a significant portion of the screen should have bright pixels.
+    try @import("std").testing.expect(bright > 1000);
+}

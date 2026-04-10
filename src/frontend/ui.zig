@@ -213,7 +213,7 @@ pub const help_right_sections = [_]MenuSection{
 pub fn overlayScale(viewport: zsdl3.Rect) f32 {
     const min_dim: f32 = @floatFromInt(@min(viewport.w, viewport.h));
     const min_scale = 1.0;
-    const max_scale = 4.0;
+    const max_scale = 3.0;
     const low = 240.0; // min_dim where scale bottoms out at 1.0
     const high = 1080.0; // min_dim where scale tops out at 4.0
     return std.math.clamp(min_scale + (max_scale - min_scale) * (min_dim - low) / (high - low), min_scale, max_scale);
@@ -784,6 +784,8 @@ pub fn renderToastOverlay(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, toast
         toast_colors.border,
         scale,
     );
+    try setClipRect(renderer, panel);
+    defer clearClipRect(renderer) catch {};
     try drawText(
         renderer,
         panel.x + padding,
@@ -803,7 +805,7 @@ pub fn renderHomeOverlay(
     frame_number: u64,
 ) !void {
     const title = "SANDOPOLIS";
-    const subtitle = "OPEN A ROM TO START";
+    const subtitle = "OPEN A ROM TO START PLAYING";
     const empty_recent_note = "NO RECENT ROMS YET";
     const footer_a = "(DPAD) MOVE  (A) OR (START) SELECT";
     const footer_b = "[CTRL+O] OPEN ROM  [F1] HELP  [ESC] QUIT";
@@ -877,7 +879,12 @@ pub fn renderHomeOverlay(
 
     for (menu_lines[0..item_count], 0..) |line, index| {
         const is_selected = index == home_menu.selected_index;
-        const base_color: zsdl3.Color = if (is_selected) Colors.orange else Colors.text_primary;
+        const action = homeMenuActionForIndex(index, cfg);
+        const is_rom = switch (action) {
+            .recent_rom => true,
+            else => false,
+        };
+        const base_color: zsdl3.Color = if (is_selected) Colors.orange else if (is_rom) Colors.cyan else Colors.text_primary;
         const color = if (is_selected) Animation.pulseColor(base_color, frame_number, 0.75, 1.0) else base_color;
         try drawText(renderer, text_x, y, scale, color, line);
         y += line_height;
@@ -1035,6 +1042,8 @@ pub fn renderStatusBar(
     // Dark background with low opacity
     try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x60 });
     try zsdl3.renderFillRect(renderer, bar_rect);
+    try setClipRect(renderer, bar_rect);
+    defer clearClipRect(renderer) catch {};
 
     // ROM name on the left
     try drawText(

@@ -847,7 +847,7 @@ test "vctest rom framebuffer matches golden hash after 60 frames" {
     const hash = framebufferCrc32(fb);
     // Golden hash captured from the current V counter implementation.
     // Update ONLY after manually verifying the new rendering is correct.
-    try testing.expectEqual(@as(u32, 2453179491), hash);
+    try testing.expectEqual(@as(u32, 3247741144), hash);
 }
 
 test "vctest rom runs stably in both ntsc and pal modes" {
@@ -1112,7 +1112,7 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expect(collector.total_samples > 0);
 
     // Golden hash for the full audio pipeline output.
-    try testing.expectEqual(@as(u32, 3630579156), collector.hash);
+    try testing.expectEqual(@as(u32, 3354757982), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1180,7 +1180,7 @@ test "streets of rage ym synthesis matches golden hash (900 frames)" {
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 2295205777), hash);
+    try testing.expectEqual(@as(u32, 2389177271), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {

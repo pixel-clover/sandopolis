@@ -453,6 +453,44 @@ test "FontFace cycle wraps through all four faces" {
     try t.expectEqual(FontFace.jbm_regular, FontFace.jbm_regular.cycle(4));
 }
 
+test "whole_pixels with four_three gives integer vertical scale and 4:3 aspect" {
+    const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1920, .h = 1080 };
+    // Genesis 320x224: nominal_h=224, nominal_w=224*4/3=298.67, scale=min(6.43, 4.82)=4.82 -> floor=4
+    const r = computeVideoDestinationRect(viewport, 320, 224, .four_three, .whole_pixels);
+    try t.expectApproxEqAbs(@as(f32, 224.0 * 4.0), r.h, 0.01); // 896
+    try t.expectApproxEqAbs(@as(f32, 224.0 * (4.0 / 3.0) * 4.0), r.w, 0.01); // 1194.67
+    // Aspect ratio must be 4:3
+    try t.expectApproxEqAbs(@as(f32, 4.0 / 3.0), r.w / r.h, 0.01);
+}
+
+test "whole_pixels with SMS resolution 256x192" {
+    const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 };
+    // square_pixels: nominal_w=256, nominal_h=192, scale=min(5.0, 3.75)=3.75 -> floor=3
+    const r = computeVideoDestinationRect(viewport, 256, 192, .square_pixels, .whole_pixels);
+    try t.expectApproxEqAbs(@as(f32, 768.0), r.w, 0.01); // 256*3
+    try t.expectApproxEqAbs(@as(f32, 576.0), r.h, 0.01); // 192*3
+    // Centered
+    try t.expectApproxEqAbs(@as(f32, (1280.0 - 768.0) / 2.0), r.x, 0.01);
+    try t.expectApproxEqAbs(@as(f32, (720.0 - 576.0) / 2.0), r.y, 0.01);
+}
+
+test "whole_pixels with Game Gear resolution 160x144" {
+    const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    // square_pixels: nominal_w=160, nominal_h=144, scale=min(5.0, 4.17)=4.17 -> floor=4
+    const r = computeVideoDestinationRect(viewport, 160, 144, .square_pixels, .whole_pixels);
+    try t.expectApproxEqAbs(@as(f32, 640.0), r.w, 0.01); // 160*4
+    try t.expectApproxEqAbs(@as(f32, 576.0), r.h, 0.01); // 144*4
+}
+
+test "whole_pixels does not floor below 1x" {
+    // Viewport smaller than native resolution
+    const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 200, .h = 150 };
+    const r = computeVideoDestinationRect(viewport, 320, 224, .square_pixels, .whole_pixels);
+    // scale = min(200/320, 150/224) = min(0.625, 0.6696) = 0.625, stays fractional (< 1.0)
+    try t.expectApproxEqAbs(@as(f32, 200.0), r.w, 0.01);
+    try t.expectApproxEqAbs(@as(f32, 140.0), r.h, 0.01);
+}
+
 test "PathCopy set truncates long paths" {
     var pc = PathCopy{};
     pc.set("short.md");
