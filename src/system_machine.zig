@@ -473,7 +473,9 @@ test "zabu demo boots and renders gameplay" {
 
     const fb = machine.framebuffer();
     var nonblack: usize = 0;
-    for (fb) |p| { if (p != 0 and p != 0xFF000000) nonblack += 1; }
+    for (fb) |p| {
+        if (p != 0 and p != 0xFF000000) nonblack += 1;
+    }
     try @import("std").testing.expect(nonblack > 1000);
 }
 

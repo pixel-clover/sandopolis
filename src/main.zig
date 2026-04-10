@@ -2899,6 +2899,8 @@ pub fn main() !void {
         @intCast(Vdp.max_framebuffer_height),
     );
     defer vdp_texture.destroy();
+    // Nearest-neighbor filtering for pixel-perfect rendering at any scale
+    _ = SDL_SetTextureScaleMode(vdp_texture, 0); // SDL_SCALEMODE_NEAREST = 0
 
     if (rom_path == null) {
         std.debug.print("No ROM file specified. Starting at the frontend home screen.\n", .{});
@@ -5978,6 +5980,7 @@ extern fn SDL_ShowOpenFileDialog(
 ) void;
 extern fn SDL_DestroyAudioStream(stream: *zsdl3.AudioStream) void;
 extern fn SDL_UpdateTexture(texture: *zsdl3.Texture, rect: ?*const zsdl3.Rect, pixels: ?*const anyopaque, pitch: c_int) bool;
+extern fn SDL_SetTextureScaleMode(texture: *zsdl3.Texture, mode: c_int) bool;
 extern fn SDL_GetRendererName(renderer: *zsdl3.Renderer) [*c]const u8;
 extern fn SDL_SetWindowFullscreen(window: *zsdl3.Window, fullscreen: bool) bool;
 extern fn SDL_GetWindowFlags(window: *zsdl3.Window) u64;

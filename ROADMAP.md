@@ -112,9 +112,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
-- [ ] Browser keyboard remapping UI
+- [x] Browser keyboard remapping UI
 - [ ] Browser CRT shader option
-- [ ] Desktop integer scaling and pixel-perfect aspect ratio correction
+- [x] Desktop integer scaling and pixel-perfect aspect ratio correction
 - [ ] SG-1000 subsystem support
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support

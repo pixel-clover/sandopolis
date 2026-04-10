@@ -803,7 +803,7 @@ pub fn renderHomeOverlay(
     frame_number: u64,
 ) !void {
     const title = "SANDOPOLIS";
-    const subtitle = "OPEN A ROM TO START";
+    const subtitle = "OPEN A ROM TO START PLAYING";
     const empty_recent_note = "NO RECENT ROMS YET";
     const footer_a = "(DPAD) MOVE  (A) OR (START) SELECT";
     const footer_b = "[CTRL+O] OPEN ROM  [F1] HELP  [ESC] QUIT";

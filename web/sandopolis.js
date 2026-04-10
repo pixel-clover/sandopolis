@@ -22,9 +22,10 @@ const textDecoder = new TextDecoder();
 
 // Display
 let aspectMode = "fit"; // "fit" (4:3), "stretch", "native"
+let scaleMode = "fit"; // "fit" (free scaling), "integer" (whole pixel multiples)
 
 // Mapped by ev.code (physical key position) so layout doesn't matter.
-const KEY_MAP = {
+const DEFAULT_KEY_MAP = Object.freeze({
     ArrowUp: "Up",
     ArrowDown: "Down",
     ArrowLeft: "Left",
@@ -36,7 +37,8 @@ const KEY_MAP = {
     KeyZ: "X",
     KeyX: "Y",
     KeyC: "Z",
-};
+});
+let keyMap = { ...DEFAULT_KEY_MAP };
 
 const HOTKEYS = {
     F5: "quickSave",
@@ -130,6 +132,7 @@ async function init() {
     document.getElementById("master-volume").addEventListener("input", onMasterVolumeChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
+    document.getElementById("scale-mode").addEventListener("change", onScaleModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
     document.getElementById("btn-quick-save").addEventListener("click", quickSave);
     document.getElementById("btn-quick-load").addEventListener("click", quickLoad);
@@ -172,6 +175,7 @@ async function init() {
     document.addEventListener("fullscreenchange", onFullscreenChange);
 
     loadSettings();
+    initRemapUI();
     db = await openDB();
     await populateRecentRoms();
     setStatus("We are ready. Load a ROM to start playing!");
@@ -310,6 +314,11 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
+        if (saved.keyMap) keyMap = { ...DEFAULT_KEY_MAP, ...saved.keyMap };
+        if (saved.scaleMode !== undefined) {
+            scaleMode = saved.scaleMode;
+            document.getElementById("scale-mode").value = saved.scaleMode;
+        }
         if (saved.theme) applyTheme(saved.theme);
     } catch (_) {
     }
@@ -324,6 +333,8 @@ function saveSettings() {
         controllerType: document.getElementById("controller-type").value,
         slot: currentSlot,
         aspectMode,
+        keyMap,
+        scaleMode,
         masterVolume,
         theme: document.documentElement.getAttribute("data-theme") || "light",
     }));
@@ -346,10 +357,172 @@ function onAspectModeChange() {
     saveSettings();
 }
 
+function onScaleModeChange() {
+    scaleMode = document.getElementById("scale-mode").value;
+    applyAspectMode();
+    saveSettings();
+}
+
 function applyAspectMode() {
     const c = document.getElementById("screen");
-    c.classList.remove("aspect-fit", "aspect-stretch", "aspect-native");
-    c.classList.add("aspect-" + aspectMode);
+    const sc = document.getElementById("screen-container");
+    c.classList.remove("aspect-fit", "aspect-stretch", "aspect-native", "integer-scale");
+    sc.classList.remove("integer-container");
+    c.style.width = "";
+    c.style.height = "";
+
+    if (scaleMode === "integer") {
+        c.classList.add("integer-scale");
+        sc.classList.add("integer-container");
+        applyIntegerScale();
+    } else {
+        c.classList.add("aspect-" + aspectMode);
+    }
+}
+
+function applyIntegerScale() {
+    const c = document.getElementById("screen");
+    const sc = document.getElementById("screen-container");
+    const nativeW = c.width || 320;
+    const nativeH = c.height || 224;
+
+    // Determine nominal display dimensions based on aspect mode
+    let nominalW, nominalH;
+    if (aspectMode === "fit") {
+        nominalH = nativeH;
+        nominalW = nativeH * (4 / 3);
+    } else if (aspectMode === "native") {
+        nominalW = nativeW;
+        nominalH = nativeH;
+    } else {
+        // Stretch: use native ratio for integer mode
+        nominalW = nativeW;
+        nominalH = nativeH;
+    }
+
+    // Get available space
+    let containerW, containerH;
+    if (sc.classList.contains("fullscreen")) {
+        containerW = window.innerWidth;
+        containerH = window.innerHeight;
+    } else {
+        containerW = sc.clientWidth;
+        containerH = sc.clientWidth * 0.75; // max height based on container width
+    }
+
+    const scale = Math.max(1, Math.floor(Math.min(containerW / nominalW, containerH / nominalH)));
+    const displayW = Math.round(nominalW * scale);
+    const displayH = Math.round(nominalH * scale);
+
+    c.style.width = displayW + "px";
+    c.style.height = displayH + "px";
+}
+
+// Recompute integer scale on window resize
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+    if (scaleMode === "integer") {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(applyIntegerScale, 50);
+    }
+});
+
+// Keyboard remapping
+
+const REMAP_BUTTONS = ["Up", "Down", "Left", "Right", "A", "B", "C", "Start", "X", "Y", "Z"];
+
+function keyDisplayName(code) {
+    if (!code) return "—";
+    if (code.startsWith("Key")) return code.slice(3);
+    if (code.startsWith("Arrow")) return code.slice(5);
+    if (code === "Enter") return "Enter";
+    if (code.startsWith("Digit")) return code.slice(5);
+    return code.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+function keyForButton(btn) {
+    for (const [code, mapped] of Object.entries(keyMap)) {
+        if (mapped === btn) return code;
+    }
+    return null;
+}
+
+function initRemapUI() {
+    const grid = document.getElementById("remap-grid");
+    grid.innerHTML = "";
+    for (const btn of REMAP_BUTTONS) {
+        const row = document.createElement("div");
+        row.className = "remap-row";
+        const lbl = document.createElement("label");
+        lbl.textContent = btn;
+        const rbtn = document.createElement("button");
+        rbtn.className = "remap-btn";
+        rbtn.dataset.btn = btn;
+        rbtn.textContent = keyDisplayName(keyForButton(btn));
+        rbtn.addEventListener("click", () => startListening(rbtn, btn));
+        row.append(lbl, rbtn);
+        grid.appendChild(row);
+    }
+    document.getElementById("remap-reset").addEventListener("click", resetKeyMap);
+}
+
+function startListening(rbtn, btn) {
+    // Cancel any active listener
+    if (activeRemapCleanup) activeRemapCleanup();
+    rbtn.classList.add("listening");
+    rbtn.textContent = "Press a key...";
+
+    function onKey(ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        cleanup();
+        if (ev.code === "Escape") {
+            rbtn.textContent = keyDisplayName(keyForButton(btn));
+            return;
+        }
+        const newCode = ev.code;
+        // If this key is already bound to another button, swap
+        const existingBtn = keyMap[newCode];
+        const oldCode = keyForButton(btn);
+        if (existingBtn && existingBtn !== btn) {
+            // Remove old mapping for the new code
+            delete keyMap[newCode];
+            // Assign old code to the displaced button
+            if (oldCode) {
+                keyMap[oldCode] = existingBtn;
+            }
+        }
+        // Remove old binding for this button
+        if (oldCode) delete keyMap[oldCode];
+        // Set new binding
+        keyMap[newCode] = btn;
+        saveSettings();
+        refreshRemapLabels();
+    }
+
+    function cleanup() {
+        document.removeEventListener("keydown", onKey, true);
+        rbtn.classList.remove("listening");
+        activeRemapCleanup = null;
+    }
+
+    activeRemapCleanup = cleanup;
+    document.addEventListener("keydown", onKey, true);
+}
+
+let activeRemapCleanup = null;
+
+function refreshRemapLabels() {
+    const btns = document.querySelectorAll(".remap-btn");
+    for (const rbtn of btns) {
+        rbtn.textContent = keyDisplayName(keyForButton(rbtn.dataset.btn));
+    }
+}
+
+function resetKeyMap() {
+    keyMap = { ...DEFAULT_KEY_MAP };
+    saveSettings();
+    refreshRemapLabels();
 }
 
 // Theme
@@ -577,6 +750,7 @@ function onFullscreenChange() {
     } else {
         container.classList.remove("fullscreen");
     }
+    if (scaleMode === "integer") setTimeout(applyIntegerScale, 50);
 }
 
 function onMasterVolumeChange() {
@@ -809,6 +983,7 @@ function frameLoop(now) {
         canvas.width = width;
         canvas.height = height;
         imageData = ctx.createImageData(width, height);
+        if (scaleMode === "integer") applyIntegerScale();
     }
     if (!imageData) imageData = ctx.createImageData(width, height);
 
@@ -849,7 +1024,7 @@ function onKeyDown(ev) {
         return;
     }
     if (!emu) return;
-    const btn = KEY_MAP[ev.code] || KEY_MAP[ev.key];
+    const btn = keyMap[ev.code] || keyMap[ev.key];
     if (btn && BUTTONS[btn] !== undefined) {
         ev.preventDefault();
         wasm.instance.exports.sandopolis_set_button(emu, 0, BUTTONS[btn], true);
@@ -858,7 +1033,7 @@ function onKeyDown(ev) {
 
 function onKeyUp(ev) {
     if (!emu) return;
-    const btn = KEY_MAP[ev.code] || KEY_MAP[ev.key];
+    const btn = keyMap[ev.code] || keyMap[ev.key];
     if (btn && BUTTONS[btn] !== undefined) {
         ev.preventDefault();
         wasm.instance.exports.sandopolis_set_button(emu, 0, BUTTONS[btn], false);
