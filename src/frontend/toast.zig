@@ -2,7 +2,7 @@ const std = @import("std");
 
 // Toast notification constants
 pub const max_message_bytes: usize = 256;
-pub const duration_frames: u64 = 180;
+pub const duration_frames: u64 = 300;
 
 // Fixed-size message storage for toast notifications
 pub const MessageCopy = struct {

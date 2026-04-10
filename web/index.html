@@ -1113,24 +1113,24 @@
 <div class="action-bar">
     <div class="btn-group tone-audio">
         <span class="btn-group-label">Audio</span>
-        <button id="audio-toggle">ON</button>
-        <input class="vol-slider" id="master-volume" max="100" min="0" step="5" title="Volume" type="range" value="70">
+        <button id="audio-toggle" title="Toggle audio output on or off">ON</button>
+        <input class="vol-slider" id="master-volume" max="100" min="0" step="5" title="Master volume level" type="range" value="70">
         <span class="vol-label" id="master-volume-label">70%</span>
     </div>
     <div class="btn-group tone-save">
         <span class="btn-group-label">Quick Save</span>
-        <button id="btn-quick-save">Save</button>
-        <button id="btn-quick-load">Load</button>
+        <button id="btn-quick-save" title="Quick save to memory [F5]">Save</button>
+        <button id="btn-quick-load" title="Quick load from memory [F8]">Load</button>
     </div>
     <div class="btn-group tone-save">
         <span class="btn-group-label">State Slot</span>
-        <select id="slot-select">
+        <select id="slot-select" title="Select save state slot (1-3)">
             <option value="1">1</option>
             <option value="2">2</option>
             <option value="3">3</option>
         </select>
-        <button id="btn-save">Save</button>
-        <button id="btn-load">Load</button>
+        <button id="btn-save" title="Save state to selected slot [F6]">Save</button>
+        <button id="btn-load" title="Load state from selected slot [F9]">Load</button>
     </div>
     <div class="btn-group tone-view">
         <span class="btn-group-label">View</span>
@@ -1158,26 +1158,26 @@
     <h3>SETTINGS</h3>
     <div class="settings-grid">
         <label>Aspect Ratio</label>
-        <select id="aspect-mode">
-            <option value="fit">4:3 Fit</option>
-            <option value="stretch">Stretch</option>
-            <option value="native">Native (320x224)</option>
+        <select id="aspect-mode" title="Display aspect ratio mode">
+            <option value="fit" title="Correct 4:3 TV aspect ratio">4:3 Fit</option>
+            <option value="stretch" title="Stretch to fill the screen area">Stretch</option>
+            <option value="native" title="Raw pixel dimensions without correction">Native (320x224)</option>
         </select>
         <label>Scaling</label>
-        <select id="scale-mode">
-            <option value="fit">Fit</option>
-            <option value="integer">Integer</option>
+        <select id="scale-mode" title="Pixel scaling mode">
+            <option value="fit" title="Smooth scaling to fill available space">Fit</option>
+            <option value="integer" title="Scale by whole numbers for even pixel sizes">Integer</option>
         </select>
         <label>Controller</label>
-        <select id="controller-type">
-            <option value="1">6-Button</option>
-            <option value="0">3-Button</option>
+        <select id="controller-type" title="Emulated controller type">
+            <option value="1" title="Genesis 6-button controller with X, Y, Z, and Mode">6-Button</option>
+            <option value="0" title="Original Genesis 3-button controller">3-Button</option>
         </select>
     </div>
     <div class="remap-section">
         <h4>KEYBOARD</h4>
         <div class="remap-grid" id="remap-grid"></div>
-        <button class="remap-reset" id="remap-reset">Reset Defaults</button>
+        <button class="remap-reset" id="remap-reset" title="Restore all keyboard bindings to defaults">Reset Defaults</button>
     </div>
 </div>
 

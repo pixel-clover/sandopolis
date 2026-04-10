@@ -459,6 +459,7 @@ function initRemapUI() {
         rbtn.className = "remap-btn";
         rbtn.dataset.btn = btn;
         rbtn.textContent = keyDisplayName(keyForButton(btn));
+        rbtn.title = "Click to rebind " + btn + " button";
         rbtn.addEventListener("click", () => startListening(rbtn, btn));
         row.append(lbl, rbtn);
         grid.appendChild(row);
