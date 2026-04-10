@@ -877,7 +877,12 @@ pub fn renderHomeOverlay(
 
     for (menu_lines[0..item_count], 0..) |line, index| {
         const is_selected = index == home_menu.selected_index;
-        const base_color: zsdl3.Color = if (is_selected) Colors.orange else Colors.text_primary;
+        const action = homeMenuActionForIndex(index, cfg);
+        const is_rom = switch (action) {
+            .recent_rom => true,
+            else => false,
+        };
+        const base_color: zsdl3.Color = if (is_selected) Colors.orange else if (is_rom) Colors.cyan else Colors.text_primary;
         const color = if (is_selected) Animation.pulseColor(base_color, frame_number, 0.75, 1.0) else base_color;
         try drawText(renderer, text_x, y, scale, color, line);
         y += line_height;
