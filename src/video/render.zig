@@ -323,20 +323,20 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             const seg_plane_b_start = seg_start;
             const seg_plane_b_end = clamped_end;
 
-            renderPlaneToBuffer(self, line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 1, seg_plane_b_start, seg_plane_b_end);
+            renderPlaneToBuffer(self, line, plane_b_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, false, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode, 1, seg_plane_b_start, seg_plane_b_end);
 
             if (window_layout.plane_a.enabled()) {
                 const pa_start = @max(window_layout.plane_a.start_x, seg_start);
                 const pa_end = @min(window_layout.plane_a.end_x, clamped_end);
                 if (pa_start < pa_end) {
-                    renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, 2, pa_start, pa_end);
+                    renderPlaneToBuffer(self, line, plane_a_base, plane_width_tiles, plane_height_tiles, plane_width_px, plane_height_px, hscroll_base, true, tile_h, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode, 2, pa_start, pa_end);
                 }
             }
             if (window_layout.window.enabled()) {
                 const win_start = @max(window_layout.window.start_x, seg_start);
                 const win_end = @min(window_layout.window.end_x, clamped_end);
                 if (win_start < win_end) {
-                    renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, win_start, win_end);
+                    renderWindowToBuffer(self, line, tile_h_shift, tile_h_mask, tile_sz, &pixel_buf, &layer_buf, &source_buf, &sh_buf, sh_mode, win_start, win_end);
                 }
             }
 
@@ -554,6 +554,8 @@ fn renderPlaneToBuffer(
     pixel_buf: *[Vdp.framebuffer_width]u8,
     layer_buf: *[Vdp.framebuffer_width]u8,
     source_buf: *[Vdp.framebuffer_width]u8,
+    sh_buf: *[Vdp.framebuffer_width]u8,
+    sh_mode: bool,
     source_id: u8,
     start_x: u16,
     end_x: u16,
@@ -609,6 +611,11 @@ fn renderPlaneToBuffer(
             layer_buf[x] = new_layer;
             source_buf[x] = source_id;
         }
+        // In shadow/highlight mode, high-priority non-transparent BG
+        // tiles promote pixels from shadow to normal brightness.
+        if (sh_mode and high_pri) {
+            sh_buf[x] = SH_NORMAL;
+        }
     }
 }
 
@@ -621,6 +628,8 @@ fn renderWindowToBuffer(
     pixel_buf: *[Vdp.framebuffer_width]u8,
     layer_buf: *[Vdp.framebuffer_width]u8,
     source_buf: *[Vdp.framebuffer_width]u8,
+    sh_buf: *[Vdp.framebuffer_width]u8,
+    sh_mode: bool,
     start_x: u16,
     end_x: u16,
 ) void {
@@ -662,6 +671,9 @@ fn renderWindowToBuffer(
             pixel_buf[x] = full_idx;
             layer_buf[x] = new_layer;
             source_buf[x] = 2;
+        }
+        if (sh_mode and high_pri) {
+            sh_buf[x] = SH_NORMAL;
         }
     }
 }

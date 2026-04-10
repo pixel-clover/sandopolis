@@ -98,10 +98,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] ROM header checksum validation and product code extraction
 - [x] Game database lookup for extended metadata (26 titles by product code)
 - [ ] Regression suite expansion with Ings VDP tests
-- [ ] Shadow/highlight priority fix: high-priority tiles should not be shadowed
+- [x] Shadow/highlight priority fix: high-priority background and window tiles promote pixels from shadow to normal brightness
 - [x] Street Fighter II Special Champion Edition graphics corruption (lazy SSF mapper activation on bank register write)
 - [ ] Ultimate Mortal Kombat Trilogy romhack loading failure on desktop (works on web)
-- [ ] Color cycling artifacts during screen transitions (CRAM update timing)
+- [x] Color cycling artifacts during screen transitions (root cause: VBlank status flag bug on last scanline; fixed alongside Zabu crash)
 
 ### Future Goals
 
@@ -119,7 +119,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
 
-### Sega Master System
+### Sega Master System Support
 
 - [x] Z80 bridge SMS mode: host-routed memory, I/O port callbacks, NMI assertion (`jgz80_bridge.c`)
 - [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background, and sprite rendering

@@ -13,7 +13,6 @@ const binding_editor_module = @import("input/binding_editor.zig");
 const Machine = @import("machine.zig").Machine;
 const SystemMachine = @import("system_machine.zig").SystemMachine;
 const SmsMachine = @import("sms/machine.zig").SmsMachine;
-const system_detect = @import("system.zig");
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;

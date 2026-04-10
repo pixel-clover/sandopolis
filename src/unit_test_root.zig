@@ -26,6 +26,17 @@ const sms_input = @import("sms/input.zig");
 const sms_machine = @import("sms/machine.zig");
 const sms_audio = @import("sms/audio.zig");
 const sms_cartridge = @import("sms/cartridge.zig");
+const sms_state_file = @import("sms/state_file.zig");
+const rom_loader = @import("rom_loader.zig");
+const system_machine = @import("system_machine.zig");
+const bus_cartridge = @import("bus/cartridge.zig");
+const bus_vdp_ports = @import("bus/vdp_ports.zig");
+const bus_cpu_memory = @import("bus/cpu_memory.zig");
+const frontend_config = @import("frontend/config.zig");
+const frontend_performance = @import("frontend/performance.zig");
+const frontend_saves = @import("frontend/saves.zig");
+const input_gamepad = @import("input/gamepad.zig");
+const input_keyboard = @import("input/keyboard.zig");
 
 comptime {
     _ = audio_blip_buf;
@@ -56,4 +67,15 @@ comptime {
     _ = sms_machine;
     _ = sms_audio;
     _ = sms_cartridge;
+    _ = sms_state_file;
+    _ = rom_loader;
+    _ = system_machine;
+    _ = bus_cartridge;
+    _ = bus_vdp_ports;
+    _ = bus_cpu_memory;
+    _ = frontend_config;
+    _ = frontend_performance;
+    _ = frontend_saves;
+    _ = input_gamepad;
+    _ = input_keyboard;
 }
