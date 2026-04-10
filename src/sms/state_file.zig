@@ -92,6 +92,7 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachin
     machine.is_game_gear = is_gg;
     @memcpy(&machine.bus.ram, ram);
     @memcpy(std.mem.asBytes(&machine.bus.vdp), vdp_bytes);
+    machine.bus.vdp.is_game_gear = is_gg; // Re-apply after VDP state overwrite
     @memcpy(&machine.bus.page, page_regs);
     machine.bus.ram_bank_enabled = ram_bank_enabled;
     machine.bus.ram_bank = ram_bank;

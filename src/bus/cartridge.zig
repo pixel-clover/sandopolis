@@ -583,10 +583,21 @@ pub const Cartridge = struct {
         }
 
         switch (self.mapper) {
-            .none, .eeprom_i2c => {},
             .ssf => |*mapper| {
                 if (mapper.writeRegisterByte(address, value)) return true;
             },
+            .none => {
+                // Lazily enable SSF mapper on first write to the bank register
+                // range (0xA130F3-0xA130FF). Games like Street Fighter II SCE
+                // use the SSF2 bank registers without declaring "SEGA SSF" in
+                // the ROM header.
+                if (SsfMapper.registerIndex(address) != null) {
+                    self.mapper = .{ .ssf = .{} };
+                    _ = self.mapper.ssf.writeRegisterByte(address, value);
+                    return true;
+                }
+            },
+            .eeprom_i2c => {},
         }
 
         return false;
@@ -1048,4 +1059,23 @@ test "sram write-protect is preserved in ram state snapshot" {
 
     try restored.restoreRamState(ram_state, source.ramBytes());
     try std.testing.expect(!restored.writeByte(0x0020_0001, 0x55));
+}
+
+test "ssf mapper lazily activates on bank register write" {
+    const t = std.testing;
+    // Create a 3MB ROM (like SF2 SCE) without "SEGA SSF" header
+    const rom = try makeBasicGenesisRom(t.allocator, 3 * 1024 * 1024);
+    defer t.allocator.free(rom);
+    var cartridge = try Cartridge.initFromRomBytes(t.allocator, rom);
+    defer cartridge.deinit(t.allocator);
+
+    // Mapper should start as none
+    try t.expectEqual(Mapper.none, cartridge.mapper);
+
+    // Write to SSF bank register 0xA130F3 (bank 1 select)
+    try t.expect(cartridge.writeRegisterByte(0xA130F3, 5));
+
+    // Mapper should now be SSF
+    try t.expect(cartridge.mapper == .ssf);
+    try t.expectEqual(@as(u8, 5), cartridge.mapper.ssf.bank_registers[0]);
 }
