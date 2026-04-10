@@ -564,7 +564,18 @@ function updateAboutInfo() {
     const ver = readWasmString(() => e.sandopolis_version_ptr(), () => e.sandopolis_version_len());
     const gitRef = readWasmString(() => e.sandopolis_git_hash_ptr(), () => e.sandopolis_git_hash_len());
     const time = readWasmString(() => e.sandopolis_build_time_ptr(), () => e.sandopolis_build_time_len());
-    versionEl.textContent = `${ver} (${gitRef})`;
+    // gitRef is "branch@hash"; avoid repeating the version when built from a tag
+    const atIdx = gitRef.lastIndexOf("@");
+    const branch = atIdx >= 0 ? gitRef.slice(0, atIdx) : gitRef;
+    const hash = atIdx >= 0 ? gitRef.slice(atIdx + 1) : "";
+    const branchIsVersion = branch === ver || branch === "v" + ver || branch === "HEAD";
+    if (hash && !branchIsVersion) {
+        versionEl.textContent = `${ver} (${branch}@${hash})`;
+    } else if (hash) {
+        versionEl.textContent = `${ver} (${hash})`;
+    } else {
+        versionEl.textContent = ver;
+    }
     buildEl.textContent = `${readWasmString(() => e.sandopolis_build_label_ptr(), () => e.sandopolis_build_label_len())} · ${time}`;
     audioEl.textContent = `YM2612 + SN76489 at ${Math.round(e.sandopolis_audio_sample_rate() / 1000)} kHz`;
 
