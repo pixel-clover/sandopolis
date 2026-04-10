@@ -98,6 +98,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] ROM header checksum validation and product code extraction
 - [x] Game database lookup for extended metadata (26 titles by product code)
 - [ ] Regression suite expansion with Ings VDP tests
+- [ ] Shadow/highlight priority fix: high-priority tiles should not be shadowed
+- [ ] Street Fighter II Special Champion Edition graphics corruption
+- [ ] Ultimate Mortal Kombat Trilogy romhack loading failure on desktop (works on web)
+- [ ] Color cycling artifacts during screen transitions (CRAM update timing)
 
 ### Future Goals
 
@@ -108,6 +112,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
+- [ ] Browser keyboard remapping UI
+- [ ] Browser CRT shader option
+- [ ] Desktop integer scaling and pixel-perfect aspect ratio correction
+- [ ] SG-1000 subsystem support
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
 
