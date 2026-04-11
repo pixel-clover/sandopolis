@@ -53,8 +53,12 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
                 }
                 this.underrunFrames = 0;
 
-                outL[i] = l * this.fadeGain;
-                if (outR) outR[i] = r * this.fadeGain; else outL[i] = (l + r) * 0.5 * this.fadeGain;
+                if (outR) {
+                    outL[i] = l * this.fadeGain;
+                    outR[i] = r * this.fadeGain;
+                } else {
+                    outL[i] = (l + r) * 0.5 * this.fadeGain;
+                }
             } else {
                 // Underrun: fade out to silence to avoid a hard click.
                 if (this.fadeGain > 0.0) {

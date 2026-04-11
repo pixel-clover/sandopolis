@@ -2621,7 +2621,7 @@ fn renderSettingsOverlay(
             fullscreenEnabled(window),
             current_audio_mode,
             frontend_config.psg_volume,
-            if (machine.genesisIoConst()) |io| io.controller_types else .{ .six_button, .six_button },
+            if (machine.genesisIoConst()) |io| io.controller_types else .{ .three_button, .three_button },
             ui.overlay == .performance_hud,
             frontend_config.font_face,
         );
@@ -2653,8 +2653,8 @@ fn renderSettingsOverlay(
     }
     max_width = @max(max_width, overlayTextWidth(settingsActionHint(settings.currentAction()), scale));
 
-    // Body line count: 2 control lines + 25 content lines (including gaps and hint)
-    const body_lines: f32 = 27.0;
+    // Body line count: 2 control lines + 27 content lines (sections, items, gaps, hint)
+    const body_lines: f32 = 29.0;
     const stw: f32 = @floatFromInt(viewport.w);
     const sth: f32 = @floatFromInt(viewport.h);
     const settings_w = @min(max_width + padding * 2.0, stw);

@@ -518,6 +518,34 @@ pub const Machine = struct {
         return self.bus.vdp.screenWidth();
     }
 
+    pub fn screenHeight(self: *const Machine) u16 {
+        return self.bus.vdp.activeVisibleLines();
+    }
+
+    pub fn romSize(self: *const Machine) usize {
+        return self.bus.rom.len;
+    }
+
+    pub fn displayModeFlags(self: *const Machine) u32 {
+        var mode: u32 = 0;
+        if (self.bus.vdp.isH40()) mode |= 1;
+        if (self.bus.vdp.isInterlaceMode2()) mode |= 2;
+        if (self.bus.vdp.isShadowHighlightEnabled()) mode |= 4;
+        return mode;
+    }
+
+    pub fn setButton(self: *Machine, port: usize, button: u16, pressed: bool) void {
+        self.bus.io.setButton(port, button, pressed);
+    }
+
+    pub fn setControllerType(self: *Machine, port: usize, ct: Io.ControllerType) void {
+        self.bus.io.setControllerType(port, ct);
+    }
+
+    pub fn controllerType(self: *const Machine, port: usize) Io.ControllerType {
+        return self.bus.io.controller_types[port];
+    }
+
     pub fn romMetadata(self: *const Machine) RomMetadata {
         const rom = self.bus.rom;
         const has_header = rom.len >= 0x200;
@@ -1087,4 +1115,45 @@ test "machine reset clears transient hardware state and preserves console config
     try std.testing.expectEqual(@as(u32, 0), machine.takePendingAudio().master_cycles);
     try std.testing.expectEqual(@as(u64, 0), machine.m68k_sync.master_cycles);
     try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
+}
+
+test "machine facade methods expose VDP and I/O state without direct bus access" {
+    var machine = try Machine.init(std.testing.allocator, null);
+    defer machine.deinit(std.testing.allocator);
+    machine.reset();
+
+    // screenHeight returns active visible lines (default NTSC = 224)
+    try std.testing.expectEqual(@as(u16, 224), machine.screenHeight());
+
+    // framebufferWidth returns H40 or H32 width
+    const width = machine.framebufferWidth();
+    try std.testing.expect(width == 320 or width == 256);
+
+    // romSize returns ROM byte length
+    try std.testing.expect(machine.romSize() > 0);
+
+    // displayModeFlags encodes VDP mode bits
+    const flags = machine.displayModeFlags();
+    // Bit 0 = H40, bit 1 = interlace, bit 2 = shadow/highlight
+    try std.testing.expect(flags < 8);
+
+    // setButton and controllerType round-trip
+    machine.setControllerType(0, .six_button);
+    try std.testing.expectEqual(Io.ControllerType.six_button, machine.controllerType(0));
+    machine.setControllerType(0, .three_button);
+    try std.testing.expectEqual(Io.ControllerType.three_button, machine.controllerType(0));
+
+    // setButton sets active-low bits
+    machine.setButton(0, Io.Button.A, true);
+    try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
+    machine.setButton(0, Io.Button.A, false);
+    try std.testing.expect((machine.controllerPadState(0) & Io.Button.A) != 0);
+}
+
+test "sms machine romSize facade returns ROM length" {
+    const SmsMachine = @import("sms/machine.zig").SmsMachine;
+    const rom = [_]u8{0} ** 0x4000;
+    var sms = try SmsMachine.initFromRomBytes(std.testing.allocator, &rom);
+    defer sms.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0x4000), sms.romSize());
 }

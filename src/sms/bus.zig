@@ -273,3 +273,51 @@ test "sms bus mapper page switch" {
     bus.write(0xFFFF, 3);
     try testing.expectEqual(@as(u8, 0xBB), bus.read(0x8000));
 }
+
+test "sg1000 bus uses flat rom and 1kb mirrored ram" {
+    // SG-1000: ROM direct-mapped 0x0000-0xBFFF, 1KB RAM at 0xC000 mirrored
+    var rom_buf = [_]u8{0} ** (48 * 1024);
+    rom_buf[0x0000] = 0xF3; // First byte (DI instruction)
+    rom_buf[0x4000] = 0xAA; // Byte in second 16KB
+    rom_buf[0x8000] = 0xBB; // Byte in third 16KB
+    var bus = SmsBus.init(&rom_buf);
+    bus.is_sg1000 = true;
+
+    // ROM reads are flat (no mapper)
+    try testing.expectEqual(@as(u8, 0xF3), bus.read(0x0000));
+    try testing.expectEqual(@as(u8, 0xAA), bus.read(0x4000));
+    try testing.expectEqual(@as(u8, 0xBB), bus.read(0x8000));
+
+    // RAM write at 0xC000, read back at 0xC000
+    bus.write(0xC000, 0x42);
+    try testing.expectEqual(@as(u8, 0x42), bus.read(0xC000));
+
+    // 1KB mirroring: addr & 0x03FF maps to same RAM offset
+    // 0xC000 & 0x03FF = 0x000, 0xC400 & 0x03FF = 0x000, 0xD000 & 0x03FF = 0x000
+    try testing.expectEqual(@as(u8, 0x42), bus.read(0xC400)); // same offset 0
+    try testing.expectEqual(@as(u8, 0x42), bus.read(0xD000)); // same offset 0
+    try testing.expectEqual(@as(u8, 0x42), bus.read(0xFC00)); // same offset 0
+
+    // Writing to ROM area is ignored for SG-1000
+    bus.write(0x4000, 0xFF);
+    try testing.expectEqual(@as(u8, 0xAA), bus.read(0x4000));
+
+    // Mapper register writes at 0xFFFC-0xFFFF should only affect 1KB RAM, not paging
+    bus.write(0xFFFF, 0x03);
+    try testing.expectEqual(@as(u8, 0xBB), bus.read(0x8000)); // ROM still direct-mapped
+}
+
+test "sg1000 bus 1kb ram does not alias into 8kb" {
+    // Verify SG-1000 only has 1KB RAM, not 8KB
+    var rom_buf = [_]u8{0} ** (16 * 1024);
+    var bus = SmsBus.init(&rom_buf);
+    bus.is_sg1000 = true;
+
+    // Write at offset 0 within RAM
+    bus.write(0xC000, 0xAA);
+    // Write at offset 1024 (should mirror back to offset 0)
+    bus.write(0xC400, 0xBB);
+    // Both addresses should read 0xBB (1KB mirror overwrote 0xC000)
+    try testing.expectEqual(@as(u8, 0xBB), bus.read(0xC000));
+    try testing.expectEqual(@as(u8, 0xBB), bus.read(0xC400));
+}

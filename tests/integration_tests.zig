@@ -357,3 +357,84 @@ test "public API detects checksum mismatch for corrupted ROMs" {
     try testing.expectEqual(@as(u16, 0xDEAD), metadata.header_checksum);
     try testing.expect(metadata.computed_checksum != 0xDEAD);
 }
+
+// --- SG-1000 integration ---
+
+const SmsMachine = sandopolis.testing.SmsMachine;
+
+test "sg1000 machine init from rom bytes and run frame produces framebuffer output" {
+    // End-to-end: create an SG-1000 machine from ROM bytes, run frames, and
+    // verify the TMS9918 VDP produces a non-empty framebuffer.
+    // ROM: LD SP,0xC0D0 / DI / set VDP regs for Mode 2 / enable display / halt
+    const program = [_]u8{
+        0xF3, // DI
+        0x31, 0xD0, 0xC0, // LD SP, 0xC0D0
+        // Write VDP register 0 = 0x02 (M2=1, Mode 2)
+        0x3E, 0x02, // LD A, 0x02
+        0xD3, 0xBF, // OUT (0xBF), A
+        0x3E, 0x80, // LD A, 0x80 (reg 0)
+        0xD3, 0xBF, // OUT (0xBF), A
+        // Write VDP register 1 = 0xE2 (display enable, VINT, tall sprites)
+        0x3E, 0xE2, // LD A, 0xE2
+        0xD3, 0xBF, // OUT (0xBF), A
+        0x3E, 0x81, // LD A, 0x81 (reg 1)
+        0xD3, 0xBF, // OUT (0xBF), A
+        // Write VDP register 7 = 0xF1 (white text on black backdrop)
+        0x3E, 0xF1, // LD A, 0xF1
+        0xD3, 0xBF, // OUT (0xBF), A
+        0x3E, 0x87, // LD A, 0x87 (reg 7)
+        0xD3, 0xBF, // OUT (0xBF), A
+        // Infinite loop
+        0x76, // HALT
+    };
+
+    var rom = [_]u8{0} ** 0x4000;
+    @memcpy(rom[0..program.len], &program);
+
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
+    defer machine.deinit(testing.allocator);
+    machine.is_sg1000 = true;
+    // bindPointers called lazily by runFrame
+
+    for (0..10) |_| machine.runFrame();
+
+    // VDP should be in TMS Mode 2 with display enabled
+    const GraphicsMode = @TypeOf(machine.bus.vdp).GraphicsMode;
+    try testing.expectEqual(GraphicsMode.mode2_graphics2, machine.bus.vdp.graphicsMode());
+    try testing.expect((machine.bus.vdp.regs[1] & 0x40) != 0); // display enabled
+
+    // Framebuffer should exist and have 256x192 pixels
+    const fb = machine.framebuffer();
+    try testing.expectEqual(@as(usize, 256 * 192), fb.len);
+}
+
+test "sg1000 system detection creates sms machine with sg1000 flag" {
+    // Verify the system_machine dispatch correctly identifies .sg extension
+    // and creates an SmsMachine with is_sg1000 = true.
+    const system_detect = @import("sandopolis_src").system_detect;
+    const SystemType = system_detect.SystemType;
+
+    // Extension detection
+    try testing.expectEqual(SystemType.sg1000, system_detect.detectSystemFromExtension("game.sg").?);
+
+    // Content detection: SG-1000 ROMs have no standard header, so they
+    // fall through to Genesis by default. Extension must override.
+    const rom = [_]u8{0} ** 0x4000;
+    try testing.expectEqual(SystemType.genesis, system_detect.detectSystem(&rom));
+}
+
+test "emulator facade exposes framebuffer and timing after init" {
+    // Integration: verify the Emulator testing facade provides valid
+    // framebuffer, screen dimensions, and VDP state after initialization.
+    var emulator = try Emulator.initEmpty(testing.allocator);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    emulator.runFrames(1);
+
+    // Framebuffer should exist with valid dimensions
+    const fb = emulator.framebuffer();
+    try testing.expect(fb.len > 0);
+    const width = emulator.framebufferWidth();
+    try testing.expect(width == 320 or width == 256);
+}

@@ -47,6 +47,18 @@ test "detect system from extension" {
     try testing.expect(detectSystemFromExtension("game.md") == null);
 }
 
+test "detect system from extension after zip stripping" {
+    // Regression: .sg.zip files must be detected after the .zip is stripped.
+    // The caller (system_machine.zig) strips .zip before calling this function.
+    // Verify that the stripped path is detected correctly.
+    const path = "roms/Dokidoki Penguin Land (Japan).sg.zip";
+    // After stripping .zip:
+    const effective = path[0 .. path.len - 4]; // "roms/Dokidoki Penguin Land (Japan).sg"
+    try testing.expectEqual(SystemType.sg1000, detectSystemFromExtension(effective).?);
+    // The raw .zip path should NOT match (caller must strip first)
+    try testing.expect(detectSystemFromExtension(path) == null);
+}
+
 test "detect system genesis" {
     var rom = [_]u8{0} ** 0x200;
     @memcpy(rom[0x100..0x104], "SEGA");

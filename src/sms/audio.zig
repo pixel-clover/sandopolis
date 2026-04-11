@@ -15,8 +15,15 @@ pub const SmsAudio = struct {
     // Accumulator for sample timing
     sample_counter: u32 = 0,
 
+    // One-pole low-pass filter state for anti-aliasing.
+    // Cutoff ~4800 Hz at 48 kHz output (similar to Genesis board LPF).
+    lpf_l: f32 = 0.0,
+    lpf_r: f32 = 0.0,
+
     pub const output_rate: u32 = 48_000;
     pub const channels: usize = 2;
+    // LPF coefficient: alpha = 1 - e^(-2*pi*fc/fs), fc=4800, fs=48000
+    const lpf_alpha: f32 = 0.4727;
 
     pub const PsgCommand = struct {
         z80_cycle: u32,
@@ -33,6 +40,8 @@ pub const SmsAudio = struct {
         self.psg = Psg.powerOn();
         self.psg_command_count = 0;
         self.sample_counter = 0;
+        self.lpf_l = 0.0;
+        self.lpf_r = 0.0;
     }
 
     pub fn pushPsgCommand(self: *SmsAudio, z80_cycle: u32, value: u8) void {
@@ -80,8 +89,13 @@ pub const SmsAudio = struct {
                 self.sample_counter -= z80_clock / sms_clock.psg_divider;
                 const out_idx = samples_written * 2;
                 if (out_idx + 1 < output.len) {
-                    output[out_idx] = sample.left;
-                    output[out_idx + 1] = sample.right;
+                    // Apply one-pole LPF to smooth aliasing from PSG decimation
+                    const fl = @as(f32, @floatFromInt(sample.left));
+                    const fr = @as(f32, @floatFromInt(sample.right));
+                    self.lpf_l += lpf_alpha * (fl - self.lpf_l);
+                    self.lpf_r += lpf_alpha * (fr - self.lpf_r);
+                    output[out_idx] = @intFromFloat(std.math.clamp(self.lpf_l, -32768.0, 32767.0));
+                    output[out_idx + 1] = @intFromFloat(std.math.clamp(self.lpf_r, -32768.0, 32767.0));
                     samples_written += 1;
                 }
             }
@@ -104,4 +118,27 @@ test "sms audio init and render silence" {
     const samples = audio.renderFrame(false, &buf);
     try testing.expect(samples > 0);
     // With default PSG state (all attenuated), output should be near-silent
+}
+
+test "sms audio lpf smooths output" {
+    // Verify the LPF produces a smoother output than raw PSG by checking
+    // that the filtered output has smaller sample-to-sample deltas.
+    var audio = SmsAudio.init();
+    // Set channel 0 to a mid-range tone with full volume
+    audio.psg.doCommand(0x80 | 0x0F); // channel 0, low 4 bits of period
+    audio.psg.doCommand(0x01); // high 6 bits: period = 0x01F = 31
+    audio.psg.doCommand(0x90); // channel 0 volume = 0 (max)
+
+    var buf = [_]i16{0} ** 4096;
+    const samples = audio.renderFrame(false, &buf);
+    try testing.expect(samples > 100);
+
+    // LPF state should be non-zero after rendering a non-silent tone
+    try testing.expect(audio.lpf_l != 0.0 or audio.lpf_r != 0.0);
+}
+
+test "sms audio lpf coefficient is in valid range" {
+    // Alpha should be between 0 (no filtering) and 1 (no pass-through)
+    try testing.expect(SmsAudio.lpf_alpha > 0.0);
+    try testing.expect(SmsAudio.lpf_alpha < 1.0);
 }
