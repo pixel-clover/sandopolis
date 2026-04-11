@@ -18,6 +18,7 @@ pub const SmsBus = struct {
     rom_owned: bool = false,
     source_path: ?[]const u8 = null,
     source_path_owned: bool = false,
+    is_sg1000: bool = false,
     ram: [8 * 1024]u8 = [_]u8{0} ** (8 * 1024),
     vdp: SmsVdp = SmsVdp.init(),
     input: SmsInput = SmsInput{},
@@ -107,6 +108,13 @@ pub const SmsBus = struct {
     }
 
     pub fn read(self: *const SmsBus, addr: u16) u8 {
+        // SG-1000: flat ROM up to 0xBFFF, 1KB RAM at 0xC000 mirrored
+        if (self.is_sg1000) {
+            if (addr < 0xC000) {
+                return if (addr < self.rom.len) self.rom[addr] else 0xFF;
+            }
+            return self.ram[addr & 0x03FF]; // 1KB mirrored
+        }
         if (addr < 0x0400) {
             // First 1KB: always from ROM start
             return if (addr < self.rom.len) self.rom[addr] else 0xFF;
@@ -135,6 +143,13 @@ pub const SmsBus = struct {
     }
 
     pub fn write(self: *SmsBus, addr: u16, value: u8) void {
+        // SG-1000: no mapper, 1KB RAM at 0xC000 mirrored
+        if (self.is_sg1000) {
+            if (addr >= 0xC000) {
+                self.ram[addr & 0x03FF] = value;
+            }
+            return;
+        }
         if (addr < 0x8000) {
             // ROM area: writes are ignored (no mapper in low pages)
             return;

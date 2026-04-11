@@ -2,7 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 
 /// ROM file extensions recognized inside ZIP archives.
-const rom_extensions = [_][]const u8{ ".bin", ".md", ".smd", ".gen", ".sms", ".gg" };
+const rom_extensions = [_][]const u8{ ".bin", ".md", ".smd", ".gen", ".sms", ".gg", ".sg" };
 
 /// Read a ROM file from disk. If the file is a ZIP archive (detected by "PK"
 /// magic bytes), the first entry with a recognized ROM extension is extracted

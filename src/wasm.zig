@@ -98,9 +98,10 @@ fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8) !WasmEmulat
                 .last_save_len = 0,
             };
         },
-        .sms, .gg => {
+        .sms, .gg, .sg1000 => {
             var sms = try SmsMachine.initFromRomBytes(alloc, rom_bytes);
             sms.is_game_gear = (sys == .gg);
+            sms.is_sg1000 = (sys == .sg1000);
             return .{
                 .system = .{ .sms = .{ .machine = sms } },
                 .audio_buffer = [_]i16{0} ** 8192,
@@ -438,7 +439,7 @@ export fn sandopolis_display_mode(emu: *const WasmEmulator) u32 {
 export fn sandopolis_system_type(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
         .genesis => 0,
-        .sms => |*s| if (s.machine.is_game_gear) @as(u32, 2) else 1,
+        .sms => |*s| if (s.machine.is_game_gear) @as(u32, 2) else if (s.machine.is_sg1000) @as(u32, 3) else 1,
     };
 }
 

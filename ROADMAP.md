@@ -120,7 +120,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [ ] NTSC composite video filter (Blargg's or equivalent)
 - [ ] Game Gear LCD ghosting emulation
 - [ ] Anti-dither shader
-- [ ] SG-1000 subsystem support
+- [x] SG-1000 subsystem support (TMS9918A VDP Modes 0-3, 1KB RAM bus, TMS sprite rendering)
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
 - [ ] Sega Pico subsystem support

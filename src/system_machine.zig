@@ -51,10 +51,14 @@ pub const SystemMachine = union(enum) {
             // Read the file (with ZIP extraction support) and detect system type.
             const rom_data = try rom_loader.readRomFile(allocator, path, 8 * 1024 * 1024);
             const effective_path = effectiveRomPath(path);
-            const sys = system_detect.detectSystem(rom_data);
-            if (sys == .sms or sys == .gg) {
+            // Extension-based detection takes priority (e.g. .sg for SG-1000).
+            // Use effective_path (.zip stripped) so ".sg.zip" resolves to ".sg".
+            const sys = system_detect.detectSystemFromExtension(effective_path) orelse
+                system_detect.detectSystem(rom_data);
+            if (sys == .sms or sys == .gg or sys == .sg1000) {
                 var sms = try SmsMachine.initFromRomBytes(allocator, rom_data);
                 sms.is_game_gear = (sys == .gg);
+                sms.is_sg1000 = (sys == .sg1000);
                 allocator.free(rom_data);
                 try sms.bus.setSourcePath(allocator, effective_path);
                 sms.bindPointers();
@@ -87,7 +91,7 @@ pub const SystemMachine = union(enum) {
     pub fn systemType(self: *const SystemMachine) SystemType {
         return switch (self.*) {
             .genesis => .genesis,
-            .sms => |*s| if (s.is_game_gear) .gg else .sms,
+            .sms => |*s| if (s.is_game_gear) .gg else if (s.is_sg1000) .sg1000 else .sms,
         };
     }
 

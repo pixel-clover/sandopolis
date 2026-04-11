@@ -1439,3 +1439,58 @@ test "zabu palette investigation: detect bulk cram rewrites during scene transit
     // hardware behavior during scene transitions.
     try testing.expectEqual(@as(usize, 0), frames_with_inverted_palette);
 }
+
+// --- SG-1000 boot tests (local ROMs, skipped if not present) ---
+
+const SmsMachine = sandopolis.testing.SmsMachine;
+
+fn initSg1000(rom_path: []const u8) !SmsMachine {
+    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, rom_path, 1024 * 1024) catch |err| {
+        return err;
+    };
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);
+    testing.allocator.free(rom_data);
+    machine.is_sg1000 = true;
+    // Do NOT call bindPointers() here: the struct will be returned by value
+    // and moved to the caller's stack. runFrame() calls bindPointers() lazily
+    // once the struct is at its final address.
+    return machine;
+}
+
+test "sg1000 dragon wang boots and produces visible output" {
+    var machine = initSg1000("roms/Dragon Wang (Japan) (Alt).sg") catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer machine.deinit(testing.allocator);
+
+    for (0..300) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000 and pixel != 0x00000000) non_black_pixels += 1;
+    }
+
+    try testing.expect(non_black_pixels > 100);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "sg1000 hustle chumy boots and produces visible output" {
+    var machine = initSg1000("roms/Hustle Chumy (Japan).sg") catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer machine.deinit(testing.allocator);
+
+    // Hustle Chumy has a longer title screen; give it more frames
+    for (0..180) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000 and pixel != 0x00000000) non_black_pixels += 1;
+    }
+    // Some SG-1000 games may render fewer visible pixels on title screens
+    try testing.expect(non_black_pixels > 10);
+}
