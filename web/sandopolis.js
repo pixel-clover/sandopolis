@@ -936,7 +936,12 @@ async function loadRom(file) {
         return;
     }
     new Uint8Array(e.memory.buffer).set(romBytes, romPtr);
-    emu = e.sandopolis_create(romPtr, romBytes.length);
+    // Detect system from file extension: 0=auto, 1=SMS, 2=GG, 3=SG-1000
+    const name = (file.name || "").toLowerCase();
+    const systemHint = name.endsWith(".sg") || name.endsWith(".sg.zip") ? 3
+        : name.endsWith(".gg") || name.endsWith(".gg.zip") ? 2
+        : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
+    emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
     e.sandopolis_free(romPtr, romBytes.length);
     if (!emu) {
         setStatus("Failed to initialize emulator.");

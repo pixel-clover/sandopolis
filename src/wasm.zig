@@ -76,12 +76,19 @@ const WasmAudioSink = struct {
     }
 };
 
-fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8) !WasmEmulator {
+fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8, system_hint: u8) !WasmEmulator {
     // Extract ROM from ZIP if needed.
     const rom_bytes = try rom_loader.extractRomBytes(alloc, raw_bytes);
     defer alloc.free(rom_bytes);
 
-    const sys = system_detect.detectSystem(rom_bytes);
+    // Use the system hint from JS if provided (e.g. from file extension);
+    // fall back to content-based detection.
+    const sys: system_detect.SystemType = switch (system_hint) {
+        1 => .sms,
+        2 => .gg,
+        3 => .sg1000,
+        else => system_detect.detectSystem(rom_bytes),
+    };
     switch (sys) {
         .genesis => {
             var machine = try Machine.initFromRomBytes(alloc, rom_bytes);
@@ -126,9 +133,10 @@ export fn sandopolis_free(ptr: [*]u8, len: usize) void {
 
 // Lifecycle
 
-export fn sandopolis_create(rom_ptr: [*]const u8, rom_len: usize) ?*WasmEmulator {
+/// Create an emulator instance. `system_hint`: 0=auto-detect, 1=SMS, 2=GG, 3=SG-1000.
+export fn sandopolis_create(rom_ptr: [*]const u8, rom_len: usize, system_hint: u8) ?*WasmEmulator {
     const emu = allocator.create(WasmEmulator) catch return null;
-    emu.* = initWasmEmulator(allocator, rom_ptr[0..rom_len]) catch {
+    emu.* = initWasmEmulator(allocator, rom_ptr[0..rom_len], system_hint) catch {
         allocator.destroy(emu);
         return null;
     };
@@ -620,7 +628,7 @@ test "wasm emulator creation resets the machine before the first frame" {
     });
     defer test_allocator.free(rom);
 
-    var emu = try initWasmEmulator(test_allocator, rom);
+    var emu = try initWasmEmulator(test_allocator, rom, 0);
     defer {
         switch (emu.system) {
             .genesis => |*g| g.machine.deinit(test_allocator),
