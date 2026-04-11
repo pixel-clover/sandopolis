@@ -13,10 +13,10 @@
 [![Play Online](https://img.shields.io/badge/play%20online-browser-007ec6?style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
 <br>
-[![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
+[![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
-A portable multi-system Sega emulator for Genesis, Master System, and Game Gear
+A portable multi-system Sega emulator for Genesis, Master System, Game Gear, and SG-1000
 
 </div>
 
@@ -44,7 +44,7 @@ Footage of Sandopolis running a few games:
 
 ### Key Features
 
-- Accurate Sega Genesis/Mega Drive, Master System, and Game Gear emulation
+- Accurate Sega Genesis/Mega Drive, Master System, Game Gear, and SG-1000 emulation
 - Very portable; can be built and run on any platform that Zig supports
 - Very configurable, including gameplay input, frontend hotkeys, and rendering settings
 - Has a permissive license that allows commercial use
@@ -123,13 +123,13 @@ Run `sandopolis --help` to see the list of available command-line options.
 Example output:
 
 ```
-A portable multi-system Sega emulator for Genesis, Master System, and Game Gear
+A portable multi-system Sega emulator for Genesis, Master System, Game Gear, and SG-1000
 
 Usage:
   sandopolis [flags] [rom_file]
 
 Arguments:
-  rom_file  Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg) or a .zip archive containing one (optional)
+  rom_file  Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg, .sg) or a .zip archive containing one (optional)
 
 Flags:
   -h, --help            Shows help information for this command [Bool] (default: false)

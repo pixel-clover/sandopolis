@@ -6,6 +6,7 @@ pub const SystemType = enum {
     genesis,
     sms,
     gg,
+    sg1000,
 };
 
 /// Detect whether a ROM belongs to a Genesis or SMS system.
@@ -24,6 +25,26 @@ pub fn detectSystem(rom: []const u8) SystemType {
     if (rom.len >= 0x104 and std.mem.eql(u8, rom[0x100..0x104], "SEGA")) return .genesis;
     // Default to Genesis for unknown ROMs
     return .genesis;
+}
+
+/// Detect system type from file extension alone. Returns null if the
+/// extension does not uniquely identify a system (e.g. ".bin" could be
+/// Genesis or SMS).
+pub fn detectSystemFromExtension(path: []const u8) ?SystemType {
+    const ext = std.fs.path.extension(path);
+    if (std.ascii.eqlIgnoreCase(ext, ".sg")) return .sg1000;
+    if (std.ascii.eqlIgnoreCase(ext, ".gg")) return .gg;
+    if (std.ascii.eqlIgnoreCase(ext, ".sms")) return .sms;
+    return null;
+}
+
+test "detect system from extension" {
+    try testing.expectEqual(SystemType.sg1000, detectSystemFromExtension("game.sg").?);
+    try testing.expectEqual(SystemType.sg1000, detectSystemFromExtension("path/to/game.SG").?);
+    try testing.expectEqual(SystemType.gg, detectSystemFromExtension("game.gg").?);
+    try testing.expectEqual(SystemType.sms, detectSystemFromExtension("game.sms").?);
+    try testing.expect(detectSystemFromExtension("game.bin") == null);
+    try testing.expect(detectSystemFromExtension("game.md") == null);
 }
 
 test "detect system genesis" {

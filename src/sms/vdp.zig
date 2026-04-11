@@ -26,6 +26,7 @@ pub const SmsVdp = struct {
     scanline: u16 = 0,
     pal_mode: bool = false,
     is_game_gear: bool = false,
+    is_sg1000: bool = false,
     gg_cram_latch: u8 = 0, // GG CRAM even-byte latch for two-byte writes
 
     pub const framebuffer_width: usize = 256;
@@ -37,6 +38,53 @@ pub const SmsVdp = struct {
     const status_vint: u8 = 0x80;
     const status_sprite_overflow: u8 = 0x40;
     const status_sprite_collision: u8 = 0x20;
+
+    // TMS9918A / SMS display mode classification
+    pub const GraphicsMode = enum {
+        mode4, // SMS Mode 4 (standard SMS/GG)
+        mode0_text, // TMS9918 Mode 0: 40x24 text, 6x8 chars, no sprites
+        mode1_graphics1, // TMS9918 Mode 1: 32x24 tiles, 1 color per 8 tiles
+        mode2_graphics2, // TMS9918 Mode 2: 32x24 tiles, per-row colors, 3 pattern groups
+        mode3_multicolor, // TMS9918 Mode 3: 64x48 colored blocks
+    };
+
+    /// Determine the active graphics mode from VDP register bits.
+    /// M4 (reg0 bit 2) selects SMS Mode 4. For TMS9918 modes:
+    /// M1 (reg1 bit 4), M2 (reg0 bit 1), M3 (reg1 bit 3).
+    pub fn graphicsMode(self: *const SmsVdp) GraphicsMode {
+        // SG-1000 uses a TMS9918A where register 0 bit 2 is unused (not M4).
+        // The SMS VDP repurposed that bit for Mode 4. Ignore it for SG-1000.
+        if (!self.is_sg1000 and (self.regs[0] & 0x04) != 0) return .mode4;
+        if ((self.regs[1] & 0x10) != 0) return .mode0_text;
+        if ((self.regs[0] & 0x02) != 0) return .mode2_graphics2;
+        if ((self.regs[1] & 0x08) != 0) return .mode3_multicolor;
+        return .mode1_graphics1;
+    }
+
+    // Fixed TMS9918A 16-color palette (ARGB format)
+    pub const tms_palette = [16]u32{
+        0x00000000, // 0: transparent (rendered as black)
+        0xFF000000, // 1: black
+        0xFF21C842, // 2: medium green
+        0xFF5EDC78, // 3: light green
+        0xFF5455ED, // 4: dark blue
+        0xFF7D76FC, // 5: light blue
+        0xFFD4524D, // 6: dark red
+        0xFF42EBF5, // 7: cyan
+        0xFFFC5554, // 8: medium red
+        0xFFFF7978, // 9: light red
+        0xFFD4C154, // 10: dark yellow
+        0xFFE6CE80, // 11: light yellow
+        0xFF21B03B, // 12: dark green
+        0xFFC95BBA, // 13: magenta
+        0xFFCCCCCC, // 14: gray
+        0xFFFFFFFF, // 15: white
+    };
+
+    /// Look up a TMS9918A fixed palette color by index.
+    pub fn tmsPaletteColor(index: u4) u32 {
+        return tms_palette[index];
+    }
 
     pub fn init() SmsVdp {
         return .{};
@@ -374,6 +422,14 @@ pub const SmsVdp = struct {
         var line_buf: [framebuffer_width]u32 = undefined;
         var priority_buf: [framebuffer_width]bool = [_]bool{false} ** framebuffer_width;
 
+        // TMS9918 modes use different rendering paths
+        if (self.graphicsMode() != .mode4) {
+            self.renderScanlineTms(line, &line_buf);
+            const offset = @as(usize, line) * framebuffer_width;
+            @memcpy(self.framebuffer[offset..][0..framebuffer_width], &line_buf);
+            return;
+        }
+
         // Fill with backdrop
         const bg = self.backdropColor();
         @memset(&line_buf, bg);
@@ -402,6 +458,239 @@ pub const SmsVdp = struct {
             @memcpy(self.framebuffer[offset..][0..framebuffer_width], &line_buf);
         }
     }
+
+    // -- TMS9918A rendering (SG-1000) --
+
+    fn renderScanlineTms(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32) void {
+        // Backdrop: register 7 lower nibble (TMS palette index)
+        const bd_color: u4 = @truncate(self.regs[7] & 0x0F);
+        const bg = if (bd_color == 0) @as(u32, 0xFF000000) else tmsPaletteColor(bd_color);
+        @memset(line_buf, bg);
+
+        switch (self.graphicsMode()) {
+            .mode2_graphics2 => self.renderBackgroundTmsMode2(line, line_buf),
+            .mode1_graphics1 => self.renderBackgroundTmsMode1(line, line_buf),
+            .mode0_text => self.renderBackgroundTmsMode0(line, line_buf),
+            .mode3_multicolor => self.renderBackgroundTmsMode3(line, line_buf),
+            .mode4 => unreachable,
+        }
+
+        // TMS sprites (all modes except Mode 0/text have sprites)
+        if (self.graphicsMode() != .mode0_text) {
+            self.renderSpritesTms(line, line_buf);
+        }
+    }
+
+    /// Mode 2 (Graphics II): 32x24 tiles, 3 pattern groups, per-row color table.
+    /// Used by ~95% of SG-1000 games.
+    fn renderBackgroundTmsMode2(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32) void {
+        const tile_row = line / 8;
+        const fine_y = line & 7;
+        // Name table base: register 2, bits 0-3, shifted left by 10
+        const name_base: u16 = (@as(u16, self.regs[2]) & 0x0F) << 10;
+        // Pattern generator base: register 4 bit 2 selects 0x0000 or 0x2000
+        // (masking with 0x04 then shift to get actual base; top bit acts as mask)
+        const pg_base: u16 = (@as(u16, self.regs[4]) & 0x04) << 11; // 0x0000 or 0x2000
+        const pg_mask: u16 = ((@as(u16, self.regs[4]) & 0x03) << 8) | 0xFF;
+        // Color table base: register 3 upper bits; lower bits act as mask
+        const ct_base: u16 = (@as(u16, self.regs[3]) & 0x80) << 6; // 0x0000 or 0x2000
+        const ct_mask: u16 = ((@as(u16, self.regs[3]) & 0x7F) << 3) | 0x07;
+        // Screen divided into thirds (rows 0-7, 8-15, 16-23)
+        const group_offset: u16 = (tile_row / 8) * 256;
+
+        for (0..32) |col_idx| {
+            const col: u16 = @intCast(col_idx);
+            const name_addr = name_base + tile_row * 32 + col;
+            const tile: u16 = self.vram[name_addr & 0x3FFF];
+            const pattern_index = (tile + group_offset) & pg_mask;
+            const pg_addr = pg_base + pattern_index * 8 + fine_y;
+            const ct_addr = ct_base + ((tile + group_offset) & ct_mask) * 8 + fine_y;
+            const pattern_byte = self.vram[pg_addr & 0x3FFF];
+            const color_byte = self.vram[ct_addr & 0x3FFF];
+            const fg_idx: u4 = @truncate(color_byte >> 4);
+            const bg_idx: u4 = @truncate(color_byte & 0x0F);
+            const fg = if (fg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(fg_idx);
+            const bg_col = if (bg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(bg_idx);
+
+            const x_base = col * 8;
+            inline for (0..8) |bit| {
+                const mask = @as(u8, 0x80) >> @intCast(bit);
+                const pixel = if ((pattern_byte & mask) != 0) fg else bg_col;
+                line_buf[x_base + bit] = pixel;
+            }
+        }
+    }
+
+    /// Mode 1 (Graphics I): 32x24 tiles, one pattern set, color per 8 tiles.
+    fn renderBackgroundTmsMode1(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32) void {
+        const tile_row = line / 8;
+        const fine_y = line & 7;
+        const name_base: u16 = (@as(u16, self.regs[2]) & 0x0F) << 10;
+        const pg_base: u16 = (@as(u16, self.regs[4]) & 0x07) << 11;
+        const ct_base: u16 = @as(u16, self.regs[3]) << 6;
+
+        for (0..32) |col_idx| {
+            const col: u16 = @intCast(col_idx);
+            const name_addr = name_base + tile_row * 32 + col;
+            const tile: u16 = self.vram[name_addr & 0x3FFF];
+            const pg_addr = pg_base + tile * 8 + fine_y;
+            // Color table: one byte per 8 tiles
+            const ct_addr = ct_base + tile / 8;
+            const pattern_byte = self.vram[pg_addr & 0x3FFF];
+            const color_byte = self.vram[ct_addr & 0x3FFF];
+            const fg_idx: u4 = @truncate(color_byte >> 4);
+            const bg_idx: u4 = @truncate(color_byte & 0x0F);
+            const fg = if (fg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(fg_idx);
+            const bg_col = if (bg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(bg_idx);
+
+            const x_base = col * 8;
+            inline for (0..8) |bit| {
+                const mask = @as(u8, 0x80) >> @intCast(bit);
+                line_buf[x_base + bit] = if ((pattern_byte & mask) != 0) fg else bg_col;
+            }
+        }
+    }
+
+    /// Mode 0 (Text): 40x24 text, 6x8 characters, no sprites.
+    fn renderBackgroundTmsMode0(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32) void {
+        const tile_row = line / 8;
+        const fine_y = line & 7;
+        const name_base: u16 = (@as(u16, self.regs[2]) & 0x0F) << 10;
+        const pg_base: u16 = (@as(u16, self.regs[4]) & 0x07) << 11;
+        const fg_idx: u4 = @truncate(self.regs[7] >> 4);
+        const bg_idx: u4 = @truncate(self.regs[7] & 0x0F);
+        const fg = if (fg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(fg_idx);
+        const bg_col = if (bg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(bg_idx);
+
+        // 40 columns of 6-pixel-wide chars; total = 240 pixels, centered with 8px border each side
+        for (0..40) |col_idx| {
+            const col: u16 = @intCast(col_idx);
+            const name_addr = name_base + tile_row * 40 + col;
+            const tile: u16 = self.vram[name_addr & 0x3FFF];
+            const pg_addr = pg_base + tile * 8 + fine_y;
+            const pattern_byte = self.vram[pg_addr & 0x3FFF];
+
+            const x_base = 8 + col * 6; // 8px left border
+            inline for (0..6) |bit| {
+                const mask = @as(u8, 0x80) >> @intCast(bit);
+                if (x_base + bit < framebuffer_width) {
+                    line_buf[x_base + bit] = if ((pattern_byte & mask) != 0) fg else bg_col;
+                }
+            }
+        }
+    }
+
+    /// Mode 3 (Multicolor): 64x48 colored blocks (4x4 pixel blocks).
+    fn renderBackgroundTmsMode3(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32) void {
+        const tile_row = line / 8;
+        const sub_row = (line / 4) & 1; // which half of the 8-pixel-tall row
+        const name_base: u16 = (@as(u16, self.regs[2]) & 0x0F) << 10;
+        const pg_base: u16 = (@as(u16, self.regs[4]) & 0x07) << 11;
+
+        for (0..32) |col_idx| {
+            const col: u16 = @intCast(col_idx);
+            const name_addr = name_base + tile_row * 32 + col;
+            const tile: u16 = self.vram[name_addr & 0x3FFF];
+            // Pattern byte encodes 2 colors (upper=left, lower=right) for this 4px sub-row
+            const pg_addr = pg_base + tile * 8 + (tile_row & 3) * 2 + sub_row;
+            const color_byte = self.vram[pg_addr & 0x3FFF];
+            const left_idx: u4 = @truncate(color_byte >> 4);
+            const right_idx: u4 = @truncate(color_byte & 0x0F);
+            const left = if (left_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(left_idx);
+            const right = if (right_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(right_idx);
+
+            const x_base = col * 8;
+            line_buf[x_base + 0] = left;
+            line_buf[x_base + 1] = left;
+            line_buf[x_base + 2] = left;
+            line_buf[x_base + 3] = left;
+            line_buf[x_base + 4] = right;
+            line_buf[x_base + 5] = right;
+            line_buf[x_base + 6] = right;
+            line_buf[x_base + 7] = right;
+        }
+    }
+
+    /// TMS9918 sprite rendering (shared by Modes 1, 2, 3).
+    fn renderSpritesTms(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32) void {
+        const sat_base: u16 = (@as(u16, self.regs[5]) & 0x7F) << 7;
+        const sg_base: u16 = (@as(u16, self.regs[6]) & 0x07) << 11;
+        const is_16x16 = (self.regs[1] & 0x02) != 0;
+        const is_magnified = (self.regs[1] & 0x01) != 0;
+        const sprite_height: u16 = if (is_16x16) 16 else 8;
+        const display_height: u16 = if (is_magnified) sprite_height * 2 else sprite_height;
+
+        var sprite_drawn: [framebuffer_width]bool = [_]bool{false} ** framebuffer_width;
+        var sprites_on_line: usize = 0;
+
+        var sprite_idx: usize = 0;
+        while (sprite_idx < 32) : (sprite_idx += 1) {
+            // TMS9918 SAT: 4 bytes per sprite (Y, X, pattern, color/EC)
+            const sat_entry = sat_base + @as(u16, @intCast(sprite_idx)) * 4;
+            const y_raw = self.vram[sat_entry & 0x3FFF];
+            if (y_raw == 0xD0) break;
+            const sprite_y: i16 = @as(i16, y_raw) + 1;
+            if (sprite_y > @as(i16, @intCast(line)) or sprite_y + @as(i16, @intCast(display_height)) <= @as(i16, @intCast(line)))
+                continue;
+
+            sprites_on_line += 1;
+            if (sprites_on_line > 4) {
+                self.status |= status_sprite_overflow;
+                break;
+            }
+
+            const sprite_x_raw = self.vram[(sat_entry + 1) & 0x3FFF];
+            const pattern = self.vram[(sat_entry + 2) & 0x3FFF];
+            const attr = self.vram[(sat_entry + 3) & 0x3FFF];
+            const color_idx: u4 = @truncate(attr & 0x0F);
+            const early_clock = (attr & 0x80) != 0;
+            const sprite_x: i16 = @as(i16, sprite_x_raw) - if (early_clock) @as(i16, 32) else 0;
+
+            if (color_idx == 0) continue;
+            const color = tmsPaletteColor(color_idx);
+
+            const row_in_sprite: u16 = if (is_magnified)
+                (@as(u16, @intCast(line)) -| @as(u16, @intCast(@max(sprite_y, 0)))) / 2
+            else
+                @as(u16, @intCast(line)) -| @as(u16, @intCast(@max(sprite_y, 0)));
+
+            const effective_pattern: u16 = if (is_16x16) @as(u16, pattern) & 0xFC else pattern;
+            const cols: usize = if (is_16x16) 2 else 1;
+
+            for (0..cols) |col| {
+                const pg_offset: u16 = if (is_16x16)
+                    effective_pattern * 8 + @as(u16, @intCast(col)) * 16 + row_in_sprite
+                else
+                    effective_pattern * 8 + row_in_sprite;
+                const pg_addr = sg_base + pg_offset;
+                const pattern_byte = self.vram[pg_addr & 0x3FFF];
+
+                for (0..8) |bit| {
+                    const mask = @as(u8, 0x80) >> @intCast(bit);
+                    if ((pattern_byte & mask) == 0) continue;
+
+                    const px_offset: i16 = @intCast(col * 8 + bit);
+                    const raw_px = sprite_x + if (is_magnified) px_offset * 2 else px_offset;
+
+                    const pixels_to_draw: usize = if (is_magnified) 2 else 1;
+                    for (0..pixels_to_draw) |sub| {
+                        const px = raw_px + @as(i16, @intCast(sub));
+                        if (px >= 0 and px < framebuffer_width) {
+                            const ux: usize = @intCast(px);
+                            if (sprite_drawn[ux]) {
+                                self.status |= status_sprite_collision;
+                            } else {
+                                line_buf[ux] = color;
+                                sprite_drawn[ux] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // -- Mode 4 rendering (SMS/GG) --
 
     fn renderBackground(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32, priority_buf: *[framebuffer_width]bool) void {
         const name_base = self.nameTableBase();
@@ -933,4 +1222,44 @@ test "gg vdp display height is always 144" {
     vdp.regs[1] = 0x98; // M1=1, M3=1
     // GG display height should still return 144
     try testing.expectEqual(@as(u16, 144), vdp.displayHeight());
+}
+
+test "displayMode returns mode4 when M4 bit is set" {
+    var vdp = SmsVdp.init();
+    vdp.regs[0] = 0x04; // M4=1
+    try testing.expectEqual(SmsVdp.GraphicsMode.mode4, vdp.graphicsMode());
+}
+
+test "displayMode returns mode2_graphics2 when M2 bit is set" {
+    var vdp = SmsVdp.init();
+    vdp.regs[0] = 0x02; // M2=1, M4=0
+    vdp.regs[1] = 0x00;
+    try testing.expectEqual(SmsVdp.GraphicsMode.mode2_graphics2, vdp.graphicsMode());
+}
+
+test "displayMode returns mode0_text when M1 bit is set" {
+    var vdp = SmsVdp.init();
+    vdp.regs[0] = 0x00; // M4=0, M2=0
+    vdp.regs[1] = 0x10; // M1=1
+    try testing.expectEqual(SmsVdp.GraphicsMode.mode0_text, vdp.graphicsMode());
+}
+
+test "displayMode returns mode3_multicolor when M3 bit is set" {
+    var vdp = SmsVdp.init();
+    vdp.regs[0] = 0x00;
+    vdp.regs[1] = 0x08; // M3=1
+    try testing.expectEqual(SmsVdp.GraphicsMode.mode3_multicolor, vdp.graphicsMode());
+}
+
+test "displayMode returns mode1_graphics1 as default TMS mode" {
+    var vdp = SmsVdp.init();
+    vdp.regs[0] = 0x00;
+    vdp.regs[1] = 0x00;
+    try testing.expectEqual(SmsVdp.GraphicsMode.mode1_graphics1, vdp.graphicsMode());
+}
+
+test "tms palette has 16 entries with correct black and white" {
+    try testing.expectEqual(@as(u32, 0xFF000000), SmsVdp.tmsPaletteColor(1)); // black
+    try testing.expectEqual(@as(u32, 0xFFFFFFFF), SmsVdp.tmsPaletteColor(15)); // white
+    try testing.expect(SmsVdp.tms_palette[0] != SmsVdp.tms_palette[1]); // transparent != black
 }

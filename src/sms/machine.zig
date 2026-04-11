@@ -13,6 +13,7 @@ pub const SmsMachine = struct {
     audio: SmsAudio = SmsAudio.init(),
     pal_mode: bool = false,
     is_game_gear: bool = false,
+    is_sg1000: bool = false,
     z80_cycle_count: u32 = 0,
 
     // Audio buffer for frame output
@@ -40,9 +41,11 @@ pub const SmsMachine = struct {
     /// the SmsMachine reaches its final memory location (e.g., after being
     /// assigned into a heap-allocated WasmEmulator).
     pub fn bindPointers(self: *SmsMachine) void {
-        // Propagate GG flag to VDP and I/O
+        // Propagate variant flags to VDP and I/O
         self.bus.vdp.is_game_gear = self.is_game_gear;
         self.bus.io.is_game_gear = self.is_game_gear;
+        self.bus.vdp.is_sg1000 = self.is_sg1000;
+        self.bus.is_sg1000 = self.is_sg1000;
 
         // Fix SmsBus internal pointers (io.vdp, io.input)
         self.bus.rebindPointers();
@@ -147,8 +150,8 @@ pub const SmsMachine = struct {
             self.z80.clearIrq();
         }
 
-        // Handle pause button NMI (SMS only; GG START is read via port 0x00)
-        if (!self.is_game_gear and self.bus.input.pause_pressed) {
+        // Handle pause button NMI (SMS only; GG and SG-1000 do not use NMI pause)
+        if (!self.is_game_gear and !self.is_sg1000 and self.bus.input.pause_pressed) {
             self.z80.assertNmi();
             self.bus.input.pause_pressed = false;
         }

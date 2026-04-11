@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta content="width=device-width, initial-scale=1" name="viewport">
-    <title>Sandopolis - Sega Genesis / Master System / Game Gear Emulator</title>
+    <title>Sandopolis - Sega Genesis / Master System / Game Gear / SG-1000 Emulator</title>
     <style>
         * {
             margin: 0;
@@ -259,7 +259,7 @@
         }
 
         #screen.aspect-native {
-            aspect-ratio: 320 / 224;
+            /* Set dynamically via JS based on emulated system resolution */
         }
 
         #screen.integer-scale {
@@ -301,7 +301,7 @@
         }
 
         #screen-container.fullscreen #screen.aspect-native {
-            aspect-ratio: 320/224;
+            /* Set dynamically via JS based on emulated system resolution */
         }
 
         /* CRT bezel overlay */
@@ -1093,14 +1093,14 @@
 
 <header>
     <h1>SANDOPOLIS</h1>
-    <span class="subtitle">Sega Genesis / Master System / Game Gear Emulator</span>
+    <span class="subtitle">Sega Genesis / Master System / Game Gear / SG-1000 Emulator</span>
     <br>
     <span class="era-tag">8-BIT</span> <span class="era-tag">16-BIT</span>
 </header>
 
 <div id="drop-zone">
     <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
-    <input accept=".bin,.md,.smd,.gen,.sms,.gg,.zip" id="rom-input" type="file">
+    <input accept=".bin,.md,.smd,.gen,.sms,.gg,.sg,.zip" id="rom-input" type="file">
     <select id="recent-roms" style="display:none">
         <option value="">Recent ROMs...</option>
     </select>
@@ -1161,7 +1161,7 @@
         <select id="aspect-mode" title="Display aspect ratio mode">
             <option value="fit" title="Correct 4:3 TV aspect ratio">4:3 Fit</option>
             <option value="stretch" title="Stretch to fill the screen area">Stretch</option>
-            <option value="native" title="Raw pixel dimensions without correction">Native (320x224)</option>
+            <option value="native" title="Raw pixel dimensions without correction">Native</option>
         </select>
         <label>Scaling</label>
         <select id="scale-mode" title="Pixel scaling mode">

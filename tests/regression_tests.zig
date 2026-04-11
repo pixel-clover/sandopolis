@@ -701,6 +701,80 @@ test "immediate cram write updates palette before fifo drains" {
     try testing.expectEqual(@as(u8, 0xEE), emulator.handle.machine.bus.vdp.cram[0x0003]);
 }
 
+test "bulk cram rewrite near vblank does not leave stale palette in next frame" {
+    // Scene transitions (e.g. Zabu) rewrite all 64 CRAM palette entries near
+    // the end of the active display. If the palette update straddles the VBlank
+    // boundary and the emulator's CRAM handling is incorrect, the next rendered
+    // frame could show corrupted (inverted/"photo negative") colors for one or
+    // more scanlines.
+    //
+    // This test writes a known palette during VBlank, runs a frame so the VDP
+    // renders with it, then overwrites the entire palette with new colors right
+    // before the next VBlank and checks that the frame AFTER uses only the new
+    // palette values (no stale entries from the old palette).
+    const rom = try seedResetNopsRom(testing.allocator, 1);
+    defer testing.allocator.free(rom);
+
+    var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    // Enable display (register 1, bit 6)
+    emulator.setVdpRegister(1, 0x44);
+    emulator.setVdpRegister(15, 2); // auto-increment = 2
+
+    // Run a few frames to stabilize
+    emulator.runFrames(5);
+
+    // Phase 1: Write "old" palette (all entries = blue 0x0E00)
+    emulator.configureVdpDataPort(0x03, 0x0000, 2); // CRAM write, addr 0, inc 2
+    for (0..64) |_| {
+        emulator.writeVdpData(0x0E00); // blue
+    }
+
+    // Run one frame so VDP renders with the blue palette
+    emulator.runFrame();
+
+    // Phase 2: Overwrite entire palette with red (0x000E) near the VBlank edge.
+    // We advance to the last few active scanlines, then do the bulk rewrite.
+    // Advance partway into the frame (up to ~scanline 200 out of 224 active).
+    const master_cycles_per_line = 3420;
+    emulator.runMasterSlice(200 * master_cycles_per_line);
+
+    // Now rewrite all 64 CRAM entries with red
+    emulator.configureVdpDataPort(0x03, 0x0000, 2);
+    for (0..64) |_| {
+        emulator.writeVdpData(0x000E); // red
+    }
+
+    // Finish this frame and render one more full frame
+    emulator.runFrame();
+    emulator.runFrame();
+
+    // Verify: all 64 CRAM entries should be red (0x000E)
+    const vdp = &emulator.handle.machine.bus.vdp;
+    for (0..64) |i| {
+        const hi = vdp.cram[i * 2];
+        const lo = vdp.cram[i * 2 + 1];
+        const color: u16 = (@as(u16, hi) << 8) | lo;
+        try testing.expectEqual(@as(u16, 0x000E), color);
+    }
+
+    // Also verify the rendered framebuffer does not contain blue pixels.
+    // Backdrop (palette 0, entry 0) should be red, so any blue pixel would
+    // indicate a stale palette reference.
+    const fb = emulator.framebuffer();
+    var blue_pixels: usize = 0;
+    for (fb) |pixel| {
+        // ARGB format: blue channel at bits 0-7
+        const r = (pixel >> 16) & 0xFF;
+        const b = pixel & 0xFF;
+        // Old blue palette: high B, low R. New red: high R, low B.
+        if (b > 0x80 and r < 0x20) blue_pixels += 1;
+    }
+    try testing.expectEqual(@as(usize, 0), blue_pixels);
+}
+
 test "z80 executes proportionally within a long scheduler slice" {
     // With finer-grained Z80 burst slicing, the Z80 should execute
     // partway through a long slice, not only at the end.  A Z80 NOP
@@ -1254,4 +1328,169 @@ test "golden axe boots and produces visible output" {
     }
     try testing.expect(non_black_pixels > 0);
     try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
+}
+
+// --- Zabu palette investigation (local ROM, skipped if ROM not present) ---
+
+const zabu_rom_path = "/tmp/zabu/Zabu_demo_2026-01-24.bin";
+
+fn cramSnapshot(vdp: anytype) [128]u8 {
+    var snap: [128]u8 = undefined;
+    for (0..128) |i| {
+        snap[i] = vdp.cram[i];
+    }
+    return snap;
+}
+
+fn cramDiffCount(a: [128]u8, b: [128]u8) usize {
+    var diff: usize = 0;
+    for (0..64) |i| {
+        if (a[i * 2] != b[i * 2] or a[i * 2 + 1] != b[i * 2 + 1]) diff += 1;
+    }
+    return diff;
+}
+
+test "zabu palette investigation: detect bulk cram rewrites during scene transitions" {
+    // This test runs the Zabu demo ROM for 600 frames, capturing CRAM state
+    // at each frame to identify scene transitions (bulk palette rewrites).
+    // For each transition frame, it verifies that the framebuffer does not
+    // contain pixels from a fully inverted ("photo negative") palette.
+    //
+    // Skipped if the ROM is not present (CI does not have local ROMs).
+    var emulator = Emulator.init(testing.allocator, zabu_rom_path) catch |err| {
+        if (err == error.FileNotFound) return; // skip on CI
+        return err;
+    };
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+
+    var prev_cram: [128]u8 = cramSnapshot(&emulator.handle.machine.bus.vdp);
+    const total_frames: usize = 600;
+    var transition_count: usize = 0;
+    var frames_with_inverted_palette: usize = 0;
+
+    for (0..total_frames) |frame| {
+        emulator.runFrame();
+
+        const cur_cram = cramSnapshot(&emulator.handle.machine.bus.vdp);
+        const diff = cramDiffCount(prev_cram, cur_cram);
+
+        // Detect bulk palette rewrite (scene transition)
+        if (diff >= 8) {
+            transition_count += 1;
+
+            std.debug.print("Frame {d}: {d}/64 CRAM entries changed\n", .{ frame, diff });
+            std.debug.print("  Old palette 0: ", .{});
+            for (0..16) |i| std.debug.print("{X:0>2}{X:0>2} ", .{ prev_cram[i * 2], prev_cram[i * 2 + 1] });
+            std.debug.print("\n  New palette 0: ", .{});
+            for (0..16) |i| std.debug.print("{X:0>2}{X:0>2} ", .{ cur_cram[i * 2], cur_cram[i * 2 + 1] });
+            std.debug.print("\n", .{});
+
+            // Check rendered framebuffer for "inverted" colors.
+            // An inverted palette would swap RGB channels or produce
+            // complement colors. Detect this by checking if most non-black
+            // pixels have inverted-looking channel relationships compared
+            // to the expected new palette's dominant color.
+            const fb = emulator.framebuffer();
+            const new_bg_r: u8 = @truncate((@as(u16, cur_cram[1]) & 0x0E));
+            const new_bg_g: u8 = @truncate((@as(u16, cur_cram[1]) >> 4) & 0x0E);
+            const new_bg_b: u8 = @truncate((@as(u16, cur_cram[0]) & 0x0E));
+
+            // Count pixels whose channels look like a bitwise complement of the
+            // new backdrop color (inverted/"photo negative" appearance).
+            var complement_pixels: usize = 0;
+            var total_visible: usize = 0;
+            for (fb) |pixel| {
+                const r: u8 = @truncate((pixel >> 16) & 0xFF);
+                const g: u8 = @truncate((pixel >> 8) & 0xFF);
+                const b: u8 = @truncate(pixel & 0xFF);
+                if (r == 0 and g == 0 and b == 0) continue;
+                total_visible += 1;
+
+                // Genesis CRAM is 9-bit (3 bits per channel, shifted left by 1).
+                // An "inverted" palette would have channels that are the bitwise
+                // complement of expected values.  Check if the rendered pixel's
+                // dominant channel is opposite to the new backdrop's dominant channel.
+                const inv_r: u8 = ~new_bg_r;
+                const inv_g: u8 = ~new_bg_g;
+                const inv_b: u8 = ~new_bg_b;
+                const dist_inv = @as(u16, if (r > inv_r) r - inv_r else inv_r - r) +
+                    @as(u16, if (g > inv_g) g - inv_g else inv_g - g) +
+                    @as(u16, if (b > inv_b) b - inv_b else inv_b - b);
+                if (dist_inv < 30) complement_pixels += 1;
+            }
+
+            if (total_visible > 0 and complement_pixels > total_visible / 2) {
+                frames_with_inverted_palette += 1;
+                std.debug.print("  ** INVERTED PALETTE DETECTED at frame {d} **\n", .{frame});
+            }
+            std.debug.print("\n", .{});
+        }
+
+        prev_cram = cur_cram;
+    }
+
+    std.debug.print("=== Zabu investigation: {d} transitions in {d} frames, {d} inverted frames ===\n", .{
+        transition_count, total_frames, frames_with_inverted_palette,
+    });
+
+    // The test passes as long as no fully inverted frames are detected.
+    // Brief single-frame palette flicker (< 50% inverted pixels) is authentic
+    // hardware behavior during scene transitions.
+    try testing.expectEqual(@as(usize, 0), frames_with_inverted_palette);
+}
+
+// --- SG-1000 boot tests (local ROMs, skipped if not present) ---
+
+const SmsMachine = sandopolis.testing.SmsMachine;
+
+fn initSg1000(rom_path: []const u8) !SmsMachine {
+    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, rom_path, 1024 * 1024) catch |err| {
+        return err;
+    };
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);
+    testing.allocator.free(rom_data);
+    machine.is_sg1000 = true;
+    // Do NOT call bindPointers() here: the struct will be returned by value
+    // and moved to the caller's stack. runFrame() calls bindPointers() lazily
+    // once the struct is at its final address.
+    return machine;
+}
+
+test "sg1000 dragon wang boots and produces visible output" {
+    var machine = initSg1000("roms/Dragon Wang (Japan) (Alt).sg") catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer machine.deinit(testing.allocator);
+
+    for (0..300) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000 and pixel != 0x00000000) non_black_pixels += 1;
+    }
+
+    try testing.expect(non_black_pixels > 100);
+    try testing.expect(countUniqueFramebufferColors(fb, 8) > 1);
+}
+
+test "sg1000 hustle chumy boots and produces visible output" {
+    var machine = initSg1000("roms/Hustle Chumy (Japan).sg") catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer machine.deinit(testing.allocator);
+
+    // Hustle Chumy has a longer title screen; give it more frames
+    for (0..180) |_| machine.runFrame();
+
+    const fb = machine.framebuffer();
+    var non_black_pixels: usize = 0;
+    for (fb) |pixel| {
+        if (pixel != 0xFF000000 and pixel != 0x00000000) non_black_pixels += 1;
+    }
+    // Some SG-1000 games may render fewer visible pixels on title screens
+    try testing.expect(non_black_pixels > 10);
 }

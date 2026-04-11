@@ -1,3 +1,4 @@
+pub const SmsMachine = @import("../sms/machine.zig").SmsMachine;
 pub const PendingAudioFrames = @import("../audio/timing.zig").PendingAudioFrames;
 pub const AudioTiming = @import("audio_timing.zig").AudioTiming;
 pub const ControllerIo = @import("controller_io.zig").ControllerIo;
