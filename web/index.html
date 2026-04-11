@@ -259,7 +259,7 @@
         }
 
         #screen.aspect-native {
-            aspect-ratio: 320 / 224;
+            /* Set dynamically via JS based on emulated system resolution */
         }
 
         #screen.integer-scale {
@@ -301,7 +301,7 @@
         }
 
         #screen-container.fullscreen #screen.aspect-native {
-            aspect-ratio: 320/224;
+            /* Set dynamically via JS based on emulated system resolution */
         }
 
         /* CRT bezel overlay */
@@ -1161,7 +1161,7 @@
         <select id="aspect-mode" title="Display aspect ratio mode">
             <option value="fit" title="Correct 4:3 TV aspect ratio">4:3 Fit</option>
             <option value="stretch" title="Stretch to fill the screen area">Stretch</option>
-            <option value="native" title="Raw pixel dimensions without correction">Native (320x224)</option>
+            <option value="native" title="Raw pixel dimensions without correction">Native</option>
         </select>
         <label>Scaling</label>
         <select id="scale-mode" title="Pixel scaling mode">

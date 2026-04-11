@@ -491,6 +491,50 @@ test "whole_pixels does not floor below 1x" {
     try t.expectApproxEqAbs(@as(f32, 140.0), r.h, 0.01);
 }
 
+test "four_three aspect ratio is correct for each console resolution" {
+    const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 };
+
+    // Genesis H40 (320x224): 4:3
+    const gen = computeVideoDestinationRect(viewport, 320, 224, .four_three, .fit);
+    try t.expectApproxEqAbs(@as(f32, 4.0 / 3.0), gen.w / gen.h, 0.01);
+
+    // Genesis H32 (256x224): 4:3
+    const gen32 = computeVideoDestinationRect(viewport, 256, 224, .four_three, .fit);
+    try t.expectApproxEqAbs(@as(f32, 4.0 / 3.0), gen32.w / gen32.h, 0.01);
+
+    // SMS (256x192): 4:3
+    const sms = computeVideoDestinationRect(viewport, 256, 192, .four_three, .fit);
+    try t.expectApproxEqAbs(@as(f32, 4.0 / 3.0), sms.w / sms.h, 0.01);
+
+    // SG-1000 (256x192): 4:3
+    const sg = computeVideoDestinationRect(viewport, 256, 192, .four_three, .fit);
+    try t.expectApproxEqAbs(@as(f32, 4.0 / 3.0), sg.w / sg.h, 0.01);
+
+    // Game Gear (160x144): 4:3 (stretched, but valid user choice)
+    const gg = computeVideoDestinationRect(viewport, 160, 144, .four_three, .fit);
+    try t.expectApproxEqAbs(@as(f32, 4.0 / 3.0), gg.w / gg.h, 0.01);
+}
+
+test "square_pixels preserves native pixel aspect for each console" {
+    const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 };
+
+    // Genesis H40 (320x224): 320:224 ≈ 1.4286
+    const gen = computeVideoDestinationRect(viewport, 320, 224, .square_pixels, .fit);
+    try t.expectApproxEqAbs(@as(f32, 320.0 / 224.0), gen.w / gen.h, 0.01);
+
+    // SMS (256x192): 256:192 = 4:3
+    const sms = computeVideoDestinationRect(viewport, 256, 192, .square_pixels, .fit);
+    try t.expectApproxEqAbs(@as(f32, 256.0 / 192.0), sms.w / sms.h, 0.01);
+
+    // Game Gear (160x144): 160:144 = 10:9
+    const gg = computeVideoDestinationRect(viewport, 160, 144, .square_pixels, .fit);
+    try t.expectApproxEqAbs(@as(f32, 160.0 / 144.0), gg.w / gg.h, 0.01);
+
+    // SG-1000 (256x192): same as SMS
+    const sg = computeVideoDestinationRect(viewport, 256, 192, .square_pixels, .fit);
+    try t.expectApproxEqAbs(@as(f32, 4.0 / 3.0), sg.w / sg.h, 0.01);
+}
+
 test "PathCopy set truncates long paths" {
     var pc = PathCopy{};
     pc.set("short.md");
