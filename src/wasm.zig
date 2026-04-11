@@ -255,11 +255,14 @@ export fn sandopolis_audio_render(emu: *WasmEmulator) usize {
             g.audio.renderPending(pending, &g.machine.bus.z80, g.machine.palMode(), &sink) catch {};
         },
         .sms => |*s| {
-            // SMS audio is rendered during runFrame; copy from SMS audio buffer
+            // SMS audio is rendered during runFrame; copy from SMS audio buffer.
+            // audioBuffer() returns interleaved stereo i16 (L, R, L, R, ...).
+            // audio_sample_count must match Genesis convention: total i16 count
+            // (not stereo pairs), since JS reads this many elements from the buffer.
             const src = s.machine.audioBuffer();
             const n = @min(src.len, emu.audio_buffer.len);
             @memcpy(emu.audio_buffer[0..n], src[0..n]);
-            emu.audio_sample_count = n / 2; // stereo pairs
+            emu.audio_sample_count = n;
         },
     }
     return emu.audio_sample_count;
