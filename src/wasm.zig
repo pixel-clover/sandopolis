@@ -640,3 +640,40 @@ test "wasm emulator creation resets the machine before the first frame" {
     g.machine.runFrame();
     try std.testing.expect(g.machine.programCounter() != pc_before);
 }
+
+test "wasm sms audio sample count returns interleaved i16 count not stereo pairs" {
+    // Regression: the WASM SMS audio path previously returned n/2 (stereo pairs)
+    // but JS reads audio_sample_count as individual i16 elements. This caused
+    // half the audio data to be silently dropped on the web.
+    const rom = [_]u8{0} ** 0x4000;
+    var emu = try initWasmEmulator(std.testing.allocator, &rom, 1); // hint=1 (SMS)
+    defer {
+        switch (emu.system) {
+            .genesis => |*g| g.machine.deinit(std.testing.allocator),
+            .sms => |*s| s.deinit(std.testing.allocator),
+        }
+    }
+
+    // Run a frame to generate audio
+    switch (emu.system) {
+        .sms => |*s| s.machine.runFrame(),
+        .genesis => |*g| g.machine.runFrame(),
+    }
+
+    // Render audio
+    const sample_count = sandopolis_audio_render(&emu);
+
+    // SMS audio buffer is interleaved stereo (L, R, L, R, ...) so the
+    // count must be even (matching the total i16 elements, not pairs).
+    try std.testing.expect(sample_count > 0);
+    try std.testing.expect(sample_count % 2 == 0);
+
+    // Verify count matches the SMS machine's audio buffer length
+    switch (emu.system) {
+        .sms => |*s| {
+            const buf = s.machine.audioBuffer();
+            try std.testing.expectEqual(buf.len, sample_count);
+        },
+        .genesis => {},
+    }
+}

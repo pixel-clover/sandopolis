@@ -1263,3 +1263,52 @@ test "tms palette has 16 entries with correct black and white" {
     try testing.expectEqual(@as(u32, 0xFFFFFFFF), SmsVdp.tmsPaletteColor(15)); // white
     try testing.expect(SmsVdp.tms_palette[0] != SmsVdp.tms_palette[1]); // transparent != black
 }
+
+test "sg1000 ignores M4 bit in register 0 for graphics mode" {
+    // On a real TMS9918A, register 0 bit 2 is unused. SG-1000 games may set
+    // it without intending Mode 4. The VDP must ignore M4 for SG-1000.
+    var vdp = SmsVdp.init();
+    vdp.is_sg1000 = true;
+    vdp.regs[0] = 0x06; // M4=1 (bit 2) + M2=1 (bit 1)
+    vdp.regs[1] = 0x00;
+    // SG-1000 should see Mode 2 (Graphics II), not Mode 4
+    try testing.expectEqual(SmsVdp.GraphicsMode.mode2_graphics2, vdp.graphicsMode());
+
+    // SMS with the same registers should see Mode 4
+    vdp.is_sg1000 = false;
+    try testing.expectEqual(SmsVdp.GraphicsMode.mode4, vdp.graphicsMode());
+}
+
+test "sg1000 tms mode 2 renders non-black pixels with pattern data" {
+    // Regression: TMS Mode 2 renderer must produce visible output when
+    // pattern and color tables have data.
+    var vdp = SmsVdp.init();
+    vdp.is_sg1000 = true;
+    vdp.regs[0] = 0x02; // M2=1 (Mode 2)
+    vdp.regs[1] = 0x42; // Display enabled, sprites tall
+    vdp.regs[2] = 0x0E; // Name table at 0x3800
+    vdp.regs[3] = 0xFF; // Color table mask 0xFF
+    vdp.regs[4] = 0x03; // Pattern gen mask 0x03
+    vdp.regs[7] = 0xF1; // Backdrop: white foreground, black background
+
+    // Write a non-zero tile in the name table
+    vdp.vram[0x3800] = 0x01; // Tile 1 at position (0,0)
+
+    // Write a pattern byte for tile 1, row 0 (all pixels set)
+    // Pattern gen base: (0x03 & 0x04)<<11 = 0, mask: 0x03FF
+    // Tile 1, row 0: addr = 0 + 1*8 + 0 = 8
+    vdp.vram[8] = 0xFF; // All 8 pixels on
+
+    // Write a color byte: foreground=white (0xF), background=black (0x1)
+    // Color table base: (0xFF & 0x80)<<6 = 0x2000
+    // Tile 1, row 0: addr = 0x2000 + (1 & 0x3FF)*8 + 0 = 0x2008
+    vdp.vram[0x2008] = 0xF1; // White foreground, black background
+
+    vdp.beginFrame();
+    _ = vdp.stepScanline(); // Renders line 0
+
+    // Check that the first 8 pixels are white (TMS color 15)
+    const white = SmsVdp.tmsPaletteColor(15);
+    try testing.expectEqual(white, vdp.framebuffer[0]);
+    try testing.expectEqual(white, vdp.framebuffer[7]);
+}
