@@ -1235,3 +1235,20 @@ test "property: psg/fm gain balance maintains calibrated ratio across inputs" {
         .seed = 0xBA1A0001,
     });
 }
+
+// --- TMS palette property ---
+
+test "property: all TMS palette entries have full alpha except transparent" {
+    const SmsMachine = @import("sandopolis_src").testing.SmsMachine;
+    // Access the VDP type through a dummy machine's bus.vdp field type
+    const tms_palette = @TypeOf(@as(SmsMachine, undefined).bus.vdp).tms_palette;
+    for (tms_palette, 0..) |color, i| {
+        if (i == 0) {
+            // Transparent: alpha = 0
+            try testing.expectEqual(@as(u32, 0x00000000), color & 0xFF000000);
+        } else {
+            // Non-transparent: alpha = 0xFF
+            try testing.expectEqual(@as(u32, 0xFF000000), color & 0xFF000000);
+        }
+    }
+}
