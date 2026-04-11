@@ -328,16 +328,20 @@ function loadSettings() {
 }
 
 function saveSettings() {
-    localStorage.setItem("sandopolis-settings", JSON.stringify({
-        audioEnabled,
-        controllerType: document.getElementById("controller-type").value,
-        slot: currentSlot,
-        aspectMode,
-        keyMap,
-        scaleMode,
-        masterVolume,
-        theme: document.documentElement.getAttribute("data-theme") || "light",
-    }));
+    try {
+        localStorage.setItem("sandopolis-settings", JSON.stringify({
+            audioEnabled,
+            controllerType: document.getElementById("controller-type").value,
+            slot: currentSlot,
+            aspectMode,
+            keyMap,
+            scaleMode,
+            masterVolume,
+            theme: document.documentElement.getAttribute("data-theme") || "light",
+        }));
+    } catch (_) {
+        // localStorage may be full or unavailable
+    }
 }
 
 function applySettings() {
@@ -370,6 +374,7 @@ function applyAspectMode() {
     sc.classList.remove("integer-container");
     c.style.width = "";
     c.style.height = "";
+    clearTimeout(resizeTimer);
 
     if (scaleMode === "integer") {
         c.classList.add("integer-scale");
@@ -476,6 +481,8 @@ function initRemapUI() {
     document.getElementById("remap-reset").addEventListener("click", resetKeyMap);
 }
 
+let activeRemapCleanup = null;
+
 function startListening(rbtn, btn) {
     // Cancel any active listener
     if (activeRemapCleanup) activeRemapCleanup();
@@ -519,8 +526,6 @@ function startListening(rbtn, btn) {
     activeRemapCleanup = cleanup;
     document.addEventListener("keydown", onKey, true);
 }
-
-let activeRemapCleanup = null;
 
 function refreshRemapLabels() {
     const btns = document.querySelectorAll(".remap-btn");
@@ -679,7 +684,7 @@ function updatePerf() {
         document.getElementById("perf-resolution").textContent = w + "x" + h;
 
         const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
-        const sysName = sysType === 1 ? "SMS" : "Genesis";
+        const sysName = sysType === 3 ? "SG-1000" : sysType === 2 ? "Game Gear" : sysType === 1 ? "SMS" : "Genesis";
         const mode = e.sandopolis_display_mode(emu);
         const parts = [sysName];
         if (sysType === 0) parts.push((mode & 1) ? "H40" : "H32");
@@ -760,6 +765,7 @@ function toggleFullscreen() {
         document.exitFullscreen();
     } else {
         container.requestFullscreen().catch(() => {
+            showToast("Fullscreen not available");
         });
     }
 }
