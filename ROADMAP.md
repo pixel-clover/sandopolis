@@ -117,9 +117,25 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
 - [x] Tooltip help text on web controls and context-sensitive hint line in desktop settings
 - [ ] Browser CRT shader option
+- [ ] NTSC composite video filter (Blargg's or equivalent)
+- [ ] Game Gear LCD ghosting emulation
+- [ ] Anti-dither shader
 - [ ] SG-1000 subsystem support
 - [ ] Sega CD subsystem support
 - [ ] 32X subsystem support
+- [ ] Sega Pico subsystem support
+- [ ] Cheat code support (Game Genie and Action Replay)
+- [ ] Lock-on cartridge emulation (like Sonic & Knuckles)
+- [ ] Rewind functionality (per-frame state history)
+- [ ] CPU overclocking options
+
+### Input Peripherals
+
+- [ ] Light guns (Sega Light Phaser, Menacer, and Konami Justifiers)
+- [ ] Sega Paddle Control
+- [ ] Sega Sports Pad
+- [ ] XE-1AP analog controller
+- [ ] Sega Activator
 
 ### Sega Master System Support
 
@@ -148,5 +164,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] SMS quick save states (in-memory capture and restore of Z80, VDP, bus, and audio state)
 - [x] SMS persistent save states (file-based serialization with source path, Z80, VDP, bus, and audio state)
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
+- [ ] Codemasters mapper
 - [ ] BIOS/boot ROM support
 - [ ] FM sound unit (YM2413) for Japanese SMS and Mark III
+- [ ] Per-game compatibility database for mapper and setting detection
