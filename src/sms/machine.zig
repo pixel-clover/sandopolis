@@ -189,6 +189,10 @@ pub const SmsMachine = struct {
         return self.audio_buffer[0 .. self.audio_sample_count * 2];
     }
 
+    pub fn romSize(self: *const SmsMachine) usize {
+        return self.bus.rom.len;
+    }
+
     // -- Save state --
 
     pub const Snapshot = struct {

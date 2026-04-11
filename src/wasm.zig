@@ -183,14 +183,14 @@ export fn sandopolis_framebuffer_len(emu: *const WasmEmulator) usize {
 
 export fn sandopolis_screen_width(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
-        .genesis => |*g| g.machine.bus.vdp.screenWidth(),
+        .genesis => |*g| g.machine.framebufferWidth(),
         .sms => |*s| s.machine.framebufferWidth(),
     };
 }
 
 export fn sandopolis_screen_height(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
-        .genesis => |*g| g.machine.bus.vdp.activeVisibleLines(),
+        .genesis => |*g| g.machine.screenHeight(),
         .sms => |*s| s.machine.screenHeight(),
     };
 }
@@ -199,7 +199,7 @@ export fn sandopolis_screen_height(emu: *const WasmEmulator) u32 {
 
 export fn sandopolis_set_button(emu: *WasmEmulator, port: u32, button: u16, pressed: bool) void {
     switch (emu.system) {
-        .genesis => |*g| g.machine.bus.io.setButton(@intCast(port), button, pressed),
+        .genesis => |*g| g.machine.setButton(@intCast(port), button, pressed),
         .sms => |*s| {
             const m = &s.machine;
             const sms_port: u1 = @intCast(@min(port, 1));
@@ -407,8 +407,8 @@ export fn sandopolis_frame_count(emu: *const WasmEmulator) u32 {
 
 export fn sandopolis_rom_size(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
-        .genesis => |*g| @intCast(g.machine.bus.rom.len),
-        .sms => |*s| @intCast(s.machine.bus.rom.len),
+        .genesis => |*g| @intCast(g.machine.romSize()),
+        .sms => |*s| @intCast(s.machine.romSize()),
     };
 }
 
@@ -435,14 +435,7 @@ export fn sandopolis_rom_checksum_valid(emu: *const WasmEmulator) bool {
 
 export fn sandopolis_display_mode(emu: *const WasmEmulator) u32 {
     return switch (emu.system) {
-        .genesis => |*g| blk: {
-            // Encodes: bit 0 = H40 (else H32), bit 1 = interlace, bit 2 = shadow/highlight
-            var mode: u32 = 0;
-            if (g.machine.bus.vdp.isH40()) mode |= 1;
-            if (g.machine.bus.vdp.isInterlaceMode2()) mode |= 2;
-            if (g.machine.bus.vdp.isShadowHighlightEnabled()) mode |= 4;
-            break :blk mode;
-        },
+        .genesis => |*g| g.machine.displayModeFlags(),
         .sms => 0, // SMS is always 256px, no interlace or shadow/highlight
     };
 }
@@ -465,7 +458,7 @@ export fn sandopolis_set_controller_type(emu: *WasmEmulator, port: u32, ct: u8) 
                 3 => .sega_mouse,
                 else => .six_button,
             };
-            g.machine.bus.io.setControllerType(@intCast(port), controller_type);
+            g.machine.setControllerType(@intCast(port), controller_type);
         },
         .sms => {}, // SMS has fixed 2-button controllers
     }
@@ -473,7 +466,7 @@ export fn sandopolis_set_controller_type(emu: *WasmEmulator, port: u32, ct: u8) 
 
 export fn sandopolis_get_controller_type(emu: *const WasmEmulator, port: u32) u8 {
     return switch (emu.system) {
-        .genesis => |*g| switch (g.machine.bus.io.controller_types[@intCast(port)]) {
+        .genesis => |*g| switch (g.machine.controllerType(@intCast(port))) {
             .three_button => 0,
             .six_button => 1,
             .ea_4way_play => 2,
