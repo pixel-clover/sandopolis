@@ -374,9 +374,18 @@ function applyAspectMode() {
     if (scaleMode === "integer") {
         c.classList.add("integer-scale");
         sc.classList.add("integer-container");
+        c.style.aspectRatio = "";
         applyIntegerScale();
     } else {
         c.classList.add("aspect-" + aspectMode);
+        // Native mode: set aspect ratio from actual canvas dimensions
+        if (aspectMode === "native") {
+            const w = c.width || 320;
+            const h = c.height || 224;
+            c.style.aspectRatio = w + " / " + h;
+        } else {
+            c.style.aspectRatio = "";
+        }
     }
 }
 
@@ -995,7 +1004,8 @@ function frameLoop(now) {
         canvas.width = width;
         canvas.height = height;
         imageData = ctx.createImageData(width, height);
-        if (scaleMode === "integer") applyIntegerScale();
+        // Reapply aspect/scale mode for the new resolution
+        applyAspectMode();
     }
     if (!imageData) imageData = ctx.createImageData(width, height);
 
