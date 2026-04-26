@@ -25,12 +25,12 @@ This directory includes a collection of useful test ROMs for examining or testin
 
 ### Additional ROMs
 
-| File                        | Name | Author | Description |
-|-----------------------------|------|--------|-------------|
-| `6ButtonControllerDemo.bin` | N/A  | N/A    | See #25     |
-| `dma_speed_test.bin`        | N/A  | N/A    | See #25     |
-| `gen_test_interlace2.bin`   | N/A  | N/A    | See #25     |
-| `gen_test_z80_bus.md`       | N/A  | N/A    | See #25     |
-| `SpriteMaskingTestRom.bin`  | N/A  | N/A    | See #25     |
-| `test_inst_speed.bin`       | N/A  | N/A    | See #25     |
+| File                        | Name | Author | Description                                                       |
+|-----------------------------|------|--------|-------------------------------------------------------------------|
+| `6ButtonControllerDemo.bin` | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |
+| `dma_speed_test.bin`        | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                          |
+| `gen_test_interlace2.bin`   | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                          |
+| `gen_test_z80_bus.md`       | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                         |
+| `SpriteMaskingTestRom.bin`  | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                        |
+| `test_inst_speed.bin`       | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                       |
 
