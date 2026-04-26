@@ -1,5 +1,5 @@
 {
-  description = "Sandopolis: Sega Genesis / Mega Drive emulator development environment";
+    description = "Sandopolis: Sega Genesis, Master System, Game Gear, and SG-1000 emulator development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

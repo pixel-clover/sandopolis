@@ -1,6 +1,6 @@
 .{
     .name = .sandopolis,
-    .version = "0.1.0-alpha.6",
+    .version = "0.1.0-alpha.7",
     .fingerprint = 0x50bf614ce7c127dd, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
@@ -9,15 +9,15 @@
             .hash = "minish-0.1.0-SQtSTWHkAQACfz3xGuWHU8zbx320vK_47r2yto3Pq0Rf",
         },
         .chilli = .{
-            .url = "https://github.com/CogitatorTech/chilli/archive/refs/tags/v0.2.2.tar.gz",
-            .hash = "chilli-0.2.2-c19PrvIyAQAgsL0VkYCKq0DuxU7rZUpRuH991zsyOkYQ",
+            .url = "https://github.com/CogitatorTech/chilli/archive/refs/tags/v0.2.3.tar.gz",
+            .hash = "chilli-0.2.3-c19PrtRWAQCRWybB_q8jDmrDy1GevS8i1bafOp5ToetM",
         },
         .zsdl = .{
-            .url = "https://github.com/zig-gamedev/zsdl/archive/refs/heads/main.tar.gz",
-            .hash = "zsdl-0.4.0-dev-rFpjEzgIXwBdDmlda0YnQPRVApMc1YEgbyzLWuT9GupM",
+            .url = "https://github.com/zig-gamedev/zsdl/archive/100f46b336a112497436144e14877118573e0adf.tar.gz",
+            .hash = "zsdl-0.4.0-dev-rFpjEzrkXwBaY3TYCYulrMLnBldTIm27f7oH1GYpoHLi",
         },
         .jgz80 = .{
-            .url = "https://github.com/habedi/jgz80-fork/archive/refs/heads/master.tar.gz",
+            .url = "https://github.com/habedi/jgz80-fork/archive/e987b9229c700c4db2c3f84dfce4fc0e63817701.tar.gz",
             .hash = "N-V-__8AAOj4AgCPCxSePjb6U-Kb3CMWSn14SVV5AOOWXXCt",
         },
         .rocket68 = .{
