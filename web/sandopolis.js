@@ -1217,15 +1217,15 @@ function pollGamepads() {
         const gp = gamepads[gi];
         if (!gp || !gp.connected) continue;
 
-        if (gp.mapping === "xr-standard") {
-            // In an active XR session, vr.js handles XR controllers. Outside
-            // XR (Quest browser in 2D mode) we route them to player 0 here.
+        // Distinguish real XR hand controllers (which always carry a `hand`
+        // field of "left" or "right") from BT gamepads that some Quest
+        // browser builds also label "xr-standard". The hand field is the
+        // authoritative signal; the mapping string alone is unreliable.
+        const isXrHand = gp.hand === "left" || gp.hand === "right";
+        if (isXrHand) {
             if (!xrActive) applyXrController(gp);
             continue;
         }
-        // Accept any non-XR mapping. Quest browser sometimes reports BT
-        // controllers with an empty mapping string instead of "standard"; the
-        // button positions still match the standard layout in practice.
         if (stdPlayer >= 2) continue;
 
         // Face buttons (edge-detected via prev state)
