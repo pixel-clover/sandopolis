@@ -7,6 +7,10 @@
     const QUAD_WIDTH = 3.2;
     const QUAD_ASPECT = 4 / 3;
     const QUAD_DISTANCE = -2.5;
+    const SCREEN_Y = 1.4;
+    const ROOM_HALF_W = 4.0;
+    const ROOM_HALF_D = 4.0;
+    const ROOM_HEIGHT = 3.0;
     const STICK_THRESHOLD = 0.5;
     const EXIT_HOLD_MS = 1000;
 
@@ -18,6 +22,7 @@
     let refSpace = null;
     let baseLayer = null;
     let program, vao, posLoc, uvLoc, mvpLoc, sampLoc, texture;
+    let roomProgram, roomVao, roomVertCount, roomMvpLoc;
     let sourceCanvas = null;
     let onTick = null;
     let onButton = null;
@@ -125,6 +130,8 @@
         program = null;
         vao = null;
         texture = null;
+        roomProgram = null;
+        roomVao = null;
         if (buttonEl) buttonEl.textContent = "Enter VR";
         if (onSessionEndCallback) {
             try { onSessionEndCallback(); } catch (err) { console.warn("[VR] onSessionEnd callback threw:", err); }
@@ -182,6 +189,87 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        setupRoom();
+    }
+
+    function setupRoom() {
+        const vs = `#version 300 es
+        in vec3 a_pos;
+        in vec3 a_color;
+        flat out vec3 v_color;
+        out vec3 v_world;
+        uniform mat4 u_mvp;
+        void main() {
+            v_color = a_color;
+            v_world = a_pos;
+            gl_Position = u_mvp * vec4(a_pos, 1.0);
+        }`;
+        const fs = `#version 300 es
+        precision mediump float;
+        flat in vec3 v_color;
+        in vec3 v_world;
+        out vec4 outColor;
+        void main() {
+            // 1m grid lines: dark seams between tiles (floor uses xz, walls use the relevant pair).
+            vec2 g;
+            if (abs(v_world.y - 0.0) < 0.001 || abs(v_world.y - 3.0) < 0.001) {
+                g = abs(fract(v_world.xz) - 0.5);
+            } else if (abs(abs(v_world.x) - 4.0) < 0.001) {
+                g = abs(fract(v_world.zy) - 0.5);
+            } else {
+                g = abs(fract(v_world.xy) - 0.5);
+            }
+            float grid = smoothstep(0.48, 0.5, max(g.x, g.y)) * 0.35;
+
+            // Soft "screen-as-light-source" falloff so the wall behind the
+            // screen is brighter than the corners, evoking a TV-lit room.
+            vec3 lightPos = vec3(0.0, 1.4, -2.5);
+            float d = length(v_world - lightPos);
+            float fall = clamp(2.0 / (1.0 + d * d * 0.3), 0.0, 1.0);
+
+            vec3 c = v_color * (0.35 + 0.65 * fall) * (1.0 - grid);
+            outColor = vec4(c, 1.0);
+        }`;
+        roomProgram = compileProgram(vs, fs);
+        roomMvpLoc = gl.getUniformLocation(roomProgram, "u_mvp");
+        const rPos = gl.getAttribLocation(roomProgram, "a_pos");
+        const rCol = gl.getAttribLocation(roomProgram, "a_color");
+
+        const hx = ROOM_HALF_W, hz = ROOM_HALF_D, h = ROOM_HEIGHT;
+        const FLOOR = [0.13, 0.10, 0.08];
+        const WALL = [0.10, 0.12, 0.18];
+        const CEIL = [0.05, 0.05, 0.07];
+
+        const data = [];
+        function quad(p0, p1, p2, p3, c) {
+            data.push(...p0, ...c, ...p1, ...c, ...p2, ...c,
+                      ...p0, ...c, ...p2, ...c, ...p3, ...c);
+        }
+        // Floor
+        quad([-hx, 0, -hz], [hx, 0, -hz], [hx, 0, hz], [-hx, 0, hz], FLOOR);
+        // Ceiling
+        quad([-hx, h, -hz], [-hx, h, hz], [hx, h, hz], [hx, h, -hz], CEIL);
+        // Back wall (-z, behind screen)
+        quad([-hx, 0, -hz], [-hx, h, -hz], [hx, h, -hz], [hx, 0, -hz], WALL);
+        // Front wall (+z, behind user)
+        quad([hx, 0, hz], [hx, h, hz], [-hx, h, hz], [-hx, 0, hz], WALL);
+        // Left wall (-x)
+        quad([-hx, 0, hz], [-hx, h, hz], [-hx, h, -hz], [-hx, 0, -hz], WALL);
+        // Right wall (+x)
+        quad([hx, 0, -hz], [hx, h, -hz], [hx, h, hz], [hx, 0, hz], WALL);
+
+        roomVertCount = data.length / 6;
+        roomVao = gl.createVertexArray();
+        gl.bindVertexArray(roomVao);
+        const vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(rPos);
+        gl.vertexAttribPointer(rPos, 3, gl.FLOAT, false, 24, 0);
+        gl.enableVertexAttribArray(rCol);
+        gl.vertexAttribPointer(rCol, 3, gl.FLOAT, false, 24, 12);
+        gl.bindVertexArray(null);
     }
 
     function compileProgram(vsSrc, fsSrc) {
@@ -225,12 +313,12 @@
         return out;
     }
 
-    function translateZ(z) {
+    function translate(x, y, z) {
         return new Float32Array([
             1, 0, 0, 0,
             0, 1, 0, 0,
             0, 0, 1, 0,
-            0, 0, z, 1,
+            x, y, z, 1,
         ]);
     }
 
@@ -324,20 +412,29 @@
         uploadCanvasTexture();
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
+        gl.enable(gl.DEPTH_TEST);
         gl.clearColor(0.02, 0.02, 0.04, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-        gl.useProgram(program);
-        gl.bindVertexArray(vao);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.uniform1i(sampLoc, 0);
-
-        const model = mulMat4(translateZ(QUAD_DISTANCE), quadScaleMatrix());
+        const screenModel = mulMat4(translate(0, SCREEN_Y, QUAD_DISTANCE), quadScaleMatrix());
         for (const view of pose.views) {
             const vp = baseLayer.getViewport(view);
             gl.viewport(vp.x, vp.y, vp.width, vp.height);
-            const mv = mulMat4(view.transform.inverse.matrix, model);
+            const viewProj = mulMat4(view.projectionMatrix, view.transform.inverse.matrix);
+
+            // Room (drawn first; depth-writes back the screen quad covers it).
+            gl.useProgram(roomProgram);
+            gl.bindVertexArray(roomVao);
+            gl.uniformMatrix4fv(roomMvpLoc, false, viewProj);
+            gl.drawArrays(gl.TRIANGLES, 0, roomVertCount);
+
+            // Screen quad
+            gl.useProgram(program);
+            gl.bindVertexArray(vao);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.uniform1i(sampLoc, 0);
+            const mv = mulMat4(view.transform.inverse.matrix, screenModel);
             const mvp = mulMat4(view.projectionMatrix, mv);
             gl.uniformMatrix4fv(mvpLoc, false, mvp);
             gl.drawArrays(gl.TRIANGLES, 0, 6);

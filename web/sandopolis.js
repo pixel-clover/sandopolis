@@ -191,7 +191,10 @@ async function init() {
             getAspectMode: () => aspectMode,
             onSessionEnd: () => {
                 // Pause the emulator when leaving VR so the game doesn't run unattended.
-                if (emu && running) togglePause();
+                if (emu && running) {
+                    togglePause();
+                    showToast("VR exited: click screen to resume");
+                }
             },
         });
     }
@@ -641,7 +644,7 @@ function togglePause() {
         running = false;
         if (rafId) cancelAnimationFrame(rafId);
         if (audioCtx) audioCtx.suspend();
-        setStatus("Paused");
+        setStatus("Paused: click screen to resume");
     } else {
         running = true;
         resumeFrame();
