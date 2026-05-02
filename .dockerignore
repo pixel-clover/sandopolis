@@ -20,3 +20,8 @@ pyproject.toml
 uv.lock
 Makefile
 mkdocs.yml
+# Locally-generated web artifacts; the Dockerfile sources these from their
+# canonical locations (build stage for wasm, src/ for fonts, docs/ for img).
+web/sandopolis.wasm
+web/fonts/
+web/img/
