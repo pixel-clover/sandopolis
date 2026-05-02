@@ -89,34 +89,38 @@
                 return;
             }
 
-            glCanvas = document.createElement("canvas");
-            gl = glCanvas.getContext("webgl2", {xrCompatible: true});
-            if (!gl) {
-                console.warn("WebXR theater mode requires WebGL2.");
-                await s.end();
-                s = null;
-                return;
-            }
-            if (gl.makeXRCompatible) {
-                try {
-                    await gl.makeXRCompatible();
-                } catch (_) { /* already compatible */
+            // Wrap all post-requestSession setup so any failure ends the
+            // newly-opened XR session before returning. Without this, a throw
+            // from XRWebGLLayer, updateRenderState, requestReferenceSpace, or
+            // setupGL could leave the headset stuck in an orphaned session.
+            try {
+                glCanvas = document.createElement("canvas");
+                gl = glCanvas.getContext("webgl2", {xrCompatible: true});
+                if (!gl) {
+                    throw new Error("WebGL2 not available");
                 }
-            }
+                if (gl.makeXRCompatible) {
+                    try {
+                        await gl.makeXRCompatible();
+                    } catch (_) { /* already compatible */
+                    }
+                }
 
-            baseLayer = new XRWebGLLayer(s, gl);
-            s.updateRenderState({baseLayer});
-            try {
-                refSpace = await s.requestReferenceSpace("local-floor");
-            } catch (_) {
-                refSpace = await s.requestReferenceSpace("local");
-            }
+                baseLayer = new XRWebGLLayer(s, gl);
+                s.updateRenderState({baseLayer});
+                try {
+                    refSpace = await s.requestReferenceSpace("local-floor");
+                } catch (_) {
+                    refSpace = await s.requestReferenceSpace("local");
+                }
 
-            try {
                 setupGL();
             } catch (err) {
-                console.warn("[VR] setupGL failed:", err);
-                await s.end();
+                console.warn("[VR] setup failed:", err);
+                try {
+                    await s.end();
+                } catch (_) { /* already ended */
+                }
                 s = null;
                 return;
             }
@@ -134,6 +138,20 @@
     }
 
     function handleSessionEnd(buttonEl) {
+        // Release GL resources explicitly so repeated VR sessions don't pile
+        // up GPU memory while we wait for GC of the orphaned context.
+        if (gl) {
+            if (program) gl.deleteProgram(program);
+            if (vao) gl.deleteVertexArray(vao);
+            if (texture) gl.deleteTexture(texture);
+            if (roomProgram) gl.deleteProgram(roomProgram);
+            if (roomVao) gl.deleteVertexArray(roomVao);
+            if (solidProgram) gl.deleteProgram(solidProgram);
+            if (solidVao) gl.deleteVertexArray(solidVao);
+            if (helpProgram) gl.deleteProgram(helpProgram);
+            if (helpVao) gl.deleteVertexArray(helpVao);
+            if (helpTexture) gl.deleteTexture(helpTexture);
+        }
         active = false;
         session = null;
         gl = null;
@@ -551,10 +569,12 @@
         if (!session || !onButton || !buttonNames) return false;
         const PLAYER = 0;
         const press = (name, down) => {
+            const id = buttonNames[name];
+            if (id === undefined) return;
             const wasDown = prevButtonState[name] || false;
             if (wasDown === down) return;
             prevButtonState[name] = down;
-            onButton(PLAYER, buttonNames[name], down);
+            onButton(PLAYER, id, down);
         };
         let lx = 0, ly = 0, anyController = false, leftGripHeld = false, leftStickPress = false;
         for (const src of session.inputSources) {

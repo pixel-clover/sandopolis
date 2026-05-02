@@ -240,26 +240,32 @@ function dbGet(key) {
 const MAX_RECENT_ROMS = 10;
 
 async function saveRecentRom(name, bytes) {
-    const tx = db.transaction("roms", "readwrite");
-    const store = tx.objectStore("roms");
-    store.put({name, bytes, timestamp: Date.now()}, name);
-    // Prune old entries beyond MAX_RECENT_ROMS
-    const allKeys = await new Promise((resolve, reject) => {
-        const req = store.getAllKeys();
+    // Each IndexedDB transaction does only synchronous work and is awaited
+    // via tx.oncomplete. Chaining requests across awaits in one transaction
+    // can race the auto-commit and throw TransactionInactiveError.
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction("roms", "readwrite");
+        tx.objectStore("roms").put({name, bytes, timestamp: Date.now()}, name);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+
+    const allEntries = await new Promise((resolve, reject) => {
+        const tx = db.transaction("roms", "readonly");
+        const req = tx.objectStore("roms").getAll();
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
-    if (allKeys.length > MAX_RECENT_ROMS) {
-        const allEntries = await new Promise((resolve, reject) => {
-            const req = store.getAll();
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-        allEntries.sort((a, b) => b.timestamp - a.timestamp);
-        for (const old of allEntries.slice(MAX_RECENT_ROMS)) {
-            store.delete(old.name);
-        }
-    }
+    if (allEntries.length <= MAX_RECENT_ROMS) return;
+    allEntries.sort((a, b) => b.timestamp - a.timestamp);
+    const toDelete = allEntries.slice(MAX_RECENT_ROMS);
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction("roms", "readwrite");
+        const store = tx.objectStore("roms");
+        for (const old of toDelete) store.delete(old.name);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
 }
 
 async function getRecentRoms() {
@@ -467,7 +473,7 @@ window.addEventListener("resize", () => {
 const REMAP_BUTTONS = ["Up", "Down", "Left", "Right", "A", "B", "C", "Start", "X", "Y", "Z"];
 
 function keyDisplayName(code) {
-    if (!code) return "—";
+    if (!code) return "·";
     if (code.startsWith("Key")) return code.slice(3);
     if (code.startsWith("Arrow")) return code.slice(5);
     if (code === "Enter") return "Enter";
@@ -636,7 +642,11 @@ function updateAboutInfo() {
 // Help overlay
 
 let helpOpen = false;
-let wasRunningBeforeHelp = false;
+// Counts simultaneously-open overlays (help, about). State capture and
+// resume only fire on the 0->1 and 1->0 transitions so two overlays opening
+// at once cannot lose the original "was running" state.
+let overlayDepth = 0;
+let wasRunningBeforeOverlay = false;
 
 function togglePause() {
     if (!emu) return;
@@ -654,14 +664,19 @@ function togglePause() {
 }
 
 function pauseForOverlay() {
-    if (!running) return;
-    running = false;
-    if (rafId) cancelAnimationFrame(rafId);
-    if (audioCtx) audioCtx.suspend();
+    if (overlayDepth === 0) wasRunningBeforeOverlay = running;
+    overlayDepth++;
+    if (running) {
+        running = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        if (audioCtx) audioCtx.suspend();
+    }
 }
 
 function resumeAfterOverlay() {
-    if (wasRunningBeforeHelp && emu) {
+    if (overlayDepth > 0) overlayDepth--;
+    if (overlayDepth > 0) return;
+    if (wasRunningBeforeOverlay && emu) {
         running = true;
         resumeFrame();
         if (audioCtx && audioEnabled) audioCtx.resume();
@@ -675,7 +690,6 @@ function toggleHelp() {
         helpOpen = false;
         resumeAfterOverlay();
     } else {
-        wasRunningBeforeHelp = running;
         pauseForOverlay();
         overlay.classList.add("visible");
         helpOpen = true;
@@ -778,7 +792,6 @@ function toggleAbout() {
         aboutOpen = false;
         resumeAfterOverlay();
     } else {
-        wasRunningBeforeHelp = running;
         pauseForOverlay();
         updateAboutInfo();
         if (wasm) {
@@ -847,11 +860,15 @@ async function initAudio() {
             console.warn("Audio: requested 48kHz but got " + audioCtx.sampleRate + "Hz; browser will resample");
         }
         await audioCtx.audioWorklet.addModule("audio-worklet.js");
+        const srcRate = wasm
+            ? wasm.instance.exports.sandopolis_audio_sample_rate()
+            : audioCtx.sampleRate;
         audioNode = new AudioWorkletNode(audioCtx, "sandopolis-audio", {
             numberOfOutputs: 1,
             channelCount: 2,
             channelCountMode: "explicit",
             channelInterpretation: "speakers",
+            processorOptions: {srcRate},
         });
         audioNode.port.onmessage = (e) => {
             if (e.data && e.data.type === "level") {
@@ -872,6 +889,8 @@ async function initAudio() {
     }
 }
 
+let renderAudioFrameCount = 0;
+
 function renderAudio() {
     if (!emu || !audioNode) return;
     const e = wasm.instance.exports;
@@ -881,8 +900,10 @@ function renderAudio() {
     // Re-read memory.buffer after render call (may have grown via memory.grow)
     const samples = new Int16Array(e.memory.buffer, bufPtr, sampleCount);
     audioNode.port.postMessage(samples.slice());
-    // Query buffer level for adaptive frame pacing.
-    audioNode.port.postMessage("query-level");
+    // Query buffer level for pacing at ~10 Hz instead of every frame.
+    if ((++renderAudioFrameCount % 6) === 0) {
+        audioNode.port.postMessage("query-level");
+    }
 }
 
 // Save/Load
@@ -1048,19 +1069,32 @@ function frameLoop(now) {
     tickEmulator(now);
 }
 
+// Pacing state machine with hysteresis. Without hysteresis the discrete
+// thresholds flip every frame whenever the buffer fill hovers near a
+// boundary, producing visible micro-judder.
+let pacingState = "normal"; // "fast" | "normal" | "slow"
+
+function updatePacingState(fill) {
+    if (pacingState === "fast") {
+        if (fill > 0.20) pacingState = "normal";
+    } else if (pacingState === "slow") {
+        if (fill < 0.50) pacingState = "normal";
+    } else {
+        if (fill < 0.05) pacingState = "fast";
+        else if (fill > 0.65) pacingState = "slow";
+    }
+}
+
 function tickEmulator(now) {
     if (!running || !emu) return;
 
-    // Adaptive frame pacing: if the audio buffer is getting low, run
-    // the emulator slightly faster by shortening the frame gate. If
-    // it's getting full, slow down. This keeps audio and video in sync
-    // despite the ~0.1% mismatch between Genesis and display refresh.
-    let paceMultiplier = 0.8;
     if (audioBufferCapacity > 0) {
-        const fill = audioBufferLevel / audioBufferCapacity;
-        if (fill < 0.1) paceMultiplier = 0.5;
-        else if (fill > 0.6) paceMultiplier = 0.95;
+        updatePacingState(audioBufferLevel / audioBufferCapacity);
     }
+    let paceMultiplier = 0.8;
+    if (pacingState === "fast") paceMultiplier = 0.5;
+    else if (pacingState === "slow") paceMultiplier = 0.95;
+
     if (now - lastFrameTime < frameInterval * paceMultiplier) return;
     lastFrameTime = now;
 
