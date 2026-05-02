@@ -779,6 +779,17 @@ function updatePerf() {
     } else {
         document.getElementById("perf-audio").textContent = "OFF";
     }
+
+    const gpDescriptions = [];
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const gp of gamepads) {
+        if (!gp || !gp.connected) continue;
+        const map = gp.mapping || "unmapped";
+        const shortId = (gp.id || "?").slice(0, 28);
+        gpDescriptions.push(`[${map}] ${shortId} (${gp.buttons.length}b/${gp.axes.length}a)`);
+    }
+    document.getElementById("perf-gamepads").textContent =
+        gpDescriptions.length ? gpDescriptions.join("; ") : "none";
 }
 
 // About modal
@@ -1205,7 +1216,9 @@ function pollGamepads() {
             if (!xrActive) applyXrController(gp);
             continue;
         }
-        if (gp.mapping !== "standard") continue;
+        // Accept any non-XR mapping. Quest browser sometimes reports BT
+        // controllers with an empty mapping string instead of "standard"; the
+        // button positions still match the standard layout in practice.
         if (stdPlayer >= 2) continue;
 
         // Face buttons (edge-detected via prev state)
