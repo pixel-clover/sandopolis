@@ -38,7 +38,7 @@ const DEFAULT_KEY_MAP = Object.freeze({
     KeyX: "Y",
     KeyC: "Z",
 });
-let keyMap = { ...DEFAULT_KEY_MAP };
+let keyMap = {...DEFAULT_KEY_MAP};
 
 const HOTKEYS = {
     F5: "quickSave",
@@ -233,7 +233,7 @@ const MAX_RECENT_ROMS = 10;
 async function saveRecentRom(name, bytes) {
     const tx = db.transaction("roms", "readwrite");
     const store = tx.objectStore("roms");
-    store.put({ name, bytes, timestamp: Date.now() }, name);
+    store.put({name, bytes, timestamp: Date.now()}, name);
     // Prune old entries beyond MAX_RECENT_ROMS
     const allKeys = await new Promise((resolve, reject) => {
         const req = store.getAllKeys();
@@ -298,7 +298,7 @@ async function loadRecentRom(name) {
     if (!entry) return;
     // Update timestamp
     const txW = db.transaction("roms", "readwrite");
-    txW.objectStore("roms").put({ ...entry, timestamp: Date.now() }, name);
+    txW.objectStore("roms").put({...entry, timestamp: Date.now()}, name);
     // Create a fake File-like object
     const blob = new Blob([entry.bytes]);
     blob.name = entry.name;
@@ -326,7 +326,7 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
-        if (saved.keyMap) keyMap = { ...DEFAULT_KEY_MAP, ...saved.keyMap };
+        if (saved.keyMap) keyMap = {...DEFAULT_KEY_MAP, ...saved.keyMap};
         if (saved.scaleMode !== undefined) {
             scaleMode = saved.scaleMode;
             document.getElementById("scale-mode").value = saved.scaleMode;
@@ -547,7 +547,7 @@ function refreshRemapLabels() {
 }
 
 function resetKeyMap() {
-    keyMap = { ...DEFAULT_KEY_MAP };
+    keyMap = {...DEFAULT_KEY_MAP};
     saveSettings();
     refreshRemapLabels();
 }
@@ -958,7 +958,7 @@ async function loadRom(file) {
     const name = (file.name || "").toLowerCase();
     const systemHint = name.endsWith(".sg") || name.endsWith(".sg.zip") ? 3
         : name.endsWith(".gg") || name.endsWith(".gg.zip") ? 2
-        : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
+            : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
     emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
     e.sandopolis_free(romPtr, romBytes.length);
     if (!emu) {
@@ -967,7 +967,8 @@ async function loadRom(file) {
     }
 
     currentRomName = file.name;
-    saveRecentRom(file.name, romBytes).then(populateRecentRoms).catch(() => {});
+    saveRecentRom(file.name, romBytes).then(populateRecentRoms).catch(() => {
+    });
     applySettings();
 
     // Resume AudioContext on user gesture (required by browsers)
@@ -1116,6 +1117,9 @@ function pollGamepads() {
     for (let gi = 0; gi < Math.min(gamepads.length, 2); gi++) {
         const gp = gamepads[gi];
         if (!gp || !gp.connected) continue;
+        // Skip XR hand controllers (mapping === "xr-standard"). They use a
+        // different button/axis layout and are routed through vr.js.
+        if (gp.mapping !== "standard") continue;
 
         // Face buttons (edge-detected via prev state)
         const prev = prevGamepadButtons[gi];

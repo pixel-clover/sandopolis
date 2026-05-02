@@ -42,9 +42,10 @@ jobs:
 
       - name: Prepare publish directory
         run: |
-          mkdir -p ./publish/img
-          cp ./web/index.html ./web/sandopolis.js ./web/vr.js ./web/audio-worklet.js ./publish/
+          mkdir -p ./publish/img ./publish/fonts
+          cp -r ./web/. ./publish/
           cp ./docs/assets/overlays/crt/*.png ./docs/assets/overlays/genesis/*.png ./publish/img/
+          cp ./src/frontend/fonts/ttf/JetBrainsMono-*.ttf ./publish/fonts/
           cp ./zig-out/web/sandopolis.wasm ./publish/
 
       - name: Deploy to GitHub Pages

@@ -20,6 +20,7 @@
     let onButton = null;
     let buttonNames = null;
     let active = false;
+    let entering = false;
     let prevButtonState = {};
 
     function isVRSupportable() {
@@ -28,94 +29,87 @@
             && typeof navigator.xr.isSessionSupported === "function";
     }
 
-    function reportDiag(msg) {
-        let el = document.getElementById("vr-diag");
-        if (!el) {
-            el = document.createElement("div");
-            el.id = "vr-diag";
-            el.style.cssText = "margin:8px auto;padding:6px 10px;max-width:680px;"
-                + "font-family:monospace;font-size:12px;text-align:center;"
-                + "background:rgba(255,200,40,0.12);border:1px solid #C8A830;"
-                + "color:#C8A830;border-radius:4px;";
-            const sb = document.querySelector(".status-bar");
-            if (sb && sb.parentNode) sb.parentNode.insertBefore(el, sb);
-            else document.body.appendChild(el);
-        }
-        el.textContent = "[VR] " + msg;
-        console.info("[VR]", msg);
-    }
-
     async function probe(buttonEl) {
-        const secure = typeof window !== "undefined" && window.isSecureContext;
-        // Always reveal the button so the user sees the feature exists.
-        buttonEl.style.display = "";
         if (!isVRSupportable()) {
-            buttonEl.disabled = true;
-            buttonEl.textContent = "VR n/a";
-            reportDiag("navigator.xr missing. Origin=" + location.origin
-                + " secureContext=" + secure
-                + (secure ? "" : ". WebXR requires HTTPS (or localhost)."));
+            // Hide the button: WebXR isn't reachable on this browser.
+            buttonEl.style.display = "none";
             return;
         }
         try {
             const supported = await navigator.xr.isSessionSupported("immersive-vr");
             if (supported) {
-                reportDiag("immersive-vr supported. Click 'Enter VR' to start.");
+                buttonEl.style.display = "";
             } else {
-                buttonEl.disabled = true;
-                reportDiag("immersive-vr NOT supported. secureContext=" + secure
-                    + (secure ? ". Is a headset connected?"
-                              : ". Serve the page over HTTPS (try ngrok or cloudflared)."));
+                buttonEl.style.display = "none";
             }
         } catch (err) {
-            reportDiag("isSessionSupported threw: " + (err && err.message ? err.message : err));
+            console.warn("[VR] isSessionSupported threw:", err);
+            buttonEl.style.display = "none";
         }
     }
 
     async function enter(buttonEl) {
-        if (active) return;
-        let s;
+        if (active || entering) return;
+        entering = true;
+        let s = null;
         try {
-            s = await navigator.xr.requestSession("immersive-vr", {
-                optionalFeatures: ["local-floor"],
-            });
-        } catch (err) {
-            console.warn("[VR] requestSession failed:", err);
-            const status = document.getElementById("status");
-            if (status) {
-                const reason = (err && err.message) ? err.message : String(err);
-                const hint = window.isSecureContext ? "" : " (page must be served over HTTPS)";
-                status.textContent = "VR unavailable: " + reason + hint;
+            try {
+                s = await navigator.xr.requestSession("immersive-vr", {
+                    optionalFeatures: ["local-floor"],
+                });
+            } catch (err) {
+                console.warn("[VR] requestSession failed:", err);
+                const status = document.getElementById("status");
+                if (status) {
+                    const reason = (err && err.message) ? err.message : String(err);
+                    const hint = window.isSecureContext ? "" : " (page must be served over HTTPS)";
+                    status.textContent = "VR unavailable: " + reason + hint;
+                }
+                return;
             }
-            return;
-        }
 
-        glCanvas = document.createElement("canvas");
-        gl = glCanvas.getContext("webgl2", { xrCompatible: true });
-        if (!gl) {
-            console.warn("WebXR theater mode requires WebGL2.");
-            await s.end();
-            return;
-        }
-        if (gl.makeXRCompatible) {
-            try { await gl.makeXRCompatible(); } catch (_) { /* already compatible */ }
-        }
+            glCanvas = document.createElement("canvas");
+            gl = glCanvas.getContext("webgl2", {xrCompatible: true});
+            if (!gl) {
+                console.warn("WebXR theater mode requires WebGL2.");
+                await s.end();
+                s = null;
+                return;
+            }
+            if (gl.makeXRCompatible) {
+                try {
+                    await gl.makeXRCompatible();
+                } catch (_) { /* already compatible */
+                }
+            }
 
-        baseLayer = new XRWebGLLayer(s, gl);
-        s.updateRenderState({ baseLayer });
-        try {
-            refSpace = await s.requestReferenceSpace("local-floor");
-        } catch (_) {
-            refSpace = await s.requestReferenceSpace("local");
-        }
+            baseLayer = new XRWebGLLayer(s, gl);
+            s.updateRenderState({baseLayer});
+            try {
+                refSpace = await s.requestReferenceSpace("local-floor");
+            } catch (_) {
+                refSpace = await s.requestReferenceSpace("local");
+            }
 
-        setupGL();
-        session = s;
-        active = true;
-        prevButtonState = {};
-        session.addEventListener("end", () => handleSessionEnd(buttonEl));
-        session.requestAnimationFrame(onXRFrame);
-        buttonEl.textContent = "Exit VR";
+            try {
+                setupGL();
+            } catch (err) {
+                console.warn("[VR] setupGL failed:", err);
+                await s.end();
+                s = null;
+                return;
+            }
+
+            session = s;
+            s = null;
+            active = true;
+            prevButtonState = {};
+            session.addEventListener("end", () => handleSessionEnd(buttonEl));
+            session.requestAnimationFrame(onXRFrame);
+            buttonEl.textContent = "Exit VR";
+        } finally {
+            entering = false;
+        }
     }
 
     function handleSessionEnd(buttonEl) {
@@ -159,11 +153,11 @@
         const halfH = QUAD_WIDTH / QUAD_ASPECT / 2;
         const verts = new Float32Array([
             -halfW, -halfH, 0, 1,
-             halfW, -halfH, 1, 1,
-             halfW,  halfH, 1, 0,
+            halfW, -halfH, 1, 1,
+            halfW, halfH, 1, 0,
             -halfW, -halfH, 0, 1,
-             halfW,  halfH, 1, 0,
-            -halfW,  halfH, 0, 0,
+            halfW, halfH, 1, 0,
+            -halfW, halfH, 0, 0,
         ]);
         vao = gl.createVertexArray();
         gl.bindVertexArray(vao);
@@ -194,6 +188,7 @@
             }
             return sh;
         }
+
         const p = gl.createProgram();
         gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
         gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
@@ -207,7 +202,7 @@
     function uploadCanvasTexture() {
         if (!sourceCanvas || sourceCanvas.width === 0 || sourceCanvas.height === 0) return;
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        // UVs already flip the canvas: bottom-left vertex maps to v=1.
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
     }
 
@@ -253,8 +248,13 @@
             //   [4] = primary face (A/X), [5] = secondary face (B/Y).
             //   axes[2,3] = thumbstick (axes[0,1] = trackpad on devices that have one).
             if (src.handedness === "left") {
-                if (gp.axes.length >= 4) { lx = gp.axes[2]; ly = gp.axes[3]; }
-                else if (gp.axes.length >= 2) { lx = gp.axes[0]; ly = gp.axes[1]; }
+                if (gp.axes.length >= 4) {
+                    lx = gp.axes[2];
+                    ly = gp.axes[3];
+                } else if (gp.axes.length >= 2) {
+                    lx = gp.axes[0];
+                    ly = gp.axes[1];
+                }
                 press("X", b(4));
                 press("Y", b(5));
                 press("Z", b(0));
@@ -312,17 +312,26 @@
         buttonEl = document.getElementById("btn-vr");
         if (!buttonEl) return null;
         buttonEl.addEventListener("click", () => {
+            if (entering) return;
             if (active && session) session.end();
             else if (sourceCanvas) enter(buttonEl);
-            else reportDiag("Load a ROM first, then click Enter VR.");
+            else showToastIfPossible("Load a ROM first, then click Enter VR.");
         });
         return buttonEl;
+    }
+
+    function showToastIfPossible(msg) {
+        const toast = document.getElementById("toast");
+        if (!toast) return;
+        toast.textContent = msg;
+        toast.classList.add("visible");
+        clearTimeout(toast._vrTimer);
+        toast._vrTimer = setTimeout(() => toast.classList.remove("visible"), 2000);
     }
 
     function autoProbe() {
         const btn = attachButton();
         if (btn) probe(btn);
-        else reportDiag("Could not find Enter VR button (#btn-vr) in the page.");
     }
 
     if (document.readyState === "loading") {
@@ -339,6 +348,8 @@
             buttonNames = opts.buttons;
             attachButton();
         },
-        get active() { return active; },
+        get active() {
+            return active;
+        },
     };
 })();
