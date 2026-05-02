@@ -13,6 +13,9 @@
     const BEZEL_OFFSET = 0.015;     // How far the bezel front sits behind the screen plane.
     const STAND_HEIGHT = 0.55;
     const STAND_DEPTH = 0.4;
+    const HELP_FADE_IN_MS = 200;
+    const HELP_VISIBLE_MS = 6000;
+    const HELP_FADE_OUT_MS = 800;
     const ROOM_HALF_W = 4.0;
     const ROOM_HALF_D = 4.0;
     const ROOM_HEIGHT = 3.0;
@@ -29,6 +32,10 @@
     let program, vao, posLoc, uvLoc, mvpLoc, sampLoc, texture;
     let roomProgram, roomVao, roomVertCount, roomMvpLoc;
     let solidProgram, solidVao, solidMvpLoc, solidColorLoc;
+    let helpProgram, helpVao, helpTexture, helpMvpLoc, helpTexLoc, helpAlphaLoc;
+    let helpShownAt = 0;
+    let helpQueued = false;
+    let leftStickPressPrev = false;
     let sourceCanvas = null;
     let onTick = null;
     let onButton = null;
@@ -140,6 +147,12 @@
         roomVao = null;
         solidProgram = null;
         solidVao = null;
+        helpProgram = null;
+        helpVao = null;
+        helpTexture = null;
+        helpShownAt = 0;
+        helpQueued = false;
+        leftStickPressPrev = false;
         if (buttonEl) buttonEl.textContent = "Enter VR";
         if (onSessionEndCallback) {
             try {
@@ -237,6 +250,108 @@
 
         setupRoom();
         setupSolid();
+        setupHelp();
+    }
+
+    function setupHelp() {
+        const c = document.createElement("canvas");
+        c.width = 1024;
+        c.height = 512;
+        const ctx2d = c.getContext("2d");
+        ctx2d.fillStyle = "rgba(8, 12, 22, 0.92)";
+        ctx2d.fillRect(0, 0, c.width, c.height);
+        ctx2d.strokeStyle = "#C8A830";
+        ctx2d.lineWidth = 4;
+        ctx2d.strokeRect(2, 2, c.width - 4, c.height - 4);
+
+        ctx2d.fillStyle = "#C8A830";
+        ctx2d.font = "bold 52px monospace";
+        ctx2d.textAlign = "center";
+        ctx2d.textBaseline = "middle";
+        ctx2d.fillText("VR THEATER CONTROLS", c.width / 2, 56);
+
+        ctx2d.fillStyle = "#D0D4E0";
+        ctx2d.font = "30px monospace";
+        ctx2d.textAlign = "left";
+        const lines = [
+            "Left stick:        D-Pad",
+            "Left X / Y:        Genesis X / Y",
+            "Left trigger:      Genesis Z",
+            "Right A / B:       Genesis A / B",
+            "Right trigger:     Genesis C",
+            "Right grip / stick: Start",
+            "",
+            "Hold left grip 1s: Exit VR",
+            "Press left stick:  Show help",
+        ];
+        let y = 130;
+        for (const line of lines) {
+            ctx2d.fillText(line, 60, y);
+            y += 38;
+        }
+
+        helpTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, helpTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const vs = `#version 300 es
+        in vec2 a_pos;
+        in vec2 a_uv;
+        out vec2 v_uv;
+        uniform mat4 u_mvp;
+        void main() { v_uv = a_uv; gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0); }`;
+        const fs = `#version 300 es
+        precision mediump float;
+        in vec2 v_uv;
+        out vec4 outColor;
+        uniform sampler2D u_tex;
+        uniform float u_alpha;
+        void main() {
+            vec4 t = texture(u_tex, v_uv);
+            outColor = vec4(t.rgb, t.a * u_alpha);
+        }`;
+        helpProgram = compileProgram(vs, fs);
+        helpMvpLoc = gl.getUniformLocation(helpProgram, "u_mvp");
+        helpTexLoc = gl.getUniformLocation(helpProgram, "u_tex");
+        helpAlphaLoc = gl.getUniformLocation(helpProgram, "u_alpha");
+
+        const verts = new Float32Array([
+            -1, -1, 0, 1,
+            1, -1, 1, 1,
+            1, 1, 1, 0,
+            -1, -1, 0, 1,
+            1, 1, 1, 0,
+            -1, 1, 0, 0,
+        ]);
+        const pos = gl.getAttribLocation(helpProgram, "a_pos");
+        const uv = gl.getAttribLocation(helpProgram, "a_uv");
+        helpVao = gl.createVertexArray();
+        gl.bindVertexArray(helpVao);
+        const vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(pos);
+        gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 16, 0);
+        gl.enableVertexAttribArray(uv);
+        gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 16, 8);
+        gl.bindVertexArray(null);
+
+        helpQueued = true;
+    }
+
+    function helpAlpha(time) {
+        if (!helpShownAt) return 0;
+        const dt = time - helpShownAt;
+        if (dt < HELP_FADE_IN_MS) return dt / HELP_FADE_IN_MS;
+        if (dt < HELP_FADE_IN_MS + HELP_VISIBLE_MS) return 1;
+        const fadeOutDt = dt - HELP_FADE_IN_MS - HELP_VISIBLE_MS;
+        if (fadeOutDt < HELP_FADE_OUT_MS) return 1 - fadeOutDt / HELP_FADE_OUT_MS;
+        helpShownAt = 0;
+        return 0;
     }
 
     function setupSolid() {
@@ -441,7 +556,7 @@
             prevButtonState[name] = down;
             onButton(PLAYER, buttonNames[name], down);
         };
-        let lx = 0, ly = 0, anyController = false, leftGripHeld = false;
+        let lx = 0, ly = 0, anyController = false, leftGripHeld = false, leftStickPress = false;
         for (const src of session.inputSources) {
             const gp = src.gamepad;
             if (!gp) continue;
@@ -463,6 +578,7 @@
                 press("Y", b(5));
                 press("Z", b(0));
                 leftGripHeld = b(1);
+                leftStickPress = b(3);
             } else if (src.handedness === "right") {
                 press("A", b(4));
                 press("B", b(5));
@@ -487,6 +603,10 @@
         } else {
             leftGripPressedAt = 0;
         }
+
+        // Press left thumbstick to (re)show help.
+        if (leftStickPress && !leftStickPressPrev) helpShownAt = time;
+        leftStickPressPrev = leftStickPress;
         return false;
     }
 
@@ -496,6 +616,11 @@
 
         const pose = frame.getViewerPose(refSpace);
         if (!pose) return;
+
+        if (helpQueued) {
+            helpShownAt = time;
+            helpQueued = false;
+        }
 
         if (onTick) onTick();
         if (pollControllers(time)) {
@@ -561,6 +686,38 @@
             const mvp = mulMat4(view.projectionMatrix, mv);
             gl.uniformMatrix4fv(mvpLoc, false, mvp);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+
+        // Translucent help panel above the screen, drawn last with alpha blending.
+        const alpha = helpAlpha(time);
+        if (alpha > 0) {
+            const panelHalfW = 0.7;
+            const panelHalfH = 0.35;
+            const panelY = SCREEN_Y + dims.halfH + panelHalfH + 0.15;
+            const panelZ = QUAD_DISTANCE + 0.05;
+            const helpModel = mulMat4(
+                translate(0, panelY, panelZ),
+                scaleXYZ(panelHalfW, panelHalfH, 1)
+            );
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            gl.depthMask(false);
+            gl.useProgram(helpProgram);
+            gl.bindVertexArray(helpVao);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, helpTexture);
+            gl.uniform1i(helpTexLoc, 0);
+            gl.uniform1f(helpAlphaLoc, alpha);
+            for (const view of pose.views) {
+                const vp = baseLayer.getViewport(view);
+                gl.viewport(vp.x, vp.y, vp.width, vp.height);
+                const mv = mulMat4(view.transform.inverse.matrix, helpModel);
+                const mvp = mulMat4(view.projectionMatrix, mv);
+                gl.uniformMatrix4fv(helpMvpLoc, false, mvp);
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+            }
+            gl.depthMask(true);
+            gl.disable(gl.BLEND);
         }
     }
 
