@@ -888,18 +888,30 @@ function renderAudio() {
 // Save/Load
 
 function quickSave() {
-    if (!emu) { showToast("Load a ROM first"); return; }
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
     showToast(wasm.instance.exports.sandopolis_quick_save(emu) ? "Quick state saved" : "Save failed");
 }
 
 function quickLoad() {
-    if (!emu) { showToast("Load a ROM first"); return; }
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
     showToast(wasm.instance.exports.sandopolis_quick_load(emu) ? "Quick state loaded" : "No quick save found");
 }
 
 async function persistentSave() {
-    if (!emu) { showToast("Load a ROM first"); return; }
-    if (!db) { showToast("Storage unavailable"); return; }
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
+    if (!db) {
+        showToast("Storage unavailable");
+        return;
+    }
     const e = wasm.instance.exports;
     const ptr = e.sandopolis_save_state(emu);
     if (!ptr) {
@@ -914,8 +926,14 @@ async function persistentSave() {
 }
 
 async function persistentLoad() {
-    if (!emu) { showToast("Load a ROM first"); return; }
-    if (!db) { showToast("Storage unavailable"); return; }
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
+    if (!db) {
+        showToast("Storage unavailable");
+        return;
+    }
     const data = await dbGet(`${currentRomName}:slot${currentSlot}`);
     if (!data) {
         showToast(`No save in slot ${currentSlot}`);

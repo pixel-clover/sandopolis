@@ -4,10 +4,15 @@
 (function () {
     "use strict";
 
-    const QUAD_WIDTH = 3.2;
+    const QUAD_WIDTH = 1.4;
     const QUAD_ASPECT = 4 / 3;
-    const QUAD_DISTANCE = -2.5;
-    const SCREEN_Y = 1.4;
+    const QUAD_DISTANCE = -1.8;
+    const SCREEN_Y = 1.2;
+    const BEZEL_THICKNESS = 0.06;
+    const BEZEL_DEPTH = 0.05;       // Half-depth of the bezel cube.
+    const BEZEL_OFFSET = 0.015;     // How far the bezel front sits behind the screen plane.
+    const STAND_HEIGHT = 0.7;
+    const STAND_DEPTH = 0.4;
     const ROOM_HALF_W = 4.0;
     const ROOM_HALF_D = 4.0;
     const ROOM_HEIGHT = 3.0;
@@ -23,6 +28,7 @@
     let baseLayer = null;
     let program, vao, posLoc, uvLoc, mvpLoc, sampLoc, texture;
     let roomProgram, roomVao, roomVertCount, roomMvpLoc;
+    let solidProgram, solidVao, solidMvpLoc, solidColorLoc;
     let sourceCanvas = null;
     let onTick = null;
     let onButton = null;
@@ -132,9 +138,15 @@
         texture = null;
         roomProgram = null;
         roomVao = null;
+        solidProgram = null;
+        solidVao = null;
         if (buttonEl) buttonEl.textContent = "Enter VR";
         if (onSessionEndCallback) {
-            try { onSessionEndCallback(); } catch (err) { console.warn("[VR] onSessionEnd callback threw:", err); }
+            try {
+                onSessionEndCallback();
+            } catch (err) {
+                console.warn("[VR] onSessionEnd callback threw:", err);
+            }
         }
     }
 
@@ -148,13 +160,46 @@
             v_uv = a_uv;
             gl_Position = u_mvp * vec4(a_pos.x, a_pos.y, 0.0, 1.0);
         }`;
+        // CRT-feel screen shader. Layers (in order):
+        //   1. Subtle barrel curvature, with the area outside the curved
+        //      rectangle clipped to black (CRT tube edge).
+        //   2. Sharp-bilinear sample of the emulator framebuffer.
+        //   3. Scanlines at the source-pixel rate.
+        //   4. Vignette fade toward the corners.
+        //   5. Warm phosphor tint.
         const fs = `#version 300 es
         precision mediump float;
         in vec2 v_uv;
         out vec4 outColor;
         uniform sampler2D u_tex;
+        const float CURVE = 0.08;
+        const float SCANLINE_DEPTH = 0.25;
+        const float VIGNETTE = 0.45;
         void main() {
-            outColor = texture(u_tex, v_uv);
+            vec2 cuv = v_uv * 2.0 - 1.0;
+            cuv += cuv * (cuv.yx * cuv.yx) * CURVE;
+            vec2 warped = (cuv + 1.0) * 0.5;
+            if (warped.x < 0.0 || warped.x > 1.0 || warped.y < 0.0 || warped.y > 1.0) {
+                outColor = vec4(0.0, 0.0, 0.0, 1.0);
+                return;
+            }
+            vec2 texSize = vec2(textureSize(u_tex, 0));
+            vec2 texelUV = warped * texSize;
+            vec2 floored = floor(texelUV) + 0.5;
+            vec2 frac = texelUV - floored;
+            vec2 dx = fwidth(texelUV);
+            vec2 sharp = floored + clamp(frac / dx + 0.5, 0.0, 1.0) - 0.5;
+            vec3 col = texture(u_tex, sharp / texSize).rgb;
+
+            float scan = 0.5 + 0.5 * cos(texelUV.y * 6.28318);
+            col *= 1.0 - SCANLINE_DEPTH * (1.0 - scan);
+
+            vec2 vd = warped - 0.5;
+            col *= 1.0 - dot(vd, vd) * VIGNETTE;
+
+            col *= vec3(1.04, 0.99, 0.95);
+
+            outColor = vec4(col, 1.0);
         }`;
         program = compileProgram(vs, fs);
         posLoc = gl.getAttribLocation(program, "a_pos");
@@ -166,11 +211,11 @@
         // the quad mirrors the source canvas's aspect (and aspect-mode setting).
         const verts = new Float32Array([
             -1, -1, 0, 1,
-             1, -1, 1, 1,
-             1,  1, 1, 0,
+            1, -1, 1, 1,
+            1, 1, 1, 0,
             -1, -1, 0, 1,
-             1,  1, 1, 0,
-            -1,  1, 0, 0,
+            1, 1, 1, 0,
+            -1, 1, 0, 0,
         ]);
         vao = gl.createVertexArray();
         gl.bindVertexArray(vao);
@@ -186,11 +231,62 @@
         texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
         setupRoom();
+        setupSolid();
+    }
+
+    function setupSolid() {
+        const vs = `#version 300 es
+        in vec3 a_pos;
+        uniform mat4 u_mvp;
+        void main() { gl_Position = u_mvp * vec4(a_pos, 1.0); }`;
+        const fs = `#version 300 es
+        precision mediump float;
+        uniform vec3 u_color;
+        out vec4 outColor;
+        void main() { outColor = vec4(u_color, 1.0); }`;
+        solidProgram = compileProgram(vs, fs);
+        solidMvpLoc = gl.getUniformLocation(solidProgram, "u_mvp");
+        solidColorLoc = gl.getUniformLocation(solidProgram, "u_color");
+        const pos = gl.getAttribLocation(solidProgram, "a_pos");
+
+        // Unit cube: 24 unique vertices (4 per face, 6 faces) drawn as 36 indices via repeated triangles.
+        const v = [
+            // x=-1
+            [-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, -1, -1], [-1, 1, 1], [-1, 1, -1],
+            // x=+1
+            [1, -1, 1], [1, -1, -1], [1, 1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1],
+            // y=-1
+            [-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, -1], [1, -1, 1], [-1, -1, 1],
+            // y=+1
+            [-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, 1], [1, 1, -1], [-1, 1, -1],
+            // z=-1
+            [1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, -1, -1], [-1, 1, -1], [1, 1, -1],
+            // z=+1
+            [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, -1, 1], [1, 1, 1], [-1, 1, 1],
+        ];
+        const arr = new Float32Array(v.flat());
+        solidVao = gl.createVertexArray();
+        gl.bindVertexArray(solidVao);
+        const vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(pos);
+        gl.vertexAttribPointer(pos, 3, gl.FLOAT, false, 12, 0);
+        gl.bindVertexArray(null);
+    }
+
+    function scaleXYZ(sx, sy, sz) {
+        return new Float32Array([
+            sx, 0, 0, 0,
+            0, sy, 0, 0,
+            0, 0, sz, 0,
+            0, 0, 0, 1,
+        ]);
     }
 
     function setupRoom() {
@@ -242,10 +338,12 @@
         const CEIL = [0.05, 0.05, 0.07];
 
         const data = [];
+
         function quad(p0, p1, p2, p3, c) {
             data.push(...p0, ...c, ...p1, ...c, ...p2, ...c,
-                      ...p0, ...c, ...p2, ...c, ...p3, ...c);
+                ...p0, ...c, ...p2, ...c, ...p3, ...c);
         }
+
         // Floor
         quad([-hx, 0, -hz], [hx, 0, -hz], [hx, 0, hz], [-hx, 0, hz], FLOOR);
         // Ceiling
@@ -322,7 +420,7 @@
         ]);
     }
 
-    function quadScaleMatrix() {
+    function quadHalfDims() {
         const w = (sourceCanvas && sourceCanvas.width) || 320;
         const h = (sourceCanvas && sourceCanvas.height) || 224;
         const mode = (getAspectMode && getAspectMode()) || "fit";
@@ -331,12 +429,7 @@
         const aspect = (mode === "fit") ? QUAD_ASPECT : (w / h);
         const halfW = QUAD_WIDTH / 2;
         const halfH = halfW / aspect;
-        return new Float32Array([
-            halfW, 0, 0, 0,
-            0, halfH, 0, 0,
-            0, 0, 1, 0,
-            0, 0, 0, 1,
-        ]);
+        return {halfW, halfH};
     }
 
     function pollControllers(time) {
@@ -416,17 +509,47 @@
         gl.clearColor(0.02, 0.02, 0.04, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-        const screenModel = mulMat4(translate(0, SCREEN_Y, QUAD_DISTANCE), quadScaleMatrix());
+        const dims = quadHalfDims();
+        const screenScale = scaleXYZ(dims.halfW, dims.halfH, 1);
+        const screenModel = mulMat4(translate(0, SCREEN_Y, QUAD_DISTANCE), screenScale);
+
+        // Bezel: dark frame behind the screen. Front face sits BEZEL_OFFSET
+        // metres behind the screen plane to avoid z-fighting with the quad.
+        const bezelHalfW = dims.halfW + BEZEL_THICKNESS;
+        const bezelHalfH = dims.halfH + BEZEL_THICKNESS;
+        const bezelCenterZ = QUAD_DISTANCE - BEZEL_OFFSET - BEZEL_DEPTH;
+        const bezelModel = mulMat4(
+            translate(0, SCREEN_Y, bezelCenterZ),
+            scaleXYZ(bezelHalfW, bezelHalfH, BEZEL_DEPTH)
+        );
+
+        // TV stand: a media console centered slightly behind the screen plane.
+        // STAND_HEIGHT is set so the stand's top sits just under the screen.
+        const standModel = mulMat4(
+            translate(0, STAND_HEIGHT / 2, QUAD_DISTANCE - 0.1),
+            scaleXYZ(bezelHalfW * 0.9, STAND_HEIGHT / 2, STAND_DEPTH / 2)
+        );
+
         for (const view of pose.views) {
             const vp = baseLayer.getViewport(view);
             gl.viewport(vp.x, vp.y, vp.width, vp.height);
             const viewProj = mulMat4(view.projectionMatrix, view.transform.inverse.matrix);
 
-            // Room (drawn first; depth-writes back the screen quad covers it).
+            // Room
             gl.useProgram(roomProgram);
             gl.bindVertexArray(roomVao);
             gl.uniformMatrix4fv(roomMvpLoc, false, viewProj);
             gl.drawArrays(gl.TRIANGLES, 0, roomVertCount);
+
+            // Bezel + stand share the solid program.
+            gl.useProgram(solidProgram);
+            gl.bindVertexArray(solidVao);
+            gl.uniform3f(solidColorLoc, 0.04, 0.04, 0.05);
+            gl.uniformMatrix4fv(solidMvpLoc, false, mulMat4(viewProj, bezelModel));
+            gl.drawArrays(gl.TRIANGLES, 0, 36);
+            gl.uniform3f(solidColorLoc, 0.07, 0.06, 0.05);
+            gl.uniformMatrix4fv(solidMvpLoc, false, mulMat4(viewProj, standModel));
+            gl.drawArrays(gl.TRIANGLES, 0, 36);
 
             // Screen quad
             gl.useProgram(program);
