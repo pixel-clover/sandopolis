@@ -178,6 +178,18 @@ async function init() {
     initRemapUI();
     db = await openDB();
     await populateRecentRoms();
+
+    if (window.SandopolisVR) {
+        window.SandopolisVR.init({
+            canvas,
+            buttons: BUTTONS,
+            onTick: () => tickEmulator(performance.now()),
+            onButton: (player, btn, down) => {
+                if (emu) wasm.instance.exports.sandopolis_set_button(emu, player, btn, down);
+            },
+        });
+    }
+
     setStatus("We are ready. Load a ROM to start playing!");
 }
 
@@ -987,6 +999,11 @@ let audioBufferCapacity = 1;
 function frameLoop(now) {
     if (!running) return;
     rafId = requestAnimationFrame(frameLoop);
+    tickEmulator(now);
+}
+
+function tickEmulator(now) {
+    if (!running || !emu) return;
 
     // Adaptive frame pacing: if the audio buffer is getting low, run
     // the emulator slightly faster by shortening the frame gate. If
@@ -995,8 +1012,8 @@ function frameLoop(now) {
     let paceMultiplier = 0.8;
     if (audioBufferCapacity > 0) {
         const fill = audioBufferLevel / audioBufferCapacity;
-        if (fill < 0.1) paceMultiplier = 0.5;       // starving: run faster
-        else if (fill > 0.6) paceMultiplier = 0.95;  // full: slow down
+        if (fill < 0.1) paceMultiplier = 0.5;
+        else if (fill > 0.6) paceMultiplier = 0.95;
     }
     if (now - lastFrameTime < frameInterval * paceMultiplier) return;
     lastFrameTime = now;
@@ -1015,12 +1032,10 @@ function frameLoop(now) {
         canvas.width = width;
         canvas.height = height;
         imageData = ctx.createImageData(width, height);
-        // Reapply aspect/scale mode for the new resolution
         applyAspectMode();
     }
     if (!imageData) imageData = ctx.createImageData(width, height);
 
-    // Re-read memory.buffer in case WASM memory grew during this frame
     const fb = new Uint32Array(e.memory.buffer, fbPtr, fbLen);
     const pixels = imageData.data;
     const count = Math.min(fbLen, width * height);
