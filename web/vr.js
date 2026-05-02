@@ -11,7 +11,7 @@
     const BEZEL_THICKNESS = 0.06;
     const BEZEL_DEPTH = 0.05;       // Half-depth of the bezel cube.
     const BEZEL_OFFSET = 0.015;     // How far the bezel front sits behind the screen plane.
-    const STAND_HEIGHT = 0.7;
+    const STAND_HEIGHT = 0.55;
     const STAND_DEPTH = 0.4;
     const ROOM_HALF_W = 4.0;
     const ROOM_HALF_D = 4.0;
@@ -173,8 +173,8 @@
         out vec4 outColor;
         uniform sampler2D u_tex;
         const float CURVE = 0.08;
-        const float SCANLINE_DEPTH = 0.25;
-        const float VIGNETTE = 0.45;
+        const float SCANLINE_DEPTH = 0.18;
+        const float VIGNETTE = 0.35;
         void main() {
             vec2 cuv = v_uv * 2.0 - 1.0;
             cuv += cuv * (cuv.yx * cuv.yx) * CURVE;
@@ -197,7 +197,7 @@
             vec2 vd = warped - 0.5;
             col *= 1.0 - dot(vd, vd) * VIGNETTE;
 
-            col *= vec3(1.04, 0.99, 0.95);
+            col *= vec3(1.02, 1.0, 0.98);
 
             outColor = vec4(col, 1.0);
         }`;
