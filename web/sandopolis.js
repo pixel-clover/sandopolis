@@ -112,7 +112,14 @@ async function init() {
     });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
-    document.getElementById("screen").addEventListener("click", togglePause);
+    // Click-to-pause is a 2D-only affordance. While a VR session is active
+    // the canvas is not visible to the user and Quest browser sometimes fires
+    // synthetic clicks on the focused canvas when a BT controller button is
+    // pressed; that would freeze the game on every button press.
+    document.getElementById("screen").addEventListener("click", () => {
+        if (window.SandopolisVR && window.SandopolisVR.active) return;
+        togglePause();
+    });
 
     // Drag and drop
     const dropZone = document.getElementById("drop-zone");
