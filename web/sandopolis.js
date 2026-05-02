@@ -38,7 +38,7 @@ const DEFAULT_KEY_MAP = Object.freeze({
     KeyX: "Y",
     KeyC: "Z",
 });
-let keyMap = { ...DEFAULT_KEY_MAP };
+let keyMap = {...DEFAULT_KEY_MAP};
 
 const HOTKEYS = {
     F5: "quickSave",
@@ -178,6 +178,27 @@ async function init() {
     initRemapUI();
     db = await openDB();
     await populateRecentRoms();
+
+    if (window.SandopolisVR) {
+        window.SandopolisVR.init({
+            canvas,
+            buttons: BUTTONS,
+            onTick: () => tickEmulator(performance.now()),
+            onButton: (player, btn, down) => {
+                if (emu) wasm.instance.exports.sandopolis_set_button(emu, player, btn, down);
+            },
+            isRomLoaded: () => !!emu,
+            getAspectMode: () => aspectMode,
+            onSessionEnd: () => {
+                // Pause the emulator when leaving VR so the game doesn't run unattended.
+                if (emu && running) {
+                    togglePause();
+                    showToast("VR exited: click screen to resume");
+                }
+            },
+        });
+    }
+
     setStatus("We are ready. Load a ROM to start playing!");
 }
 
@@ -219,26 +240,32 @@ function dbGet(key) {
 const MAX_RECENT_ROMS = 10;
 
 async function saveRecentRom(name, bytes) {
-    const tx = db.transaction("roms", "readwrite");
-    const store = tx.objectStore("roms");
-    store.put({ name, bytes, timestamp: Date.now() }, name);
-    // Prune old entries beyond MAX_RECENT_ROMS
-    const allKeys = await new Promise((resolve, reject) => {
-        const req = store.getAllKeys();
+    // Each IndexedDB transaction does only synchronous work and is awaited
+    // via tx.oncomplete. Chaining requests across awaits in one transaction
+    // can race the auto-commit and throw TransactionInactiveError.
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction("roms", "readwrite");
+        tx.objectStore("roms").put({name, bytes, timestamp: Date.now()}, name);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+
+    const allEntries = await new Promise((resolve, reject) => {
+        const tx = db.transaction("roms", "readonly");
+        const req = tx.objectStore("roms").getAll();
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
-    if (allKeys.length > MAX_RECENT_ROMS) {
-        const allEntries = await new Promise((resolve, reject) => {
-            const req = store.getAll();
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-        allEntries.sort((a, b) => b.timestamp - a.timestamp);
-        for (const old of allEntries.slice(MAX_RECENT_ROMS)) {
-            store.delete(old.name);
-        }
-    }
+    if (allEntries.length <= MAX_RECENT_ROMS) return;
+    allEntries.sort((a, b) => b.timestamp - a.timestamp);
+    const toDelete = allEntries.slice(MAX_RECENT_ROMS);
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction("roms", "readwrite");
+        const store = tx.objectStore("roms");
+        for (const old of toDelete) store.delete(old.name);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
 }
 
 async function getRecentRoms() {
@@ -286,7 +313,7 @@ async function loadRecentRom(name) {
     if (!entry) return;
     // Update timestamp
     const txW = db.transaction("roms", "readwrite");
-    txW.objectStore("roms").put({ ...entry, timestamp: Date.now() }, name);
+    txW.objectStore("roms").put({...entry, timestamp: Date.now()}, name);
     // Create a fake File-like object
     const blob = new Blob([entry.bytes]);
     blob.name = entry.name;
@@ -314,7 +341,7 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
-        if (saved.keyMap) keyMap = { ...DEFAULT_KEY_MAP, ...saved.keyMap };
+        if (saved.keyMap) keyMap = {...DEFAULT_KEY_MAP, ...saved.keyMap};
         if (saved.scaleMode !== undefined) {
             scaleMode = saved.scaleMode;
             document.getElementById("scale-mode").value = saved.scaleMode;
@@ -446,7 +473,7 @@ window.addEventListener("resize", () => {
 const REMAP_BUTTONS = ["Up", "Down", "Left", "Right", "A", "B", "C", "Start", "X", "Y", "Z"];
 
 function keyDisplayName(code) {
-    if (!code) return "—";
+    if (!code) return "·";
     if (code.startsWith("Key")) return code.slice(3);
     if (code.startsWith("Arrow")) return code.slice(5);
     if (code === "Enter") return "Enter";
@@ -535,7 +562,7 @@ function refreshRemapLabels() {
 }
 
 function resetKeyMap() {
-    keyMap = { ...DEFAULT_KEY_MAP };
+    keyMap = {...DEFAULT_KEY_MAP};
     saveSettings();
     refreshRemapLabels();
 }
@@ -598,12 +625,28 @@ function updateAboutInfo() {
     videoEl.textContent = `${width}x${height} ARGB Canvas`;
 
     document.getElementById("about-save-version").textContent = "v" + e.sandopolis_save_state_version();
+
+    const vrEl = document.getElementById("about-vr");
+    if (vrEl) {
+        const status = window.SandopolisVR ? window.SandopolisVR.status : "no-api";
+        const labels = {
+            supported: "Detected (immersive-vr)",
+            unsupported: "WebXR present, no headset",
+            "no-api": "Not available (no WebXR)",
+            checking: "Checking...",
+        };
+        vrEl.textContent = labels[status] || "Unknown";
+    }
 }
 
 // Help overlay
 
 let helpOpen = false;
-let wasRunningBeforeHelp = false;
+// Counts simultaneously-open overlays (help, about). State capture and
+// resume only fire on the 0->1 and 1->0 transitions so two overlays opening
+// at once cannot lose the original "was running" state.
+let overlayDepth = 0;
+let wasRunningBeforeOverlay = false;
 
 function togglePause() {
     if (!emu) return;
@@ -611,7 +654,7 @@ function togglePause() {
         running = false;
         if (rafId) cancelAnimationFrame(rafId);
         if (audioCtx) audioCtx.suspend();
-        setStatus("Paused");
+        setStatus("Paused: click screen to resume");
     } else {
         running = true;
         resumeFrame();
@@ -621,14 +664,19 @@ function togglePause() {
 }
 
 function pauseForOverlay() {
-    if (!running) return;
-    running = false;
-    if (rafId) cancelAnimationFrame(rafId);
-    if (audioCtx) audioCtx.suspend();
+    if (overlayDepth === 0) wasRunningBeforeOverlay = running;
+    overlayDepth++;
+    if (running) {
+        running = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        if (audioCtx) audioCtx.suspend();
+    }
 }
 
 function resumeAfterOverlay() {
-    if (wasRunningBeforeHelp && emu) {
+    if (overlayDepth > 0) overlayDepth--;
+    if (overlayDepth > 0) return;
+    if (wasRunningBeforeOverlay && emu) {
         running = true;
         resumeFrame();
         if (audioCtx && audioEnabled) audioCtx.resume();
@@ -642,7 +690,6 @@ function toggleHelp() {
         helpOpen = false;
         resumeAfterOverlay();
     } else {
-        wasRunningBeforeHelp = running;
         pauseForOverlay();
         overlay.classList.add("visible");
         helpOpen = true;
@@ -745,7 +792,6 @@ function toggleAbout() {
         aboutOpen = false;
         resumeAfterOverlay();
     } else {
-        wasRunningBeforeHelp = running;
         pauseForOverlay();
         updateAboutInfo();
         if (wasm) {
@@ -763,11 +809,15 @@ function toggleFullscreen() {
     const container = document.getElementById("screen-container");
     if (document.fullscreenElement) {
         document.exitFullscreen();
-    } else {
-        container.requestFullscreen().catch(() => {
-            showToast("Fullscreen not available");
-        });
+        return;
     }
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
+    container.requestFullscreen().catch(() => {
+        showToast("Fullscreen not available");
+    });
 }
 
 function onFullscreenChange() {
@@ -810,11 +860,15 @@ async function initAudio() {
             console.warn("Audio: requested 48kHz but got " + audioCtx.sampleRate + "Hz; browser will resample");
         }
         await audioCtx.audioWorklet.addModule("audio-worklet.js");
+        const srcRate = wasm
+            ? wasm.instance.exports.sandopolis_audio_sample_rate()
+            : audioCtx.sampleRate;
         audioNode = new AudioWorkletNode(audioCtx, "sandopolis-audio", {
             numberOfOutputs: 1,
             channelCount: 2,
             channelCountMode: "explicit",
             channelInterpretation: "speakers",
+            processorOptions: {srcRate},
         });
         audioNode.port.onmessage = (e) => {
             if (e.data && e.data.type === "level") {
@@ -835,6 +889,8 @@ async function initAudio() {
     }
 }
 
+let renderAudioFrameCount = 0;
+
 function renderAudio() {
     if (!emu || !audioNode) return;
     const e = wasm.instance.exports;
@@ -844,24 +900,39 @@ function renderAudio() {
     // Re-read memory.buffer after render call (may have grown via memory.grow)
     const samples = new Int16Array(e.memory.buffer, bufPtr, sampleCount);
     audioNode.port.postMessage(samples.slice());
-    // Query buffer level for adaptive frame pacing.
-    audioNode.port.postMessage("query-level");
+    // Query buffer level for pacing at ~10 Hz instead of every frame.
+    if ((++renderAudioFrameCount % 6) === 0) {
+        audioNode.port.postMessage("query-level");
+    }
 }
 
 // Save/Load
 
 function quickSave() {
-    if (!emu) return;
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
     showToast(wasm.instance.exports.sandopolis_quick_save(emu) ? "Quick state saved" : "Save failed");
 }
 
 function quickLoad() {
-    if (!emu) return;
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
     showToast(wasm.instance.exports.sandopolis_quick_load(emu) ? "Quick state loaded" : "No quick save found");
 }
 
 async function persistentSave() {
-    if (!emu || !db) return;
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
+    if (!db) {
+        showToast("Storage unavailable");
+        return;
+    }
     const e = wasm.instance.exports;
     const ptr = e.sandopolis_save_state(emu);
     if (!ptr) {
@@ -876,7 +947,14 @@ async function persistentSave() {
 }
 
 async function persistentLoad() {
-    if (!emu || !db) return;
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
+    if (!db) {
+        showToast("Storage unavailable");
+        return;
+    }
     const data = await dbGet(`${currentRomName}:slot${currentSlot}`);
     if (!data) {
         showToast(`No save in slot ${currentSlot}`);
@@ -946,7 +1024,7 @@ async function loadRom(file) {
     const name = (file.name || "").toLowerCase();
     const systemHint = name.endsWith(".sg") || name.endsWith(".sg.zip") ? 3
         : name.endsWith(".gg") || name.endsWith(".gg.zip") ? 2
-        : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
+            : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
     emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
     e.sandopolis_free(romPtr, romBytes.length);
     if (!emu) {
@@ -955,7 +1033,8 @@ async function loadRom(file) {
     }
 
     currentRomName = file.name;
-    saveRecentRom(file.name, romBytes).then(populateRecentRoms).catch(() => {});
+    saveRecentRom(file.name, romBytes).then(populateRecentRoms).catch(() => {
+    });
     applySettings();
 
     // Resume AudioContext on user gesture (required by browsers)
@@ -987,17 +1066,35 @@ let audioBufferCapacity = 1;
 function frameLoop(now) {
     if (!running) return;
     rafId = requestAnimationFrame(frameLoop);
+    tickEmulator(now);
+}
 
-    // Adaptive frame pacing: if the audio buffer is getting low, run
-    // the emulator slightly faster by shortening the frame gate. If
-    // it's getting full, slow down. This keeps audio and video in sync
-    // despite the ~0.1% mismatch between Genesis and display refresh.
-    let paceMultiplier = 0.8;
-    if (audioBufferCapacity > 0) {
-        const fill = audioBufferLevel / audioBufferCapacity;
-        if (fill < 0.1) paceMultiplier = 0.5;       // starving: run faster
-        else if (fill > 0.6) paceMultiplier = 0.95;  // full: slow down
+// Pacing state machine with hysteresis. Without hysteresis the discrete
+// thresholds flip every frame whenever the buffer fill hovers near a
+// boundary, producing visible micro-judder.
+let pacingState = "normal"; // "fast" | "normal" | "slow"
+
+function updatePacingState(fill) {
+    if (pacingState === "fast") {
+        if (fill > 0.20) pacingState = "normal";
+    } else if (pacingState === "slow") {
+        if (fill < 0.50) pacingState = "normal";
+    } else {
+        if (fill < 0.05) pacingState = "fast";
+        else if (fill > 0.65) pacingState = "slow";
     }
+}
+
+function tickEmulator(now) {
+    if (!running || !emu) return;
+
+    if (audioBufferCapacity > 0) {
+        updatePacingState(audioBufferLevel / audioBufferCapacity);
+    }
+    let paceMultiplier = 0.8;
+    if (pacingState === "fast") paceMultiplier = 0.5;
+    else if (pacingState === "slow") paceMultiplier = 0.95;
+
     if (now - lastFrameTime < frameInterval * paceMultiplier) return;
     lastFrameTime = now;
 
@@ -1015,12 +1112,10 @@ function frameLoop(now) {
         canvas.width = width;
         canvas.height = height;
         imageData = ctx.createImageData(width, height);
-        // Reapply aspect/scale mode for the new resolution
         applyAspectMode();
     }
     if (!imageData) imageData = ctx.createImageData(width, height);
 
-    // Re-read memory.buffer in case WASM memory grew during this frame
     const fb = new Uint32Array(e.memory.buffer, fbPtr, fbLen);
     const pixels = imageData.data;
     const count = Math.min(fbLen, width * height);
@@ -1095,33 +1190,74 @@ const AXIS_THRESHOLD = 0.5;
 
 function pollGamepads() {
     if (!emu) return;
+    const xrActive = window.SandopolisVR && window.SandopolisVR.active;
     const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
     const e = wasm.instance.exports;
 
-    for (let gi = 0; gi < Math.min(gamepads.length, 2); gi++) {
+    let stdPlayer = 0;
+    for (let gi = 0; gi < gamepads.length; gi++) {
         const gp = gamepads[gi];
         if (!gp || !gp.connected) continue;
 
+        if (gp.mapping === "xr-standard") {
+            // In an active XR session, vr.js handles XR controllers. Outside
+            // XR (Quest browser in 2D mode) we route them to player 0 here.
+            if (!xrActive) applyXrController(gp);
+            continue;
+        }
+        if (gp.mapping !== "standard") continue;
+        if (stdPlayer >= 2) continue;
+
         // Face buttons (edge-detected via prev state)
-        const prev = prevGamepadButtons[gi];
+        const prev = prevGamepadButtons[stdPlayer];
         for (const [bi, name] of GAMEPAD_FACE_MAP) {
             if (bi >= gp.buttons.length) continue;
             const pressed = gp.buttons[bi].pressed ? 1 : 0;
             if (pressed !== prev[bi]) {
                 prev[bi] = pressed;
-                e.sandopolis_set_button(emu, gi, BUTTONS[name], !!pressed);
+                e.sandopolis_set_button(emu, stdPlayer, BUTTONS[name], !!pressed);
             }
         }
 
-        // D-pad + left stick combined (set every frame)
         const lx = gp.axes.length >= 2 ? gp.axes[0] : 0;
         const ly = gp.axes.length >= 2 ? gp.axes[1] : 0;
         const dp = (i) => gp.buttons.length > i && gp.buttons[i].pressed;
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Up, dp(12) || ly < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Down, dp(13) || ly > AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Left, dp(14) || lx < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Right, dp(15) || lx > AXIS_THRESHOLD);
+        stdPlayer++;
+    }
+}
 
-        e.sandopolis_set_button(emu, gi, BUTTONS.Up, dp(12) || ly < -AXIS_THRESHOLD);
-        e.sandopolis_set_button(emu, gi, BUTTONS.Down, dp(13) || ly > AXIS_THRESHOLD);
-        e.sandopolis_set_button(emu, gi, BUTTONS.Left, dp(14) || lx < -AXIS_THRESHOLD);
-        e.sandopolis_set_button(emu, gi, BUTTONS.Right, dp(15) || lx > AXIS_THRESHOLD);
+function isRightXrController(gp) {
+    if (gp.hand === "right") return true;
+    if (gp.hand === "left") return false;
+    return /right/i.test(gp.id || "");
+}
+
+function applyXrController(gp) {
+    const e = wasm.instance.exports;
+    const PLAYER = 0;
+    const isRight = isRightXrController(gp);
+    const b = (i) => i < gp.buttons.length && gp.buttons[i].pressed;
+    // xr-standard layout: [0]=trigger, [1]=grip, [3]=stick press, [4]=A/X, [5]=B/Y.
+    // axes[2,3] are the thumbstick on Quest controllers; axes[0,1] would be a trackpad.
+    if (isRight) {
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.A, b(4));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.B, b(5));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.C, b(0));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Start, b(3) || b(1));
+    } else {
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.X, b(4));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Y, b(5));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Z, b(0));
+        const sx = gp.axes.length >= 4 ? gp.axes[2] : (gp.axes[0] || 0);
+        const sy = gp.axes.length >= 4 ? gp.axes[3] : (gp.axes[1] || 0);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Up, sy < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Down, sy > AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Left, sx < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Right, sx > AXIS_THRESHOLD);
     }
 }
 

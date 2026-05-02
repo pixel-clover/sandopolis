@@ -116,6 +116,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser integer scaling mode (whole-pixel multiples)
 - [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
 - [x] Tooltip help text on web controls and context-sensitive hint line in desktop settings
+- [x] Browser WebXR theater mode (immersive-vr session, virtual screen quad, and controller input mapping)
 - [ ] Browser CRT shader option
 - [ ] NTSC composite video filter (Blargg's or equivalent)
 - [ ] Game Gear LCD ghosting emulation

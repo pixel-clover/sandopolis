@@ -49,7 +49,7 @@
             font-display: swap;
         }
 
-        /* Dark: Genesis console — black chassis, Sega blue, 16-BIT gold */
+        /* Dark: Genesis console: black chassis, Sega blue, 16-BIT gold */
         :root[data-theme="dark"] {
             --bg: #08080E;
             --bg-panel: #101018;
@@ -72,7 +72,7 @@
             --overlay-bg: rgba(4, 4, 8, 0.85);
         }
 
-        /* Light: Genesis box art — cream white, Sega blue, gold accents */
+        /* Light: Genesis box art: cream white, Sega blue, gold accents */
         :root[data-theme="light"] {
             --bg: #F0EDE6;
             --bg-panel: #FAF8F4;
@@ -121,7 +121,7 @@
             font-family: var(--font-ui);
             font-weight: 500;
             margin-bottom: 2px;
-            text-shadow: 0 1px 0 rgba(0,0,0,0.3);
+            text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
         }
 
         header .subtitle {
@@ -236,7 +236,7 @@
             border: 3px solid #1A1A24;
             border-radius: 3px;
             overflow: hidden;
-            box-shadow: 0 0 0 1px var(--border-accent), var(--shadow-md), inset 0 0 20px rgba(0,0,0,0.4);
+            box-shadow: 0 0 0 1px var(--border-accent), var(--shadow-md), inset 0 0 20px rgba(0, 0, 0, 0.4);
             transition: box-shadow var(--transition-fast);
             margin-bottom: 6px;
             width: min(100%, 640px);
@@ -642,8 +642,12 @@
         }
 
         @keyframes pulse {
-            from { opacity: 0.8; }
-            to { opacity: 1; }
+            from {
+                opacity: 0.8;
+            }
+            to {
+                opacity: 1;
+            }
         }
 
         .remap-reset {
@@ -1114,7 +1118,8 @@
     <div class="btn-group tone-audio">
         <span class="btn-group-label">Audio</span>
         <button id="audio-toggle" title="Toggle audio output on or off">ON</button>
-        <input class="vol-slider" id="master-volume" max="100" min="0" step="5" title="Master volume level" type="range" value="70">
+        <input class="vol-slider" id="master-volume" max="100" min="0" step="5" title="Master volume level" type="range"
+               value="70">
         <span class="vol-label" id="master-volume-label">70%</span>
     </div>
     <div class="btn-group tone-save">
@@ -1135,6 +1140,9 @@
     <div class="btn-group tone-view">
         <span class="btn-group-label">View</span>
         <button id="btn-fullscreen" title="Fullscreen [F11]">Fullscreen</button>
+        <button id="btn-vr" style="display:none"
+                title="Enter immersive VR theater mode (WebXR). Hold left grip for 1s to exit.">Enter VR
+        </button>
         <button id="theme-toggle" title="Toggle theme">Dark</button>
     </div>
     <div class="btn-group tone-system">
@@ -1159,25 +1167,26 @@
     <div class="settings-grid">
         <label>Aspect Ratio</label>
         <select id="aspect-mode" title="Display aspect ratio mode">
-            <option value="fit" title="Correct 4:3 TV aspect ratio">4:3 Fit</option>
-            <option value="stretch" title="Stretch to fill the screen area">Stretch</option>
-            <option value="native" title="Raw pixel dimensions without correction">Native</option>
+            <option title="Correct 4:3 TV aspect ratio" value="fit">4:3 Fit</option>
+            <option title="Stretch to fill the screen area" value="stretch">Stretch</option>
+            <option title="Raw pixel dimensions without correction" value="native">Native</option>
         </select>
         <label>Scaling</label>
         <select id="scale-mode" title="Pixel scaling mode">
-            <option value="fit" title="Smooth scaling to fill available space">Fit</option>
-            <option value="integer" title="Scale by whole numbers for even pixel sizes">Integer</option>
+            <option title="Smooth scaling to fill available space" value="fit">Fit</option>
+            <option title="Scale by whole numbers for even pixel sizes" value="integer">Integer</option>
         </select>
         <label>Controller</label>
         <select id="controller-type" title="Emulated controller type">
-            <option value="1" title="Genesis 6-button controller with X, Y, Z, and Mode">6-Button</option>
-            <option value="0" title="Original Genesis 3-button controller">3-Button</option>
+            <option title="Genesis 6-button controller with X, Y, Z, and Mode" value="1">6-Button</option>
+            <option title="Original Genesis 3-button controller" value="0">3-Button</option>
         </select>
     </div>
     <div class="remap-section">
         <h4>KEYBOARD</h4>
         <div class="remap-grid" id="remap-grid"></div>
-        <button class="remap-reset" id="remap-reset" title="Restore all keyboard bindings to defaults">Reset Defaults</button>
+        <button class="remap-reset" id="remap-reset" title="Restore all keyboard bindings to defaults">Reset Defaults
+        </button>
     </div>
 </div>
 
@@ -1211,7 +1220,10 @@
                 </div>
             </div>
         </div>
-        <p class="help-footer">Found a bug or have a feature request? <a href="https://github.com/pixel-clover/sandopolis/issues">Please open an issue for it</a>. For everything else, use <a href="https://github.com/pixel-clover/sandopolis/discussions">project's Discussions forum</a>.</p>
+        <p class="help-footer">Found a bug or have a feature request? <a
+            href="https://github.com/pixel-clover/sandopolis/issues">Please open an issue for it</a>. For everything
+            else, use <a href="https://github.com/pixel-clover/sandopolis/discussions">project's Discussions forum</a>.
+        </p>
         <button id="help-close">CLOSE</button>
     </div>
 </div>
@@ -1242,10 +1254,13 @@
                 <div class="about-row"><span>Audio</span><span id="about-audio">--</span></div>
                 <div class="about-row"><span>Video</span><span id="about-video">--</span></div>
                 <div class="about-row"><span>Save Format</span><span id="about-save-version">--</span></div>
+                <div class="about-row"><span>VR</span><span id="about-vr">--</span></div>
                 <div class="about-row"><span>License</span><span>MIT</span></div>
                 <div class="about-row"><span>WASM Size</span><span id="about-wasm-size">--</span></div>
             </div>
-            <p class="about-donate">If you enjoy Sandopolis, please consider supporting the project by giving it a <a href="https://github.com/pixel-clover/sandopolis">star</a> and making a <a href="https://github.com/sponsors/habedi">donation</a> to help keep development going.</p>
+            <p class="about-donate">If you enjoy Sandopolis, please consider supporting the project by giving it a <a
+                href="https://github.com/pixel-clover/sandopolis">star</a> and making a <a
+                href="https://github.com/sponsors/habedi">donation</a> to help keep development going.</p>
         </div>
         <button id="about-close">CLOSE</button>
     </div>
@@ -1255,6 +1270,7 @@
     <a href="https://github.com/pixel-clover/sandopolis">Sandopolis on GitHub</a>
 </footer>
 
+<script src="vr.js"></script>
 <script src="sandopolis.js"></script>
 </body>
 </html>
