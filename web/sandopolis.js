@@ -187,6 +187,8 @@ async function init() {
             onButton: (player, btn, down) => {
                 if (emu) wasm.instance.exports.sandopolis_set_button(emu, player, btn, down);
             },
+            isRomLoaded: () => !!emu,
+            getAspectMode: () => aspectMode,
         });
     }
 
@@ -775,11 +777,15 @@ function toggleFullscreen() {
     const container = document.getElementById("screen-container");
     if (document.fullscreenElement) {
         document.exitFullscreen();
-    } else {
-        container.requestFullscreen().catch(() => {
-            showToast("Fullscreen not available");
-        });
+        return;
     }
+    if (!emu) {
+        showToast("Load a ROM first");
+        return;
+    }
+    container.requestFullscreen().catch(() => {
+        showToast("Fullscreen not available");
+    });
 }
 
 function onFullscreenChange() {
@@ -863,17 +869,18 @@ function renderAudio() {
 // Save/Load
 
 function quickSave() {
-    if (!emu) return;
+    if (!emu) { showToast("Load a ROM first"); return; }
     showToast(wasm.instance.exports.sandopolis_quick_save(emu) ? "Quick state saved" : "Save failed");
 }
 
 function quickLoad() {
-    if (!emu) return;
+    if (!emu) { showToast("Load a ROM first"); return; }
     showToast(wasm.instance.exports.sandopolis_quick_load(emu) ? "Quick state loaded" : "No quick save found");
 }
 
 async function persistentSave() {
-    if (!emu || !db) return;
+    if (!emu) { showToast("Load a ROM first"); return; }
+    if (!db) { showToast("Storage unavailable"); return; }
     const e = wasm.instance.exports;
     const ptr = e.sandopolis_save_state(emu);
     if (!ptr) {
@@ -888,7 +895,8 @@ async function persistentSave() {
 }
 
 async function persistentLoad() {
-    if (!emu || !db) return;
+    if (!emu) { showToast("Load a ROM first"); return; }
+    if (!db) { showToast("Storage unavailable"); return; }
     const data = await dbGet(`${currentRomName}:slot${currentSlot}`);
     if (!data) {
         showToast(`No save in slot ${currentSlot}`);
@@ -1111,36 +1119,74 @@ const AXIS_THRESHOLD = 0.5;
 
 function pollGamepads() {
     if (!emu) return;
+    const xrActive = window.SandopolisVR && window.SandopolisVR.active;
     const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
     const e = wasm.instance.exports;
 
-    for (let gi = 0; gi < Math.min(gamepads.length, 2); gi++) {
+    let stdPlayer = 0;
+    for (let gi = 0; gi < gamepads.length; gi++) {
         const gp = gamepads[gi];
         if (!gp || !gp.connected) continue;
-        // Skip XR hand controllers (mapping === "xr-standard"). They use a
-        // different button/axis layout and are routed through vr.js.
+
+        if (gp.mapping === "xr-standard") {
+            // In an active XR session, vr.js handles XR controllers. Outside
+            // XR (Quest browser in 2D mode) we route them to player 0 here.
+            if (!xrActive) applyXrController(gp);
+            continue;
+        }
         if (gp.mapping !== "standard") continue;
+        if (stdPlayer >= 2) continue;
 
         // Face buttons (edge-detected via prev state)
-        const prev = prevGamepadButtons[gi];
+        const prev = prevGamepadButtons[stdPlayer];
         for (const [bi, name] of GAMEPAD_FACE_MAP) {
             if (bi >= gp.buttons.length) continue;
             const pressed = gp.buttons[bi].pressed ? 1 : 0;
             if (pressed !== prev[bi]) {
                 prev[bi] = pressed;
-                e.sandopolis_set_button(emu, gi, BUTTONS[name], !!pressed);
+                e.sandopolis_set_button(emu, stdPlayer, BUTTONS[name], !!pressed);
             }
         }
 
-        // D-pad + left stick combined (set every frame)
         const lx = gp.axes.length >= 2 ? gp.axes[0] : 0;
         const ly = gp.axes.length >= 2 ? gp.axes[1] : 0;
         const dp = (i) => gp.buttons.length > i && gp.buttons[i].pressed;
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Up, dp(12) || ly < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Down, dp(13) || ly > AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Left, dp(14) || lx < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, stdPlayer, BUTTONS.Right, dp(15) || lx > AXIS_THRESHOLD);
+        stdPlayer++;
+    }
+}
 
-        e.sandopolis_set_button(emu, gi, BUTTONS.Up, dp(12) || ly < -AXIS_THRESHOLD);
-        e.sandopolis_set_button(emu, gi, BUTTONS.Down, dp(13) || ly > AXIS_THRESHOLD);
-        e.sandopolis_set_button(emu, gi, BUTTONS.Left, dp(14) || lx < -AXIS_THRESHOLD);
-        e.sandopolis_set_button(emu, gi, BUTTONS.Right, dp(15) || lx > AXIS_THRESHOLD);
+function isRightXrController(gp) {
+    if (gp.hand === "right") return true;
+    if (gp.hand === "left") return false;
+    return /right/i.test(gp.id || "");
+}
+
+function applyXrController(gp) {
+    const e = wasm.instance.exports;
+    const PLAYER = 0;
+    const isRight = isRightXrController(gp);
+    const b = (i) => i < gp.buttons.length && gp.buttons[i].pressed;
+    // xr-standard layout: [0]=trigger, [1]=grip, [3]=stick press, [4]=A/X, [5]=B/Y.
+    // axes[2,3] are the thumbstick on Quest controllers; axes[0,1] would be a trackpad.
+    if (isRight) {
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.A, b(4));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.B, b(5));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.C, b(0));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Start, b(3) || b(1));
+    } else {
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.X, b(4));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Y, b(5));
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Z, b(0));
+        const sx = gp.axes.length >= 4 ? gp.axes[2] : (gp.axes[0] || 0);
+        const sy = gp.axes.length >= 4 ? gp.axes[3] : (gp.axes[1] || 0);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Up, sy < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Down, sy > AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Left, sx < -AXIS_THRESHOLD);
+        e.sandopolis_set_button(emu, PLAYER, BUTTONS.Right, sx > AXIS_THRESHOLD);
     }
 }
 

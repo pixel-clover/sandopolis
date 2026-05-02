@@ -8,6 +8,9 @@
     const QUAD_ASPECT = 4 / 3;
     const QUAD_DISTANCE = -2.5;
     const STICK_THRESHOLD = 0.5;
+    const EXIT_HOLD_MS = 1000;
+
+    let leftGripPressedAt = 0;
 
     let session = null;
     let gl = null;
@@ -149,15 +152,15 @@
         mvpLoc = gl.getUniformLocation(program, "u_mvp");
         sampLoc = gl.getUniformLocation(program, "u_tex");
 
-        const halfW = QUAD_WIDTH / 2;
-        const halfH = QUAD_WIDTH / QUAD_ASPECT / 2;
+        // Unit quad in local space; the model matrix scales it per frame so
+        // the quad mirrors the source canvas's aspect (and aspect-mode setting).
         const verts = new Float32Array([
-            -halfW, -halfH, 0, 1,
-            halfW, -halfH, 1, 1,
-            halfW, halfH, 1, 0,
-            -halfW, -halfH, 0, 1,
-            halfW, halfH, 1, 0,
-            -halfW, halfH, 0, 0,
+            -1, -1, 0, 1,
+             1, -1, 1, 1,
+             1,  1, 1, 0,
+            -1, -1, 0, 1,
+             1,  1, 1, 0,
+            -1,  1, 0, 0,
         ]);
         vao = gl.createVertexArray();
         gl.bindVertexArray(vao);
@@ -228,8 +231,25 @@
         ]);
     }
 
-    function pollControllers() {
-        if (!session || !onButton || !buttonNames) return;
+    function quadScaleMatrix() {
+        const w = (sourceCanvas && sourceCanvas.width) || 320;
+        const h = (sourceCanvas && sourceCanvas.height) || 224;
+        const mode = (getAspectMode && getAspectMode()) || "fit";
+        // "fit" forces the canonical 4:3 TV aspect; the other modes
+        // (stretch, native) use the canvas's pixel aspect directly.
+        const aspect = (mode === "fit") ? QUAD_ASPECT : (w / h);
+        const halfW = QUAD_WIDTH / 2;
+        const halfH = halfW / aspect;
+        return new Float32Array([
+            halfW, 0, 0, 0,
+            0, halfH, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+        ]);
+    }
+
+    function pollControllers(time) {
+        if (!session || !onButton || !buttonNames) return false;
         const PLAYER = 0;
         const press = (name, down) => {
             const wasDown = prevButtonState[name] || false;
@@ -237,7 +257,7 @@
             prevButtonState[name] = down;
             onButton(PLAYER, buttonNames[name], down);
         };
-        let lx = 0, ly = 0, anyController = false;
+        let lx = 0, ly = 0, anyController = false, leftGripHeld = false;
         for (const src of session.inputSources) {
             const gp = src.gamepad;
             if (!gp) continue;
@@ -258,6 +278,7 @@
                 press("X", b(4));
                 press("Y", b(5));
                 press("Z", b(0));
+                leftGripHeld = b(1);
             } else if (src.handedness === "right") {
                 press("A", b(4));
                 press("B", b(5));
@@ -271,9 +292,21 @@
             press("Left", lx < -STICK_THRESHOLD);
             press("Right", lx > STICK_THRESHOLD);
         }
+
+        // Exit gesture: hold left grip for 1 second to end the session.
+        if (leftGripHeld) {
+            if (leftGripPressedAt === 0) leftGripPressedAt = time;
+            else if (time - leftGripPressedAt >= EXIT_HOLD_MS) {
+                leftGripPressedAt = 0;
+                return true;
+            }
+        } else {
+            leftGripPressedAt = 0;
+        }
+        return false;
     }
 
-    function onXRFrame(_time, frame) {
+    function onXRFrame(time, frame) {
         if (!active || !session) return;
         session.requestAnimationFrame(onXRFrame);
 
@@ -281,7 +314,10 @@
         if (!pose) return;
 
         if (onTick) onTick();
-        pollControllers();
+        if (pollControllers(time)) {
+            session.end();
+            return;
+        }
         uploadCanvasTexture();
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
@@ -294,7 +330,7 @@
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.uniform1i(sampLoc, 0);
 
-        const model = translateZ(QUAD_DISTANCE);
+        const model = mulMat4(translateZ(QUAD_DISTANCE), quadScaleMatrix());
         for (const view of pose.views) {
             const vp = baseLayer.getViewport(view);
             gl.viewport(vp.x, vp.y, vp.width, vp.height);
@@ -306,6 +342,8 @@
     }
 
     let buttonEl = null;
+    let isRomLoaded = null;
+    let getAspectMode = null;
 
     function attachButton() {
         if (buttonEl) return buttonEl;
@@ -314,8 +352,8 @@
         buttonEl.addEventListener("click", () => {
             if (entering) return;
             if (active && session) session.end();
-            else if (sourceCanvas) enter(buttonEl);
-            else showToastIfPossible("Load a ROM first, then click Enter VR.");
+            else if (isRomLoaded && isRomLoaded()) enter(buttonEl);
+            else showToastIfPossible("Load a ROM first");
         });
         return buttonEl;
     }
@@ -346,6 +384,8 @@
             onTick = opts.onTick;
             onButton = opts.onButton;
             buttonNames = opts.buttons;
+            isRomLoaded = opts.isRomLoaded || null;
+            getAspectMode = opts.getAspectMode || null;
             attachButton();
         },
         get active() {
