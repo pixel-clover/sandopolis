@@ -25,6 +25,8 @@
     let active = false;
     let entering = false;
     let prevButtonState = {};
+    // Result of the immersive-vr probe: "checking" | "supported" | "unsupported" | "no-api".
+    let probeResult = "checking";
 
     function isVRSupportable() {
         return typeof navigator !== "undefined"
@@ -34,18 +36,16 @@
 
     async function probe(buttonEl) {
         if (!isVRSupportable()) {
-            // Hide the button: WebXR isn't reachable on this browser.
+            probeResult = "no-api";
             buttonEl.style.display = "none";
             return;
         }
         try {
             const supported = await navigator.xr.isSessionSupported("immersive-vr");
-            if (supported) {
-                buttonEl.style.display = "";
-            } else {
-                buttonEl.style.display = "none";
-            }
+            probeResult = supported ? "supported" : "unsupported";
+            buttonEl.style.display = supported ? "" : "none";
         } catch (err) {
+            probeResult = "unsupported";
             console.warn("[VR] isSessionSupported threw:", err);
             buttonEl.style.display = "none";
         }
@@ -126,6 +126,9 @@
         vao = null;
         texture = null;
         if (buttonEl) buttonEl.textContent = "Enter VR";
+        if (onSessionEndCallback) {
+            try { onSessionEndCallback(); } catch (err) { console.warn("[VR] onSessionEnd callback threw:", err); }
+        }
     }
 
     function setupGL() {
@@ -344,6 +347,7 @@
     let buttonEl = null;
     let isRomLoaded = null;
     let getAspectMode = null;
+    let onSessionEndCallback = null;
 
     function attachButton() {
         if (buttonEl) return buttonEl;
@@ -386,10 +390,14 @@
             buttonNames = opts.buttons;
             isRomLoaded = opts.isRomLoaded || null;
             getAspectMode = opts.getAspectMode || null;
+            onSessionEndCallback = opts.onSessionEnd || null;
             attachButton();
         },
         get active() {
             return active;
+        },
+        get status() {
+            return probeResult;
         },
     };
 })();

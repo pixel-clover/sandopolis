@@ -189,6 +189,10 @@ async function init() {
             },
             isRomLoaded: () => !!emu,
             getAspectMode: () => aspectMode,
+            onSessionEnd: () => {
+                // Pause the emulator when leaving VR so the game doesn't run unattended.
+                if (emu && running) togglePause();
+            },
         });
     }
 
@@ -612,6 +616,18 @@ function updateAboutInfo() {
     videoEl.textContent = `${width}x${height} ARGB Canvas`;
 
     document.getElementById("about-save-version").textContent = "v" + e.sandopolis_save_state_version();
+
+    const vrEl = document.getElementById("about-vr");
+    if (vrEl) {
+        const status = window.SandopolisVR ? window.SandopolisVR.status : "no-api";
+        const labels = {
+            supported: "Detected (immersive-vr)",
+            unsupported: "WebXR present, no headset",
+            "no-api": "Not available (no WebXR)",
+            checking: "Checking...",
+        };
+        vrEl.textContent = labels[status] || "Unknown";
+    }
 }
 
 // Help overlay
