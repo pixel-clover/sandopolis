@@ -310,18 +310,22 @@ async function populateRecentRoms() {
 }
 
 async function loadRecentRom(name) {
-    const tx = db.transaction("roms", "readonly");
-    const store = tx.objectStore("roms");
     const entry = await new Promise((resolve, reject) => {
-        const req = store.get(name);
+        const tx = db.transaction("roms", "readonly");
+        const req = tx.objectStore("roms").get(name);
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
     if (!entry) return;
-    // Update timestamp
-    const txW = db.transaction("roms", "readwrite");
-    txW.objectStore("roms").put({...entry, timestamp: Date.now()}, name);
-    // Create a fake File-like object
+    // Bump timestamp so this ROM moves to the top of the recents list.
+    // Wrapped in its own awaited transaction so we don't race the auto-commit;
+    // logged on failure but not blocking, since the ROM still loads either way.
+    new Promise((resolve, reject) => {
+        const tx = db.transaction("roms", "readwrite");
+        tx.objectStore("roms").put({...entry, timestamp: Date.now()}, name);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    }).catch((err) => console.warn("Recent ROM timestamp update failed:", err));
     const blob = new Blob([entry.bytes]);
     blob.name = entry.name;
     blob.arrayBuffer = () => Promise.resolve(entry.bytes.buffer.slice(
@@ -1028,6 +1032,15 @@ async function loadRom(file) {
         emu = null;
     }
 
+    // Reset pacing and audio-buffer telemetry so the freshly-loaded ROM
+    // doesn't inherit fast/slow pacing or stale buffer-fill numbers from
+    // the previous game. Without this the first second of playback can run
+    // at ~2x or ~0.5x speed.
+    pacingState = "normal";
+    audioBufferLevel = 0;
+    audioBufferCapacity = 1;
+    renderAudioFrameCount = 0;
+
     await initAudio();
 
     const buffer = await file.arrayBuffer();
@@ -1188,11 +1201,17 @@ function onKeyUp(ev) {
 
 // Gamepad support (standard mapping: https://w3c.github.io/gamepad/#remapping)
 
-const prevGamepadButtons = [new Uint8Array(17), new Uint8Array(17)];
+// Per-player edge state, keyed by Genesis button name (not source button index)
+// so two source buttons mapping to the same Genesis button OR together rather
+// than racing each other on release.
+const prevGamepadStates = [{}, {}];
 
-// Standard gamepad button index -> Genesis button (face buttons only)
-// Xbox: A=0 B=1 X=2 Y=3 LB=4 RB=5 Start=9 L3=10
-// Genesis bottom row: A B C  top row: X Y Z  plus Start, Mode
+// Standard gamepad button index -> Genesis button (face buttons only).
+// Xbox: A=0 B=1 X=2 Y=3 LB=4 RB=5 Start=9 L3=10.
+// Genesis bottom row: A B C  top row: X Y Z  plus Start, Mode.
+// Multiple source buttons may map to the same Genesis button; pollGamepads
+// ORs them so releasing one while another is still held does not falsely
+// release the Genesis button.
 const GAMEPAD_FACE_MAP = [
     [2, "A"],     // X → Genesis A (leftmost face)
     [0, "B"],     // A → Genesis B (bottom face)
@@ -1228,14 +1247,22 @@ function pollGamepads() {
         }
         if (stdPlayer >= 2) continue;
 
-        // Face buttons (edge-detected via prev state)
-        const prev = prevGamepadButtons[stdPlayer];
+        // Compute the OR of all source buttons mapped to the same Genesis
+        // button, then edge-detect by Genesis-button name. Without OR'ing
+        // first, releasing one of two co-mapped sources falsely releases the
+        // Genesis button while the other source is still held.
+        const desired = {};
         for (const [bi, name] of GAMEPAD_FACE_MAP) {
             if (bi >= gp.buttons.length) continue;
-            const pressed = gp.buttons[bi].pressed ? 1 : 0;
-            if (pressed !== prev[bi]) {
-                prev[bi] = pressed;
-                e.sandopolis_set_button(emu, stdPlayer, BUTTONS[name], !!pressed);
+            if (BUTTONS[name] === undefined) continue;
+            desired[name] = desired[name] || gp.buttons[bi].pressed;
+        }
+        const prev = prevGamepadStates[stdPlayer];
+        for (const name in desired) {
+            const isDown = !!desired[name];
+            if (prev[name] !== isDown) {
+                prev[name] = isDown;
+                e.sandopolis_set_button(emu, stdPlayer, BUTTONS[name], isDown);
             }
         }
 
