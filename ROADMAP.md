@@ -116,7 +116,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser integer scaling mode (whole-pixel multiples)
 - [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
 - [x] Tooltip help text on web controls and context-sensitive hint line in desktop settings
-- [x] Browser WebXR theater mode (immersive-vr session, virtual screen quad, and controller input mapping)
+- [x] Browser WebXR theater mode (immersive-vr session, procedural game-room scene, CRT shader with scanlines, barrel curvature, vignette,
+  sharp-bilinear pixel filter, controller mapping, exit gesture, and in-VR help overlay)
+- [x] Browser auto-pause on tab hide (visibility-change handler suspends rAF and audio while the tab is backgrounded)
 - [ ] Browser CRT shader option
 - [ ] NTSC composite video filter (Blargg's or equivalent)
 - [ ] Game Gear LCD ghosting emulation
@@ -142,7 +144,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 - [x] Z80 bridge SMS mode: host-routed memory, I/O port callbacks, NMI assertion (`jgz80_bridge.c`)
 - [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background, and sprite rendering
-- [x] SMS bus with Sega mapper (3 page registers, cartridge RAM banking)
+- [x] SMS bus with Sega mapper (3-page registers, cartridge RAM banking)
 - [x] SMS I/O port dispatch with partial address decoding (VDP, PSG, controllers)
 - [x] SMS controller input (2 buttons per player, pause via NMI)
 - [x] SMS cartridge detection ("TMR SEGA" header) and system auto-detection (`system.zig`)

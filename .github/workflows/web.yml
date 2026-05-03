@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - develop
     tags:
       - 'v*'
 
@@ -47,6 +48,9 @@ jobs:
           cp ./docs/assets/overlays/crt/*.png ./docs/assets/overlays/genesis/*.png ./publish/img/
           cp ./src/frontend/fonts/ttf/JetBrainsMono-*.ttf ./publish/fonts/
           cp ./zig-out/web/sandopolis.wasm ./publish/
+          # CREDITS.txt is part of web/ and copied by the recursive cp above.
+          # This guard fails the deploy if it ever goes missing.
+          test -f ./publish/CREDITS.txt
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

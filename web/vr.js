@@ -509,17 +509,30 @@
             gl.shaderSource(sh, src);
             gl.compileShader(sh);
             if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-                throw new Error("Shader compile error: " + gl.getShaderInfoLog(sh));
+                const log = gl.getShaderInfoLog(sh);
+                gl.deleteShader(sh);
+                throw new Error("Shader compile error: " + log);
             }
             return sh;
         }
 
+        const vs = compile(gl.VERTEX_SHADER, vsSrc);
+        const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
         const p = gl.createProgram();
-        gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
-        gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+        gl.attachShader(p, vs);
+        gl.attachShader(p, fs);
         gl.linkProgram(p);
+        // Detach and delete the source shader objects in either outcome:
+        // after a successful link the program owns the compiled stages, and
+        // on failure we discard everything together.
+        gl.detachShader(p, vs);
+        gl.detachShader(p, fs);
+        gl.deleteShader(vs);
+        gl.deleteShader(fs);
         if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-            throw new Error("Program link error: " + gl.getProgramInfoLog(p));
+            const log = gl.getProgramInfoLog(p);
+            gl.deleteProgram(p);
+            throw new Error("Program link error: " + log);
         }
         return p;
     }

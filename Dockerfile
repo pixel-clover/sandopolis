@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.cache/zig \
 FROM nginx:1.27-alpine
 
 RUN mkdir -p /usr/share/nginx/html/fonts
-COPY web/*.html web/*.js /usr/share/nginx/html/
+COPY web/*.html web/*.js web/CREDITS.txt /usr/share/nginx/html/
 COPY src/frontend/fonts/ttf/JetBrainsMono-*.ttf /usr/share/nginx/html/fonts/
 COPY docs/assets/overlays/crt/ /tmp/overlays/crt/
 COPY docs/assets/overlays/genesis/ /tmp/overlays/genesis/
