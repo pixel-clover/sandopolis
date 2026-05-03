@@ -144,7 +144,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 
 - [x] Z80 bridge SMS mode: host-routed memory, I/O port callbacks, NMI assertion (`jgz80_bridge.c`)
 - [x] SMS VDP Mode 4: 16KB VRAM, 32-byte CRAM, 11 registers, background, and sprite rendering
-- [x] SMS bus with Sega mapper (3 page registers, cartridge RAM banking)
+- [x] SMS bus with Sega mapper (3-page registers, cartridge RAM banking)
 - [x] SMS I/O port dispatch with partial address decoding (VDP, PSG, controllers)
 - [x] SMS controller input (2 buttons per player, pause via NMI)
 - [x] SMS cartridge detection ("TMR SEGA" header) and system auto-detection (`system.zig`)
