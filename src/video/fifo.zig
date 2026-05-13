@@ -34,6 +34,19 @@ const TransferPhaseBoundaryEvent = struct {
     wait_master_cycles: u32,
 };
 
+fn buildSlotLookupTable(comptime slot_count: u16, comptime slot_set: []const u8) [slot_count]bool {
+    var table: [slot_count]bool = .{false} ** slot_count;
+    inline for (slot_set) |set_idx| {
+        table[@as(usize, set_idx)] = true;
+    }
+    return table;
+}
+
+const h32_access_slot_lookup = buildSlotLookupTable(h32_slot_count, &h32_access_slots);
+const h40_access_slot_lookup = buildSlotLookupTable(h40_slot_count, &h40_access_slots);
+const h32_refresh_slot_lookup = buildSlotLookupTable(h32_slot_count, &h32_refresh_slots);
+const h40_refresh_slot_lookup = buildSlotLookupTable(h40_slot_count, &h40_refresh_slots);
+
 pub fn fifoIsEmpty(self: *const Vdp) bool {
     return self.fifo_len == 0;
 }
@@ -137,13 +150,6 @@ fn advanceTransferCursor(self: *Vdp, master_cycles: u32) void {
     self.transfer_line_master_cycle = @intCast(total);
 }
 
-fn slotIndexInSet(slot_idx: u16, comptime slot_set: []const u8) bool {
-    inline for (slot_set) |set_idx| {
-        if (slot_idx == set_idx) return true;
-    }
-    return false;
-}
-
 fn transferSlotCount(self: *const Vdp) u16 {
     return if (self.isH40()) h40_slot_count else h32_slot_count;
 }
@@ -178,17 +184,17 @@ fn transferSlotEndMasterCycles(self: *const Vdp, slot_idx: u16) u16 {
 
 fn transferSlotIsRefresh(self: *const Vdp, slot_idx: u16) bool {
     return if (self.isH40())
-        slotIndexInSet(slot_idx, &h40_refresh_slots)
+        h40_refresh_slot_lookup[@as(usize, slot_idx)]
     else
-        slotIndexInSet(slot_idx, &h32_refresh_slots);
+        h32_refresh_slot_lookup[@as(usize, slot_idx)];
 }
 
 fn transferSlotIsAccess(self: *const Vdp, slot_idx: u16, blanking: bool) bool {
     if (blanking) return !transferSlotIsRefresh(self, slot_idx);
     return if (self.isH40())
-        slotIndexInSet(slot_idx, &h40_access_slots)
+        h40_access_slot_lookup[@as(usize, slot_idx)]
     else
-        slotIndexInSet(slot_idx, &h32_access_slots);
+        h32_access_slot_lookup[@as(usize, slot_idx)];
 }
 
 fn activeVisibleLinesForPhase(self: *const Vdp) u16 {
@@ -2264,4 +2270,24 @@ test "projected data port write wait blocks on dma started by buffered control r
 
     try testing.expectEqual(expected_wait, combined.dataPortWriteWaitMasterCycles());
     try testing.expectEqual(expected_wait, combined.reserveDataPortWriteWaitMasterCycles());
+}
+
+test "transfer slot access classification matches h32 and h40 schedules" {
+    var vdp = Vdp.init();
+
+    vdp.regs[12] = 0x00;
+    try testing.expect(transferSlotIsRefresh(&vdp, 1));
+    try testing.expect(!transferSlotIsAccess(&vdp, 1, false));
+    try testing.expect(transferSlotIsAccess(&vdp, 5, false));
+    try testing.expect(!transferSlotIsRefresh(&vdp, 5));
+    try testing.expect(!transferSlotIsAccess(&vdp, 0, false));
+    try testing.expect(transferSlotIsAccess(&vdp, 0, true));
+
+    vdp.regs[12] = 0x01;
+    try testing.expect(transferSlotIsRefresh(&vdp, 26));
+    try testing.expect(!transferSlotIsAccess(&vdp, 26, false));
+    try testing.expect(transferSlotIsAccess(&vdp, 6, false));
+    try testing.expect(!transferSlotIsRefresh(&vdp, 6));
+    try testing.expect(!transferSlotIsAccess(&vdp, 0, false));
+    try testing.expect(transferSlotIsAccess(&vdp, 0, true));
 }
