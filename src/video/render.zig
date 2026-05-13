@@ -38,6 +38,15 @@ pub fn layerOrder(source_id: u8, high_pri: bool) u8 {
     };
 }
 
+fn layerBaseForSource(source_id: u8) u8 {
+    return switch (source_id) {
+        1 => LAYER_PLANE_B_LOW,
+        2 => LAYER_PLANE_A_LOW,
+        3 => LAYER_SPRITE_LOW,
+        else => LAYER_BACKDROP,
+    };
+}
+
 fn paletteColorWord(self: *const Vdp, index: u8) u16 {
     const offset = @as(usize, index & 0x3F) * 2;
     const val_hi = self.cram[offset];
@@ -563,11 +572,14 @@ fn renderPlaneToBuffer(
     const hscroll = readHScroll(self, hscroll_base, line, is_plane_a);
     const hscroll_shift: u4 = @truncate(@as(u16, @bitCast(@as(i16, @intCast(hscroll)))));
     _ = tile_h;
+    _ = plane_height_tiles;
 
     const render_start_x: u16 = if (is_plane_a and start_x != 0 and hscroll_shift != 0)
         @min(end_x, start_x + hscroll_shift)
     else
         start_x;
+    const base_layer = layerBaseForSource(source_id);
+    const high_layer = if (base_layer == LAYER_BACKDROP) LAYER_BACKDROP else base_layer + 3;
 
     var x: u16 = render_start_x;
     while (x < end_x) : (x += 1) {
@@ -577,10 +589,12 @@ fn renderPlaneToBuffer(
         const y_scrolled = @as(i32, line) + vscroll_val;
         const x_wrapped = @mod(x_scrolled, plane_width_px);
         const y_wrapped = @mod(y_scrolled, plane_height_px);
-        const tile_col: u16 = @intCast(@divFloor(x_wrapped, 8));
-        const tile_row: u16 = @intCast(@as(u32, @intCast(y_wrapped)) >> tile_h_shift);
+        const x_wrapped_u32: u32 = @intCast(x_wrapped);
+        const y_wrapped_u32: u32 = @intCast(y_wrapped);
+        const tile_col: u16 = @intCast(x_wrapped_u32 >> 3);
+        const tile_row: u16 = @intCast(y_wrapped_u32 >> tile_h_shift);
 
-        const table_index = (@as(u32, tile_row % plane_height_tiles) * @as(u32, plane_width_tiles)) + @as(u32, tile_col % plane_width_tiles);
+        const table_index = (@as(u32, tile_row) * @as(u32, plane_width_tiles)) + @as(u32, tile_col);
         const entry_addr: u16 = @intCast((plane_base + (table_index * 2)) & 0xFFFF);
         const entry_hi = self.vramReadByte(entry_addr);
         const entry_lo = self.vramReadByte(entry_addr +% 1);
@@ -592,8 +606,8 @@ fn renderPlaneToBuffer(
         const hflip = (entry & 0x0800) != 0;
         const high_pri = (entry & 0x8000) != 0;
 
-        const fine_x: u8 = @intCast(@mod(x_wrapped, 8));
-        const fine_y: u8 = @intCast(@as(u32, @intCast(y_wrapped)) & tile_h_mask);
+        const fine_x: u8 = @intCast(x_wrapped_u32 & 7);
+        const fine_y: u8 = @intCast(y_wrapped_u32 & tile_h_mask);
         const px = if (hflip) @as(u8, 7) - fine_x else fine_x;
         const py = if (vflip) tile_h_mask - fine_y else fine_y;
 
@@ -603,7 +617,7 @@ fn renderPlaneToBuffer(
         if (color_idx == 0) continue;
 
         const full_idx = palette_idx * 16 + color_idx;
-        const new_layer = layerOrder(source_id, high_pri);
+        const new_layer = if (high_pri) high_layer else base_layer;
         const cur_layer = layer_buf[x];
 
         if (new_layer >= cur_layer) {
@@ -637,11 +651,13 @@ fn renderWindowToBuffer(
     const win_width: u32 = if (self.isH40()) 64 else 32;
     const tile_row: u32 = @as(u32, line) >> tile_h_shift;
     const fine_y: u8 = @intCast(@as(u32, line) & tile_h_mask);
+    const base_layer = LAYER_PLANE_A_LOW;
+    const high_layer = LAYER_PLANE_A_HIGH;
 
     var x: u16 = start_x;
     while (x < end_x) : (x += 1) {
-        const tile_col: u32 = @as(u32, x) / 8;
-        const fine_x: u8 = @intCast(@as(u32, x) % 8);
+        const tile_col: u32 = @as(u32, x >> 3);
+        const fine_x: u8 = @truncate(x & 7);
 
         const table_index = tile_row * win_width + tile_col;
         const entry_addr: u16 = @intCast((win_base + table_index * 2) & 0xFFFF);
@@ -664,7 +680,7 @@ fn renderWindowToBuffer(
         if (color_idx == 0) continue;
 
         const full_idx = palette_idx * 16 + color_idx;
-        const new_layer = layerOrder(2, high_pri);
+        const new_layer = if (high_pri) high_layer else base_layer;
         const cur_layer = layer_buf[x];
 
         if (new_layer >= cur_layer) {
@@ -920,6 +936,7 @@ fn renderSpritesToBuffer(
 ) void {
     const screen_w = self.screenWidth();
     const screen_w_i32: i32 = @intCast(screen_w);
+    const counters = self.active_execution_counters;
     const y_line: i32 = @intCast(line);
     const tile_h_shift = self.tileHeightShift();
     const max_sprites = self.maxSpritesPerLine();
@@ -941,8 +958,8 @@ fn renderSpritesToBuffer(
     var sprite_index: u8 = 0;
     var count: u8 = 0;
     while (count < max_total) : (count += 1) {
-        if (self.active_execution_counters) |counters| {
-            counters.render_sprite_entries += 1;
+        if (counters) |active_counters| {
+            active_counters.render_sprite_entries += 1;
         }
         const entry = self.sprite_cache_entries[sprite_index];
         const sprite_v_px = @as(i32, entry.v_size) * @as(i32, tile_h);
@@ -1022,11 +1039,9 @@ fn renderSpritesToBuffer(
                         const screen_x = tile_screen_start + @as(i32, px_in_tile);
                         if (screen_x < 0 or screen_x >= screen_w_i32) continue;
 
-                        if (self.active_execution_counters) |counters| {
-                            counters.render_sprite_pixels += 1;
-                        }
-                        if (self.active_execution_counters) |counters| {
-                            counters.render_sprite_opaque_pixels += 1;
+                        if (counters) |active_counters| {
+                            active_counters.render_sprite_pixels += 1;
+                            active_counters.render_sprite_opaque_pixels += 1;
                         }
 
                         const sx: usize = @intCast(screen_x);

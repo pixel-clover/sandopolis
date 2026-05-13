@@ -421,6 +421,8 @@ pub const AudioOutput = struct {
         ym_dac_samples: []const YmDacSampleEvent,
         ym_reset_events: []const YmResetEvent,
     ) void {
+        const render_mode = self.render_mode;
+        const ym_silenced = render_mode == .psg_only;
         const fm_period: u32 = clock.fm_master_cycles_per_sample;
         var yw: usize = 0; // YM write cursor
         var yd: usize = 0; // DAC cursor
@@ -486,7 +488,7 @@ pub const AudioOutput = struct {
             var cur_l: i32 = sample[0];
             var cur_r: i32 = sample[1];
 
-            if (self.render_mode == .psg_only) {
+            if (ym_silenced) {
                 cur_l = 0;
                 cur_r = 0;
             }
@@ -532,6 +534,8 @@ pub const AudioOutput = struct {
         pending: PendingAudioFrames,
         psg_commands: []const PsgCommandEvent,
     ) void {
+        const render_mode = self.render_mode;
+        const psg_enabled = render_mode != .ym_only;
         const psg_gain = self.blipPsgGainForVolume();
         const psg_clock: u32 = clock.psg_master_cycles_per_sample;
         var psg_cmd_cursor: usize = 0;
@@ -544,7 +548,7 @@ pub const AudioOutput = struct {
             while (psg_cmd_cursor < psg_commands.len and psg_commands[psg_cmd_cursor].master_offset <= master_cursor) : (psg_cmd_cursor += 1) {
                 self.psg.doCommand(psg_commands[psg_cmd_cursor].value);
                 // Volume/frequency change: emit delta at command time.
-                self.emitPsgBlipDelta(master_time, psg_gain);
+                self.emitPsgBlipDelta(master_time, psg_gain, psg_enabled);
             }
 
             // Step PSG one clock and check for transitions.
@@ -553,7 +557,7 @@ pub const AudioOutput = struct {
             self.last_psg_sample_right = self.psg.currentStereoSample().right;
 
             // Emit delta if the PSG output level changed after this step.
-            self.emitPsgBlipDelta(master_time, psg_gain);
+            self.emitPsgBlipDelta(master_time, psg_gain, psg_enabled);
 
             master_cursor = master_time + psg_clock;
             produced += 1;
@@ -564,14 +568,14 @@ pub const AudioOutput = struct {
         }
     }
 
-    fn emitPsgBlipDelta(self: *AudioOutput, master_time: u32, psg_gain: f32) void {
+    fn emitPsgBlipDelta(self: *AudioOutput, master_time: u32, psg_gain: f32, enabled: bool) void {
+        if (!enabled) return;
+
         const sample = self.psg.currentStereoSample();
         var cur_l: i32 = 0;
         var cur_r: i32 = 0;
-        if (self.render_mode != .ym_only) {
-            cur_l = @intFromFloat(@as(f32, @floatFromInt(sample.left)) * psg_gain);
-            cur_r = @intFromFloat(@as(f32, @floatFromInt(sample.right)) * psg_gain);
-        }
+        cur_l = @intFromFloat(@as(f32, @floatFromInt(sample.left)) * psg_gain);
+        cur_r = @intFromFloat(@as(f32, @floatFromInt(sample.right)) * psg_gain);
 
         const dl = cur_l - self.blip_psg_last_left;
         const dr = cur_r - self.blip_psg_last_right;
