@@ -69,7 +69,7 @@ You can download the latest pre-built binaries from the project's [release page]
 ##### B. Web
 
 You can download and use the latest pre-built Docker image for the web version of Sandopolis from the
-[GCR](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web):
+[GHCR](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web):
 
 ```bash
 docker run -d -p 8085:80 --rm ghcr.io/pixel-clover/sandopolis-web:latest

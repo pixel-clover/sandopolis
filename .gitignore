@@ -112,3 +112,5 @@ web/img/
 web/sandopolis.wasm
 .codex
 web/fonts/
+zig-pkg/
+.agents/
