@@ -1186,7 +1186,8 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expect(collector.total_samples > 0);
 
     // Golden hash for the full audio pipeline output.
-    try testing.expectEqual(@as(u32, 3354757982), collector.hash);
+    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
+    try testing.expectEqual(@as(u32, 1232385218), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1244,17 +1245,20 @@ fn captureYmGoldenHash(rom_path: []const u8, frames: usize) !?u32 {
 
 test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sn.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 425404804), hash);
+    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
+    try testing.expectEqual(@as(u32, 3327217102), hash);
 }
 
 test "streets of rage ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sor.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 0), hash);
+    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
+    try testing.expectEqual(@as(u32, 73816007), hash);
 }
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    try testing.expectEqual(@as(u32, 2389177271), hash);
+    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
+    try testing.expectEqual(@as(u32, 2425685617), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {

@@ -378,6 +378,44 @@ pub fn build(b: *std.Build) void {
     const trace_m68k_failure_step = b.step("trace-m68k-failure", "Trace the last M68K instructions before a bad CPU state");
     trace_m68k_failure_step.dependOn(&trace_m68k_failure_run.step);
 
+    const trace_irq_storm = b.addExecutable(.{
+        .name = "trace-irq-storm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_irq_storm.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_irq_storm, b, cpu_deps);
+    const trace_irq_storm_run = b.addRunArtifact(trace_irq_storm);
+    if (b.args) |args| {
+        trace_irq_storm_run.addArgs(args);
+    }
+    const trace_irq_storm_step = b.step("trace-irq-storm", "Diagnose the interrupt-storm regression per ROM");
+    trace_irq_storm_step.dependOn(&trace_irq_storm_run.step);
+
+    const trace_overdrive_crash = b.addExecutable(.{
+        .name = "trace-overdrive-crash",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_overdrive_crash.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_overdrive_crash, b, cpu_deps);
+    const trace_overdrive_crash_run = b.addRunArtifact(trace_overdrive_crash);
+    if (b.args) |args| {
+        trace_overdrive_crash_run.addArgs(args);
+    }
+    const trace_overdrive_crash_step = b.step("trace-overdrive-crash", "Locate the frame/instruction where a ROM derails");
+    trace_overdrive_crash_step.dependOn(&trace_overdrive_crash_run.step);
+
     const trace_ym_writes = b.addExecutable(.{
         .name = "trace-ym-writes",
         .root_module = b.createModule(.{
