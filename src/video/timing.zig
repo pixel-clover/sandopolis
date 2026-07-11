@@ -258,30 +258,6 @@ fn statusWordForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) u16
     return status;
 }
 
-fn statusReadAdjustmentMasterCycles(opcode: u16) u32 {
-    if ((opcode & 0xC000) == 0 and ((opcode >> 12) & 0x3) != 0) {
-        return 0;
-    }
-
-    if ((opcode & 0xFF00) == 0x0C00) {
-        return clock.m68kCyclesToMaster(4);
-    }
-
-    if ((opcode & 0xFF00) == 0x0800 and ((opcode >> 6) & 0x3) == 0) {
-        return clock.m68kCyclesToMaster(4);
-    }
-
-    if ((opcode & 0xF000) == 0xB000) {
-        return 0;
-    }
-
-    if ((opcode & 0x0100) != 0 and ((opcode >> 6) & 0x3) == 0) {
-        return clock.m68kCyclesToMaster(2);
-    }
-
-    return clock.m68kCyclesToMaster(8);
-}
-
 fn lineMasterCycleDelta(
     self: *const Vdp,
     from_scanline: u16,
@@ -314,8 +290,15 @@ pub fn readControl(self: *Vdp) u16 {
     return status;
 }
 
-pub fn readControlAdjusted(self: *Vdp, opcode: u16) u16 {
-    const adjusted = adjustedLineState(self, statusReadAdjustmentMasterCycles(opcode));
+/// Read the VDP status/control word as observed `adjustment_master_cycles`
+/// into the future from the last VDP sync point.  Because the scheduler runs
+/// a whole 68K instruction before advancing the VDP, the caller passes the
+/// live intra-instruction elapsed master cycles (from the CPU core), so the
+/// read is sampled at the actual read cycle of the reading instruction --
+/// matching real hardware and the reference emulators (GPGX `m68k_cycles()`,
+/// jgenesis per-opcode offset).  See src/bus/vdp_ports.zig.
+pub fn readControlAdjusted(self: *Vdp, adjustment_master_cycles: u32) u16 {
+    const adjusted = adjustedLineState(self, adjustment_master_cycles);
     const status = statusWordForAdjustedState(self, adjusted);
 
     self.pending_command = false;
@@ -347,11 +330,11 @@ pub fn readHVCounter(self: *Vdp) u16 {
     return computeLiveHVCounter(self);
 }
 
-pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
+pub fn readHVCounterAdjusted(self: *Vdp, adjustment_master_cycles: u32) u16 {
     if (self.isHVCounterLatchEnabled() and self.hv_latched_valid) {
         return self.hv_latched;
     }
-    const adjusted = adjustedLineState(self, statusReadAdjustmentMasterCycles(opcode));
+    const adjusted = adjustedLineState(self, adjustment_master_cycles);
     return computeLiveHVCounterAt(self, adjusted.scanline, adjusted.line_master_cycle);
 }
 
@@ -493,7 +476,7 @@ test "status read adjustment can observe fifo empty after the next access slot" 
     try testing.expect(drain_wait <= clock.m68kCyclesToMaster(8));
 
     try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0200);
-    try testing.expectEqual(@as(u16, 0x0200), vdp.readControlAdjusted(0x4E71) & 0x0200);
+    try testing.expectEqual(@as(u16, 0x0200), vdp.readControlAdjusted(clock.m68kCyclesToMaster(8)) & 0x0200);
 }
 
 test "status read adjustment can observe fifo no longer full after the next access slot" {
@@ -520,7 +503,7 @@ test "status read adjustment can observe fifo no longer full after the next acce
     try testing.expect(open_wait <= clock.m68kCyclesToMaster(8));
 
     try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & 0x0100);
-    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0100);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(clock.m68kCyclesToMaster(8)) & 0x0100);
 }
 
 test "status read adjustment can observe buffered replay delay ending before the next instruction completes" {
@@ -539,7 +522,7 @@ test "status read adjustment can observe buffered replay delay ending before the
     try testing.expect(vdp.dataPortWriteWaitMasterCycles() <= clock.m68kCyclesToMaster(8));
 
     try testing.expectEqual(@as(u16, 0x0100), vdp.readControl() & 0x0100);
-    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0100);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(clock.m68kCyclesToMaster(8)) & 0x0100);
 }
 
 test "status read adjustment can observe dma copy complete after the next access slot" {
@@ -569,7 +552,7 @@ test "status read adjustment can observe dma copy complete after the next access
     try testing.expect(found_phase);
 
     try testing.expectEqual(@as(u16, 0x0002), vdp.readControl() & 0x0002);
-    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0002);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(clock.m68kCyclesToMaster(8)) & 0x0002);
 }
 
 test "status read adjustment can observe dma fill complete after the next access slot" {
@@ -603,7 +586,7 @@ test "status read adjustment can observe dma fill complete after the next access
     try testing.expect(found_phase);
 
     try testing.expectEqual(@as(u16, 0x0002), vdp.readControl() & 0x0002);
-    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(0x4E71) & 0x0002);
+    try testing.expectEqual(@as(u16, 0), vdp.readControlAdjusted(clock.m68kCyclesToMaster(8)) & 0x0002);
 }
 
 test "HV counter advances to the next scanline at the H interrupt boundary" {
