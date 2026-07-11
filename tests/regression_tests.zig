@@ -245,6 +245,8 @@ test "ssf mapper remaps switchable rom windows" {
     try testing.expectEqual(@as(u8, 15), emulator.read8(0x380000 + marker_offset));
 }
 
+// NOTE: these two run NTSC.  Overdrive is really a PAL demo; the PAL path
+// still derails and is tracked by the known-fail test below.
 test "overdrive rom runs for 5000 frames without wedging the core" {
     var emulator = try Emulator.init(testing.allocator, overdrive_rom);
     defer emulator.deinit(testing.allocator);
@@ -260,6 +262,39 @@ test "overdrive rom runs for 5000 frames without wedging the core" {
     try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
     try testing.expect(non_black_pixels > 0);
     try testing.expect(emulator.cpuState().program_counter != 0);
+}
+
+test "overdrive rom runs in PAL without derailing (known-fail: v0.2.2 CPU-phase timing)" {
+    // Overdrive auto-detects as PAL (on hardware and in the frontend).  With
+    // Rocket 68 v0.2.2's cycle-accurate control-flow EA timing it derails
+    // ~frame 2813: a level-6 VINT fires while the copied-to-RAM HINT handler is
+    // mid vector-rewrite, hitting a null vector (0x78=0) -> PC=0.
+    //
+    // This is an open Sandopolis CPU-vs-interrupt phase-calibration gap that
+    // v0.2.1's (incorrect, ~4-cycle-too-high) control-flow timing was masking;
+    // v0.2.2's timing matches the 68000 manual and is correct, so the fix
+    // belongs in Sandopolis's system timing, not the core.  The NTSC path
+    // (fixed by live-cycle VDP read sampling) does not exercise this.
+    //
+    // Self-healing known-fail: skips while the derail persists (PC in the
+    // vector/header region), and starts asserting liveness again once the phase
+    // gap is reconciled.  Diagnose with: zig build trace-irq-storm --
+    //   "<overdrive>.bin" 4000 --pal --derail
+    var emulator = try Emulator.init(testing.allocator, overdrive_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.setPalMode(true);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(5000);
+
+    if (emulator.cpuState().program_counter < 0x200) return error.SkipZigTest;
+
+    var non_black_pixels: usize = 0;
+    for (emulator.framebuffer()) |pixel| {
+        if (pixel != 0xFF000000) non_black_pixels += 1;
+    }
+    try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
+    try testing.expect(non_black_pixels > 0);
 }
 
 test "overdrive rom runs for 5000 frames with audio output processing" {

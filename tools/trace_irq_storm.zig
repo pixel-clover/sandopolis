@@ -31,6 +31,7 @@ const Args = struct {
     frames: usize = 240,
     derail: bool = false,
     dump: usize = 40,
+    pal: bool = false,
 };
 
 fn parseArgs(it: *std.process.ArgIterator) !Args {
@@ -44,6 +45,8 @@ fn parseArgs(it: *std.process.ArgIterator) !Args {
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, "--derail")) {
             args.derail = true;
+        } else if (std.mem.eql(u8, a, "--pal")) {
+            args.pal = true;
         } else if (std.mem.eql(u8, a, "--dump")) {
             const n = it.next() orelse return error.InvalidArgs;
             args.dump = try std.fmt.parseInt(usize, n, 10);
@@ -74,6 +77,10 @@ pub fn main() !void {
 
     var emulator = try testing.Emulator.init(allocator, args.rom_path);
     defer emulator.deinit(allocator);
+    if (args.pal) {
+        emulator.setPalMode(true);
+        emulator.reset();
+    }
     var output = testing.AudioOutput.init();
 
     if (args.derail) {
