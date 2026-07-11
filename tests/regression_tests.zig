@@ -317,14 +317,17 @@ test "hard reset seeds the first mode-5 hv counter read to the reference values"
     defer ntsc.deinit(testing.allocator);
     ntsc.reset();
     ntsc.runFrame();
-    try testing.expectEqual(@as(u16, 0x9F21), ntsc.read16(0x00FF_0000));
+    // The MOVE.W $C00008,D0 read is now sampled at its true intra-instruction
+    // read cycle (~12 M68K cycles in), not at instruction start, so the H
+    // counter is +4 vs the old opcode-heuristic model.  See vdp_ports.zig.
+    try testing.expectEqual(@as(u16, 0x9F25), ntsc.read16(0x00FF_0000));
 
     var pal = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer pal.deinit(testing.allocator);
     pal.reset();
     pal.setPalMode(true);
     pal.runFrame();
-    try testing.expectEqual(@as(u16, 0x8421), pal.read16(0x00FF_0000));
+    try testing.expectEqual(@as(u16, 0x8425), pal.read16(0x00FF_0000));
 }
 
 test "frame scheduler stalls cpu while vdp dma owns the bus" {
@@ -1186,8 +1189,8 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expect(collector.total_samples > 0);
 
     // Golden hash for the full audio pipeline output.
-    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
-    try testing.expectEqual(@as(u32, 1232385218), collector.hash);
+    // Re-baselined for Rocket 68 v0.2.2 + live-cycle VDP read sampling.
+    try testing.expectEqual(@as(u32, 3882299550), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1257,8 +1260,8 @@ test "streets of rage ym synthesis matches golden hash (900 frames)" {
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
-    try testing.expectEqual(@as(u32, 2425685617), hash);
+    // Re-baselined for Rocket 68 v0.2.2 + live-cycle VDP read sampling.
+    try testing.expectEqual(@as(u32, 1356361046), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {
