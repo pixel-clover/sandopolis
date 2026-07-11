@@ -394,27 +394,8 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         trace_irq_storm_run.addArgs(args);
     }
-    const trace_irq_storm_step = b.step("trace-irq-storm", "Diagnose the interrupt-storm regression per ROM");
+    const trace_irq_storm_step = b.step("trace-irq-storm", "Per-ROM progress/storm diagnostic (--derail locates a crash)");
     trace_irq_storm_step.dependOn(&trace_irq_storm_run.step);
-
-    const trace_overdrive_crash = b.addExecutable(.{
-        .name = "trace-overdrive-crash",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/trace_overdrive_crash.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "sandopolis_testing", .module = testing_api },
-            },
-        }),
-    });
-    addExternalCpuCores(trace_overdrive_crash, b, cpu_deps);
-    const trace_overdrive_crash_run = b.addRunArtifact(trace_overdrive_crash);
-    if (b.args) |args| {
-        trace_overdrive_crash_run.addArgs(args);
-    }
-    const trace_overdrive_crash_step = b.step("trace-overdrive-crash", "Locate the frame/instruction where a ROM derails");
-    trace_overdrive_crash_step.dependOn(&trace_overdrive_crash_run.step);
 
     const trace_ym_writes = b.addExecutable(.{
         .name = "trace-ym-writes",
