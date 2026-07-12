@@ -114,3 +114,4 @@ web/sandopolis.wasm
 web/fonts/
 zig-pkg/
 .agents/
+*.so

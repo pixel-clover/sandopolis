@@ -28,7 +28,7 @@ SHELL         := /usr/bin/env bash
 ################################################################################
 
 .PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs docs-serve clean \
- install-deps release help setup-hooks test-hooks wasm web web-serve
+ install-deps release help setup-hooks test-hooks wasm web web-serve reference-core trace-diff dump-audio trace-ym-writes
 .DEFAULT_GOAL := help
 
 help: ## Show the help messages for all targets
@@ -61,6 +61,24 @@ test-regression: ## Run regression tests
 
 test-property: ## Run property-based tests
 	$(ZIG) build test-property $(BUILD_OPTS) -j$(JOBS)
+
+################################################################################
+# Differential testing (Genesis Plus GX reference core)
+################################################################################
+
+reference-core: ## Build the Genesis Plus GX reference core for differential testing
+	@echo "Building Genesis Plus GX reference core..."
+	git submodule update --init external/Genesis-Plus-GX
+	$(MAKE) -C external/Genesis-Plus-GX -f Makefile.libretro -j$(JOBS)
+
+trace-diff: reference-core ## Diff 68K RAM vs Genesis Plus GX (pass ROM via ARGS)
+	$(ZIG) build trace-diff $(BUILD_OPTS) -- $(ARGS)
+
+dump-audio: reference-core ## Dump headless audio to WAV (pass args via ARGS)
+	$(ZIG) build dump-audio $(BUILD_OPTS) -- $(ARGS)
+
+trace-ym-writes: reference-core ## Dump decoded YM register writes (pass args via ARGS)
+	$(ZIG) build trace-ym-writes $(BUILD_OPTS) -- $(ARGS)
 
 release: ## Build in Release mode
 	@echo "Building the project in Release mode..."
