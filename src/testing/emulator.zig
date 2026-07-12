@@ -533,6 +533,12 @@ pub const Emulator = struct {
         return self.handle.machine.bus.ram[offset];
     }
 
+    /// The whole 64 KB 68K work RAM (0xFF0000-0xFFFFFF) as a slice, for bulk
+    /// comparison against a reference core (differential testing).
+    pub fn workRamSlice(self: *const Emulator) []const u8 {
+        return self.handle.machine.bus.ram[0..];
+    }
+
     pub fn writeRam(self: *Emulator, offset: u16, value: u8) void {
         self.handle.machine.bus.ram[offset] = value;
     }

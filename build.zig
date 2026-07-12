@@ -340,6 +340,28 @@ pub fn build(b: *std.Build) void {
     const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or a reference libretro core");
     dump_audio_step.dependOn(&dump_audio_run.step);
 
+    const trace_diff = b.addExecutable(.{
+        .name = "trace-diff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_diff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_diff, b, cpu_deps);
+    trace_diff.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    trace_diff.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    trace_diff.linkLibC();
+    const trace_diff_run = b.addRunArtifact(trace_diff);
+    if (b.args) |args| {
+        trace_diff_run.addArgs(args);
+    }
+    const trace_diff_step = b.step("trace-diff", "Differential test vs Genesis Plus GX: report first 68K-RAM divergence");
+    trace_diff_step.dependOn(&trace_diff_run.step);
+
     const trace_sound_boot = b.addExecutable(.{
         .name = "trace-sound-boot",
         .root_module = b.createModule(.{
