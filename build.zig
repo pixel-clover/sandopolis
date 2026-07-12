@@ -362,6 +362,28 @@ pub fn build(b: *std.Build) void {
     const trace_diff_step = b.step("trace-diff", "Differential test vs Genesis Plus GX: report first 68K-RAM divergence");
     trace_diff_step.dependOn(&trace_diff_run.step);
 
+    const dump_frames = b.addExecutable(.{
+        .name = "dump-frames",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dump_frames.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(dump_frames, b, cpu_deps);
+    dump_frames.addIncludePath(b.path("external/libretro"));
+    dump_frames.root_module.addIncludePath(b.path("external/libretro"));
+    dump_frames.linkLibC();
+    const dump_frames_run = b.addRunArtifact(dump_frames);
+    if (b.args) |args| {
+        dump_frames_run.addArgs(args);
+    }
+    const dump_frames_step = b.step("dump-frames", "Capture Sandopolis + Genesis Plus GX framebuffers at a frame as PPMs");
+    dump_frames_step.dependOn(&dump_frames_run.step);
+
     const trace_sound_boot = b.addExecutable(.{
         .name = "trace-sound-boot",
         .root_module = b.createModule(.{
