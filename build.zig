@@ -384,6 +384,28 @@ pub fn build(b: *std.Build) void {
     const dump_frames_step = b.step("dump-frames", "Capture Sandopolis + Genesis Plus GX framebuffers at a frame as PPMs");
     dump_frames_step.dependOn(&dump_frames_run.step);
 
+    const vram_diff = b.addExecutable(.{
+        .name = "vram-diff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/vram_diff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(vram_diff, b, cpu_deps);
+    vram_diff.addIncludePath(b.path("external/libretro"));
+    vram_diff.root_module.addIncludePath(b.path("external/libretro"));
+    vram_diff.linkLibC();
+    const vram_diff_run = b.addRunArtifact(vram_diff);
+    if (b.args) |args| {
+        vram_diff_run.addArgs(args);
+    }
+    const vram_diff_step = b.step("vram-diff", "Compare Sandopolis vs Genesis Plus GX VRAM byte-for-byte at a frame");
+    vram_diff_step.dependOn(&vram_diff_run.step);
+
     const trace_sound_boot = b.addExecutable(.{
         .name = "trace-sound-boot",
         .root_module = b.createModule(.{

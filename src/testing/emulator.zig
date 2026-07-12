@@ -238,6 +238,14 @@ pub const Emulator = struct {
         return self.handle.machine.bus.vdp.vramReadByte(addr);
     }
 
+    pub fn cramReadByte(self: *const Emulator, addr: u8) u8 {
+        return self.handle.machine.bus.vdp.cram[addr];
+    }
+
+    pub fn vsramReadByte(self: *const Emulator, addr: u8) u8 {
+        return self.handle.machine.bus.vdp.vsram[addr];
+    }
+
     pub fn setVdpCode(self: *Emulator, code: u8) void {
         var machine = self.handle.machine.testing();
         machine.setVdpCode(code);
