@@ -18,7 +18,7 @@ const c = @cImport({
 //
 // Usage: trace-diff <rom> [frames] [--pal] [--skip N] [--every N] [--spike N]
 
-const default_core_path = "tmp/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
+const default_core_path = "external/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
 
 const Args = struct {
     rom_path: []const u8,
@@ -151,7 +151,16 @@ pub fn main() !void {
     const args = try parseArgs(&arg_it);
 
     // --- Genesis Plus GX ---
-    var api = try ReferenceApi.open(default_core_path);
+    var api = ReferenceApi.open(default_core_path) catch |err| {
+        std.debug.print(
+            "error: cannot open Genesis Plus GX reference core at {s} ({s}).\n" ++
+                "Build it once:\n" ++
+                "  git submodule update --init external/Genesis-Plus-GX\n" ++
+                "  make -C external/Genesis-Plus-GX -f Makefile.libretro\n",
+            .{ default_core_path, @errorName(err) },
+        );
+        return err;
+    };
     defer api.lib.close();
 
     const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");

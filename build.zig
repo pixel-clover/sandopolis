@@ -330,8 +330,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(dump_audio, b, cpu_deps);
-    dump_audio.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
-    dump_audio.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    dump_audio.addIncludePath(b.path("external/libretro"));
+    dump_audio.root_module.addIncludePath(b.path("external/libretro"));
     dump_audio.linkLibC();
     const dump_audio_run = b.addRunArtifact(dump_audio);
     if (b.args) |args| {
@@ -352,8 +352,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(trace_diff, b, cpu_deps);
-    trace_diff.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
-    trace_diff.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    trace_diff.addIncludePath(b.path("external/libretro"));
+    trace_diff.root_module.addIncludePath(b.path("external/libretro"));
     trace_diff.linkLibC();
     const trace_diff_run = b.addRunArtifact(trace_diff);
     if (b.args) |args| {
@@ -431,8 +431,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(trace_ym_writes, b, cpu_deps);
-    trace_ym_writes.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
-    trace_ym_writes.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    trace_ym_writes.addIncludePath(b.path("external/libretro"));
+    trace_ym_writes.root_module.addIncludePath(b.path("external/libretro"));
     trace_ym_writes.linkLibC();
     const trace_ym_writes_run = b.addRunArtifact(trace_ym_writes);
     if (b.args) |args| {
