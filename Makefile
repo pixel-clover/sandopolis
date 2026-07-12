@@ -28,7 +28,7 @@ SHELL         := /usr/bin/env bash
 ################################################################################
 
 .PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs docs-serve clean \
- install-deps release help setup-hooks test-hooks wasm web web-serve reference-core trace-diff dump-audio trace-ym-writes
+ install-deps release help setup-hooks test-hooks wasm web web-serve reference-core trace-diff dump-audio trace-ym-writes pal-accuracy
 .DEFAULT_GOAL := help
 
 help: ## Show the help messages for all targets
@@ -79,6 +79,9 @@ dump-audio: reference-core ## Dump headless audio to WAV (pass args via ARGS)
 
 trace-ym-writes: reference-core ## Dump decoded YM register writes (pass args via ARGS)
 	$(ZIG) build trace-ym-writes $(BUILD_OPTS) -- $(ARGS)
+
+pal-accuracy: reference-core ## Framebuffer RMSE vs Genesis Plus GX at diagnostic PAL/NTSC frames
+	python3 tools/pal_accuracy_check.py
 
 release: ## Build in Release mode
 	@echo "Building the project in Release mode..."
