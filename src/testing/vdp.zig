@@ -154,16 +154,16 @@ pub const Vdp = struct {
         return self.handle.vdp.readHVCounter();
     }
 
-    pub fn readHVCounterAdjusted(self: *Vdp, opcode: u16) u16 {
-        return self.handle.vdp.readHVCounterAdjusted(opcode);
+    pub fn readHVCounterAdjusted(self: *Vdp, adjustment_master_cycles: u32) u16 {
+        return self.handle.vdp.readHVCounterAdjusted(adjustment_master_cycles);
     }
 
     pub fn readControl(self: *Vdp) u16 {
         return self.handle.vdp.readControl();
     }
 
-    pub fn readControlAdjusted(self: *Vdp, opcode: u16) u16 {
-        return self.handle.vdp.readControlAdjusted(opcode);
+    pub fn readControlAdjusted(self: *Vdp, adjustment_master_cycles: u32) u16 {
+        return self.handle.vdp.readControlAdjusted(adjustment_master_cycles);
     }
 
     pub fn setRegister(self: *Vdp, index: usize, value: u8) void {

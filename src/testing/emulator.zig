@@ -238,6 +238,14 @@ pub const Emulator = struct {
         return self.handle.machine.bus.vdp.vramReadByte(addr);
     }
 
+    pub fn cramReadByte(self: *const Emulator, addr: u8) u8 {
+        return self.handle.machine.bus.vdp.cram[addr];
+    }
+
+    pub fn vsramReadByte(self: *const Emulator, addr: u8) u8 {
+        return self.handle.machine.bus.vdp.vsram[addr];
+    }
+
     pub fn setVdpCode(self: *Emulator, code: u8) void {
         var machine = self.handle.machine.testing();
         machine.setVdpCode(code);
@@ -531,6 +539,12 @@ pub const Emulator = struct {
 
     pub fn readRam(self: *const Emulator, offset: u16) u8 {
         return self.handle.machine.bus.ram[offset];
+    }
+
+    /// The whole 64 KB 68K work RAM (0xFF0000-0xFFFFFF) as a slice, for bulk
+    /// comparison against a reference core (differential testing).
+    pub fn workRamSlice(self: *const Emulator) []const u8 {
+        return self.handle.machine.bus.ram[0..];
     }
 
     pub fn writeRam(self: *Emulator, offset: u16, value: u8) void {

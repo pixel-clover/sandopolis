@@ -652,7 +652,7 @@ fn vdpMoveAdjustedHvProperty(input: VdpStateCase) !void {
     var vdp = try Vdp.init(testing.allocator);
     defer vdp.deinit(testing.allocator);
     configureVdpFromCase(&vdp, input);
-    try testing.expectEqual(vdp.readHVCounter(), vdp.readHVCounterAdjusted(0x3039));
+    try testing.expectEqual(vdp.readHVCounter(), vdp.readHVCounterAdjusted(0));
 }
 
 fn vdpMoveAdjustedStatusProperty(input: VdpStateCase) !void {
@@ -663,7 +663,7 @@ fn vdpMoveAdjustedStatusProperty(input: VdpStateCase) !void {
     var adjusted = try immediate.clone(testing.allocator);
     defer adjusted.deinit(testing.allocator);
 
-    try testing.expectEqual(immediate.readControl(), adjusted.readControlAdjusted(0x3039));
+    try testing.expectEqual(immediate.readControl(), adjusted.readControlAdjusted(0));
 }
 
 fn vdpFifoStatusProperty(input: VdpFifoCase) !void {

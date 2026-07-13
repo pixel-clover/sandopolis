@@ -330,8 +330,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(dump_audio, b, cpu_deps);
-    dump_audio.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
-    dump_audio.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    dump_audio.addIncludePath(b.path("external/libretro"));
+    dump_audio.root_module.addIncludePath(b.path("external/libretro"));
     dump_audio.linkLibC();
     const dump_audio_run = b.addRunArtifact(dump_audio);
     if (b.args) |args| {
@@ -339,6 +339,72 @@ pub fn build(b: *std.Build) void {
     }
     const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or a reference libretro core");
     dump_audio_step.dependOn(&dump_audio_run.step);
+
+    const trace_diff = b.addExecutable(.{
+        .name = "trace-diff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_diff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_diff, b, cpu_deps);
+    trace_diff.addIncludePath(b.path("external/libretro"));
+    trace_diff.root_module.addIncludePath(b.path("external/libretro"));
+    trace_diff.linkLibC();
+    const trace_diff_run = b.addRunArtifact(trace_diff);
+    if (b.args) |args| {
+        trace_diff_run.addArgs(args);
+    }
+    const trace_diff_step = b.step("trace-diff", "Differential test vs Genesis Plus GX: report first 68K-RAM divergence");
+    trace_diff_step.dependOn(&trace_diff_run.step);
+
+    const dump_frames = b.addExecutable(.{
+        .name = "dump-frames",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dump_frames.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(dump_frames, b, cpu_deps);
+    dump_frames.addIncludePath(b.path("external/libretro"));
+    dump_frames.root_module.addIncludePath(b.path("external/libretro"));
+    dump_frames.linkLibC();
+    const dump_frames_run = b.addRunArtifact(dump_frames);
+    if (b.args) |args| {
+        dump_frames_run.addArgs(args);
+    }
+    const dump_frames_step = b.step("dump-frames", "Capture Sandopolis + Genesis Plus GX framebuffers at a frame as PPMs");
+    dump_frames_step.dependOn(&dump_frames_run.step);
+
+    const vram_diff = b.addExecutable(.{
+        .name = "vram-diff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/vram_diff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(vram_diff, b, cpu_deps);
+    vram_diff.addIncludePath(b.path("external/libretro"));
+    vram_diff.root_module.addIncludePath(b.path("external/libretro"));
+    vram_diff.linkLibC();
+    const vram_diff_run = b.addRunArtifact(vram_diff);
+    if (b.args) |args| {
+        vram_diff_run.addArgs(args);
+    }
+    const vram_diff_step = b.step("vram-diff", "Compare Sandopolis vs Genesis Plus GX VRAM byte-for-byte at a frame");
+    vram_diff_step.dependOn(&vram_diff_run.step);
 
     const trace_sound_boot = b.addExecutable(.{
         .name = "trace-sound-boot",
@@ -378,6 +444,25 @@ pub fn build(b: *std.Build) void {
     const trace_m68k_failure_step = b.step("trace-m68k-failure", "Trace the last M68K instructions before a bad CPU state");
     trace_m68k_failure_step.dependOn(&trace_m68k_failure_run.step);
 
+    const trace_irq_storm = b.addExecutable(.{
+        .name = "trace-irq-storm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/trace_irq_storm.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(trace_irq_storm, b, cpu_deps);
+    const trace_irq_storm_run = b.addRunArtifact(trace_irq_storm);
+    if (b.args) |args| {
+        trace_irq_storm_run.addArgs(args);
+    }
+    const trace_irq_storm_step = b.step("trace-irq-storm", "Per-ROM progress/storm diagnostic (--derail locates a crash)");
+    trace_irq_storm_step.dependOn(&trace_irq_storm_run.step);
+
     const trace_ym_writes = b.addExecutable(.{
         .name = "trace-ym-writes",
         .root_module = b.createModule(.{
@@ -390,8 +475,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(trace_ym_writes, b, cpu_deps);
-    trace_ym_writes.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
-    trace_ym_writes.root_module.addIncludePath(b.path("tmp/Genesis-Plus-GX/libretro/libretro-common/include"));
+    trace_ym_writes.addIncludePath(b.path("external/libretro"));
+    trace_ym_writes.root_module.addIncludePath(b.path("external/libretro"));
     trace_ym_writes.linkLibC();
     const trace_ym_writes_run = b.addRunArtifact(trace_ym_writes);
     if (b.args) |args| {

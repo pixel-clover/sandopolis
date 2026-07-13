@@ -7,7 +7,7 @@ const c = @cImport({
     @cInclude("libretro.h");
 });
 
-const default_reference_core_path = "tmp/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
+const default_reference_core_path = "external/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
 const default_frames: usize = 600;
 
 const Backend = enum {

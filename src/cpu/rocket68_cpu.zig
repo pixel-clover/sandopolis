@@ -103,10 +103,6 @@ fn cpuDisasmRead32(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
     return @intCast(memory.read32(address));
 }
 
-fn cpuIntAck(_: ?*c.M68kCpu, _: c_int) callconv(.c) c_int {
-    return -1;
-}
-
 pub const Cpu = struct {
     pub const M68kInstructionTraceEntry = m68k_instruction_trace.Entry;
 
@@ -188,7 +184,19 @@ pub const Cpu = struct {
         c.m68k_set_write8_callback(&self.core, cpuWrite8);
         c.m68k_set_write16_callback(&self.core, cpuWrite16);
         c.m68k_set_write32_callback(&self.core, cpuWrite32);
-        c.m68k_set_int_ack_callback(&self.core, cpuIntAck);
+        // Deliberately do NOT install an INT ACK callback.  Sandopolis models
+        // the VDP interrupt sources as edges (see machine.applyScanlineEvent
+        // and vdp.currentInterruptLevel): each is asserted with a one-shot
+        // requestInterrupt() and cleared implicitly once serviced.  That only
+        // works if the core auto-clears irq_level after taking the interrupt.
+        //
+        // Rocket 68 auto-clears irq_level *only when no INT ACK callback is
+        // installed*.  As of v0.2.2 installing one flips the core into a
+        // level-held IPL model where the line stays asserted until the host
+        // lowers it, so the interrupt re-fires after every RTE and the CPU
+        // storms inside the handler (games freeze at sr=0x2x00).  The old
+        // callback only returned -1 (autovector), which is identical to the
+        // core's default vector, so it added nothing but the level-held mode.
 
         return self;
     }

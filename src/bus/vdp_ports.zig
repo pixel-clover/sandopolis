@@ -14,10 +14,15 @@ fn readOpenBusByte(open_bus: *const u16, address: u32) u8 {
 
 fn readStatus(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeState) u16 {
     const opcode = runtime.currentOpcode();
+    // The scheduler advances the VDP only after a full 68K instruction, so a
+    // status read taken mid-instruction must be sampled at the instruction's
+    // actual read cycle.  Use the live intra-instruction elapsed master cycles
+    // from the CPU core (GPGX `m68k_cycles()` / jgenesis per-opcode offset),
+    // not an opcode heuristic -- the latter cannot track the core's timing and
+    // desyncs cycle-exact raster demos (e.g. TiTAN Overdrive).
     // On real hardware, undefined VDP status bits (15:10) return the
     // instruction prefetch word, not the last value on the data bus.
-    // On real hardware, the undefined status bits return the prefetch word.
-    const status = vdp.readControlAdjusted(opcode) | (opcode & 0xFC00);
+    const status = vdp.readControlAdjusted(runtime.currentAccessElapsedMasterCycles()) | (opcode & 0xFC00);
     open_bus.* = status;
     // readControlAdjusted() already cleared vint_pending/sprite flags in the VDP.
     // Recalculate the M68K IRQ level from remaining VDP sources instead of
@@ -32,8 +37,9 @@ fn readStatus(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeStat
 }
 
 fn readHVCounter(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeState) u16 {
-    const opcode = runtime.currentOpcode();
-    const word = vdp.readHVCounterAdjusted(opcode);
+    // Sample the HV counter at the live intra-instruction read cycle (see
+    // readStatus).  Beam-poll loops in raster demos read through this path.
+    const word = vdp.readHVCounterAdjusted(runtime.currentAccessElapsedMasterCycles());
     open_bus.* = word;
     return word;
 }

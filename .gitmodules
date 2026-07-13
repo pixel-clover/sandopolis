@@ -1,3 +1,7 @@
 [submodule "external/Nuked-OPN2"]
 	path = external/Nuked-OPN2
 	url = https://github.com/nukeykt/Nuked-OPN2
+[submodule "external/Genesis-Plus-GX"]
+	path = external/Genesis-Plus-GX
+	url = https://github.com/ekeeke/Genesis-Plus-GX.git
+	ignore = untracked
