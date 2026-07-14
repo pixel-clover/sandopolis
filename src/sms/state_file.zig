@@ -14,7 +14,7 @@ pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 
     defer snapshot.deinit(allocator);
     const m = &snapshot.machine;
 
-    var list = std.ArrayListUnmanaged(u8){};
+    var list = std.ArrayListUnmanaged(u8).empty;
     errdefer list.deinit(allocator);
 
     // Header

@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
 const Emulator = testing.Emulator;
@@ -19,8 +20,9 @@ const StreamSummary = struct {
     dropped: u32 = 0,
 };
 
-pub fn main() !void {
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
+    var gpa_state = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -44,7 +46,7 @@ pub fn main() !void {
 }
 
 fn parseArgs(allocator: std.mem.Allocator) !Config {
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try platform.argsWithAllocator(allocator);
     defer args.deinit();
 
     _ = args.next();
@@ -95,7 +97,7 @@ fn traceZ80AudioOps(allocator: std.mem.Allocator, config: Config) !StreamSummary
     var emulator = try Emulator.init(allocator, config.rom_path);
     defer emulator.deinit(allocator);
 
-    var file = try std.fs.cwd().createFile(config.out_path, .{ .truncate = true });
+    var file = try platform.cwd().createFile(config.out_path, .{ .truncate = true });
     defer file.close();
     var buffer: [4096]u8 = undefined;
     var file_writer = file.writer(&buffer);

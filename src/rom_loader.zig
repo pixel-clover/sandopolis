@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("platform.zig");
 const testing = std.testing;
 
 /// ROM file extensions recognized inside ZIP archives.
@@ -8,7 +9,7 @@ const rom_extensions = [_][]const u8{ ".bin", ".md", ".smd", ".gen", ".sms", ".g
 /// magic bytes), the first entry with a recognized ROM extension is extracted
 /// and returned. Otherwise the raw file contents are returned as-is.
 pub fn readRomFile(allocator: std.mem.Allocator, path: []const u8, max_size: usize) ![]u8 {
-    const file_data = try std.fs.cwd().readFileAlloc(allocator, path, max_size);
+    const file_data = try platform.cwd().readFileAlloc(allocator, path, max_size);
     errdefer allocator.free(file_data);
 
     if (isZip(file_data)) {

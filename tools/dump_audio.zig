@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 const AudioOutput = testing.AudioOutput;
 const WavRecorder = testing.WavRecorder;
@@ -204,8 +205,9 @@ fn referenceInputStateCallback(_: c_uint, _: c_uint, _: c_uint, _: c_uint) callc
     return 0;
 }
 
-pub fn main() !void {
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
+    var gpa_state = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -221,7 +223,7 @@ pub fn main() !void {
 }
 
 fn parseArgs(allocator: std.mem.Allocator) !Config {
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try platform.argsWithAllocator(allocator);
     defer args.deinit();
 
     _ = args.next();
@@ -363,7 +365,7 @@ fn dumpReference(allocator: std.mem.Allocator, config: Config) !void {
     var api = try ReferenceApi.open(config.reference_core_path);
     defer api.close();
 
-    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd_path = try platform.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd_path);
     const cwd_z = try allocator.dupeZ(u8, cwd_path);
     defer allocator.free(cwd_z);

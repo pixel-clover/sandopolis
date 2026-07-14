@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("platform.zig");
 const build_options = @import("build_options");
 const zsdl3 = @import("zsdl3");
 const clock = @import("clock.zig");
@@ -370,7 +371,7 @@ fn refreshSaveManager(
             defer allocator.free(path);
             var metadata = saves_module.SlotMetadata{};
             metadata.path.set(path);
-            const file = std.fs.cwd().openFile(path, .{}) catch {
+            const file = platform.cwd().openFile(path, .{}) catch {
                 save_manager.slots[slot_index] = metadata;
                 continue;
             };
@@ -381,7 +382,7 @@ fn refreshSaveManager(
             };
             metadata.exists = true;
             metadata.size_bytes = stat.size;
-            metadata.modified_ns = stat.mtime;
+            metadata.modified_ns = stat.mtime.nanoseconds;
             save_manager.slots[slot_index] = metadata;
         }
     }
@@ -412,7 +413,7 @@ fn deletePersistentStateFile(
     };
     defer allocator.free(state_path);
 
-    std.fs.cwd().deleteFile(state_path) catch |err| switch (err) {
+    platform.cwd().deleteFile(state_path) catch |err| switch (err) {
         error.FileNotFound => {
             notifyFrontend(notifications, .info, "STATE SLOT {d} IS EMPTY", .{persistent_state_slot});
             return true;
@@ -2080,13 +2081,13 @@ const sms_state_file = @import("sms/state_file.zig");
 fn saveSmsStateFile(allocator: std.mem.Allocator, sms: *const SmsMachine, path: []const u8) !void {
     const data = try sms_state_file.saveToBuffer(allocator, sms);
     defer allocator.free(data);
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    var file = try platform.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(data);
 }
 
 fn loadSmsStateFile(allocator: std.mem.Allocator, sms: *SmsMachine, path: []const u8) !void {
-    const file_data = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
+    const file_data = try platform.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
     defer allocator.free(file_data);
 
     var new_machine = try sms_state_file.loadFromBuffer(allocator, file_data);
@@ -2810,17 +2811,18 @@ fn renderFrontendOverlay(
     }
 }
 
-pub fn main() !void {
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
+    var gpa_state = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
     var cli_config = CliConfig{};
     const root_cmd = try createCliCommand(allocator);
     defer root_cmd.deinit();
-    try root_cmd.run(&cli_config);
+    try root_cmd.run(init.minimal.args, &cli_config);
     if (cli_config.show_version) {
-        try std.fs.File.stdout().writeAll(cli_module.version_summary ++ "\n");
+        try platform.stdout().writeAll(cli_module.version_summary ++ "\n");
         return;
     }
     if (!cli_config.should_run) return;
@@ -2935,7 +2937,7 @@ pub fn main() !void {
     std.debug.print("Config: {s}\n", .{config_file_path});
 
     // Write default config on first run if file doesn't exist
-    std.fs.cwd().access(config_file_path, .{}) catch |err| switch (err) {
+    platform.cwd().access(config_file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             unified_config.save(&frontend_config, &input_bindings, config_file_path) catch |save_err| {
                 std.debug.print("Failed to create default config file: {s}\n", .{@errorName(save_err)});
@@ -3026,9 +3028,9 @@ pub fn main() !void {
     }
     home_menu.clamp(&frontend_config);
 
-    var frame_timer = std.time.Instant.now() catch unreachable;
+    var frame_timer = platform.Instant.now() catch unreachable;
     mainLoop: while (true) {
-        frame_timer = std.time.Instant.now() catch frame_timer;
+        frame_timer = platform.Instant.now() catch frame_timer;
         var event: zsdl3.Event = undefined;
         while (zsdl3.pollEvent(&event)) {
             switch (event.type) {
@@ -3881,13 +3883,13 @@ pub fn main() !void {
                 smsFrameDurationNs(machine.palMode())
             else
                 frameDurationNs(machine.palMode(), machine.frameMasterCycles());
-            const emulation_start = std.time.Instant.now() catch frame_timer;
+            const emulation_start = platform.Instant.now() catch frame_timer;
             if (sample_core_counters) {
                 machine.runFrameProfiled(&core_counters);
             } else {
                 machine.runFrame();
             }
-            frame_phases.emulation_ns = (std.time.Instant.now() catch emulation_start).since(emulation_start);
+            frame_phases.emulation_ns = (platform.Instant.now() catch emulation_start).since(emulation_start);
         } else if (debugger_state.active and debugger_state.running_to_breakpoint) {
             // Run instructions until a breakpoint is hit or one frame's worth of
             // instructions have executed (to keep the UI responsive).
@@ -3929,7 +3931,7 @@ pub fn main() !void {
             std.debug.print("f={d} pc={X:0>8}\n", .{ frame_counter, machine.programCounter() });
         }
         if (audio) |*a| {
-            const audio_start = std.time.Instant.now() catch frame_timer;
+            const audio_start = platform.Instant.now() catch frame_timer;
             if (machine.audioZ80()) |z80| {
                 // Genesis: render audio from pending YM+PSG events
                 const pending = machine.takePendingAudio();
@@ -3941,11 +3943,11 @@ pub fn main() !void {
                     try a.queueRawSamples(sms_samples);
                 }
             }
-            frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
+            frame_phases.audio_ns = (platform.Instant.now() catch audio_start).since(audio_start);
         } else {
-            const audio_start = std.time.Instant.now() catch frame_timer;
+            const audio_start = platform.Instant.now() catch frame_timer;
             machine.discardPendingAudio();
-            frame_phases.audio_ns = (std.time.Instant.now() catch audio_start).since(audio_start);
+            frame_phases.audio_ns = (platform.Instant.now() catch audio_start).since(audio_start);
         }
         const queued_audio_bytes: ?usize = if (audio) |*a|
             zsdl3.getAudioStreamQueued(a.stream) catch null
@@ -3965,11 +3967,11 @@ pub fn main() !void {
             .w = @intCast(fb_stride),
             .h = framebuffer_height,
         };
-        const upload_start = std.time.Instant.now() catch frame_timer;
+        const upload_start = platform.Instant.now() catch frame_timer;
         _ = SDL_UpdateTexture(vdp_texture, &update_rect, @ptrCast(framebuffer.ptr), @intCast(@as(u32, fb_stride) * @sizeOf(u32)));
-        frame_phases.upload_ns = (std.time.Instant.now() catch upload_start).since(upload_start);
+        frame_phases.upload_ns = (platform.Instant.now() catch upload_start).since(upload_start);
 
-        const draw_start = std.time.Instant.now() catch frame_timer;
+        const draw_start = platform.Instant.now() catch frame_timer;
         try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x20, .g = 0x20, .b = 0x20, .a = 0xFF });
         try zsdl3.renderClear(renderer);
         const active_width = machine.framebufferWidth();
@@ -4018,23 +4020,23 @@ pub fn main() !void {
             try zsdl3.setRenderDrawBlendMode(renderer, .blend);
             if (machine.asGenesisConst()) |gen| try debugger_mod.render(renderer, dbg_viewport, gen, &debugger_state);
         }
-        frame_phases.draw_ns = (std.time.Instant.now() catch draw_start).since(draw_start);
-        const present_call_start = std.time.Instant.now() catch frame_timer;
+        frame_phases.draw_ns = (platform.Instant.now() catch draw_start).since(draw_start);
+        const present_call_start = platform.Instant.now() catch frame_timer;
         zsdl3.renderPresent(renderer);
-        frame_phases.present_call_ns = (std.time.Instant.now() catch present_call_start).since(present_call_start);
+        frame_phases.present_call_ns = (platform.Instant.now() catch present_call_start).since(present_call_start);
 
         frame_counter += 1;
         frontend_frame_counter += 1;
-        const frame_now = std.time.Instant.now() catch frame_timer;
+        const frame_now = platform.Instant.now() catch frame_timer;
         const work_elapsed = frame_now.since(frame_timer);
         if (frame_counter > uncapped_boot_frames) {
             if (target_frame_ns) |frame_ns| {
                 if (work_elapsed < frame_ns) {
-                    std.Thread.sleep(frame_ns - work_elapsed);
+                    platform.sleep(frame_ns - work_elapsed);
                 }
             }
         }
-        const present_elapsed = (std.time.Instant.now() catch frame_now).since(frame_timer);
+        const present_elapsed = (platform.Instant.now() catch frame_now).since(frame_timer);
         if (!emulation_paused) {
             if (target_frame_ns) |frame_ns| {
                 performance_hud.noteFrame(
@@ -4655,9 +4657,9 @@ test "soft reset helper rewinds cpu without reloading runtime state" {
 
     const rom = try makeFrontendTestRom(allocator);
     defer allocator.free(rom);
-    try tmp.dir.writeFile(.{ .sub_path = "restart.bin", .data = rom });
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "restart.bin", .data = rom });
 
-    const rom_path = try tmp.dir.realpathAlloc(allocator, "restart.bin");
+    const rom_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, "restart.bin");
     defer allocator.free(rom_path);
 
     var machine = SystemMachine{ .genesis = try Machine.init(allocator, rom_path) };
@@ -4691,9 +4693,9 @@ test "hard reset helper reloads the current rom path" {
 
     const rom = try makeFrontendTestRom(allocator);
     defer allocator.free(rom);
-    try tmp.dir.writeFile(.{ .sub_path = "restart.bin", .data = rom });
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "restart.bin", .data = rom });
 
-    const rom_path = try tmp.dir.realpathAlloc(allocator, "restart.bin");
+    const rom_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, "restart.bin");
     defer allocator.free(rom_path);
 
     var machine = SystemMachine{ .genesis = try Machine.init(allocator, rom_path) };
@@ -4774,7 +4776,7 @@ test "audio playback shadow only records samples that have actually drained" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(tmp_dir_path);
     const wav_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_dir_path, "shadow.wav" });
     defer std.testing.allocator.free(wav_path);
@@ -4851,7 +4853,7 @@ test "persistent state helper saves and restores machine state" {
     defer tmp.cleanup();
 
     const rom = [_]u8{0} ** 0x400;
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
     defer allocator.free(rom_path);
@@ -4868,7 +4870,7 @@ test "persistent state helper saves and restores machine state" {
 
     machine.genesis.writeWorkRamByte(0x20, 0x5A);
     try std.testing.expectEqual(PersistentStateActionResult.handled, handlePersistentStateAction(allocator, .save_state_file, &machine, rom_path, &persistent_state_slot, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
-    try std.fs.cwd().access(slot1_state_path, .{});
+    try platform.cwd().access(slot1_state_path, .{});
 
     machine.genesis.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
@@ -4884,7 +4886,7 @@ test "persistent state helper cycles slots and keeps files separate" {
     defer tmp.cleanup();
 
     const rom = [_]u8{0} ** 0x400;
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
     defer allocator.free(rom_path);
@@ -4930,7 +4932,7 @@ test "persistent state load sync exits home screen and updates current rom path"
     defer tmp.cleanup();
 
     const rom = [_]u8{0} ** 0x400;
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
     defer allocator.free(rom_path);
@@ -4982,7 +4984,7 @@ test "save manager metadata tracks slot files and deletions" {
     defer tmp.cleanup();
 
     const rom = [_]u8{0} ** 0x400;
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
     defer allocator.free(rom_path);
@@ -5040,13 +5042,13 @@ test "save manager metadata tracks slot files and deletions" {
     try std.testing.expect(save_manager.slotMetadata(1).modified_ns != 0);
     try std.testing.expectEqualStrings("slot1.state", std.fs.path.basename(save_manager.slotMetadata(1).path.slice()));
     try std.testing.expectEqualStrings("slot2.state", std.fs.path.basename(save_manager.slotMetadata(2).path.slice()));
-    try std.fs.cwd().access(slot2_preview_path, .{});
+    try platform.cwd().access(slot2_preview_path, .{});
 
     try std.testing.expect(deletePersistentStateFile(allocator, &machine, rom_path, 2, .{}));
     try save_manager.refresh(allocator, &machine.genesis, rom_path);
     try std.testing.expect(!save_manager.slotMetadata(2).exists);
     try std.testing.expect(!save_manager.slotMetadata(2).preview.available);
-    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot2_preview_path, .{}));
+    try std.testing.expectError(error.FileNotFound, platform.cwd().access(slot2_preview_path, .{}));
 }
 
 test "save state preview sidecar round-trips sampled pixels" {
@@ -5054,7 +5056,7 @@ test "save state preview sidecar round-trips sampled pixels" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const preview_path = try std.fs.path.join(allocator, &.{ dir_path, "slot1.state.preview" });
     defer allocator.free(preview_path);
@@ -5350,7 +5352,7 @@ test "save manager gamepad controls save load delete and close" {
     defer tmp.cleanup();
 
     const rom = [_]u8{0} ** 0x400;
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
     defer allocator.free(rom_path);
@@ -5386,7 +5388,7 @@ test "save manager gamepad controls save load delete and close" {
         .consumed => {},
         else => try std.testing.expect(false),
     }
-    try std.fs.cwd().access(slot1_state_path, .{});
+    try platform.cwd().access(slot1_state_path, .{});
     try std.testing.expect(save_manager.slotMetadata(1).exists);
 
     machine.genesis.writeWorkRamByte(0x20, 0x00);
@@ -5495,7 +5497,7 @@ test "save manager gamepad controls save load delete and close" {
     }
     try std.testing.expect(!ui.delete_confirm_pending);
     try std.testing.expect(!save_manager.slotMetadata(1).exists);
-    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(slot1_state_path, .{}));
+    try std.testing.expectError(error.FileNotFound, platform.cwd().access(slot1_state_path, .{}));
 
     switch (handleSaveManagerGamepadInput(
         &ui,
@@ -5803,7 +5805,7 @@ fn gifOutputPath(current_rom: []const u8) ?[256]u8 {
                 std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
             else
                 std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
-            std.fs.cwd().makePath(dir) catch {};
+            platform.cwd().makePath(dir) catch {};
             return path;
         }
     }
@@ -5813,7 +5815,7 @@ fn gifOutputPath(current_rom: []const u8) ?[256]u8 {
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch return buf;
+        platform.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
@@ -5828,7 +5830,7 @@ fn wavOutputPath(current_rom: []const u8) ?[256]u8 {
                 std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
             else
                 std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
-            std.fs.cwd().makePath(dir) catch {};
+            platform.cwd().makePath(dir) catch {};
             return path;
         }
     }
@@ -5837,7 +5839,7 @@ fn wavOutputPath(current_rom: []const u8) ?[256]u8 {
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch return buf;
+        platform.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }
@@ -5852,7 +5854,7 @@ fn screenshotOutputPath(current_rom: []const u8) ?[256]u8 {
                 std.fmt.bufPrint(&dir_buf, "{s}{c}{s}", .{ p, std.fs.path.sep, stem })
             else
                 std.fmt.bufPrint(&dir_buf, "{s}", .{stem})) catch return path;
-            std.fs.cwd().makePath(dir) catch {};
+            platform.cwd().makePath(dir) catch {};
             return path;
         }
     }
@@ -5861,7 +5863,7 @@ fn screenshotOutputPath(current_rom: []const u8) ?[256]u8 {
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.bmp", .{i}) catch return null;
         buf[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch return buf;
+        platform.cwd().access(name, .{}) catch return buf;
     }
     return null;
 }

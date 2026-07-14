@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const eeprom_i2c = @import("eeprom_i2c.zig");
 const rom_paths = @import("../rom_paths.zig");
 
@@ -386,7 +387,7 @@ pub const Cartridge = struct {
         var rom_data: []u8 = undefined;
 
         if (rom_path) |path| {
-            const file = try std.fs.cwd().openFile(path, .{});
+            const file = try platform.cwd().openFile(path, .{});
             defer file.close();
 
             const size = try file.getEndPos();
@@ -513,7 +514,7 @@ pub const Cartridge = struct {
     pub fn loadPersistentStorage(self: *Cartridge) !void {
         const save_path = self.save_path orelse return;
 
-        const file = std.fs.cwd().openFile(save_path, .{}) catch |err| switch (err) {
+        const file = platform.cwd().openFile(save_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return,
             else => return err,
         };
@@ -546,7 +547,7 @@ pub const Cartridge = struct {
         if (self.mapper == .eeprom_i2c) {
             if (!self.mapper.eeprom_i2c.eeprom.dirty) return;
             const data = self.mapper.eeprom_i2c.eeprom.data;
-            const file = try std.fs.cwd().createFile(save_path, .{ .truncate = true });
+            const file = try platform.cwd().createFile(save_path, .{ .truncate = true });
             defer file.close();
             try file.writeAll(data);
             self.mapper.eeprom_i2c.eeprom.dirty = false;
@@ -556,7 +557,7 @@ pub const Cartridge = struct {
         if (!self.ram.persistent or !self.ram.dirty) return;
 
         const data = self.ram.data orelse return;
-        const file = try std.fs.cwd().createFile(save_path, .{ .truncate = true });
+        const file = try platform.cwd().createFile(save_path, .{ .truncate = true });
         defer file.close();
         try file.writeAll(data);
         self.ram.clearDirty();

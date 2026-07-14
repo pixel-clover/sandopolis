@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("platform.zig");
 
 /// Shorten a filename for display. Names longer than `max_len` are truncated
 /// with an ellipsis in the middle: "Adventures...02).gg"
@@ -34,7 +35,7 @@ pub fn ensureRomDataDir(allocator: std.mem.Allocator, rom_path: []const u8) ![]u
         try allocator.dupe(u8, dir_name);
     errdefer allocator.free(dir_path);
 
-    std.fs.cwd().makePath(dir_path) catch |err| switch (err) {
+    platform.cwd().makePath(dir_path) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
@@ -91,7 +92,7 @@ pub fn nextOutputPath(rom_path: []const u8, extension: []const u8) ?[256]u8 {
                 extension,
             }) catch return null;
         result[name.len] = 0;
-        std.fs.cwd().access(name, .{}) catch {
+        platform.cwd().access(name, .{}) catch {
             return result;
         };
     }

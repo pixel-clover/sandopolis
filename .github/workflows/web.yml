@@ -29,10 +29,14 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
+      - name: Determine Zig version
+        id: zigver
+        run: echo "version=$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' build.zig.zon)" >> "$GITHUB_OUTPUT"
+
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: '0.15.2'
+          version: ${{ steps.zigver.outputs.version }}
 
       - name: Set build metadata
         id: build_meta

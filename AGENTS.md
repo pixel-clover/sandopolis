@@ -111,6 +111,9 @@ Quick examples:
 - The PSG is reachable from both the Z80 (address `0x7F11`) and the M68K (VDP port `0xC00011`). Both paths must push timestamped events through the
   Z80 bridge.
 - Keep frontend concerns separate from emulation concerns.
+- `src/platform.zig` is the only place allowed to use `std.Io`, `std.fs`, or `std.process` directly. All other code must go through the `platform`
+  module for file, directory, clock, env, args, and sleep operations. This contains standard-library churn between Zig versions to one file. When a
+  Zig upgrade changes these APIs, update the wrapper bodies in `src/platform.zig` instead of spreading fixes across call sites.
 - Preserve MIT-license boundaries. Treat external emulator repos and AGPL code as references unless licensing has been reviewed explicitly.
 - `external/Nuked-OPN2` is an optional LGPL developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the
   default `sandopolis`, `check`, `test`, or release build paths.

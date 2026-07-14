@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 const AudioOutput = testing.AudioOutput;
 const TraceEntry = testing.M68kSoundWriteTraceEntry;
@@ -15,8 +16,9 @@ const Config = struct {
     limit: usize = default_limit,
 };
 
-pub fn main() !void {
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
+    var gpa_state = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
@@ -43,7 +45,7 @@ pub fn main() !void {
     }
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = platform.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
     const entries = emulator.m68kSoundWriteTraceEntries();
     const dropped = emulator.m68kSoundWriteTraceDroppedCount();
@@ -74,7 +76,7 @@ pub fn main() !void {
 }
 
 fn parseArgs(allocator: std.mem.Allocator) !Config {
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try platform.argsWithAllocator(allocator);
     defer args.deinit();
 
     _ = args.next();

@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const testing = std.testing;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const SmsBus = @import("bus.zig").SmsBus;
@@ -240,7 +241,7 @@ test "sms machine init" {
 }
 
 test "sms machine run frames produces visible output" {
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Pac-Mania (Europe).sms", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Pac-Mania (Europe).sms", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);
@@ -297,7 +298,7 @@ test "sms machine save and restore state" {
 }
 
 test "sms aladdin shows graphics after extended init" {
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Disney's Aladdin (Europe).sms", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Disney's Aladdin (Europe).sms", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);
@@ -348,7 +349,7 @@ test "sms vdp register write via z80 port" {
 
 test "gg aerial assault detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Aerial Assault (World).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Aerial Assault (World).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));
@@ -378,7 +379,7 @@ test "gg aerial assault detected and produces visible output" {
 
 test "gg addams family detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Addams Family, The (World).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Addams Family, The (World).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));
@@ -405,7 +406,7 @@ test "gg addams family detected and produces visible output" {
 
 test "gg 5 in one funpak detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/5 in One FunPak (USA).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/5 in One FunPak (USA).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));
@@ -432,7 +433,7 @@ test "gg 5 in one funpak detected and produces visible output" {
 
 test "gg batman robin detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Adventures of Batman & Robin, The (USA, Europe) (Beta) (1995-05-02).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Adventures of Batman & Robin, The (USA, Europe) (Beta) (1995-05-02).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));

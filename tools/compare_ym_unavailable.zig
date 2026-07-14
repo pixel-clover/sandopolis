@@ -1,8 +1,10 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
     var stderr_buffer: [256]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = platform.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
     try stderr.writeAll(
         "compare-ym requires the optional external/Nuked-OPN2 submodule.\n" ++

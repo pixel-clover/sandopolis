@@ -9,6 +9,11 @@ const perf_profile = @import("performance_profile.zig");
 const scheduler = @import("scheduler/frame_scheduler.zig");
 const Vdp = @import("video/vdp.zig").Vdp;
 
+// TEMP drift measurement.
+var dbg_frame_seq: u32 = 0;
+var dbg_cur_frame: u32 = 0;
+var dbg_logged_rewrite: bool = false;
+
 pub const Machine = struct {
     pub const CoreFrameCounters = perf_profile.CoreFrameCounters;
     const PendingFramePhase = enum {
@@ -360,6 +365,9 @@ pub const Machine = struct {
     }
 
     fn runFrameInternal(self: *Machine, counters: ?*CoreFrameCounters) void {
+        dbg_cur_frame = dbg_frame_seq;
+        dbg_frame_seq += 1;
+        dbg_logged_rewrite = false;
         if (counters) |active_counters| {
             active_counters.* = .{};
         }
@@ -408,6 +416,14 @@ pub const Machine = struct {
         render_visible: bool,
         counters: ?*CoreFrameCounters,
     ) void {
+        if (dbg_cur_frame >= 2700 and dbg_cur_frame <= 2814 and !dbg_logged_rewrite) {
+            const pc = self.cpu.core.pc;
+            if (pc >= 0x3146A0 and pc <= 0x314710) {
+                dbg_logged_rewrite = true;
+                std.debug.print("REWRITE f={d} line={d} pc=0x{X:0>6} vis={d}\n", .{ dbg_cur_frame, line, @as(u32, pc), visible_lines });
+            }
+        }
+
         const entering_vblank = self.bus.vdp.setScanlineState(line, visible_lines, total_lines);
         if (!entering_vblank and !self.bus.vdp.vint_pending) {
             self.bus.z80.clearIrq();

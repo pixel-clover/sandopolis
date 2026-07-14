@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_src").platform;
 const testing = std.testing;
 const sandopolis = @import("sandopolis_src");
 const clock = sandopolis.clock;
@@ -41,9 +42,9 @@ test "machine reset applies fallback vectors when ROM vectors are invalid" {
 
     const rom = try makeGenesisRom(testing.allocator, 0x0100_0001, 0x0000_0000, &.{});
     defer testing.allocator.free(rom);
-    try tmp.dir.writeFile(.{ .sub_path = "fallback.bin", .data = rom });
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "fallback.bin", .data = rom });
 
-    const rom_path = try tmp.dir.realpathAlloc(testing.allocator, "fallback.bin");
+    const rom_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(testing.allocator, "fallback.bin");
     defer testing.allocator.free(rom_path);
 
     var machine = try Machine.init(testing.allocator, rom_path);
@@ -61,9 +62,9 @@ test "machine reset preserves zero stack pointer when reset pc is valid" {
 
     const rom = try makeGenesisRom(testing.allocator, 0x0000_0000, 0x0000_0200, &.{ 0x4E, 0x71 });
     defer testing.allocator.free(rom);
-    try tmp.dir.writeFile(.{ .sub_path = "zero-sp.bin", .data = rom });
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "zero-sp.bin", .data = rom });
 
-    const rom_path = try tmp.dir.realpathAlloc(testing.allocator, "zero-sp.bin");
+    const rom_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(testing.allocator, "zero-sp.bin");
     defer testing.allocator.free(rom_path);
 
     var machine = try Machine.init(testing.allocator, rom_path);
@@ -100,9 +101,9 @@ test "machine runMasterSlice advances the reset program through the public API" 
         0x4E, 0x71,
     });
     defer testing.allocator.free(rom);
-    try tmp.dir.writeFile(.{ .sub_path = "boot.bin", .data = rom });
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "boot.bin", .data = rom });
 
-    const rom_path = try tmp.dir.realpathAlloc(testing.allocator, "boot.bin");
+    const rom_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(testing.allocator, "boot.bin");
     defer testing.allocator.free(rom_path);
 
     var machine = try Machine.init(testing.allocator, rom_path);
@@ -184,9 +185,9 @@ test "emulator persistent cartridge sram flushes to save file and reloads" {
 
     const rom = try makeRomWithSramHeader(testing.allocator, 0x200000, 0xF8, 0x200001, 0x203FFF);
     defer testing.allocator.free(rom);
-    try tmp.dir.writeFile(.{ .sub_path = "persist.md", .data = rom });
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "persist.md", .data = rom });
 
-    const rom_path = try tmp.dir.realpathAlloc(testing.allocator, "persist.md");
+    const rom_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(testing.allocator, "persist.md");
     defer testing.allocator.free(rom_path);
 
     {
@@ -199,7 +200,7 @@ test "emulator persistent cartridge sram flushes to save file and reloads" {
         emulator.write8(0x0020_0003, 0x5A);
         try emulator.flushPersistentStorage();
 
-        var save_file = try std.fs.cwd().openFile(save_path, .{});
+        var save_file = try platform.cwd().openFile(save_path, .{});
         defer save_file.close();
 
         var first_bytes: [2]u8 = undefined;

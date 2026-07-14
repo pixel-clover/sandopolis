@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_src").platform;
 const testing = std.testing;
 const minish = @import("minish");
 const sandopolis = @import("sandopolis_src");
@@ -926,7 +927,7 @@ test "property: low-byte writes do not change Z80 control register state" {
 }
 
 fn tempFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: []const u8) ![]u8 {
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }

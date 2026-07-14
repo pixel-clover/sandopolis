@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const testing = std.testing;
 const Io = @import("io.zig").Io;
 const ControllerType = Io.ControllerType;
@@ -287,7 +288,7 @@ pub const Bindings = struct {
     }
 
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Bindings {
-        const contents = try std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
+        const contents = try platform.cwd().readFileAlloc(allocator, path, 64 * 1024);
         defer allocator.free(contents);
         return parseContents(contents);
     }
@@ -450,7 +451,7 @@ pub const Bindings = struct {
     }
 
     pub fn saveToFile(self: *const Bindings, path: []const u8) !void {
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        var file = try platform.cwd().createFile(path, .{ .truncate = true });
         defer file.close();
         var buffer: [4096]u8 = undefined;
         var writer = file.writer(&buffer);
@@ -513,13 +514,13 @@ pub const Bindings = struct {
 };
 
 pub fn defaultConfigPath(allocator: std.mem.Allocator) !?[]u8 {
-    const env_path = std.process.getEnvVarOwned(allocator, "SANDOPOLIS_INPUT_CONFIG") catch |err| switch (err) {
+    const env_path = platform.getEnvVarOwned(allocator, "SANDOPOLIS_INPUT_CONFIG") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };
     if (env_path) |path| return path;
 
-    std.fs.cwd().access(default_config_name, .{}) catch |err| switch (err) {
+    platform.cwd().access(default_config_name, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -540,19 +541,19 @@ pub fn keyboardInputName(input: KeyboardInput) []const u8 {
 }
 
 pub fn keyboardInputDisplayName(buffer: []u8, input: KeyboardInput) ![]const u8 {
-    var stream = std.io.fixedBufferStream(buffer);
-    const writer = stream.writer();
+    var stream = std.Io.Writer.fixed(buffer);
+    const writer = &stream;
     try writer.writeByte('[');
     try writeKeyboardInputDisplay(writer, input);
     try writer.writeByte(']');
-    return stream.getWritten();
+    return stream.buffered();
 }
 
 pub fn hotkeyBindingDisplayName(buffer: []u8, binding: HotkeyBinding) ![]const u8 {
     const input = binding.input orelse return std.fmt.bufPrint(buffer, "NONE", .{});
 
-    var stream = std.io.fixedBufferStream(buffer);
-    const writer = stream.writer();
+    var stream = std.Io.Writer.fixed(buffer);
+    const writer = &stream;
 
     if (binding.modifiers.ctrl) try writer.writeAll("[CTRL]+");
     if (binding.modifiers.alt) try writer.writeAll("[ALT]+");
@@ -562,7 +563,7 @@ pub fn hotkeyBindingDisplayName(buffer: []u8, binding: HotkeyBinding) ![]const u
     try writeKeyboardInputDisplay(writer, input);
     try writer.writeByte(']');
 
-    return stream.getWritten();
+    return stream.buffered();
 }
 
 pub fn gamepadInputName(input: GamepadInput) []const u8 {
@@ -570,8 +571,8 @@ pub fn gamepadInputName(input: GamepadInput) []const u8 {
 }
 
 pub fn gamepadInputDisplayName(buffer: []u8, input: GamepadInput) ![]const u8 {
-    var stream = std.io.fixedBufferStream(buffer);
-    const writer = stream.writer();
+    var stream = std.Io.Writer.fixed(buffer);
+    const writer = &stream;
     try writer.writeByte('(');
     switch (input) {
         .dpad_up => try writer.writeAll("D-PAD UP"),
@@ -594,7 +595,7 @@ pub fn gamepadInputDisplayName(buffer: []u8, input: GamepadInput) ![]const u8 {
         .right_trigger => try writer.writeAll("RT"),
     }
     try writer.writeByte(')');
-    return stream.getWritten();
+    return stream.buffered();
 }
 
 fn trimLine(raw_line: []const u8) []const u8 {
@@ -916,11 +917,11 @@ test "input bindings write contents round trip" {
     bindings.setControllerType(1, .three_button);
     bindings.setGamepadAxisThreshold(12_345);
 
-    var output = std.ArrayList(u8).empty;
-    defer output.deinit(testing.allocator);
-    try bindings.writeContents(output.writer(testing.allocator));
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    try bindings.writeContents(&output.writer);
 
-    const round_tripped = try Bindings.parseContents(output.items);
+    const round_tripped = try Bindings.parseContents(output.writer.buffered());
     try testing.expectEqual(@as(?KeyboardInput, .q), round_tripped.keyboardBinding(0, .a));
     try testing.expectEqual(@as(?KeyboardInput, null), round_tripped.keyboardBinding(1, .start));
     try testing.expectEqual(

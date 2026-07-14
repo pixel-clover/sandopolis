@@ -1,8 +1,9 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const testing = std.testing;
 
 pub const GifRecorder = struct {
-    file: std.fs.File,
+    file: platform.File,
     frame_count: u32,
     delay_cs: u16,
     width: u16,
@@ -23,7 +24,7 @@ pub const GifRecorder = struct {
         if (height == 0 or height > max_height) return error.InvalidFrameHeight;
         if (fb_width == 0 or fb_width > max_width) return error.InvalidFrameWidth;
 
-        const file = try std.fs.cwd().createFile(path, .{});
+        const file = try platform.cwd().createFile(path, .{});
         errdefer file.close();
 
         const delay_cs: u16 = if (fps > 0) @intCast(@min(65535, (100 + fps / 2) / fps)) else 2;
@@ -315,7 +316,7 @@ fn emitCode(
 }
 
 fn tempGifPath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: []const u8) ![]u8 {
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }
@@ -339,7 +340,7 @@ test "GIF recorder creates valid single-frame GIF" {
     try recorder.addFrame(framebuffer[0..]);
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_output.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_output.gif", .{});
     defer file.close();
     var header: [6]u8 = undefined;
     _ = try file.readAll(&header);
@@ -367,7 +368,7 @@ test "GIF recorder handles multiple frames" {
 
     try std.testing.expectEqual(@as(u32, 3), recorder.frame_count);
 
-    const file = try tmp.dir.openFile("test_multi.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_multi.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 2000);
@@ -389,7 +390,7 @@ test "GIF recorder handles noisy framebuffer without overflow" {
     try recorder.addFrame(fb[0..]);
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_noisy.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_noisy.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);
@@ -412,7 +413,7 @@ test "GIF recorder accepts 240-line frames" {
     try recorder.addFrame(fb[0..]);
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_240.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_240.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const zsdl3 = @import("zsdl3");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
 
@@ -235,7 +236,7 @@ pub const FrontendConfig = struct {
     }
 
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !FrontendConfig {
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+        const file = platform.cwd().openFile(path, .{}) catch |err| switch (err) {
             error.FileNotFound => return .{},
             else => return err,
         };
@@ -272,17 +273,17 @@ pub const FrontendConfig = struct {
         const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}.tmp", .{path}) catch
             return error.NameTooLong;
         {
-            var file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+            var file = try platform.cwd().createFile(tmp_path, .{ .truncate = true });
             defer file.close();
             var buffer: [4096]u8 = undefined;
             var writer = file.writer(&buffer);
             try self.writeContents(&writer.interface);
             try writer.interface.flush();
         }
-        std.fs.cwd().rename(tmp_path, path) catch {
+        platform.cwd().rename(tmp_path, path) catch {
             // Rename failed (e.g. cross-device); fall back to direct write.
-            std.fs.cwd().deleteFile(tmp_path) catch {};
-            var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+            platform.cwd().deleteFile(tmp_path) catch {};
+            var file = try platform.cwd().createFile(path, .{ .truncate = true });
             defer file.close();
             var buffer: [4096]u8 = undefined;
             var writer = file.writer(&buffer);
@@ -362,7 +363,7 @@ fn trimConfigLine(raw_line: []const u8) []const u8 {
 }
 
 pub fn defaultConfigPath(allocator: std.mem.Allocator) ![]u8 {
-    const env_path = std.process.getEnvVarOwned(allocator, "SANDOPOLIS_FRONTEND_CONFIG") catch |err| switch (err) {
+    const env_path = platform.getEnvVarOwned(allocator, "SANDOPOLIS_FRONTEND_CONFIG") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
     };

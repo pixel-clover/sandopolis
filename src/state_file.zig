@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("platform.zig");
 const testing = std.testing;
 const bus_save_state = @import("bus/save_state.zig");
 const clock = @import("clock.zig");
@@ -254,7 +255,7 @@ fn writeStateData(writer: anytype, machine: *const Machine) !void {
 }
 
 pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    var file = try platform.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
 
     var buffer: [4096]u8 = undefined;
@@ -264,10 +265,10 @@ pub fn saveToFile(machine: *const Machine, path: []const u8) !void {
 }
 
 pub fn saveToBuffer(allocator: std.mem.Allocator, machine: *const Machine) ![]u8 {
-    var list = std.ArrayList(u8).empty;
-    errdefer list.deinit(allocator);
-    try writeStateData(list.writer(allocator).any(), machine);
-    return list.toOwnedSlice(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    try writeStateData(&aw.writer, machine);
+    return aw.toOwnedSlice();
 }
 
 fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
@@ -308,7 +309,7 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
 }
 
 pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
-    var file = try std.fs.cwd().openFile(path, .{});
+    var file = try platform.cwd().openFile(path, .{});
     defer file.close();
 
     var buffer: [4096]u8 = undefined;
@@ -317,18 +318,18 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
 }
 
 pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine {
-    var fbs = std.io.fixedBufferStream(bytes);
-    var reader = SliceReader{ .fbs = &fbs };
+    var reader = SliceReader{ .buffer = bytes };
     return readStateData(allocator, &reader);
 }
 
 const SliceReader = struct {
-    fbs: *std.io.FixedBufferStream([]const u8),
+    buffer: []const u8,
+    pos: usize = 0,
 
     pub fn takeByte(self: *SliceReader) !u8 {
-        if (self.fbs.pos >= self.fbs.buffer.len) return error.EndOfStream;
-        const byte = self.fbs.buffer[self.fbs.pos];
-        self.fbs.pos += 1;
+        if (self.pos >= self.buffer.len) return error.EndOfStream;
+        const byte = self.buffer[self.pos];
+        self.pos += 1;
         return byte;
     }
 
@@ -339,10 +340,10 @@ const SliceReader = struct {
     }
 
     pub fn readSliceAll(self: *SliceReader, dest: []u8) !void {
-        const end = self.fbs.pos + dest.len;
-        if (end > self.fbs.buffer.len) return error.EndOfStream;
-        @memcpy(dest, self.fbs.buffer[self.fbs.pos..end]);
-        self.fbs.pos = end;
+        const end = self.pos + dest.len;
+        if (end > self.buffer.len) return error.EndOfStream;
+        @memcpy(dest, self.buffer[self.pos..end]);
+        self.pos = end;
     }
 
     pub fn writeAll(_: *SliceReader, _: []const u8) !void {}
@@ -371,7 +372,7 @@ fn makeRomWithSramHeader(
 }
 
 fn tempFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: []const u8) ![]u8 {
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }

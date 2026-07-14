@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_src").platform;
 const testing = std.testing;
 const sandopolis = @import("sandopolis_src");
 const clock = sandopolis.clock;
@@ -1487,7 +1488,7 @@ test "zabu palette investigation: detect bulk cram rewrites during scene transit
 const SmsMachine = sandopolis.testing.SmsMachine;
 
 fn initSg1000(rom_path: []const u8) !SmsMachine {
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, rom_path, 1024 * 1024) catch |err| {
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, rom_path, 1024 * 1024) catch |err| {
         return err;
     };
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);

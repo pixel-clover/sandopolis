@@ -18,3 +18,5 @@ pub const YmWriteEvent = testing.YmWriteEvent;
 pub const Z80AudioOpTraceEntry = testing.Z80AudioOpTraceEntry;
 pub const YmDacSampleEvent = testing.YmDacSampleEvent;
 pub const ymWriteEvent = testing.ymWriteEvent;
+
+pub const platform = @import("platform.zig");

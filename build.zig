@@ -44,7 +44,7 @@ fn createSandopolisApiModule(
 fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
     addCpuIncludePaths(step, b, deps);
 
-    step.addCSourceFiles(.{
+    step.root_module.addCSourceFiles(.{
         .root = deps.rocket68.path("."),
         .files = &.{
             "src/m68k/m68k.c",
@@ -57,33 +57,29 @@ fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDe
         },
         .flags = &.{"-std=c11"},
     });
-    step.addCSourceFiles(.{
+    step.root_module.addCSourceFiles(.{
         .root = deps.jgz80.path("."),
         .files = &.{
             "z80.c",
         },
         .flags = &.{"-std=c11"},
     });
-    step.addCSourceFiles(.{
+    step.root_module.addCSourceFiles(.{
         .files = &.{"src/cpu/jgz80_bridge.c"},
         .flags = &.{"-std=c11"},
     });
-    step.linkLibC();
+    step.root_module.link_libc = true;
 }
 
 fn addCpuIncludePaths(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
-    step.addIncludePath(deps.rocket68.path("include"));
-    step.addIncludePath(deps.rocket68.path("src/m68k"));
-    step.addIncludePath(deps.jgz80.path("."));
-    step.addIncludePath(b.path("src/cpu"));
     step.root_module.addIncludePath(deps.rocket68.path("include"));
     step.root_module.addIncludePath(deps.rocket68.path("src/m68k"));
     step.root_module.addIncludePath(deps.jgz80.path("."));
     step.root_module.addIncludePath(b.path("src/cpu"));
 }
 
-fn pathExists(relative_path: []const u8) bool {
-    std.fs.cwd().access(relative_path, .{}) catch return false;
+fn pathExists(b: *std.Build, relative_path: []const u8) bool {
+    b.build_root.handle.access(b.graph.io, relative_path, .{}) catch return false;
     return true;
 }
 
@@ -91,21 +87,20 @@ fn runOrDefault(b: *std.Build, argv: []const []const u8, default_value: []const 
     if (!std.process.can_spawn) return default_value;
 
     var code: u8 = 0;
-    return b.runAllowFail(argv, &code, .Ignore) catch default_value;
+    return b.runAllowFail(argv, &code, .ignore) catch default_value;
 }
 
 fn addStbTruetype(step: *std.Build.Step.Compile, b: *std.Build) void {
-    step.addCSourceFiles(.{
+    step.root_module.addCSourceFiles(.{
         .files = &.{"src/frontend/fonts/stb_impl.c"},
         .flags = &.{"-std=c99"},
     });
-    step.addIncludePath(b.path("src/frontend/fonts"));
     step.root_module.addIncludePath(b.path("src/frontend/fonts"));
 }
 
 fn linkSdl3(step: *std.Build.Step.Compile, sdl3_lib: *std.Build.Step.Compile) void {
-    step.linkLibrary(sdl3_lib);
-    step.linkLibC();
+    step.root_module.linkLibrary(sdl3_lib);
+    step.root_module.link_libc = true;
 }
 
 pub fn build(b: *std.Build) void {
@@ -130,7 +125,7 @@ pub fn build(b: *std.Build) void {
     const sandopolis_api = createSandopolisApiModule(b, target, optimize, cpu_deps);
     const regression_api = createSandopolisApiModule(b, target, regression_optimize, cpu_deps);
     const testing_api = createTestingApiModule(b, target, optimize, cpu_deps);
-    const compare_ym_available = pathExists("external/Nuked-OPN2/ym3438.c");
+    const compare_ym_available = pathExists(b, "external/Nuked-OPN2/ym3438.c");
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
@@ -302,14 +297,13 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(compare_ym, b, cpu_deps);
     if (compare_ym_available) {
-        compare_ym.addIncludePath(b.path("external/Nuked-OPN2"));
         compare_ym.root_module.addIncludePath(b.path("external/Nuked-OPN2"));
-        compare_ym.addCSourceFiles(.{
+        compare_ym.root_module.addCSourceFiles(.{
             .root = b.path("external/Nuked-OPN2"),
             .files = &.{"ym3438.c"},
             .flags = &.{"-std=c11"},
         });
-        compare_ym.linkLibC();
+        compare_ym.root_module.link_libc = true;
     }
     const compare_ym_run = b.addRunArtifact(compare_ym);
     if (b.args) |args| {
@@ -330,9 +324,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(dump_audio, b, cpu_deps);
-    dump_audio.addIncludePath(b.path("external/libretro"));
     dump_audio.root_module.addIncludePath(b.path("external/libretro"));
-    dump_audio.linkLibC();
+    dump_audio.root_module.link_libc = true;
     const dump_audio_run = b.addRunArtifact(dump_audio);
     if (b.args) |args| {
         dump_audio_run.addArgs(args);
@@ -352,9 +345,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(trace_diff, b, cpu_deps);
-    trace_diff.addIncludePath(b.path("external/libretro"));
     trace_diff.root_module.addIncludePath(b.path("external/libretro"));
-    trace_diff.linkLibC();
+    trace_diff.root_module.link_libc = true;
     const trace_diff_run = b.addRunArtifact(trace_diff);
     if (b.args) |args| {
         trace_diff_run.addArgs(args);
@@ -374,9 +366,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(dump_frames, b, cpu_deps);
-    dump_frames.addIncludePath(b.path("external/libretro"));
     dump_frames.root_module.addIncludePath(b.path("external/libretro"));
-    dump_frames.linkLibC();
+    dump_frames.root_module.link_libc = true;
     const dump_frames_run = b.addRunArtifact(dump_frames);
     if (b.args) |args| {
         dump_frames_run.addArgs(args);
@@ -396,9 +387,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(vram_diff, b, cpu_deps);
-    vram_diff.addIncludePath(b.path("external/libretro"));
     vram_diff.root_module.addIncludePath(b.path("external/libretro"));
-    vram_diff.linkLibC();
+    vram_diff.root_module.link_libc = true;
     const vram_diff_run = b.addRunArtifact(vram_diff);
     if (b.args) |args| {
         vram_diff_run.addArgs(args);
@@ -475,9 +465,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(trace_ym_writes, b, cpu_deps);
-    trace_ym_writes.addIncludePath(b.path("external/libretro"));
     trace_ym_writes.root_module.addIncludePath(b.path("external/libretro"));
-    trace_ym_writes.linkLibC();
+    trace_ym_writes.root_module.link_libc = true;
     const trace_ym_writes_run = b.addRunArtifact(trace_ym_writes);
     if (b.args) |args| {
         trace_ym_writes_run.addArgs(args);
@@ -533,7 +522,6 @@ pub fn build(b: *std.Build) void {
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .wasi,
-        .cpu_features_add = std.Target.wasm.featureSet(&.{.exception_handling}),
     });
     const wasm_exe = b.addExecutable(.{
         .name = "sandopolis",
@@ -547,9 +535,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     wasm_exe.entry = .disabled;
+    wasm_exe.root_module.addIncludePath(b.path("src/wasm_compat"));
     wasm_exe.rdynamic = true;
     addExternalCpuCores(wasm_exe, b, cpu_deps);
-    wasm_exe.addCSourceFiles(.{
+    wasm_exe.root_module.addCSourceFiles(.{
         .files = &.{"src/wasm_stubs.c"},
         .flags = &.{"-std=c11"},
     });

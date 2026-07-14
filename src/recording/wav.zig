@@ -1,10 +1,11 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const testing = std.testing;
 
 /// Records audio output to a WAV file for debugging purposes.
 /// Supports 16-bit stereo audio at configurable sample rates.
 pub const WavRecorder = struct {
-    file: std.fs.File,
+    file: platform.File,
     sample_count: u32,
     sample_rate: u32,
     channels: u16,
@@ -23,7 +24,7 @@ pub const WavRecorder = struct {
             return error.InvalidAudioFormat;
         }
 
-        const file = try std.fs.cwd().createFile(path, .{});
+        const file = try platform.cwd().createFile(path, .{});
         errdefer file.close();
 
         var self = WavRecorder{
@@ -144,7 +145,7 @@ pub const WavRecorder = struct {
 };
 
 fn tempWavPath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: []const u8) ![]u8 {
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }
@@ -171,7 +172,7 @@ test "WAV recorder creates valid stereo WAV file" {
     recorder.finish();
 
     // Verify the file was created and has valid header
-    const file = try tmp.dir.openFile("test_stereo.wav", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_stereo.wav", .{});
     defer file.close();
 
     var header: [44]u8 = undefined;
@@ -215,7 +216,7 @@ test "WAV recorder handles mono audio" {
     try recorder.addSamples(&samples);
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_mono.wav", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_mono.wav", .{});
     defer file.close();
 
     var header: [44]u8 = undefined;
@@ -246,7 +247,7 @@ test "WAV recorder handles multiple addSamples calls" {
     // 100 samples per call / 2 channels = 50 frames per call, * 10 calls = 500 frames
     try testing.expectEqual(@as(u32, 500), recorder.sample_count);
 
-    const file = try tmp.dir.openFile("test_multi.wav", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_multi.wav", .{});
     defer file.close();
     const stat = try file.stat();
     // 100 samples * 2 bytes * 10 calls + 44 byte header = 2044 bytes
@@ -311,7 +312,7 @@ test "WAV recorder handles large recordings" {
 
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_large.wav", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_large.wav", .{});
     defer file.close();
     const stat = try file.stat();
 
