@@ -157,6 +157,9 @@ export fn retro_get_system_info(info: *RetroSystemInfo) callconv(.c) void {
 }
 
 export fn retro_get_system_av_info(info: *RetroSystemAvInfo) callconv(.c) void {
+    // Never leave the out-param uninitialized, even on out-of-spec call
+    // ordering (no game loaded).
+    info.* = std.mem.zeroes(RetroSystemAvInfo);
     const c_state = core orelse return;
     const is_pal = c_state.machine.palMode();
     const fps: f64 = if (is_pal)
@@ -297,6 +300,15 @@ export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
     const info = game orelse return false;
     const rom_data = info.data orelse return false;
     if (info.size == 0) return false;
+
+    // The framebuffer is XRGB8888 (u32); without this the frontend assumes
+    // the libretro default 0RGB1555 and renders garbage.
+    const env = environment_cb orelse return false;
+    var pixel_format: c_int = 1; // RETRO_PIXEL_FORMAT_XRGB8888
+    if (!env(10, @ptrCast(&pixel_format))) return false; // RETRO_ENVIRONMENT_SET_PIXEL_FORMAT
+
+    // Free a still-loaded instance if the frontend skips retro_unload_game.
+    retro_unload_game();
 
     const c_state = allocator.create(CoreState) catch return false;
     c_state.* = .{

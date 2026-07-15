@@ -91,6 +91,9 @@ pub fn nextOutputPath(rom_path: []const u8, extension: []const u8) ?[256]u8 {
                 stem,      i,
                 extension,
             }) catch return null;
+        // bufPrint can succeed with a name that exactly fills the buffer,
+        // leaving no room for the terminator.
+        if (name.len >= result.len) return null;
         result[name.len] = 0;
         platform.cwd().access(name, .{}) catch {
             return result;

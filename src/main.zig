@@ -902,11 +902,13 @@ fn applySettingsAction(
             const ct = if (delta >= 0) nextCT(bindings.controller_types[0]) else prevCT(bindings.controller_types[0]);
             bindings.controller_types[0] = ct;
             if (machine.genesisIo()) |io| io.setControllerType(0, ct);
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
         },
         .controller_p2_type => {
             const ct = if (delta >= 0) nextCT(bindings.controller_types[1]) else prevCT(bindings.controller_types[1]);
             bindings.controller_types[1] = ct;
             if (machine.genesisIo()) |io| io.setControllerType(1, ct);
+            persistFrontendConfig(frontend_config, bindings, frontend_config_path, notifications);
         },
         .font_face => {
             const next = frontend_config.font_face.cycle(if (delta == 0) 1 else delta);
@@ -1732,8 +1734,11 @@ fn applySmsKeyboardInput(machine: *SystemMachine, input: InputBindings.KeyboardI
     const mapping = smsKeyboardMapping(input);
     if (mapping.button) |btn| {
         machine.setSmsButton(mapping.port, btn, pressed);
-    } else if (mapping.pause and pressed) {
-        machine.setSmsStartOrPause(true);
+    } else if (mapping.pause) {
+        // Forward releases too: Game Gear START is level-sensitive, so
+        // never sending `false` latched the button down forever.  (SMS
+        // pause is edge-triggered on press and ignores the release.)
+        machine.setSmsStartOrPause(pressed);
     }
 }
 
@@ -3721,7 +3726,9 @@ pub fn main(init: std.process.Init) !void {
                                         };
                                         const path_str = std.mem.sliceTo(&path, 0);
                                         const fb_width = machine.framebufferWidth();
-                                        const framebuffer_height: u16 = @intCast(machine.framebuffer().len / fb_width);
+                                        // Height must come from the stride: the Genesis framebuffer
+                                        // rows are always 320 pixels even in 256-wide H32 mode.
+                                        const framebuffer_height: u16 = @intCast(machine.framebuffer().len / machine.framebufferStride());
                                         gif_recorder = GifRecorder.start(path_str, fps, fb_width, framebuffer_height) catch |err| {
                                             std.debug.print("Failed to start GIF recording: {}\n", .{err});
                                             notifyFrontend(notifications, .failure, "FAILED TO START GIF RECORDING", .{});
@@ -3772,8 +3779,9 @@ pub fn main(init: std.process.Init) !void {
                                     const path_str = std.mem.sliceTo(&path, 0);
                                     const framebuffer = machine.framebuffer();
                                     const active_width: u32 = machine.framebufferWidth();
-                                    const framebuffer_height: u32 = @intCast(framebuffer.len / active_width);
-                                    screenshot.saveBmp(path_str, framebuffer, active_width, framebuffer_height) catch |err| {
+                                    const fb_stride: u32 = machine.framebufferStride();
+                                    const framebuffer_height: u32 = @intCast(framebuffer.len / fb_stride);
+                                    screenshot.saveBmp(path_str, framebuffer, active_width, framebuffer_height, fb_stride) catch |err| {
                                         std.debug.print("Failed to save screenshot: {}\n", .{err});
                                         notifyFrontend(notifications, .failure, "FAILED TO SAVE SCREENSHOT", .{});
                                         continue;
@@ -3814,11 +3822,15 @@ pub fn main(init: std.process.Init) !void {
         switch (file_dialog_state.take()) {
             .none => {},
             .canceled => {
-                frontend_ui.overlay = if (frontend_ui.parent_overlay != .none) frontend_ui.parent_overlay else .home;
+                // Restore whatever overlay the dialog was opened from —
+                // including `.none` (opened in-game via hotkey); mapping
+                // that case to `.home` stranded a running game behind a
+                // screen with no resume action.
+                frontend_ui.overlay = frontend_ui.parent_overlay;
                 frontend_ui.parent_overlay = .none;
             },
             .failed => |message| {
-                frontend_ui.overlay = if (frontend_ui.parent_overlay != .none) frontend_ui.parent_overlay else .home;
+                frontend_ui.overlay = frontend_ui.parent_overlay;
                 frontend_ui.parent_overlay = .none;
                 std.debug.print("Open ROM dialog failed: {s}\n", .{message.slice()});
                 notifyFrontend(
@@ -3916,7 +3928,7 @@ pub fn main(init: std.process.Init) !void {
             const framebuffer = machine.framebuffer();
             if (gif_recorder) |*rec| {
                 if (frame_counter % 2 == 0) {
-                    rec.addFrame(framebuffer) catch |err| {
+                    rec.addFrame(framebuffer, machine.framebufferStride()) catch |err| {
                         std.debug.print("GIF frame capture failed: {}\n", .{err});
                         const frames = rec.frame_count;
                         rec.finish();

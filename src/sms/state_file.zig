@@ -6,7 +6,8 @@ const SmsVdp = @import("vdp.zig").SmsVdp;
 const Z80 = @import("../cpu/z80.zig").Z80;
 
 pub const magic = [8]u8{ 'S', 'N', 'D', 'S', 'M', 'S', 'S', 'T' };
-pub const version: u16 = 2;
+// v3: added is_sg1000 flag (SG-1000 games silently became SMS on load).
+pub const version: u16 = 3;
 
 /// Serialize SMS machine state into a byte buffer.
 pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 {
@@ -22,8 +23,9 @@ pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 
     try list.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, version)));
     try list.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @as(u32, @intCast(m.bus.rom.len)))));
 
-    // is_game_gear flag
+    // Variant flags
     try list.append(allocator, @intFromBool(m.is_game_gear));
+    try list.append(allocator, @intFromBool(m.is_sg1000));
 
     // Z80 state
     const z80_state = m.z80.captureState();
@@ -60,8 +62,9 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachin
     if (ver != version) return error.UnsupportedSaveStateVersion;
     const rom_len = std.mem.readInt(u32, (try readSlice(data, &pos, 4))[0..4], .little);
 
-    // is_game_gear flag
+    // Variant flags
     const is_gg = (try readSlice(data, &pos, 1))[0] != 0;
+    const is_sg = (try readSlice(data, &pos, 1))[0] != 0;
 
     // Z80 state
     const z80_bytes = try readSlice(data, &pos, @sizeOf(Z80.State));
@@ -90,9 +93,26 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachin
     errdefer machine.deinit(allocator);
 
     machine.is_game_gear = is_gg;
+    machine.is_sg1000 = is_sg;
     @memcpy(&machine.bus.ram, ram);
     @memcpy(std.mem.asBytes(&machine.bus.vdp), vdp_bytes);
+    // Sanitize scalar fields byte-wise before any typed use: a corrupt
+    // state can plant invalid bit patterns in bools/small ints (UB), and
+    // out-of-range address bits would index VRAM out of bounds.
+    const vdp_raw = std.mem.asBytes(&machine.bus.vdp);
+    inline for ([_][]const u8{
+        "control_latch", "vint_pending", "hint_pending",
+        "pal_mode",      "is_game_gear", "is_sg1000",
+    }) |field| {
+        const off = @offsetOf(SmsVdp, field);
+        vdp_raw[off] = @intFromBool(vdp_raw[off] != 0);
+    }
+    vdp_raw[@offsetOf(SmsVdp, "code")] &= 0x03;
+    const addr_off = @offsetOf(SmsVdp, "addr");
+    const addr_raw = std.mem.readInt(u16, vdp_raw[addr_off..][0..2], .little);
+    std.mem.writeInt(u16, vdp_raw[addr_off..][0..2], addr_raw & 0x3FFF, .little);
     machine.bus.vdp.is_game_gear = is_gg; // Re-apply after VDP state overwrite
+    if (machine.bus.vdp.scanline >= machine.bus.vdp.totalLines()) machine.bus.vdp.scanline = 0;
     @memcpy(&machine.bus.page, page_regs);
     machine.bus.ram_bank_enabled = ram_bank_enabled;
     machine.bus.ram_bank = ram_bank;

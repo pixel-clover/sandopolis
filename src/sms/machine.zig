@@ -47,6 +47,9 @@ pub const SmsMachine = struct {
         self.bus.io.is_game_gear = self.is_game_gear;
         self.bus.vdp.is_sg1000 = self.is_sg1000;
         self.bus.is_sg1000 = self.is_sg1000;
+        // The region lives on the machine; vdp.reset() would otherwise
+        // silently drop PAL timing (313-line frames vs 262).
+        self.bus.vdp.pal_mode = self.pal_mode;
 
         // Fix SmsBus internal pointers (io.vdp, io.input)
         self.bus.rebindPointers();
@@ -95,7 +98,7 @@ pub const SmsMachine = struct {
 
     fn psgWriteCallback(ctx: ?*anyopaque, value: u8) void {
         const audio: *SmsAudio = @ptrCast(@alignCast(ctx orelse return));
-        audio.pushPsgCommand(0, value);
+        audio.pushPsgCommand(audio.current_z80_cycle, value);
     }
 
     fn psgStereoCallback(ctx: ?*anyopaque, value: u8) void {
@@ -132,6 +135,8 @@ pub const SmsMachine = struct {
     }
 
     fn runScanline(self: *SmsMachine) void {
+        // Scanline-granular timestamp for PSG writes issued this line.
+        self.audio.current_z80_cycle = self.z80_cycle_count;
         // Run Z80 for one scanline worth of cycles
         const target_cycles = self.z80_cycle_count + sms_clock.z80_cycles_per_line;
 
@@ -211,6 +216,7 @@ pub const SmsMachine = struct {
             .audio = self.audio,
             .pal_mode = self.pal_mode,
             .is_game_gear = self.is_game_gear,
+            .is_sg1000 = self.is_sg1000,
             .z80_cycle_count = self.z80_cycle_count,
             .audio_buffer = self.audio_buffer,
             .audio_sample_count = self.audio_sample_count,

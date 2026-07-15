@@ -520,8 +520,9 @@ test "golden axe shadow highlight high priority tiles are not darkened" {
 
     const fb = machine.framebuffer();
     const w = machine.framebufferWidth();
-    const h: u32 = @intCast(fb.len / w);
-    screenshot.saveBmp("/tmp/golden_axe_sh.bmp", fb, w, h) catch {};
+    const stride = machine.framebufferStride();
+    const h: u32 = @intCast(fb.len / stride);
+    screenshot.saveBmp("/tmp/golden_axe_sh.bmp", fb, w, h, stride) catch {};
 
     // Golden Axe uses S/H mode for character shadows on the ground.
     // High-priority tiles (HUD, characters) should not be darkened.

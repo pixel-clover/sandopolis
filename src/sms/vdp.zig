@@ -140,7 +140,9 @@ pub const SmsVdp = struct {
     pub fn readData(self: *SmsVdp) u8 {
         self.control_latch = false;
         const value = self.read_buffer;
-        self.read_buffer = self.vram[@as(u16, self.addr)];
+        // Mask defensively: a corrupt save state can plant out-of-range bits
+        // in the address register's storage.
+        self.read_buffer = self.vram[@as(u16, self.addr) & 0x3FFF];
         self.addr +%= 1;
         return value;
     }
@@ -149,7 +151,7 @@ pub const SmsVdp = struct {
         self.control_latch = false;
         switch (self.code) {
             0, 1, 2 => {
-                self.vram[@as(u16, self.addr)] = value;
+                self.vram[@as(u16, self.addr) & 0x3FFF] = value;
             },
             3 => {
                 if (self.is_game_gear) {
@@ -196,7 +198,7 @@ pub const SmsVdp = struct {
             switch (self.code) {
                 0 => {
                     // VRAM read: pre-fill read buffer
-                    self.read_buffer = self.vram[@as(u16, self.addr)];
+                    self.read_buffer = self.vram[@as(u16, self.addr) & 0x3FFF];
                     self.addr +%= 1;
                 },
                 2 => {
@@ -303,17 +305,12 @@ pub const SmsVdp = struct {
             } else {
                 self.line_counter -= 1;
             }
-        } else if (self.scanline == total - 1) {
-            // Last line of frame: decrement line counter (not reload)
-            // per jgenesis reference: HINT can fire on the frame boundary
-            if (self.line_counter == 0) {
-                self.line_counter = self.regs[10];
-                self.hint_pending = true;
-            } else {
-                self.line_counter -= 1;
-            }
         } else {
-            // Vblank (except last line): reload line counter each line
+            // Vblank: reload the line counter each line.  (SMSPower: the
+            // counter decrements on lines 0..=active and reloads on every
+            // other line; decrementing on the last frame line too made the
+            // counter enter line 0 at reload-1, firing the first HINT of
+            // each frame one line early.)
             self.line_counter = self.regs[10];
         }
 
@@ -351,7 +348,12 @@ pub const SmsVdp = struct {
     }
 
     pub fn nameTableBase(self: *const SmsVdp) u16 {
-        return (@as(u16, self.regs[2] & 0x0E) << 10) | 0x0000;
+        return switch (self.displayMode()) {
+            .mode_192 => @as(u16, self.regs[2] & 0x0E) << 10,
+            // 224/240-line modes use a different address formula
+            // (jgenesis vdp.rs: ((reg2 & 0x0C) << 10) | 0x700).
+            .mode_224, .mode_240 => (@as(u16, self.regs[2] & 0x0C) << 10) | 0x700,
+        };
     }
 
     fn spriteAttributeTableBase(self: *const SmsVdp) u16 {
@@ -400,6 +402,7 @@ pub const SmsVdp = struct {
     fn renderBlankLine(self: *SmsVdp, line: u16) void {
         const bg = self.backdropColor();
         if (self.is_game_gear) {
+            const gg_top = self.ggViewportTop();
             if (line >= gg_top and line < gg_top + gg_visible_height) {
                 const gg_line = line - gg_top;
                 const offset = @as(usize, gg_line) * gg_visible_width;
@@ -414,7 +417,11 @@ pub const SmsVdp = struct {
     // GG viewport: 160x144 centered in 256x192
     const gg_left: usize = 48;
     const gg_right: usize = 208; // 48 + 160
-    const gg_top: u16 = 24;
+    /// GG LCD window top line: 24 in 192-line mode, 40 in 224-line mode
+    /// (jgenesis: viewport top shifts down 16 lines for the 224 mode).
+    fn ggViewportTop(self: *const SmsVdp) u16 {
+        return if (self.displayMode() == .mode_224) 40 else 24;
+    }
     pub const gg_visible_width: usize = 160;
     pub const gg_visible_height: u16 = 144;
 
@@ -448,6 +455,7 @@ pub const SmsVdp = struct {
         if (self.is_game_gear) {
             // GG: write only the center 160 pixels of visible lines into a
             // compact 160-wide framebuffer.
+            const gg_top = self.ggViewportTop();
             if (line >= gg_top and line < gg_top + gg_visible_height) {
                 const gg_line = line - gg_top;
                 const offset = @as(usize, gg_line) * gg_visible_width;
@@ -785,8 +793,12 @@ pub const SmsVdp = struct {
             // Y = 0xD0 terminates sprite processing in 192-line mode
             if (self.displayMode() == .mode_192 and y_raw == 0xD0) break;
 
-            const y: u16 = @as(u16, y_raw) +% 1; // Sprite Y is offset by 1
-            if (line < y or line >= y + @as(u16, height)) continue;
+            // Sprite Y is offset by 1 and compared with 8-bit wraparound:
+            // a sprite at Y=0xF8 shows its lower rows at the top of the
+            // screen instead of never rendering.
+            const y8: u8 = y_raw +% 1;
+            const dy: u8 = @as(u8, @truncate(line)) -% y8;
+            if (line > 0xFF or dy >= height) continue;
 
             if (sprite_count >= max_sprites) {
                 self.status |= status_sprite_overflow;
@@ -808,7 +820,7 @@ pub const SmsVdp = struct {
                 tile &= 0xFE;
             }
 
-            var row_in_sprite = line - y;
+            var row_in_sprite: u16 = dy;
             if (is_double) {
                 row_in_sprite /= 2;
             }
