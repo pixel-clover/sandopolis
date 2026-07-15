@@ -14,4 +14,5 @@ pub const State = struct {
     tmss_register: [4]u8,
     tmss_locked: bool,
     cartridge_ram: Cartridge.RamState,
+    cartridge_mapper: Cartridge.MapperState,
 };

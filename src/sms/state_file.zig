@@ -106,7 +106,9 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachin
 }
 
 fn readSlice(data: []const u8, pos: *usize, len: usize) ![]const u8 {
-    if (pos.* + len > data.len) return error.EndOfStream;
+    // Subtraction form: `pos + len` could wrap on 32-bit targets when `len`
+    // comes from a corrupt header.
+    if (len > data.len - pos.*) return error.EndOfStream;
     const slice = data[pos.*..][0..len];
     pos.* += len;
     return slice;

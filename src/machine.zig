@@ -9,11 +9,6 @@ const perf_profile = @import("performance_profile.zig");
 const scheduler = @import("scheduler/frame_scheduler.zig");
 const Vdp = @import("video/vdp.zig").Vdp;
 
-// TEMP drift measurement.
-var dbg_frame_seq: u32 = 0;
-var dbg_cur_frame: u32 = 0;
-var dbg_logged_rewrite: bool = false;
-
 pub const Machine = struct {
     pub const CoreFrameCounters = perf_profile.CoreFrameCounters;
     const PendingFramePhase = enum {
@@ -365,9 +360,6 @@ pub const Machine = struct {
     }
 
     fn runFrameInternal(self: *Machine, counters: ?*CoreFrameCounters) void {
-        dbg_cur_frame = dbg_frame_seq;
-        dbg_frame_seq += 1;
-        dbg_logged_rewrite = false;
         if (counters) |active_counters| {
             active_counters.* = .{};
         }
@@ -416,16 +408,14 @@ pub const Machine = struct {
         render_visible: bool,
         counters: ?*CoreFrameCounters,
     ) void {
-        if (dbg_cur_frame >= 2700 and dbg_cur_frame <= 2814 and !dbg_logged_rewrite) {
-            const pc = self.cpu.core.pc;
-            if (pc >= 0x3146A0 and pc <= 0x314710) {
-                dbg_logged_rewrite = true;
-                std.debug.print("REWRITE f={d} line={d} pc=0x{X:0>6} vis={d}\n", .{ dbg_cur_frame, line, @as(u32, pc), visible_lines });
-            }
-        }
-
         const entering_vblank = self.bus.vdp.setScanlineState(line, visible_lines, total_lines);
-        if (!entering_vblank and !self.bus.vdp.vint_pending) {
+        if (!entering_vblank) {
+            // The Z80 /INT line is held from VInt until the start of the
+            // next line (gpgx semantics), independent of the 68K's
+            // vint_pending flag: coupling it to vint_pending kept /INT
+            // asserted for whole frames when the 68K masks VInt, making
+            // sound drivers that re-enable interrupts in their handler
+            // re-enter once per EI instead of once per frame.
             self.bus.z80.clearIrq();
         }
 
@@ -476,7 +466,11 @@ pub const Machine = struct {
                 );
                 current_master_cycles = event_mc;
             }
-            if (event_mc > start_master_cycles or event_mc == events[0]) {
+            // Fire events strictly after the slice start; the only event at
+            // the start position that may fire is cycle 0 of a full line.
+            // (Comparing against events[0] instead used to re-fire events
+            // that already elapsed before a mid-line save-state resume.)
+            if (event_mc > start_master_cycles or (start_master_cycles == 0 and event_mc == 0)) {
                 self.applyScanlineEvent(line, visible_lines, entering_vblank, hint_master_cycles, hblank_start_master_cycles, vint_master_cycles, event_mc);
             }
             prev_event = event_mc;
@@ -559,7 +553,7 @@ pub const Machine = struct {
     }
 
     pub fn controllerType(self: *const Machine, port: usize) Io.ControllerType {
-        return self.bus.io.controller_types[port];
+        return self.bus.io.getControllerType(port);
     }
 
     pub fn romMetadata(self: *const Machine) RomMetadata {

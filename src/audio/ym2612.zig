@@ -321,8 +321,11 @@ const Opn2Core = struct {
     fnum_3ch: [6]u16 = [_]u16{0} ** 6,
     block_3ch: [6]u8 = [_]u8{0} ** 6,
     kcode_3ch: [6]u8 = [_]u8{0} ** 6,
-    reg_a4: [6]u8 = [_]u8{0} ** 6,
-    reg_ac: [6]u8 = [_]u8{0} ** 6,
+    // Single shared frequency-MSB latches (not per-channel): the real chip
+    // has one $A4 and one $AC latch that any subsequent $A0-$A2/$A8-$AA low
+    // write consumes, and some drivers rely on that.
+    reg_a4: u8 = 0,
+    reg_ac: u8 = 0,
     connect: [6]u8 = [_]u8{0} ** 6,
     fb: [6]u8 = [_]u8{0} ** 6,
     pan_l: [6]u8 = [_]u8{1} ** 6,
@@ -441,8 +444,11 @@ const Opn2Core = struct {
                     },
                     0x26 => self.timer_b_reg = write.value,
                     0x27 => {
-                        const prev_timer_a_load = self.timer_a_load;
-                        const prev_timer_b_load = self.timer_b_load;
+                        // Only latch the control bits here; load-edge
+                        // detection and reset/flag-clear belong to
+                        // doTimerA/doTimerB (Nuked semantics) — doing them
+                        // at write time reloaded/cleared a sample early and
+                        // could double-fire within one 24-cycle window.
                         self.mode_ch3 = (write.value & 0xC0) >> 6;
                         self.mode_csm = @intFromBool(self.mode_ch3 == 0x02);
                         self.timer_a_load = write.value & 0x01;
@@ -451,18 +457,6 @@ const Opn2Core = struct {
                         self.timer_b_load = (write.value >> 1) & 0x01;
                         self.timer_b_enable = (write.value >> 3) & 0x01;
                         self.timer_b_reset = (write.value >> 5) & 0x01;
-                        if (self.timer_a_load != 0 and prev_timer_a_load == 0) {
-                            self.timer_a_load_latch = 1;
-                        }
-                        if (self.timer_b_load != 0 and prev_timer_b_load == 0) {
-                            self.timer_b_load_latch = 1;
-                        }
-                        if (self.timer_a_reset != 0) {
-                            self.timer_a_overflow_flag = 0;
-                        }
-                        if (self.timer_b_reset != 0) {
-                            self.timer_b_overflow_flag = 0;
-                        }
                     },
                     0x28 => {
                         inline for (0..4) |i| {
@@ -527,17 +521,17 @@ const Opn2Core = struct {
         if (channel_offsets[channel] == (address & 0x103)) {
             switch (address & 0xFC) {
                 0xA0 => {
-                    self.fnum[channel] = (@as(u16, self.reg_a4[channel] & 0x07) << 8) | write.value;
-                    self.block[channel] = (self.reg_a4[channel] >> 3) & 0x07;
+                    self.fnum[channel] = (@as(u16, self.reg_a4 & 0x07) << 8) | write.value;
+                    self.block[channel] = (self.reg_a4 >> 3) & 0x07;
                     self.kcode[channel] = (self.block[channel] << 2) | fn_note[self.fnum[channel] >> 7];
                 },
-                0xA4 => self.reg_a4[channel] = write.value,
+                0xA4 => self.reg_a4 = write.value & 0x3F,
                 0xA8 => {
-                    self.fnum_3ch[channel] = (@as(u16, self.reg_ac[channel] & 0x07) << 8) | write.value;
-                    self.block_3ch[channel] = (self.reg_ac[channel] >> 3) & 0x07;
+                    self.fnum_3ch[channel] = (@as(u16, self.reg_ac & 0x07) << 8) | write.value;
+                    self.block_3ch[channel] = (self.reg_ac >> 3) & 0x07;
                     self.kcode_3ch[channel] = (self.block_3ch[channel] << 2) | fn_note[self.fnum_3ch[channel] >> 7];
                 },
-                0xAC => self.reg_ac[channel] = write.value,
+                0xAC => self.reg_ac = write.value & 0x3F,
                 0xB0 => {
                     self.connect[channel] = write.value & 0x07;
                     self.fb[channel] = (write.value >> 3) & 0x07;
@@ -866,8 +860,11 @@ const Opn2Core = struct {
         const dt_value = self.dt[slot];
         var kcode = self.pg_kcode;
 
+        // fnum_high must come from the raw fnum (Nuked: fnum_h = fnum >> 4
+        // BEFORE fnum <<= 1); deriving it from the doubled value doubles the
+        // LFO pitch-modulation depth.
+        const fnum_high = @as(u32, fnum) >> 4;
         var fnum_work = @as(u32, fnum) << 1;
-        const fnum_high = fnum_work >> 4;
 
         const lfo = self.lfo_pm;
         var lfo_low = lfo & 0x0F;
@@ -1009,14 +1006,10 @@ const Opn2Core = struct {
             next_level |= @as(i16, self.eg_tl[1]) << 3;
         }
 
-        // SSG-EG: Force level to MAX on Key OFF if inverted level >= 0x200.
-        // This must happen regardless of current state (including attack phase).
-        // Fix for SSG-EG inverted attenuation level on Key OFF (2021-11-05):
-        // force level to MAX when inverted level >= 0x200.
-        if (koff_event and self.eg_ssg_enable[slot] != 0 and eg_off) {
-            next_state = .release;
-            next_level = 0x03FF;
-        } else if (!kon_event and self.eg_ssg_hold_up_latch[slot] == 0 and current_state != .attack and eg_off) {
+        // Envelope off (matches Nuked): key-off has no special SSG-EG
+        // clause — the inverted level is handled by the ssg_level mapping
+        // above, and forcing MAX here would cut SSG-EG release tails short.
+        if (!kon_event and self.eg_ssg_hold_up_latch[slot] == 0 and current_state != .attack and eg_off) {
             next_state = .release;
             next_level = 0x03FF;
         }
@@ -1430,7 +1423,7 @@ test "ym a4 high latch applies on the next a0 write" {
 
     synth.applyWrite(writeEvent(0, 0xA4, 0x22));
     try std.testing.expect(drainPendingWrites(&synth, 32) > 0);
-    try std.testing.expectEqual(@as(u8, 0x22), synth.core.reg_a4[0]);
+    try std.testing.expectEqual(@as(u8, 0x22), synth.core.reg_a4);
     try std.testing.expectEqual(@as(u16, 0), synth.core.fnum[0]);
 
     synth.applyWrite(writeEvent(0, 0xA0, 0x80));
@@ -1439,7 +1432,10 @@ test "ym a4 high latch applies on the next a0 write" {
     try std.testing.expectEqual(@as(u8, 4), synth.core.block[0]);
 }
 
-test "ym a4 high latches are tracked per channel" {
+test "ym a4 high latch is shared across channels" {
+    // The real chip has a single $A4 latch; a later $A5 write replaces the
+    // value an earlier $A4 write stored, and every subsequent low-byte
+    // write consumes the same shared latch.
     var synth = Ym2612Synth{};
 
     synth.applyWrite(writeEvent(0, 0xA4, 0x22));
@@ -1448,10 +1444,9 @@ test "ym a4 high latches are tracked per channel" {
     synth.applyWrite(writeEvent(0, 0xA1, 0x40));
 
     try std.testing.expect(drainPendingWrites(&synth, 128) > 0);
-    try std.testing.expectEqual(@as(u8, 0x22), synth.core.reg_a4[0]);
-    try std.testing.expectEqual(@as(u8, 0x1F), synth.core.reg_a4[1]);
-    try std.testing.expectEqual(@as(u16, 0x280), synth.core.fnum[0]);
-    try std.testing.expectEqual(@as(u8, 4), synth.core.block[0]);
+    try std.testing.expectEqual(@as(u8, 0x1F), synth.core.reg_a4);
+    try std.testing.expectEqual(@as(u16, 0x780), synth.core.fnum[0]);
+    try std.testing.expectEqual(@as(u8, 3), synth.core.block[0]);
     try std.testing.expectEqual(@as(u16, 0x740), synth.core.fnum[1]);
     try std.testing.expectEqual(@as(u8, 3), synth.core.block[1]);
 }
@@ -1679,13 +1674,16 @@ test "ym timer b overflow sets irq and status" {
     try std.testing.expectEqual(@as(u8, 0x02), core.readStatus(0) & 0x02);
 }
 
-test "ym timer reset bits clear status immediately on mode write" {
+test "ym timer reset bits clear status on the next timer clock" {
+    // The $27 write only latches the reset bits; doTimerA/doTimerB consume
+    // them on the following internal clocks (Nuked semantics), so give the
+    // core one full 24-cycle frame to apply the reset.
     var synth = Ym2612Synth{};
     synth.core.timer_a_overflow_flag = 1;
     synth.core.timer_b_overflow_flag = 1;
 
     synth.applyWrite(writeEvent(0, 0x27, 0x30));
-    _ = synth.clockOneInternal();
+    advanceInternalClocks(&synth, 24);
 
     try std.testing.expectEqual(@as(u8, 0x00), synth.readStatus(0) & 0x03);
 }
@@ -1808,7 +1806,9 @@ test "ym lfo sensitivity modulates phase increments" {
     with_lfo.multi[0] = 2;
     no_lfo.pms[0] = 7;
     with_lfo.pms[0] = 7;
-    with_lfo.lfo_pm = 0x1F;
+    // lfo_pm 0x07 is the peak of the PM triangle (0x0F would fold back to
+    // zero modulation via the bit-3 inversion).
+    with_lfo.lfo_pm = 0x07;
 
     no_lfo.phaseCalcIncrement();
     with_lfo.phaseCalcIncrement();
@@ -1836,10 +1836,11 @@ test "ym ssg-eg repeat type latches repeat when the envelope wraps" {
     try std.testing.expectEqual(@as(u8, 1), repeat.eg_ssg_repeat_latch[0]);
 }
 
-test "ym ssg-eg key off during attack forces level to max when inverted level exceeds threshold" {
-    // This test validates the fix for the SSG-EG key-off bug where inverted attenuation
-    // level >= 0x200 should be forced to MAX (0x3FF) regardless of current envelope state.
-    // SSG-EG key-off fix (2021-11-05).
+test "ym ssg-eg key off during attack inverts the level and releases normally" {
+    // Nuked reference behavior: key-off of an SSG-EG inverted operator maps
+    // the level through ssg_level ((0x200 - level) & 0x3FF) and then
+    // releases normally; it is NOT forced straight to 0x3FF (that would cut
+    // SSG-EG release tails short).
     var core = Opn2Core{};
 
     const slot = 0;
@@ -1855,19 +1856,13 @@ test "ym ssg-eg key off during attack forces level to max when inverted level ex
     core.eg_kon_latch[slot] = 0; // Key OFF event pending
     core.eg_state[slot] = @intFromEnum(EgState.attack);
 
-    // Level that when inverted (512 - level) will be >= 0x200
-    // If level = 0x100 (256), inverted = 512 - 256 = 256 (0x100) - NOT over threshold
-    // If level = 0x050 (80), inverted = 512 - 80 = 432 (0x1B0) - NOT over threshold
-    // If level = 0x010 (16), inverted = 512 - 16 = 496 (0x1F0) - NOT over threshold
-    // If level = 0x000 (0), inverted = 512 - 0 = 512 (0x200) - AT threshold!
+    // Fully-attacked level 0 inverts to (0x200 - 0) & 0x3FF = 0x200.
     core.eg_level[slot] = 0x000;
 
     core.envelopeSsgEg();
     core.envelopeAdsr();
 
-    // After key-off with SSG-EG, since inverted level (0x200) >= 0x200,
-    // the level should be forced to maximum (0x3FF)
-    try std.testing.expectEqual(@as(u16, 0x3FF), core.eg_level[slot]);
+    try std.testing.expectEqual(@as(u16, 0x200), core.eg_level[slot]);
     try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.release)), core.eg_state[slot]);
 }
 

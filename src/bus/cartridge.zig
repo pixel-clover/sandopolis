@@ -161,8 +161,6 @@ fn detectMapper(allocator: ?std.mem.Allocator, rom: []const u8) !Mapper {
                     result.eeprom_type,
                     result.wiring,
                     data,
-                    0x200000,
-                    0x3FFFFF,
                 ),
             } };
         }
@@ -245,8 +243,14 @@ const Ram = struct {
         };
         const persistent = (header[2] & 0x40) != 0;
         const start_address = std.mem.readInt(u32, header[4..8], .big);
-        const end_address = std.mem.readInt(u32, header[8..12], .big);
+        var end_address = std.mem.readInt(u32, header[8..12], .big);
         if (start_address > end_address) return initEmpty();
+        // Reject headers claiming SRAM outside the 68K cartridge address space
+        // (garbage or hostile headers could otherwise shadow work RAM or I/O),
+        // and clamp the range to 64KB like Genesis Plus GX does, which also
+        // rules out length overflow and absurd allocations below.
+        if (start_address >= 0x0080_0000) return initEmpty();
+        end_address = @min(end_address, start_address +| 0xFFFF);
 
         const ram_len_u32: u32 = switch (ram_type) {
             .none => 0,
@@ -420,6 +424,7 @@ pub const Cartridge = struct {
         rom_path: ?[]const u8,
         checksum_override: ?u32,
     ) !Cartridge {
+        errdefer allocator.free(rom_data);
         const checksum = checksum_override orelse std.hash.Crc32.hash(rom_data);
         const source_path = if (rom_path) |path|
             try allocator.dupe(u8, path)
@@ -427,10 +432,15 @@ pub const Cartridge = struct {
             null;
         errdefer if (source_path) |path| allocator.free(path);
 
+        var ram = try Ram.initFromRomHeader(allocator, rom_data, checksum);
+        errdefer ram.deinit(allocator);
+        const mapper = try detectMapper(allocator, rom_data);
+        errdefer if (mapper == .eeprom_i2c) allocator.free(mapper.eeprom_i2c.eeprom.data);
+
         var cartridge = Cartridge{
             .rom = rom_data,
-            .ram = try Ram.initFromRomHeader(allocator, rom_data, checksum),
-            .mapper = try detectMapper(allocator, rom_data),
+            .ram = ram,
+            .mapper = mapper,
             .save_path = null,
             .source_path = source_path,
         };
@@ -439,6 +449,7 @@ pub const Cartridge = struct {
             (cartridge.mapper == .eeprom_i2c);
         if (needs_save and rom_path != null) {
             cartridge.save_path = try savePathForRom(allocator, rom_path.?);
+            errdefer allocator.free(cartridge.save_path.?);
             try cartridge.loadPersistentStorage();
         }
 
@@ -635,6 +646,65 @@ pub const Cartridge = struct {
 
     pub fn ramBytes(self: *const Cartridge) ?[]const u8 {
         return self.ram.data;
+    }
+
+    pub const MapperKind = enum(u8) { none, ssf, eeprom_i2c };
+
+    /// Mapper hardware state for save states: SSF bank registers and the
+    /// EEPROM I2C protocol state.  EEPROM storage bytes travel separately
+    /// (like cartridge RAM).
+    pub const MapperState = struct {
+        kind: MapperKind = .none,
+        ssf_banks: [ssf_switchable_bank_count]u8 = @splat(0),
+        eeprom: eeprom_i2c.EepromI2c.ProtocolState = .{},
+    };
+
+    pub fn captureMapperState(self: *const Cartridge) MapperState {
+        return switch (self.mapper) {
+            .none => .{ .kind = .none },
+            .ssf => |mapper| .{ .kind = .ssf, .ssf_banks = mapper.bank_registers },
+            .eeprom_i2c => |mapper| .{
+                .kind = .eeprom_i2c,
+                .eeprom = mapper.eeprom.captureProtocolState(),
+            },
+        };
+    }
+
+    pub fn restoreMapperState(
+        self: *Cartridge,
+        state: MapperState,
+        eeprom_bytes: ?[]const u8,
+    ) error{InvalidSaveState}!void {
+        switch (state.kind) {
+            .none => {
+                // A lazily-activated SSF mapper reverts to plain ROM.
+                if (self.mapper == .eeprom_i2c) return error.InvalidSaveState;
+                self.mapper = .none;
+            },
+            .ssf => {
+                switch (self.mapper) {
+                    .ssf => |*mapper| mapper.bank_registers = state.ssf_banks,
+                    // The state was taken after lazy SSF activation.
+                    .none => self.mapper = .{ .ssf = .{ .bank_registers = state.ssf_banks } },
+                    .eeprom_i2c => return error.InvalidSaveState,
+                }
+            },
+            .eeprom_i2c => {
+                if (self.mapper != .eeprom_i2c) return error.InvalidSaveState;
+                const eeprom = &self.mapper.eeprom_i2c.eeprom;
+                const saved = eeprom_bytes orelse return error.InvalidSaveState;
+                if (saved.len != eeprom.data.len) return error.InvalidSaveState;
+                std.mem.copyForwards(u8, eeprom.data, saved);
+                eeprom.restoreProtocolState(state.eeprom);
+            },
+        }
+    }
+
+    pub fn eepromDataBytes(self: *const Cartridge) ?[]const u8 {
+        return switch (self.mapper) {
+            .eeprom_i2c => |mapper| mapper.eeprom.data,
+            else => null,
+        };
     }
 
     pub fn captureRamState(self: *const Cartridge) RamState {
@@ -923,6 +993,25 @@ test "cartridge sram map register toggles rom fallback" {
 
     try std.testing.expect(cartridge.writeRegisterWord(0x00A1_30F0, 0x0001));
     try std.testing.expectEqual(@as(u8, 0xAA), readBusVisibleByte(&cartridge, 0x0020_0001));
+}
+
+test "hostile sram header ranges are rejected instead of overflowing" {
+    // end - start + 1 used to overflow u32 for a full-range header; the
+    // range is now clamped to 64KB (gpgx behavior) instead of crashing.
+    const overflow_rom = try makeRomWithSramHeader(std.testing.allocator, 0x1000, 0xE0, 0x00000000, 0xFFFFFFFF);
+    defer std.testing.allocator.free(overflow_rom);
+    var overflow_cart = try Cartridge.initFromRomBytes(std.testing.allocator, overflow_rom);
+    defer overflow_cart.deinit(std.testing.allocator);
+    try std.testing.expect(overflow_cart.hasRam());
+    try std.testing.expectEqual(@as(u32, 0xFFFF), overflow_cart.ram.end_address);
+
+    // A start address outside the cartridge region must not claim SRAM over
+    // the rest of the memory map (work RAM, Z80 control, ...).
+    const shadow_rom = try makeRomWithSramHeader(std.testing.allocator, 0x1000, 0xE0, 0x00FF0000, 0x00FFFFFF);
+    defer std.testing.allocator.free(shadow_rom);
+    var shadow_cart = try Cartridge.initFromRomBytes(std.testing.allocator, shadow_rom);
+    defer shadow_cart.deinit(std.testing.allocator);
+    try std.testing.expect(!shadow_cart.hasRam());
 }
 
 test "cartridge sixteen-bit sram stores both bytes of a word" {

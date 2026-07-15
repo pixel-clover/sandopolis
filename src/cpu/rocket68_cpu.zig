@@ -139,6 +139,7 @@ pub const Cpu = struct {
         pending_wait_cycles: u32,
         pending_wait_master_cycles: u32,
         sub_instruction_advanced_master: u32,
+        pending_irq_levels: u8,
     };
 
     pub const WaitAccounting = struct {
@@ -158,6 +159,11 @@ pub const Cpu = struct {
     pending_wait_cycles: u32,
     pending_wait_master_cycles: u32,
     sub_instruction_advanced_master: u32,
+    /// Bit N set = interrupt level N latched and not yet serviced.  The core
+    /// holds only a single irq_level and auto-clears it on service, so a
+    /// pending HInt (4) would be lost when VInt (6) arrives on the same
+    /// line; this mask lets us reassert the residual level after service.
+    pending_irq_levels: u8 = 0,
     active_memory: ?*MemoryInterface,
     active_execution_counters: ?*CoreFrameCounters,
     instruction_trace: m68k_instruction_trace.Trace,
@@ -209,6 +215,7 @@ pub const Cpu = struct {
         copy.pending_wait_cycles = self.pending_wait_cycles;
         copy.pending_wait_master_cycles = self.pending_wait_master_cycles;
         copy.sub_instruction_advanced_master = self.sub_instruction_advanced_master;
+        copy.pending_irq_levels = self.pending_irq_levels;
         copy.active_memory = null;
         copy.active_execution_counters = null;
         copy.instruction_trace = self.instruction_trace;
@@ -252,6 +259,7 @@ pub const Cpu = struct {
         state.pending_wait_cycles = self.pending_wait_cycles;
         state.pending_wait_master_cycles = self.pending_wait_master_cycles;
         state.sub_instruction_advanced_master = self.sub_instruction_advanced_master;
+        state.pending_irq_levels = self.pending_irq_levels;
 
         return state;
     }
@@ -291,6 +299,7 @@ pub const Cpu = struct {
         self.pending_wait_cycles = state.pending_wait_cycles;
         self.pending_wait_master_cycles = state.pending_wait_master_cycles;
         self.sub_instruction_advanced_master = state.sub_instruction_advanced_master;
+        self.pending_irq_levels = state.pending_irq_levels;
         self.active_memory = null;
     }
 
@@ -462,6 +471,7 @@ pub const Cpu = struct {
         self.core.cycles_remaining = 0;
         self.cycles += ran_cycles;
         self.halted = self.core.stopped;
+        self.reconcileServicedInterrupt();
         if (self.active_execution_counters) |counters| counters.m68k_instructions += 1;
 
         self.instruction_trace.record(
@@ -490,6 +500,7 @@ pub const Cpu = struct {
         const consumed: u32 = if (ran > 0) @intCast(ran) else 0;
         self.cycles += consumed;
         self.halted = self.core.stopped;
+        self.reconcileServicedInterrupt();
         return consumed;
     }
 
@@ -508,19 +519,47 @@ pub const Cpu = struct {
     }
 
     pub fn clearInterrupt(self: *Cpu) void {
+        self.pending_irq_levels = 0;
         self.core.irq_level = 0;
     }
 
+    fn highestPendingLevel(self: *const Cpu) u3 {
+        if (self.pending_irq_levels == 0) return 0;
+        return @intCast(7 - @clz(self.pending_irq_levels));
+    }
+
+    /// Drive the core's IRQ input from the pending mask.  Invariant outside
+    /// execution: core.irq_level == highestPendingLevel(), so a zero
+    /// irq_level after a run means the core serviced (and auto-cleared) the
+    /// highest pending level.
+    fn syncIrqLine(self: *Cpu) void {
+        c.m68k_set_irq(&self.core, @intCast(self.highestPendingLevel()));
+    }
+
+    /// Called after m68k execution: if the core serviced an interrupt (it
+    /// auto-clears irq_level on service), retire the highest pending level
+    /// and reassert the next one, if any.
+    fn reconcileServicedInterrupt(self: *Cpu) void {
+        if (self.core.irq_level == 0 and self.pending_irq_levels != 0) {
+            self.pending_irq_levels &= ~(@as(u8, 1) << self.highestPendingLevel());
+            self.syncIrqLine();
+        }
+    }
+
+    /// The VDP recomputed its interrupt output (e.g. a status read cleared
+    /// vint_pending).  Level 6 is VDP-owned, so drop a pending 6 the VDP no
+    /// longer asserts; a latched HInt (4) has no persistent VDP flag and
+    /// stays pending until serviced (hardware keeps its pending flip-flop).
     pub fn updateInterruptLevel(self: *Cpu, level: u3) void {
-        c.m68k_set_irq(&self.core, @intCast(level));
+        if (level < 6) self.pending_irq_levels &= ~(@as(u8, 1) << 6);
+        if (level != 0) self.pending_irq_levels |= @as(u8, 1) << level;
+        self.syncIrqLine();
     }
 
     pub fn requestInterrupt(self: *Cpu, level: u3) void {
-        const current: c_int = @intCast(self.core.irq_level);
-        const new_level: c_int = @intCast(level);
-        if (new_level > current) {
-            c.m68k_set_irq(&self.core, new_level);
-        }
+        if (level == 0) return;
+        self.pending_irq_levels |= @as(u8, 1) << level;
+        self.syncIrqLine();
     }
 
     pub fn setInstructionTraceEnabled(self: *Cpu, enabled: bool) void {

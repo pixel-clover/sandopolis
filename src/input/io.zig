@@ -296,10 +296,12 @@ pub const Io = struct {
     }
 
     pub fn setControllerType(self: *Io, port: usize, controller_type: ControllerType) void {
+        if (port >= self.controller_types.len) return;
         self.controller_types[port] = controller_type;
     }
 
     pub fn getControllerType(self: *const Io, port: usize) ControllerType {
+        if (port >= self.controller_types.len) return .three_button;
         return self.controller_types[port];
     }
 

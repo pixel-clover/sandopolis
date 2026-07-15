@@ -580,10 +580,16 @@ pub const Bus = struct {
             .tmss_register = self.tmss_register,
             .tmss_locked = self.tmss_locked,
             .cartridge_ram = self.cartridge.captureRamState(),
+            .cartridge_mapper = self.cartridge.captureMapperState(),
         };
     }
 
-    pub fn restoreSaveState(self: *Bus, state: bus_save_state.State, cartridge_ram_bytes: ?[]const u8) error{InvalidSaveState}!void {
+    pub fn restoreSaveState(
+        self: *Bus,
+        state: bus_save_state.State,
+        cartridge_ram_bytes: ?[]const u8,
+        eeprom_bytes: ?[]const u8,
+    ) error{InvalidSaveState}!void {
         self.ram = state.ram;
         self.vdp = state.vdp;
         self.vdp.setActiveExecutionCounters(self.active_execution_counters);
@@ -594,6 +600,7 @@ pub const Bus = struct {
         self.tmss_register = state.tmss_register;
         self.tmss_locked = state.tmss_locked;
         try self.cartridge.restoreRamState(state.cartridge_ram, cartridge_ram_bytes);
+        try self.cartridge.restoreMapperState(state.cartridge_mapper, eeprom_bytes);
         self.timing_state.z80_cached_can_run = self.z80.canRun();
     }
 

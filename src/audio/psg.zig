@@ -56,7 +56,8 @@ const LatchedCommand = struct {
 pub const Psg = struct {
     tones: [3]ToneState = .{ ToneState{}, ToneState{}, ToneState{} },
     noise: NoiseState = NoiseState{},
-    // Power-on latch targets tone channel 2 attenuation on the integrated MD PSG.
+    // Power-on latch targets the second tone channel's attenuation
+    // (index 1 here) on the integrated MD PSG.
     latched: LatchedCommand = .{ .channel = 1, .is_volume = true },
     /// Per-channel stereo panning. Each element is [left_enable, right_enable].
     /// Default: all channels output to both speakers.

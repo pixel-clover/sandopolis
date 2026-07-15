@@ -1050,12 +1050,20 @@ static void advance_ym_master(Jgz80Handle *h, uint32_t master_cycles) {
     }
 }
 
+/* KNOWN ISSUE: when the offset cursor rewinds (deferred Z80 bursts restart
+ * from their base offset) and then advances again, spans that a mid-slice
+ * 68K access already advanced through are run through the timer shadow a
+ * second time, so Timer A/B can run slightly fast in slices where the 68K
+ * touches the sound hardware.  A monotonic high-water mark is NOT a valid
+ * fix: it freezes chip time for the whole burst replay, so a Z80 driver
+ * polling the BUSY flag inside the burst never sees it clear (verified to
+ * silence Streets of Rage's GEMS driver).  A correct fix needs the timer
+ * shadow to snapshot at the burst base and roll forward per-instruction. */
 static void advance_ym_to_master_offset(Jgz80Handle *h, uint32_t master_offset) {
     if (master_offset < h->ym_offset_cursor) {
         h->ym_offset_cursor = master_offset;
         return;
     }
-
     advance_ym_master(h, master_offset - h->ym_offset_cursor);
     h->ym_offset_cursor = master_offset;
 }
@@ -1813,12 +1821,7 @@ void jgz80_clear_audio_op_trace(Jgz80Handle *handle) {
 
 void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset) {
     if (!handle) return;
-    if (master_offset < handle->ym_offset_cursor) {
-        handle->ym_offset_cursor = master_offset;
-    } else {
-        advance_ym_master(handle, master_offset - handle->ym_offset_cursor);
-        handle->ym_offset_cursor = master_offset;
-    }
+    advance_ym_to_master_offset(handle, master_offset);
     handle->audio_master_offset = master_offset;
 }
 

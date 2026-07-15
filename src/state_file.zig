@@ -9,7 +9,9 @@ const Cpu = @import("cpu/cpu.zig").Cpu;
 const Z80 = @import("cpu/z80.zig").Z80;
 
 const save_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
-pub const save_state_version: u16 = 2;
+// v3: added cartridge mapper state (SSF banks, EEPROM protocol) to the bus
+// state and an eeprom_len byte stream after cartridge RAM.
+pub const save_state_version: u16 = 3;
 const default_state_name = "sandopolis.state";
 pub const default_persistent_state_slot: u8 = 1;
 pub const persistent_state_slot_count: u8 = 3;
@@ -19,6 +21,7 @@ const Header = struct {
     version: u16,
     rom_len: u32,
     cartridge_ram_len: u32,
+    eeprom_len: u32,
     save_path_len: u32,
     source_path_len: u32,
 };
@@ -108,11 +111,13 @@ fn readInto(reader: anytype, out: anytype) !void {
         .int => {
             const Storage = comptime storageIntType(T);
             const raw = try reader.takeInt(Storage, std.builtin.Endian.little);
-            out.* = @intCast(raw);
+            // The bytes come from an untrusted file; a corrupt value must
+            // surface as an error, not a safety panic.
+            out.* = std.math.cast(T, raw) orelse return error.InvalidSaveState;
         },
         .@"enum" => |enum_info| {
             const raw = try readValue(reader, enum_info.tag_type);
-            out.* = @enumFromInt(raw);
+            out.* = std.enums.fromInt(T, raw) orelse return error.InvalidSaveState;
         },
         .array => |array_info| {
             if (array_info.child == u8) {
@@ -230,10 +235,12 @@ pub fn pathForMachineSlot(allocator: std.mem.Allocator, machine: *const Machine,
 fn writeStateData(writer: anytype, machine: *const Machine) !void {
     const rom = machine.bus.romBytes();
     const cartridge_ram = machine.bus.cartridgeRamBytes();
+    const eeprom = machine.bus.cartridge.eepromDataBytes();
     const save_path = machine.bus.persistentSavePath();
     const source_path = machine.bus.sourcePath();
     const rom_len: u32 = @intCast(rom.len);
     const cartridge_ram_len: u32 = @intCast(if (cartridge_ram) |bytes| bytes.len else 0);
+    const eeprom_len: u32 = @intCast(if (eeprom) |bytes| bytes.len else 0);
     const save_path_len: u32 = @intCast(if (save_path) |bytes| bytes.len else 0);
     const source_path_len: u32 = @intCast(if (source_path) |bytes| bytes.len else 0);
 
@@ -242,6 +249,7 @@ fn writeStateData(writer: anytype, machine: *const Machine) !void {
         .version = save_state_version,
         .rom_len = rom_len,
         .cartridge_ram_len = cartridge_ram_len,
+        .eeprom_len = eeprom_len,
         .save_path_len = save_path_len,
         .source_path_len = source_path_len,
     });
@@ -250,6 +258,7 @@ fn writeStateData(writer: anytype, machine: *const Machine) !void {
     try writeValue(writer, machine.bus.z80.captureState());
     try writer.writeAll(rom);
     if (cartridge_ram) |bytes| try writer.writeAll(bytes);
+    if (eeprom) |bytes| try writer.writeAll(bytes);
     if (save_path) |bytes| try writer.writeAll(bytes);
     if (source_path) |bytes| try writer.writeAll(bytes);
 }
@@ -275,6 +284,12 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
     const header = try readValue(reader, Header);
     if (!std.mem.eql(u8, &header.magic, &save_state_magic)) return error.InvalidSaveState;
     if (header.version != save_state_version) return error.UnsupportedSaveStateVersion;
+    // Sanity-cap the length fields so a corrupt header can't force huge
+    // allocations before the truncated stream is even noticed.
+    if (header.rom_len == 0 or header.rom_len > 64 * 1024 * 1024) return error.InvalidSaveState;
+    if (header.cartridge_ram_len > 16 * 1024 * 1024) return error.InvalidSaveState;
+    if (header.eeprom_len > 1024 * 1024) return error.InvalidSaveState;
+    if (header.save_path_len > 4096 or header.source_path_len > 4096) return error.InvalidSaveState;
 
     const bus_state = try readValue(reader, BusState);
     const cpu_state = try readValue(reader, Cpu.State);
@@ -286,6 +301,9 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
     const cartridge_ram = try readOwnedBytes(allocator, reader, header.cartridge_ram_len);
     defer if (cartridge_ram) |bytes| allocator.free(bytes);
 
+    const eeprom_bytes = try readOwnedBytes(allocator, reader, header.eeprom_len);
+    defer if (eeprom_bytes) |bytes| allocator.free(bytes);
+
     var save_path_bytes = try readOwnedBytes(allocator, reader, header.save_path_len);
     defer if (save_path_bytes) |bytes| allocator.free(bytes);
     var source_path_bytes = try readOwnedBytes(allocator, reader, header.source_path_len);
@@ -294,7 +312,7 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
     var machine = try Machine.initFromRomBytes(allocator, rom);
     errdefer machine.deinit(allocator);
 
-    try machine.bus.restoreSaveState(bus_state.bus, cartridge_ram);
+    try machine.bus.restoreSaveState(bus_state.bus, cartridge_ram, eeprom_bytes);
     machine.m68k_sync = bus_state.m68k_sync;
     machine.bus.replaceStoragePaths(allocator, save_path_bytes, source_path_bytes);
     save_path_bytes = null;
@@ -412,6 +430,96 @@ test "default state path derives from ROM source path, numbered slots, and fallb
 
     try testing.expectEqual(@as(u8, 2), nextPersistentStateSlot(1));
     try testing.expectEqual(@as(u8, 1), nextPersistentStateSlot(persistent_state_slot_count));
+}
+
+test "corrupt save-state bytes return an error instead of panicking" {
+    const allocator = testing.allocator;
+
+    const rom = try makeRomWithSramHeader(allocator, 0x4000, 0xF8, 0x200001, 0x203FFF);
+    defer allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom);
+    defer machine.deinit(allocator);
+
+    const buf = try saveToBuffer(allocator, &machine);
+    defer allocator.free(buf);
+
+    // A header that claims an absurd ROM length must be rejected before any
+    // allocation is attempted.
+    const bad_header = try allocator.dupe(u8, buf);
+    defer allocator.free(bad_header);
+    std.mem.writeInt(u32, bad_header[10..14], 0xFFFF_FFFF, .little); // rom_len
+    try testing.expectError(error.InvalidSaveState, loadFromBuffer(allocator, bad_header));
+
+    // Flipping bytes anywhere in the payload must never crash the
+    // deserializer: every failure has to surface as an error (or, for
+    // plain integer fields, load as a different value).
+    var corrupt = try allocator.dupe(u8, buf);
+    defer allocator.free(corrupt);
+    var pos: usize = 14; // past magic/version/rom_len
+    while (pos < corrupt.len) : (pos += 97) {
+        const original = corrupt[pos];
+        corrupt[pos] = original ^ 0xFF;
+        if (loadFromBuffer(allocator, corrupt)) |loaded| {
+            var m = loaded;
+            m.deinit(allocator);
+        } else |_| {}
+        corrupt[pos] = original;
+    }
+}
+
+test "save-state round-trips ssf bank registers and eeprom state" {
+    const allocator = testing.allocator;
+
+    // SSF: lazily activate the mapper via a bank-register write, remap a
+    // bank, and make sure the file state restores the banks (not defaults).
+    {
+        const rom = try makeRomWithSramHeader(allocator, 0x4000, 0x00, 0, 0);
+        defer allocator.free(rom);
+        var machine = try Machine.initFromRomBytes(allocator, rom);
+        defer machine.deinit(allocator);
+
+        machine.bus.write8(0x00A1_30F5, 9);
+
+        const buf = try saveToBuffer(allocator, &machine);
+        defer allocator.free(buf);
+        var restored = try loadFromBuffer(allocator, buf);
+        defer restored.deinit(allocator);
+
+        try testing.expect(restored.bus.cartridge.mapper == .ssf);
+        try testing.expectEqual(
+            machine.bus.cartridge.mapper.ssf.bank_registers,
+            restored.bus.cartridge.mapper.ssf.bank_registers,
+        );
+    }
+
+    // EEPROM: contents and I2C protocol state survive the round trip.
+    {
+        var rom = [_]u8{0} ** 0x400;
+        @memcpy(rom[0x100..0x104], "SEGA");
+        @memcpy(rom[0x183 .. 0x183 + 7], "T-12046"); // known EEPROM game
+        var machine = try Machine.initFromRomBytes(allocator, &rom);
+        defer machine.deinit(allocator);
+
+        try testing.expect(machine.bus.cartridge.mapper == .eeprom_i2c);
+        const eeprom = &machine.bus.cartridge.mapper.eeprom_i2c.eeprom;
+        eeprom.data[5] = 0x77;
+        eeprom.word_address = 5;
+        eeprom.state = .read_data;
+        eeprom.dirty = true;
+
+        const buf = try saveToBuffer(allocator, &machine);
+        defer allocator.free(buf);
+        var restored = try loadFromBuffer(allocator, buf);
+        defer restored.deinit(allocator);
+
+        try testing.expect(restored.bus.cartridge.mapper == .eeprom_i2c);
+        const restored_eeprom = &restored.bus.cartridge.mapper.eeprom_i2c.eeprom;
+        try testing.expectEqual(@as(u8, 0x77), restored_eeprom.data[5]);
+        try testing.expectEqual(@as(u16, 5), restored_eeprom.word_address);
+        try testing.expectEqual(.read_data, restored_eeprom.state);
+        try testing.expect(restored_eeprom.dirty);
+    }
 }
 
 test "save-state buffers round-trip machine state" {

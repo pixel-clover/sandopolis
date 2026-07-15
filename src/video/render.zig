@@ -571,6 +571,9 @@ fn renderPlaneToBuffer(
 ) void {
     const hscroll = readHScroll(self, hscroll_base, line, is_plane_a);
     const hscroll_shift: u4 = @truncate(@as(u16, @bitCast(@as(i16, @intCast(hscroll)))));
+    // Vertical sampling uses the double-resolution row in interlace mode 2
+    // (the hscroll table above is still indexed by display line).
+    const v_line: i32 = @intCast(self.effectiveVerticalLine(line));
     _ = tile_h;
     _ = plane_height_tiles;
 
@@ -586,7 +589,7 @@ fn renderPlaneToBuffer(
         const vscroll_val = planeVScrollForPixel(self, x, hscroll_shift, is_plane_a);
 
         const x_scrolled = @as(i32, @intCast(x)) - hscroll;
-        const y_scrolled = @as(i32, line) + vscroll_val;
+        const y_scrolled = v_line + vscroll_val;
         const x_wrapped = @mod(x_scrolled, plane_width_px);
         const y_wrapped = @mod(y_scrolled, plane_height_px);
         const x_wrapped_u32: u32 = @intCast(x_wrapped);
@@ -614,6 +617,13 @@ fn renderPlaneToBuffer(
         const pattern_addr = (@as(u32, pattern_idx) * tile_sz) + (@as(u32, py) * 4) + @as(u32, px / 2);
         const pattern_byte = self.vramReadByte(@intCast(pattern_addr & 0xFFFF));
         const color_idx: u8 = if ((px & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
+
+        // In shadow/highlight mode the priority bit lifts the pixel out of
+        // shadow even when this tile's pixel is transparent: hardware keys
+        // shadow off the name-table priority bits, not pixel opacity.
+        if (sh_mode and high_pri) {
+            sh_buf[x] = SH_NORMAL;
+        }
         if (color_idx == 0) continue;
 
         const full_idx = palette_idx * 16 + color_idx;
@@ -624,11 +634,6 @@ fn renderPlaneToBuffer(
             pixel_buf[x] = full_idx;
             layer_buf[x] = new_layer;
             source_buf[x] = source_id;
-        }
-        // In shadow/highlight mode, high-priority non-transparent BG
-        // tiles promote pixels from shadow to normal brightness.
-        if (sh_mode and high_pri) {
-            sh_buf[x] = SH_NORMAL;
         }
     }
 }
@@ -649,8 +654,9 @@ fn renderWindowToBuffer(
 ) void {
     const win_base = windowBaseAddress(self);
     const win_width: u32 = if (self.isH40()) 64 else 32;
-    const tile_row: u32 = @as(u32, line) >> tile_h_shift;
-    const fine_y: u8 = @intCast(@as(u32, line) & tile_h_mask);
+    const v_line: u32 = self.effectiveVerticalLine(line);
+    const tile_row: u32 = v_line >> tile_h_shift;
+    const fine_y: u8 = @intCast(v_line & tile_h_mask);
     const base_layer = LAYER_PLANE_A_LOW;
     const high_layer = LAYER_PLANE_A_HIGH;
 
@@ -677,6 +683,12 @@ fn renderWindowToBuffer(
         const pattern_addr = (@as(u32, pattern_idx) * tile_sz) + (@as(u32, py) * 4) + @as(u32, px / 2);
         const pattern_byte = self.vramReadByte(@intCast(pattern_addr & 0xFFFF));
         const color_idx: u8 = if ((px & 1) == 0) (pattern_byte >> 4) & 0xF else pattern_byte & 0xF;
+
+        // Priority lifts shadow regardless of pixel opacity (see
+        // renderPlaneToBuffer).
+        if (sh_mode and high_pri) {
+            sh_buf[x] = SH_NORMAL;
+        }
         if (color_idx == 0) continue;
 
         const full_idx = palette_idx * 16 + color_idx;
@@ -687,9 +699,6 @@ fn renderWindowToBuffer(
             pixel_buf[x] = full_idx;
             layer_buf[x] = new_layer;
             source_buf[x] = 2;
-        }
-        if (sh_mode and high_pri) {
-            sh_buf[x] = SH_NORMAL;
         }
     }
 }
@@ -937,7 +946,7 @@ fn renderSpritesToBuffer(
     const screen_w = self.screenWidth();
     const screen_w_i32: i32 = @intCast(screen_w);
     const counters = self.active_execution_counters;
-    const y_line: i32 = @intCast(line);
+    const y_line: i32 = @intCast(self.effectiveVerticalLine(line));
     const tile_h_shift = self.tileHeightShift();
     const max_sprites = self.maxSpritesPerLine();
     const max_pixels = self.maxSpritePixelsPerLine();
@@ -963,7 +972,7 @@ fn renderSpritesToBuffer(
         }
         const entry = self.sprite_cache_entries[sprite_index];
         const sprite_v_px = @as(i32, entry.v_size) * @as(i32, tile_h);
-        const y_in_non_flipped = y_line - @as(i32, entry.y_pos);
+        const y_in_non_flipped = y_line - self.spriteYPos(entry.y_pos);
 
         if (y_in_non_flipped >= 0 and y_in_non_flipped < sprite_v_px) {
             sprites_on_line += 1;

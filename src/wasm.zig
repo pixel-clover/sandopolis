@@ -556,13 +556,17 @@ export fn sandopolis_load_state(emu: *WasmEmulator, ptr: [*]const u8, len: usize
             g.machine.deinit(allocator);
             g.machine = new_machine;
             g.audio.reset();
+            g.audio.syncYmStateFromZ80(&g.machine.bus.z80);
             return true;
         },
         .sms => |*s| {
-            var new_machine = sms_state_file.loadFromBuffer(allocator, ptr[0..len]) catch return false;
-            new_machine.bindPointers();
+            const new_machine = sms_state_file.loadFromBuffer(allocator, ptr[0..len]) catch return false;
             s.machine.deinit(allocator);
+            // Bind only after the by-value move: bindPointers stores
+            // self-referential pointers, so binding the local first would
+            // leave them dangling once it is copied into place.
             s.machine = new_machine;
+            s.machine.bindPointers();
             return true;
         },
     }

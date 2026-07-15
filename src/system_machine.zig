@@ -50,6 +50,9 @@ pub const SystemMachine = union(enum) {
         if (rom_path) |path| {
             // Read the file (with ZIP extraction support) and detect system type.
             const rom_data = try rom_loader.readRomFile(allocator, path, 8 * 1024 * 1024);
+            // Both machine inits copy the bytes, so the file data can always
+            // be released, including on error paths.
+            defer allocator.free(rom_data);
             const effective_path = effectiveRomPath(path);
             // Extension-based detection takes priority (e.g. .sg for SG-1000).
             // Use effective_path (.zip stripped) so ".sg.zip" resolves to ".sg".
@@ -57,17 +60,18 @@ pub const SystemMachine = union(enum) {
                 system_detect.detectSystem(rom_data);
             if (sys == .sms or sys == .gg or sys == .sg1000) {
                 var sms = try SmsMachine.initFromRomBytes(allocator, rom_data);
+                errdefer sms.deinit(allocator);
                 sms.is_game_gear = (sys == .gg);
                 sms.is_sg1000 = (sys == .sg1000);
-                allocator.free(rom_data);
                 try sms.bus.setSourcePath(allocator, effective_path);
-                sms.bindPointers();
+                // NOTE: no bindPointers() here — the struct is moved by the
+                // return below; SmsMachine.runFrame binds lazily.
                 return .{ .sms = sms };
             }
             // Genesis: init from extracted ROM bytes (handles ZIP transparently)
             // and set source path for SRAM resolution.
             var genesis = try Machine.initFromRomBytes(allocator, rom_data);
-            allocator.free(rom_data);
+            errdefer genesis.deinit(allocator);
             const source_copy = try allocator.dupe(u8, effective_path);
             const Cartridge = @import("bus/cartridge.zig").Cartridge;
             const save_copy = Cartridge.savePathForRom(allocator, effective_path) catch null;
@@ -247,23 +251,34 @@ pub const SystemMachine = union(enum) {
         }
     }
 
-    pub fn applyKeyboardBindings(self: *SystemMachine, bindings: *const InputBindings.Bindings) void {
-        switch (self.*) {
-            .genesis => |*g| g.applyKeyboardBindings(bindings),
-            .sms => {},
-        }
+    pub fn applyKeyboardBindings(
+        self: *SystemMachine,
+        bindings: *const InputBindings.Bindings,
+        input: InputBindings.KeyboardInput,
+        pressed: bool,
+    ) bool {
+        return switch (self.*) {
+            .genesis => |*g| g.applyKeyboardBindings(bindings, input, pressed),
+            .sms => false,
+        };
     }
 
-    pub fn applyGamepadBindings(self: *SystemMachine, bindings: *const InputBindings.Bindings) void {
-        switch (self.*) {
-            .genesis => |*g| g.applyGamepadBindings(bindings),
-            .sms => {},
-        }
+    pub fn applyGamepadBindings(
+        self: *SystemMachine,
+        bindings: *const InputBindings.Bindings,
+        port: usize,
+        input: InputBindings.GamepadInput,
+        pressed: bool,
+    ) bool {
+        return switch (self.*) {
+            .genesis => |*g| g.applyGamepadBindings(bindings, port, input, pressed),
+            .sms => false,
+        };
     }
 
-    pub fn releaseKeyboardBindings(self: *SystemMachine) void {
+    pub fn releaseKeyboardBindings(self: *SystemMachine, bindings: *const InputBindings.Bindings) void {
         switch (self.*) {
-            .genesis => |*g| g.releaseKeyboardBindings(),
+            .genesis => |*g| g.releaseKeyboardBindings(bindings),
             .sms => {},
         }
     }
