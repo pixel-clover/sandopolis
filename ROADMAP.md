@@ -102,6 +102,13 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Street Fighter II Special Champion Edition graphics corruption (lazy SSF mapper activation on bank register write)
 - [ ] Ultimate Mortal Kombat Trilogy romhack loading failure on desktop (works on web)
 - [x] Color cycling artifacts during screen transitions (root cause: VBlank status flag bug on last scanline; fixed alongside Zabu crash)
+- [x] PAL Overdrive execution derailed at frame 2813 (root cause: pending interrupt levels dropped when a higher level was serviced; fixed with a
+  pending-level bitmask in the rocket68 wrapper and Z80 INT line handling decoupled from the 68K VINT flag)
+- [x] I2C EEPROM per-wiring address decoding matched to Genesis Plus GX (Acclaim 32M bank shift, byte-lane parity, and random-read address
+  retention; fixes NBA Jam TE ROM shadowing)
+- [x] Save-state format v3 with mapper bank registers, EEPROM state, and validated deserialization of untrusted input
+- [x] Interlace mode 2 vertical geometry (doubled line sampling and sprite Y offset)
+- [x] GIF and BMP screenshot stride handling for H32 display mode
 
 ### Future Goals
 
@@ -112,6 +119,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
+- [x] Libretro XRGB8888 pixel format negotiation and reload handling (fixes garbled video in RetroArch)
+- [ ] Libretro save RAM interface (`RETRO_MEMORY_SAVE_RAM`)
 - [x] Browser keyboard remapping UI with localStorage persistence and duplicate-swap
 - [x] Browser integer scaling mode (whole-pixel multiples)
 - [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
@@ -166,6 +175,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
   auto-detection from cartridge region codes
 - [x] SMS quick save states (in-memory capture and restore of Z80, VDP, bus, and audio state)
 - [x] SMS persistent save states (file-based serialization with source path, Z80, VDP, bus, and audio state)
+- [x] SMS VDP accuracy fixes (name table base in 224-line mode, sprite Y wraparound, line counter reload, VRAM port address masking, and Game Gear
+  viewport top in 224-line mode)
+- [x] SMS save-state hardening (format v3 with byte-level sanitization of untrusted input, SG-1000 flag preserved across clone and save, and PAL
+  mode preserved across reset)
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
 - [ ] Codemasters mapper
 - [ ] BIOS/boot ROM support
