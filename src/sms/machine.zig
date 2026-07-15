@@ -203,6 +203,10 @@ pub const SmsMachine = struct {
         return self.bus.rom.len;
     }
 
+    pub fn workRam(self: *SmsMachine) []u8 {
+        return &self.bus.ram;
+    }
+
     // -- Save state --
 
     pub const Snapshot = struct {

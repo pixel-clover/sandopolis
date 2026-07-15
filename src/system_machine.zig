@@ -4,6 +4,10 @@ const SmsMachine = @import("sms/machine.zig").SmsMachine;
 const SmsInput = @import("sms/input.zig").SmsInput;
 const system_detect = @import("system.zig");
 const rom_loader = @import("rom_loader.zig");
+const clock = @import("clock.zig");
+const sms_clock = @import("sms/clock.zig");
+const genesis_state_file = @import("state_file.zig");
+const sms_state_file = @import("sms/state_file.zig");
 const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
@@ -85,6 +89,30 @@ pub const SystemMachine = union(enum) {
         return .{ .genesis = try Machine.init(allocator, null) };
     }
 
+    /// Initialize from in-memory ROM bytes (ZIP archives are extracted).
+    /// `system_hint` overrides content-based detection when the caller knows
+    /// the system out-of-band (e.g. from a file extension the raw bytes no
+    /// longer carry). No storage paths are attached; frontends that persist
+    /// state or SRAM own that concern.
+    pub fn initFromRomBytes(
+        allocator: std.mem.Allocator,
+        raw_bytes: []const u8,
+        system_hint: ?SystemType,
+    ) !SystemMachine {
+        const rom_bytes = try rom_loader.extractRomBytes(allocator, raw_bytes);
+        defer allocator.free(rom_bytes);
+        const sys = system_hint orelse system_detect.detectSystem(rom_bytes);
+        switch (sys) {
+            .sms, .gg, .sg1000 => {
+                var sms = try SmsMachine.initFromRomBytes(allocator, rom_bytes);
+                sms.is_game_gear = (sys == .gg);
+                sms.is_sg1000 = (sys == .sg1000);
+                return .{ .sms = sms };
+            },
+            .genesis => return .{ .genesis = try Machine.initFromRomBytes(allocator, rom_bytes) },
+        }
+    }
+
     pub fn deinit(self: *SystemMachine, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .genesis => |*g| g.deinit(allocator),
@@ -131,9 +159,30 @@ pub const SystemMachine = union(enum) {
         };
     }
 
+    pub fn screenHeight(self: *const SystemMachine) u16 {
+        return switch (self.*) {
+            .genesis => |*g| g.screenHeight(),
+            .sms => |*s| s.screenHeight(),
+        };
+    }
+
     /// Maximum possible framebuffer width across all systems (for texture allocation).
     pub fn maxFramebufferWidth() u16 {
         return Vdp.framebuffer_width; // 320 (Genesis) >= 256 (SMS)
+    }
+
+    /// Maximum possible framebuffer height across all systems.
+    pub fn maxFramebufferHeight() u16 {
+        return Vdp.max_framebuffer_height; // 240 (Genesis PAL) >= 224 (SMS)
+    }
+
+    /// Display mode bitmask (H40 = 1, interlace mode 2 = 2, shadow/highlight
+    /// = 4). SMS/GG have none of these modes and always report 0.
+    pub fn displayModeFlags(self: *const SystemMachine) u32 {
+        return switch (self.*) {
+            .genesis => |*g| g.displayModeFlags(),
+            .sms => 0,
+        };
     }
 
     /// Framebuffer stride in pixels (width of the backing buffer row, not active width).
@@ -205,11 +254,25 @@ pub const SystemMachine = union(enum) {
         return switch (self.*) {
             .genesis => |*g| g.frameMasterCycles(),
             .sms => |*s| blk: {
-                const sms_clock = @import("sms/clock.zig");
                 const lines: u32 = if (s.pal_mode) sms_clock.pal_lines_per_frame else sms_clock.ntsc_lines_per_frame;
                 break :blk lines * sms_clock.master_cycles_per_line;
             },
         };
+    }
+
+    /// Master clock rate in Hz for the running system and region.
+    pub fn masterClockHz(self: *const SystemMachine) u32 {
+        return switch (self.*) {
+            .genesis => |*g| if (g.palMode()) clock.master_clock_pal else clock.master_clock_ntsc,
+            .sms => |*s| if (s.isPal()) sms_clock.pal_master_clock else sms_clock.ntsc_master_clock,
+        };
+    }
+
+    /// Nominal video frame rate derived from the master clock.
+    pub fn framesPerSecond(self: *const SystemMachine) f64 {
+        const master_hz: f64 = @floatFromInt(self.masterClockHz());
+        const per_frame: f64 = @floatFromInt(self.frameMasterCycles());
+        return master_hz / per_frame;
     }
 
     pub fn setConsoleIsOverseas(self: *SystemMachine, overseas: bool) void {
@@ -306,6 +369,30 @@ pub const SystemMachine = union(enum) {
         }
     }
 
+    /// Press or release a button identified by its Genesis-style mask
+    /// (Io.Button.*). On SMS/GG the mask maps to the nearest equivalent:
+    /// A and B -> button 1, C -> button 2, Start -> pause (SMS) or the
+    /// Game Gear Start button. Unmappable buttons are ignored.
+    pub fn setButton(self: *SystemMachine, port: u32, button_mask: u16, pressed: bool) void {
+        switch (self.*) {
+            .genesis => |*g| g.setButton(port, button_mask, pressed),
+            .sms => |*s| {
+                const sms_port: u1 = @intCast(@min(port, 1));
+                const sms_button: SmsInput.Button = switch (button_mask) {
+                    Io.Button.Up => .up,
+                    Io.Button.Down => .down,
+                    Io.Button.Left => .left,
+                    Io.Button.Right => .right,
+                    Io.Button.A, Io.Button.B => .button1,
+                    Io.Button.C => .button2,
+                    Io.Button.Start => return self.setSmsStartOrPause(pressed),
+                    else => return,
+                };
+                s.setButton(sms_port, sms_button, pressed);
+            },
+        }
+    }
+
     // -- ROM metadata --
 
     pub fn romMetadata(self: *const SystemMachine) RomMetadata {
@@ -325,7 +412,73 @@ pub const SystemMachine = union(enum) {
         };
     }
 
+    // -- Memory regions --
+
+    pub fn romSize(self: *const SystemMachine) usize {
+        return switch (self.*) {
+            .genesis => |*g| g.romSize(),
+            .sms => |*s| s.romSize(),
+        };
+    }
+
+    /// Console work RAM (68K RAM on Genesis, Z80 RAM on SMS/GG).
+    pub fn workRam(self: *SystemMachine) []u8 {
+        return switch (self.*) {
+            .genesis => |*g| g.workRam(),
+            .sms => |*s| s.workRam(),
+        };
+    }
+
+    /// Battery-backed cartridge storage the frontend may persist and rewrite
+    /// in place (e.g. libretro SAVE_RAM), or null when the cartridge has
+    /// none. SMS/GG battery RAM is not persisted yet and reports null.
+    pub fn persistentSaveRam(self: *SystemMachine) ?[]u8 {
+        return switch (self.*) {
+            .genesis => |*g| g.persistentSaveRam(),
+            .sms => null,
+        };
+    }
+
     // -- Save state --
+
+    /// Serialize the machine into a self-describing state buffer. Each
+    /// system's format carries its own magic, so loadStateFromBuffer can
+    /// dispatch without the caller tracking the variant.
+    pub fn saveStateToBuffer(self: *const SystemMachine, allocator: std.mem.Allocator) ![]u8 {
+        return switch (self.*) {
+            .genesis => |*g| genesis_state_file.saveToBuffer(allocator, g),
+            .sms => |*s| sms_state_file.saveToBuffer(allocator, s),
+        };
+    }
+
+    /// Replace the running machine with one deserialized from a state
+    /// buffer. The target system comes from the buffer's magic, so this can
+    /// switch variants. On success the old machine is freed and runtime
+    /// pointers are rebound; on error self is untouched. Frontend concerns
+    /// (audio output resync, recordings) stay with the caller.
+    pub fn loadStateFromBuffer(self: *SystemMachine, allocator: std.mem.Allocator, data: []const u8) !void {
+        if (data.len >= sms_state_file.magic.len and
+            std.mem.eql(u8, data[0..sms_state_file.magic.len], &sms_state_file.magic))
+        {
+            var next = try sms_state_file.loadFromBuffer(allocator, data);
+            errdefer next.deinit(allocator);
+            // The SMS format carries no paths; keep the current source path
+            // so state and SRAM slots keep resolving after the load.
+            if (self.sourcePath()) |sp| try next.bus.setSourcePath(allocator, sp);
+            var old = self.*;
+            self.* = .{ .sms = next };
+            self.rebindRuntimePointers();
+            old.deinit(allocator);
+            return;
+        }
+        // The Genesis format restores its own storage paths from the buffer.
+        var next = try genesis_state_file.loadFromBuffer(allocator, data);
+        errdefer next.deinit(allocator);
+        var old = self.*;
+        self.* = .{ .genesis = next };
+        self.rebindRuntimePointers();
+        old.deinit(allocator);
+    }
 
     pub fn captureSnapshot(self: *SystemMachine, allocator: std.mem.Allocator) !Snapshot {
         return switch (self.*) {
@@ -472,6 +625,54 @@ test "effectiveRomPath strips .zip suffix" {
     try t.expectEqualStrings("game.gg", SystemMachine.effectiveRomPath("game.gg.Zip"));
     try t.expectEqualStrings(".zip", SystemMachine.effectiveRomPath(".zip.zip"));
     try t.expectEqualStrings("ab", SystemMachine.effectiveRomPath("ab"));
+}
+
+test "state buffer round-trips through the facade and dispatches on magic" {
+    const t = @import("std").testing;
+
+    // SMS machine: save, then load back through the facade.
+    var sms_rom = [_]u8{0xC7} ** 1024;
+    var machine = try SystemMachine.initFromRomBytes(testing_alloc, &sms_rom, .sms);
+    defer machine.deinit(testing_alloc);
+    machine.runFrame();
+    const sms_buf = try machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(sms_buf);
+    try machine.loadStateFromBuffer(testing_alloc, sms_buf);
+    try t.expectEqual(system_detect.SystemType.sms, machine.systemType());
+
+    // Loading a Genesis buffer into the same instance switches the variant.
+    var gen_rom = [_]u8{0} ** 0x400;
+    @memcpy(gen_rom[0x100..0x104], "SEGA");
+    var gen_machine = try SystemMachine.initFromRomBytes(testing_alloc, &gen_rom, null);
+    defer gen_machine.deinit(testing_alloc);
+    try t.expectEqual(system_detect.SystemType.genesis, gen_machine.systemType());
+    const gen_buf = try gen_machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(gen_buf);
+    try machine.loadStateFromBuffer(testing_alloc, gen_buf);
+    try t.expectEqual(system_detect.SystemType.genesis, machine.systemType());
+    machine.runFrame();
+
+    // A corrupt buffer leaves the machine untouched.
+    const junk = [_]u8{0} ** 64;
+    try t.expectError(error.InvalidSaveState, machine.loadStateFromBuffer(testing_alloc, &junk));
+    try t.expectEqual(system_detect.SystemType.genesis, machine.systemType());
+}
+
+test "unified setButton maps genesis masks to sms buttons" {
+    const t = @import("std").testing;
+    var rom = [_]u8{0xC7} ** 1024;
+    var machine = try SystemMachine.initFromRomBytes(testing_alloc, &rom, .sms);
+    defer machine.deinit(testing_alloc);
+
+    machine.setButton(0, Io.Button.Up, true);
+    machine.setButton(0, Io.Button.A, true);
+    machine.setButton(1, Io.Button.C, true);
+    machine.setButton(0, Io.Button.Start, true);
+    const input = &machine.sms.bus.input;
+    try t.expect(input.port1.up);
+    try t.expect(input.port1.button1);
+    try t.expect(input.port2.button2);
+    try t.expect(input.pause_pressed);
 }
 
 test "zabu demo boots and renders gameplay" {

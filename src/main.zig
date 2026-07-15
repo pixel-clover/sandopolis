@@ -13,7 +13,6 @@ const keyboard = @import("input/keyboard.zig");
 const binding_editor_module = @import("input/binding_editor.zig");
 const Machine = @import("machine.zig").Machine;
 const SystemMachine = @import("system_machine.zig").SystemMachine;
-const SmsMachine = @import("sms/machine.zig").SmsMachine;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
 const GifRecorder = @import("recording/gif.zig").GifRecorder;
@@ -1994,71 +1993,38 @@ fn handlePersistentStateAction(
 
     switch (action) {
         .save_state_file => {
-            switch (machine.*) {
-                .genesis => |*gen| {
-                    StateFile.saveToFile(gen, state_path) catch |err| {
-                        std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                        notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
-                        return .handled;
-                    };
-                    saveStatePreviewFile(allocator, gen, state_path) catch |err| {
-                        std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
-                    };
-                },
-                .sms => |*sms| {
-                    saveSmsStateFile(allocator, sms, state_path) catch |err| {
-                        std.debug.print("Failed to save SMS state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                        notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
-                        return .handled;
-                    };
-                },
+            writeStateFile(allocator, machine, state_path) catch |err| {
+                std.debug.print("Failed to save state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                notifyFrontend(notifications, .failure, "FAILED TO SAVE STATE FILE", .{});
+                return .handled;
+            };
+            if (machine.asGenesis()) |gen| {
+                saveStatePreviewFile(allocator, gen, state_path) catch |err| {
+                    std.debug.print("Failed to save state preview for {s}: {s}\n", .{ state_path, @errorName(err) });
+                };
             }
             std.debug.print("Saved state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE SAVED", .{});
             return .handled;
         },
         .load_state_file => {
-            switch (machine.*) {
-                .genesis => {
-                    var next_machine = StateFile.loadFromFile(allocator, state_path) catch |err| {
-                        if (err == error.FileNotFound) {
-                            notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
-                        } else {
-                            std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                            notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
-                        }
-                        return .handled;
-                    };
-                    errdefer next_machine.deinit(allocator);
+            loadStateFile(allocator, machine, state_path) catch |err| {
+                if (err == error.FileNotFound) {
+                    notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
+                } else {
+                    std.debug.print("Failed to load state file {s}: {s}\n", .{ state_path, @errorName(err) });
+                    notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
+                }
+                return .handled;
+            };
 
-                    stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
-                    stopWavRecording(audio, wav_recorder, "WAV recording stopped for state-file load");
-                    if (audio) |a| resetAudioOutput(a, null);
-
-                    var old_machine = machine.*;
-                    machine.* = .{ .genesis = next_machine };
-                    machine.rebindRuntimePointers();
-                    old_machine.deinit(allocator);
-
-                    if (audio) |a| {
-                        if (machine.audioZ80()) |z80| a.output.syncYmStateFromZ80(z80);
-                    }
-                },
-                .sms => |*sms| {
-                    loadSmsStateFile(allocator, sms, state_path) catch |err| {
-                        if (err == error.FileNotFound) {
-                            notifyFrontend(notifications, .info, "NO STATE FILE IN SLOT", .{});
-                        } else {
-                            std.debug.print("Failed to load SMS state file {s}: {s}\n", .{ state_path, @errorName(err) });
-                            notifyFrontend(notifications, .failure, "FAILED TO LOAD STATE FILE", .{});
-                        }
-                        return .handled;
-                    };
-                    stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
-                    stopWavRecording(audio, wav_recorder, "WAV recording stopped for state-file load");
-                    if (audio) |a| resetAudioOutput(a, null);
-                },
+            stopGifRecording(gif_recorder, "GIF recording stopped for state-file load");
+            stopWavRecording(audio, wav_recorder, "WAV recording stopped for state-file load");
+            if (audio) |a| {
+                resetAudioOutput(a, null);
+                if (machine.audioZ80()) |z80| a.output.syncYmStateFromZ80(z80);
             }
+
             frame_counter.* = 0;
             std.debug.print("Loaded state file: {s}\n", .{state_path});
             notifyFrontend(notifications, .success, "STATE FILE LOADED", .{});
@@ -2090,33 +2056,18 @@ fn resolveStatePathForSystem(
     return null;
 }
 
-const sms_state_file = @import("sms/state_file.zig");
-
-fn saveSmsStateFile(allocator: std.mem.Allocator, sms: *const SmsMachine, path: []const u8) !void {
-    const data = try sms_state_file.saveToBuffer(allocator, sms);
+fn writeStateFile(allocator: std.mem.Allocator, machine: *const SystemMachine, path: []const u8) !void {
+    const data = try machine.saveStateToBuffer(allocator);
     defer allocator.free(data);
     var file = try platform.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(data);
 }
 
-fn loadSmsStateFile(allocator: std.mem.Allocator, sms: *SmsMachine, path: []const u8) !void {
-    const file_data = try platform.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
+fn loadStateFile(allocator: std.mem.Allocator, machine: *SystemMachine, path: []const u8) !void {
+    const file_data = try platform.cwd().readFileAlloc(allocator, path, 64 * 1024 * 1024);
     defer allocator.free(file_data);
-
-    var new_machine = try sms_state_file.loadFromBuffer(allocator, file_data);
-    errdefer new_machine.deinit(allocator);
-
-    // Copy source path from current machine
-    if (sms.bus.sourcePath()) |sp| {
-        try new_machine.bus.setSourcePath(allocator, sp);
-    }
-
-    // Swap in the new machine
-    var old = sms.*;
-    sms.* = new_machine;
-    sms.bindPointers();
-    old.deinit(allocator);
+    try machine.loadStateFromBuffer(allocator, file_data);
 }
 
 // Re-export gamepad input functions from input/gamepad.zig

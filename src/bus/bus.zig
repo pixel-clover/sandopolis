@@ -217,63 +217,6 @@ pub const Bus = struct {
         self.z80.setResetLineAsserted(lines.reset_asserted);
     }
 
-    fn restoreZ80PostControlAudioState(self: *Bus, after_state: Z80.State) void {
-        var merged = self.z80.captureState();
-        merged.audio_master_offset = after_state.audio_master_offset;
-        merged.ym_addr = after_state.ym_addr;
-        merged.ym_regs = after_state.ym_regs;
-        merged.ym_key_mask = after_state.ym_key_mask;
-        merged.ym_offset_cursor = after_state.ym_offset_cursor;
-        merged.ym_internal_master_remainder = after_state.ym_internal_master_remainder;
-        merged.ym_cycle = after_state.ym_cycle;
-        merged.ym_busy = after_state.ym_busy;
-        merged.ym_busy_cycles_remaining = after_state.ym_busy_cycles_remaining;
-        merged.ym_last_status_read = after_state.ym_last_status_read;
-        merged.ym_timer_a_cnt = after_state.ym_timer_a_cnt;
-        merged.ym_timer_a_reg = after_state.ym_timer_a_reg;
-        merged.ym_timer_a_load_lock = after_state.ym_timer_a_load_lock;
-        merged.ym_timer_a_load = after_state.ym_timer_a_load;
-        merged.ym_timer_a_enable = after_state.ym_timer_a_enable;
-        merged.ym_timer_a_reset = after_state.ym_timer_a_reset;
-        merged.ym_timer_a_load_latch = after_state.ym_timer_a_load_latch;
-        merged.ym_timer_a_overflow_flag = after_state.ym_timer_a_overflow_flag;
-        merged.ym_timer_a_overflow = after_state.ym_timer_a_overflow;
-        merged.ym_timer_b_cnt = after_state.ym_timer_b_cnt;
-        merged.ym_timer_b_subcnt = after_state.ym_timer_b_subcnt;
-        merged.ym_timer_b_reg = after_state.ym_timer_b_reg;
-        merged.ym_timer_b_load_lock = after_state.ym_timer_b_load_lock;
-        merged.ym_timer_b_load = after_state.ym_timer_b_load;
-        merged.ym_timer_b_enable = after_state.ym_timer_b_enable;
-        merged.ym_timer_b_reset = after_state.ym_timer_b_reset;
-        merged.ym_timer_b_load_latch = after_state.ym_timer_b_load_latch;
-        merged.ym_timer_b_overflow_flag = after_state.ym_timer_b_overflow_flag;
-        merged.ym_timer_b_overflow = after_state.ym_timer_b_overflow;
-        merged.audio_event_sequence = after_state.audio_event_sequence;
-        merged.ym_write_events = after_state.ym_write_events;
-        merged.ym_write_write_index = after_state.ym_write_write_index;
-        merged.ym_write_read_index = after_state.ym_write_read_index;
-        merged.ym_write_count = after_state.ym_write_count;
-        merged.ym_dac_samples = after_state.ym_dac_samples;
-        merged.ym_dac_write_index = after_state.ym_dac_write_index;
-        merged.ym_dac_read_index = after_state.ym_dac_read_index;
-        merged.ym_dac_count = after_state.ym_dac_count;
-        merged.ym_reset_events = after_state.ym_reset_events;
-        merged.ym_reset_write_index = after_state.ym_reset_write_index;
-        merged.ym_reset_read_index = after_state.ym_reset_read_index;
-        merged.ym_reset_count = after_state.ym_reset_count;
-        merged.psg_commands = after_state.psg_commands;
-        merged.psg_command_write_index = after_state.psg_command_write_index;
-        merged.psg_command_read_index = after_state.psg_command_read_index;
-        merged.psg_command_count = after_state.psg_command_count;
-        merged.psg_last = after_state.psg_last;
-        merged.psg_tone = after_state.psg_tone;
-        merged.psg_volume = after_state.psg_volume;
-        merged.psg_noise = after_state.psg_noise;
-        merged.psg_latched_channel = after_state.psg_latched_channel;
-        merged.psg_latched_is_volume = after_state.psg_latched_is_volume;
-        self.z80.restoreState(&merged);
-    }
-
     fn currentCpuAccessElapsedMasterCycles(self: *const Bus) u32 {
         return self.cpu_runtime_state.currentAccessElapsedMasterCycles();
     }
@@ -290,7 +233,7 @@ pub const Bus = struct {
             self.applyZ80ControlLines(before);
             timing.stepMasterEarly(pre_access_master_cycles);
             self.applyZ80ControlLines(after);
-            if (after_state) |state| self.restoreZ80PostControlAudioState(state);
+            if (after_state) |state| self.z80.restoreAudioState(&state);
         }
         timing.noteZ80RunnableStateTransition(before.canRun());
     }

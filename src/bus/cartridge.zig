@@ -700,6 +700,20 @@ pub const Cartridge = struct {
         }
     }
 
+    /// Battery-backed storage the frontend may persist and rewrite in place
+    /// (e.g. libretro SAVE_RAM): cartridge SRAM when battery-backed,
+    /// otherwise the I2C EEPROM data. Both buffers are heap-allocated at
+    /// cartridge init and keep a stable address while the cartridge lives.
+    pub fn persistentSaveRam(self: *Cartridge) ?[]u8 {
+        if (self.ram.persistent) {
+            if (self.ram.data) |data| return data;
+        }
+        return switch (self.mapper) {
+            .eeprom_i2c => |*mapper| mapper.eeprom.data,
+            else => null,
+        };
+    }
+
     pub fn eepromDataBytes(self: *const Cartridge) ?[]const u8 {
         return switch (self.mapper) {
             .eeprom_i2c => |mapper| mapper.eeprom.data,

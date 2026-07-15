@@ -1,8 +1,6 @@
 const std = @import("std");
 const clock = @import("../clock.zig");
-const Z80 = @import("../cpu/z80.zig").Z80;
-
-pub const YmWriteEvent = Z80.YmWriteEvent;
+pub const YmWriteEvent = @import("events.zig").YmWriteEvent;
 
 pub const StereoSample = struct {
     left: f32,
