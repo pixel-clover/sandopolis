@@ -123,6 +123,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
 - [x] Libretro XRGB8888 pixel format negotiation and reload handling (fixes garbled video in RetroArch)
 - [x] Libretro save RAM interface (`RETRO_MEMORY_SAVE_RAM` exposing battery SRAM and I2C EEPROM data)
+- [x] Libretro SMS, Game Gear, and SG-1000 support (core routed through the `SystemMachine` facade)
+- [x] Frontend decoupling: all three frontends (SDL, wasm, libretro) drive the emulator through the shared `SystemMachine` facade, including
+  unified button mapping and magic-dispatched save-state serialization (`saveStateToBuffer`/`loadStateFromBuffer`)
 - [x] Browser keyboard remapping UI with localStorage persistence and duplicate-swap
 - [x] Browser integer scaling mode (whole-pixel multiples)
 - [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
