@@ -120,13 +120,15 @@ const AudioInit = struct {
         try self.output.renderPending(pending, z80, is_pal, &sink);
     }
 
-    pub fn queueRawSamples(self: *AudioInit, samples: []const i16) !void {
+    pub fn queueRawSamples(self: *AudioInit, samples: []const i16, wav_recorder: ?*WavRecorder) !void {
         if (self.startupMuteActive()) {
             if (samples.len > 0) self.clearStartupMute();
             return;
         }
+        self.syncRecordedPlayback(wav_recorder);
         if (self.queueHasRoom()) {
             try zsdl3.putAudioStreamData(i16, self.stream, samples);
+            self.appendPlaybackShadow(samples);
         }
     }
 
@@ -1881,13 +1883,13 @@ fn handleQuickStateAction(
     wav_recorder: *?WavRecorder,
     frame_counter: *u32,
     notifications: FrontendNotifications,
-) bool {
+) QuickStateActionResult {
     switch (action) {
         .save_quick_state => {
             const snapshot = machine.captureSnapshot(allocator) catch |err| {
                 std.debug.print("Failed to save quick state: {}\n", .{err});
                 notifyFrontend(notifications, .failure, "FAILED TO SAVE QUICK STATE", .{});
-                return true;
+                return .handled;
             };
             if (quick_state.*) |*saved| {
                 saved.deinit(allocator);
@@ -1895,14 +1897,14 @@ fn handleQuickStateAction(
             quick_state.* = snapshot;
             std.debug.print("Quick state saved.\n", .{});
             notifyFrontend(notifications, .success, "QUICK STATE SAVED", .{});
-            return true;
+            return .handled;
         },
         .load_quick_state => {
             if (quick_state.*) |*saved| {
                 machine.restoreSnapshot(allocator, saved) catch |err| {
                     std.debug.print("Failed to load quick state: {}\n", .{err});
                     notifyFrontend(notifications, .failure, "FAILED TO LOAD QUICK STATE", .{});
-                    return true;
+                    return .handled;
                 };
                 stopGifRecording(gif_recorder, "GIF recording stopped for state load");
                 stopWavRecording(audio, wav_recorder, "WAV recording stopped for state load");
@@ -1913,17 +1915,24 @@ fn handleQuickStateAction(
                 frame_counter.* = 0;
                 std.debug.print("Quick state loaded.\n", .{});
                 notifyFrontend(notifications, .success, "QUICK STATE LOADED", .{});
+                return .loaded_machine;
             } else {
                 std.debug.print("No quick state saved.\n", .{});
                 notifyFrontend(notifications, .info, "NO QUICK STATE SAVED", .{});
             }
-            return true;
+            return .handled;
         },
-        else => return false,
+        else => return .ignored,
     }
 }
 
 const PersistentStateActionResult = enum {
+    ignored,
+    handled,
+    loaded_machine,
+};
+
+const QuickStateActionResult = enum {
     ignored,
     handled,
     loaded_machine,
@@ -3614,7 +3623,7 @@ pub fn main(init: std.process.Init) !void {
                                 .toast = &frontend_toast,
                                 .frame_number = frontend_frame_counter,
                             };
-                            if (handleQuickStateAction(
+                            const quick_state_result = handleQuickStateAction(
                                 allocator,
                                 action,
                                 &machine,
@@ -3624,7 +3633,13 @@ pub fn main(init: std.process.Init) !void {
                                 &wav_recorder,
                                 &frame_counter,
                                 notifications,
-                            )) {
+                            );
+                            if (quick_state_result == .loaded_machine) {
+                                // A quick snapshot may come from a different game;
+                                // keep the save manager targeting the running ROM.
+                                syncFrontendAfterPersistentStateLoad(&frontend_ui, &current_rom_path, &machine);
+                            }
+                            if (quick_state_result != .ignored) {
                                 continue;
                             }
                             const persistent_state_result = handlePersistentStateAction(
@@ -3662,7 +3677,12 @@ pub fn main(init: std.process.Init) !void {
                                         } else if (frontend_ui.overlay == .none or frontend_ui.overlay == .performance_hud) {
                                             frontend_ui.overlay = .pause;
                                             if (audio) |*a| {
+                                                // Record what was actually played, then drop the
+                                                // unplayed tail from both the stream and the shadow
+                                                // so it does not land in an active WAV recording.
+                                                a.syncRecordedPlayback(if (wav_recorder) |*rec| rec else null);
                                                 zsdl3.clearAudioStream(a.stream) catch {};
+                                                a.clearPlaybackShadow();
                                             }
                                         }
                                     }
@@ -3949,10 +3969,17 @@ pub fn main(init: std.process.Init) !void {
                 const pending = machine.takePendingAudio();
                 const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
                 try a.handlePending(pending, z80, machine.palMode(), wav_rec_ptr);
-            } else if (!emulation_paused) {
-                if (machine.smsAudioBuffer()) |sms_samples| {
-                    // SMS: audio already rendered in runFrame; queue to SDL
-                    try a.queueRawSamples(sms_samples);
+            } else {
+                const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
+                if (!emulation_paused) {
+                    if (machine.smsAudioBuffer()) |sms_samples| {
+                        // SMS: audio already rendered in runFrame; queue to SDL
+                        try a.queueRawSamples(sms_samples, wav_rec_ptr);
+                    }
+                } else {
+                    // Keep recording samples the device consumes while an
+                    // overlay pause lets the queued tail play out.
+                    a.syncRecordedPlayback(wav_rec_ptr);
                 }
             }
             frame_phases.audio_ns = (platform.Instant.now() catch audio_start).since(audio_start);
@@ -4849,11 +4876,11 @@ test "quick state helper saves and restores machine state" {
     var frame_counter: u32 = 42;
 
     machine.genesis.writeWorkRamByte(0x20, 0x5A);
-    try std.testing.expect(handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(QuickStateActionResult.handled, handleQuickStateAction(allocator, .save_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     machine.genesis.writeWorkRamByte(0x20, 0x00);
     frame_counter = 99;
-    try std.testing.expect(handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
+    try std.testing.expectEqual(QuickStateActionResult.loaded_machine, handleQuickStateAction(allocator, .load_quick_state, &machine, &quick_state, null, &gif_recorder, &wav_recorder, &frame_counter, .{}));
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);

@@ -342,18 +342,69 @@ export fn retro_get_region() callconv(.c) c_uint {
     return if (c_state.machine.palMode()) RETRO_REGION_PAL else RETRO_REGION_NTSC;
 }
 
+/// Battery-backed storage exposed to the frontend for `.srm` persistence:
+/// cartridge SRAM when present, otherwise I2C EEPROM data. Both buffers are
+/// heap-allocated at cartridge init and stay at a stable address for the
+/// lifetime of the loaded machine.
+fn saveRamBytes(c_state: *CoreState) ?[]u8 {
+    const cart = &c_state.machine.bus.cartridge;
+    if (cart.isRamPersistent()) {
+        if (cart.ram.data) |data| return data;
+    }
+    switch (cart.mapper) {
+        .eeprom_i2c => |*mapper| return mapper.eeprom.data,
+        else => {},
+    }
+    return null;
+}
+
 export fn retro_get_memory_data(id: c_uint) callconv(.c) ?*anyopaque {
     const c_state = core orelse return null;
     return switch (id) {
+        RETRO_MEMORY_SAVE_RAM => if (saveRamBytes(c_state)) |bytes| @ptrCast(bytes.ptr) else null,
         RETRO_MEMORY_SYSTEM_RAM => @ptrCast(&c_state.machine.bus.ram),
         else => null,
     };
 }
 
 export fn retro_get_memory_size(id: c_uint) callconv(.c) usize {
-    _ = core orelse return 0;
+    const c_state = core orelse return 0;
     return switch (id) {
+        RETRO_MEMORY_SAVE_RAM => if (saveRamBytes(c_state)) |bytes| bytes.len else 0,
         RETRO_MEMORY_SYSTEM_RAM => 64 * 1024,
         else => 0,
     };
+}
+
+test "retro memory api exposes battery sram" {
+    const talloc = std.testing.allocator;
+    var rom = [_]u8{0} ** 0x400;
+    @memcpy(rom[0x100..0x104], "SEGA");
+    rom[0x1B0] = 'R';
+    rom[0x1B1] = 'A';
+    rom[0x1B2] = 0xF8;
+    rom[0x1B3] = 0x20;
+    std.mem.writeInt(u32, rom[0x1B4..0x1B8], 0x200001, .big);
+    std.mem.writeInt(u32, rom[0x1B8..0x1BC], 0x203FFF, .big);
+
+    var c_state = CoreState{
+        .machine = try Machine.initFromRomBytes(talloc, &rom),
+        .audio = undefined,
+        .audio_buffer = undefined,
+        .audio_sample_count = 0,
+    };
+    defer c_state.machine.deinit(talloc);
+
+    const bytes = saveRamBytes(&c_state) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(bytes.len > 0);
+
+    // A machine with no SRAM header and no EEPROM exposes nothing.
+    var plain = CoreState{
+        .machine = try Machine.initFromRomBytes(talloc, &[_]u8{0} ** 0x400),
+        .audio = undefined,
+        .audio_buffer = undefined,
+        .audio_sample_count = 0,
+    };
+    defer plain.machine.deinit(talloc);
+    try std.testing.expectEqual(@as(?[]u8, null), saveRamBytes(&plain));
 }

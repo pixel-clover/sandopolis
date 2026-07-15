@@ -84,7 +84,10 @@ pub const SmsBus = struct {
             .ram = self.ram,
             .vdp = self.vdp,
             .input = self.input,
-            .io = undefined, // Rebind after placement
+            // Keeps port state (memory/io control, GG regs); the embedded
+            // pointers and callbacks are stale until rebindPointers /
+            // machine.bindPointers run after placement.
+            .io = self.io,
             .page = self.page,
             .ram_bank_enabled = self.ram_bank_enabled,
             .ram_bank = self.ram_bank,

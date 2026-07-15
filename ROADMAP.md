@@ -76,6 +76,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Startup home screen with recent-ROM history and remembered open-directory state
 - [x] Modal save manager for persistent state slots with runtime metadata and delete support
 - [x] GIF animation recording, WAV audio recording, and BMP screenshot capture
+- [x] WAV recording correctness (SMS and Game Gear audio captured, pause no longer flushes unplayed audio into an active recording)
+- [x] Quick-load and save-manager slot consistency after a cross-game quick-state load
 - [x] Save-state previews/screenshots and pause the flow
 - [x] EA 4-Way Play multitap adapter (4-player support)
 - [x] Sega Mouse peripheral support with 8-nibble TH-toggle protocol
@@ -120,7 +122,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
 - [x] Libretro XRGB8888 pixel format negotiation and reload handling (fixes garbled video in RetroArch)
-- [ ] Libretro save RAM interface (`RETRO_MEMORY_SAVE_RAM`)
+- [x] Libretro save RAM interface (`RETRO_MEMORY_SAVE_RAM` exposing battery SRAM and I2C EEPROM data)
 - [x] Browser keyboard remapping UI with localStorage persistence and duplicate-swap
 - [x] Browser integer scaling mode (whole-pixel multiples)
 - [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
@@ -177,8 +179,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] SMS persistent save states (file-based serialization with source path, Z80, VDP, bus, and audio state)
 - [x] SMS VDP accuracy fixes (name table base in 224-line mode, sprite Y wraparound, line counter reload, VRAM port address masking, and Game Gear
   viewport top in 224-line mode)
-- [x] SMS save-state hardening (format v3 with byte-level sanitization of untrusted input, SG-1000 flag preserved across clone and save, and PAL
-  mode preserved across reset)
+- [x] SMS save-state hardening (format v4 with byte-level sanitization of untrusted input, SG-1000 flag preserved across clone and save, PAL mode
+  preserved across reset, and I/O port and PSG state included)
+- [x] SMS soft reset semantics (Z80 reset pulse with RAM, VDP, PSG, and mapper state preserved instead of a full power cycle)
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
 - [ ] Codemasters mapper
 - [ ] BIOS/boot ROM support

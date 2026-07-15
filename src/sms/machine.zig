@@ -188,7 +188,11 @@ pub const SmsMachine = struct {
     }
 
     pub fn softReset(self: *SmsMachine) void {
-        self.reset();
+        // The console RESET pulses the Z80 /RESET line only; RAM, VDP, PSG,
+        // and mapper state persist. A power cycle goes through reset().
+        if (!self.bound) self.bindPointers();
+        self.z80.softReset();
+        self.z80_cycle_count = 0;
     }
 
     pub fn audioBuffer(self: *const SmsMachine) []const i16 {
@@ -300,6 +304,36 @@ test "sms machine save and restore state" {
     try machine.restoreSnapshot(testing.allocator, &snapshot);
 
     // State should be restored
+    try testing.expectEqual(@as(u8, 0xE0), machine.bus.vdp.regs[1]);
+}
+
+test "sms soft reset preserves ram, vdp, and mapper state" {
+    var rom = [_]u8{0} ** 1024;
+    // LD A, 0xE0; OUT (0xBF), A; LD A, 0x81; OUT (0xBF), A; JR -2 (loop)
+    rom[0] = 0x3E;
+    rom[1] = 0xE0;
+    rom[2] = 0xD3;
+    rom[3] = 0xBF;
+    rom[4] = 0x3E;
+    rom[5] = 0x81;
+    rom[6] = 0xD3;
+    rom[7] = 0xBF;
+    rom[8] = 0x18;
+    rom[9] = 0xFE;
+
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+
+    for (0..5) |_| machine.runFrame();
+    machine.bus.ram[0x100] = 0xA5;
+    machine.bus.page[2] = 5;
+
+    machine.softReset();
+
+    try testing.expectEqual(@as(u16, 0x0000), machine.z80.getPc());
+    try testing.expectEqual(@as(u8, 0xA5), machine.bus.ram[0x100]);
+    try testing.expectEqual(@as(u8, 5), machine.bus.page[2]);
     try testing.expectEqual(@as(u8, 0xE0), machine.bus.vdp.regs[1]);
 }
 
