@@ -1,6 +1,5 @@
 name: Sandopolis CodeQL Config
 
-# Excludes vendored third-party single-file libraries
 paths-ignore:
   - src/frontend/fonts/stb_truetype.h
   - src/cpu/jgz80_bridge.c
