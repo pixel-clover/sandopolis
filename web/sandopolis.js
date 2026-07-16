@@ -83,6 +83,11 @@ async function init() {
             return 0;
         },
         clock_time_get: () => 0,
+        clock_res_get: (clockId, resPtr) => {
+            new DataView(wasm.instance.exports.memory.buffer).setBigUint64(resPtr, 1n, true);
+            return 0;
+        },
+        poll_oneoff: () => ERRNO_NOSYS,
         proc_exit: () => {
         },
         random_get: (buf, len) => {
@@ -91,9 +96,15 @@ async function init() {
         },
     };
 
+    // Fall back to a NOSYS stub for any WASI import the list above does not
+    // name, so a std-library upgrade adding imports cannot break instantiation.
+    const wasiImports = new Proxy(wasiStubs, {
+        get: (target, prop) => target[prop] ?? (() => ERRNO_NOSYS),
+    });
+
     const response = await fetch("sandopolis.wasm");
     const bytes = await response.arrayBuffer();
-    wasm = await WebAssembly.instantiate(bytes, {wasi_snapshot_preview1: wasiStubs});
+    wasm = await WebAssembly.instantiate(bytes, {wasi_snapshot_preview1: wasiImports});
 
     const e = wasm.instance.exports;
     BUTTONS = {
