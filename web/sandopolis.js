@@ -933,8 +933,9 @@ function renderAudio() {
     // Re-read memory.buffer after render call (may have grown via memory.grow)
     const samples = new Int16Array(e.memory.buffer, bufPtr, sampleCount);
     audioNode.port.postMessage(samples.slice());
-    // Query buffer level for pacing at ~10 Hz instead of every frame.
-    if ((++renderAudioFrameCount % 6) === 0) {
+    // Query buffer level for pacing at ~30 Hz; the rate-trim controller is
+    // gentle, so mildly stale feedback is fine but fresher converges faster.
+    if ((++renderAudioFrameCount % 2) === 0) {
         audioNode.port.postMessage("query-level");
     }
 }
@@ -1047,7 +1048,7 @@ async function loadRom(file) {
     // doesn't inherit fast/slow pacing or stale buffer-fill numbers from
     // the previous game. Without this the first second of playback can run
     // at ~2x or ~0.5x speed.
-    pacingState = "normal";
+    rateTrim = 1.0;
     audioBufferLevel = 0;
     audioBufferCapacity = 1;
     renderAudioFrameCount = 0;
@@ -1111,39 +1112,58 @@ function frameLoop(now) {
     tickEmulator(now);
 }
 
-// Pacing state machine with hysteresis. Without hysteresis the discrete
-// thresholds flip every frame whenever the buffer fill hovers near a
-// boundary, producing visible micro-judder.
-let pacingState = "normal"; // "fast" | "normal" | "slow"
+// Frame pacing: fixed-timestep accumulator with audio-driven rate trim.
+//
+// Emulation is decoupled from the display refresh rate: each rAF tick runs
+// however many emulated frames the elapsed wall time calls for (0 to
+// MAX_FRAME_STEPS), carrying the fractional remainder forward, so the exact
+// console frame rate is held on any panel (60/75/120/144 Hz). Drift between
+// the emulator clock and the audio device clock is absorbed by trimming the
+// effective frame interval by a fraction of a percent to hold the worklet
+// ring buffer at a small fixed level, instead of skipping whole frames.
+const MAX_FRAME_STEPS = 3;
+// Target buffered audio in interleaved stereo samples at 48kHz (~90 ms).
+const AUDIO_TARGET_SAMPLES = 8640;
+let rateTrim = 1.0;
 
-function updatePacingState(fill) {
-    if (pacingState === "fast") {
-        if (fill > 0.20) pacingState = "normal";
-    } else if (pacingState === "slow") {
-        if (fill < 0.50) pacingState = "normal";
-    } else {
-        if (fill < 0.05) pacingState = "fast";
-        else if (fill > 0.65) pacingState = "slow";
+function updateRateTrim() {
+    if (!audioNode || !audioCtx || audioCtx.state !== "running" || audioBufferCapacity <= 1) {
+        rateTrim = 1.0;
+        return;
     }
+    // Proportional control: buffer above target runs slightly slower so the
+    // device drains it, below target slightly faster. Steady-state trim stays
+    // well under 0.5%; the 5% clamp only engages while (re)filling after a
+    // ROM load or a stall.
+    const err = (audioBufferLevel - AUDIO_TARGET_SAMPLES) / AUDIO_TARGET_SAMPLES;
+    rateTrim = 1 + Math.max(-0.05, Math.min(0.05, err * 0.05));
 }
 
 function tickEmulator(now) {
     if (!running || !emu) return;
 
-    if (audioBufferCapacity > 0) {
-        updatePacingState(audioBufferLevel / audioBufferCapacity);
-    }
-    let paceMultiplier = 0.8;
-    if (pacingState === "fast") paceMultiplier = 0.5;
-    else if (pacingState === "slow") paceMultiplier = 0.95;
+    updateRateTrim();
+    const effInterval = frameInterval * rateTrim;
+    const elapsed = now - lastFrameTime;
+    if (elapsed < effInterval) return;
 
-    if (now - lastFrameTime < frameInterval * paceMultiplier) return;
-    lastFrameTime = now;
+    let steps = Math.floor(elapsed / effInterval);
+    if (steps > MAX_FRAME_STEPS) {
+        // Long stall (hidden tab, GC pause): drop the backlog instead of
+        // fast-forwarding the game to catch up.
+        steps = 1;
+        lastFrameTime = now;
+    } else {
+        lastFrameTime += steps * effInterval;
+    }
 
     const e = wasm.instance.exports;
     pollGamepads();
-    e.sandopolis_run_frame(emu);
-    renderAudio();
+    for (let i = 0; i < steps; i++) {
+        e.sandopolis_run_frame(emu);
+        renderAudio();
+        updateFps();
+    }
 
     const width = e.sandopolis_screen_width(emu);
     const height = e.sandopolis_screen_height(emu);
@@ -1170,7 +1190,6 @@ function tickEmulator(now) {
         pixels[off + 3] = 0xFF;
     }
     ctx.putImageData(imageData, 0, 0);
-    updateFps();
 }
 
 function resumeFrame() {
