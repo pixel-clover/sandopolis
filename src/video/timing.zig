@@ -358,6 +358,31 @@ pub fn setScanlineState(self: *Vdp, line: u16, visible_lines: u16, total_lines: 
     return entering_vblank;
 }
 
+/// Master cycles per scanline for the current video region.
+pub fn masterCyclesPerLine(self: *const Vdp) u16 {
+    return if (self.pal_mode) clock.pal_master_cycles_per_line else clock.ntsc_master_cycles_per_line;
+}
+
+/// The line and intra-line master-cycle position where execution stopped
+/// (used to resume a frame mid-line, e.g. after a save-state load).
+pub const LinePosition = struct { line: u16, master_cycle: u16 };
+
+pub fn linePosition(self: *const Vdp) LinePosition {
+    return .{ .line = self.scanline, .master_cycle = self.line_master_cycle };
+}
+
+/// Restore the raw hblank flag for a line's starting offset WITHOUT the
+/// setHBlank transition side effects (FIFO phase reset, HV counter latch):
+/// the state is being re-established for a resume, not transitioning live.
+pub fn restoreHBlankFlag(self: *Vdp, active: bool) void {
+    self.hblank = active;
+}
+
+/// Flip the interlace odd/even field at the end of a frame.
+pub fn advanceFrameParity(self: *Vdp) void {
+    self.odd_frame = !self.odd_frame;
+}
+
 pub fn setHBlank(self: *Vdp, active: bool) void {
     if (self.hblank != active) {
         fifo.resetTransferPhase(self);

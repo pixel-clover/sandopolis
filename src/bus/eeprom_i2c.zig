@@ -68,6 +68,7 @@ pub const EepromI2c = struct {
 
     // Config
     spec: I2cSpec,
+    wiring: WiringConfig,
     scl_in_bit: u3,
     sda_in_bit: u3,
     sda_out_bit: u3,
@@ -76,28 +77,54 @@ pub const EepromI2c = struct {
     data: []u8,
     dirty: bool = false,
 
-    // Address range for bus mapping
-    address_start: u32,
-    address_end: u32,
+    // Acclaim 32M boards (LZ95A53 PAL): word writes to the control window
+    // bank-shift $200000-$2FFFFF reads between cartridge ROM (bit 0 set)
+    // and the serial EEPROM (bit 0 clear).  Power-on state exposes ROM.
+    rom_readable: bool = true,
 
     pub fn init(
         spec_index: usize,
         wiring: WiringConfig,
         data: []u8,
-        addr_start: u32,
-        addr_end: u32,
     ) EepromI2c {
         const spec = i2c_specs[spec_index];
         const bits = wiringBits(wiring);
         return .{
             .spec = spec,
+            .wiring = wiring,
             .scl_in_bit = bits.scl_in,
             .sda_in_bit = bits.sda_in,
             .sda_out_bit = bits.sda_out,
             .data = data,
-            .address_start = addr_start,
-            .address_end = addr_end,
         };
+    }
+
+    /// Address window the EEPROM answers READS in, per board wiring
+    /// (matches the Genesis Plus GX memory maps).
+    fn inReadWindow(self: *const EepromI2c, address: u32) bool {
+        return switch (self.wiring) {
+            .sega, .ea, .acclaim_16m => address >= 0x20_0000 and address <= 0x3F_FFFF,
+            // Bank-shifted: ROM is exposed until the PAL selects the EEPROM.
+            .acclaim_32m => !self.rom_readable and address >= 0x20_0000 and address <= 0x2F_FFFF,
+            .codemasters => address >= 0x38_0000 and address <= 0x3F_FFFF,
+        };
+    }
+
+    /// Address window the EEPROM (or its control PAL) claims WRITES in.
+    fn inWriteWindow(self: *const EepromI2c, address: u32) bool {
+        return switch (self.wiring) {
+            .sega, .ea, .acclaim_16m => address >= 0x20_0000 and address <= 0x3F_FFFF,
+            .acclaim_32m => address >= 0x20_0000 and address <= 0x2F_FFFF,
+            .codemasters => address >= 0x30_0000 and address <= 0x37_FFFF,
+        };
+    }
+
+    fn latchLines(self: *EepromI2c, value: u8) void {
+        self.old_sda = self.sda;
+        self.old_scl = self.scl;
+        self.sda = @truncate((value >> self.sda_in_bit) & 1);
+        self.scl = @truncate((value >> self.scl_in_bit) & 1);
+        self.update();
     }
 
     fn detectStart(self: *EepromI2c) void {
@@ -105,11 +132,13 @@ pub const EepromI2c = struct {
         if (self.old_scl == 1 and self.scl == 1) {
             if (self.old_sda == 1 and self.sda == 0) {
                 self.cycles = 0;
-                self.device_address = 0;
-                self.word_address = 0;
                 if (self.spec.address_bits == 7) {
+                    self.word_address = 0;
                     self.state = .get_word_adr_7bits;
                 } else {
+                    // Keep word_address: a repeated START after setting the
+                    // word address is the standard I2C random-read sequence.
+                    self.device_address = 0;
                     self.state = .get_device_adr;
                 }
             }
@@ -144,14 +173,21 @@ pub const EepromI2c = struct {
                 if (self.old_scl == 1 and self.scl == 0) {
                     if (self.cycles == 9) {
                         self.cycles = 1;
-                        // Shift device address according to spec
-                        self.device_address = @as(u16, self.device_address) << @intCast(self.spec.address_bits);
+                        // Shift device address according to spec. Widen to u32:
+                        // address_bits is 16 for the larger parts, where the
+                        // device bits shift entirely out of the word address.
+                        self.device_address = @truncate(@as(u32, self.device_address) << @intCast(self.spec.address_bits));
                         if (self.rw == 1) {
                             self.state = .read_data;
-                        } else if (self.spec.address_bits == 16) {
-                            self.state = .get_word_adr_high;
                         } else {
-                            self.state = .get_word_adr_low;
+                            // A write transaction supplies a fresh word
+                            // address; a read (rw==1) keeps the current one.
+                            self.word_address = 0;
+                            if (self.spec.address_bits == 16) {
+                                self.state = .get_word_adr_high;
+                            } else {
+                                self.state = .get_word_adr_low;
+                            }
                         }
                     } else {
                         self.cycles += 1;
@@ -323,39 +359,104 @@ pub const EepromI2c = struct {
     }
 
     pub fn readByte(self: *const EepromI2c, address: u32) ?u8 {
-        if (address < self.address_start or address > self.address_end) return null;
+        if (!self.inReadWindow(address)) return null;
+        // The EEPROM drives D0-D7, i.e. the odd byte lane; even byte reads
+        // are open bus (null lets the caller's open-bus handling apply).
         if ((address & 1) != 0) {
-            // Odd byte: return SDA output on the configured bit
             return @as(u8, self.output()) << self.sda_out_bit;
         }
-        return 0;
+        return null;
     }
 
     pub fn readWord(self: *const EepromI2c, address: u32) ?u16 {
-        if (address < self.address_start or address > self.address_end) return null;
-        const sda_out: u16 = @as(u16, self.output()) << self.sda_out_bit;
-        return sda_out;
+        if (!self.inReadWindow(address)) return null;
+        // SDA appears on D0-D7, the low byte of a word read.
+        return @as(u16, self.output()) << self.sda_out_bit;
     }
 
     pub fn writeByte(self: *EepromI2c, address: u32, value: u8) bool {
-        if (address < self.address_start or address > self.address_end) return false;
-        self.old_sda = self.sda;
-        self.old_scl = self.scl;
-        self.sda = @truncate((value >> self.sda_in_bit) & 1);
-        self.scl = @truncate((value >> self.scl_in_bit) & 1);
-        self.update();
+        if (!self.inWriteWindow(address)) return false;
+        switch (self.wiring) {
+            // Only /LWR (odd byte lane) reaches the EEPROM; even byte
+            // writes are consumed but ignored.
+            .sega, .ea => if ((address & 1) != 0) self.latchLines(value),
+            // /LWR & /UWR unused: any byte write latches both lines.
+            .acclaim_16m, .codemasters => self.latchLines(value),
+            // LZ95A53 PAL: D0 routes to SDA on odd writes, SCL on even.
+            .acclaim_32m => {
+                self.old_sda = self.sda;
+                self.old_scl = self.scl;
+                if ((address & 1) != 0) {
+                    self.sda = @truncate(value & 1);
+                } else {
+                    self.scl = @truncate(value & 1);
+                }
+                self.update();
+            },
+        }
         return true;
     }
 
     pub fn writeWord(self: *EepromI2c, address: u32, value: u16) bool {
-        if (address < self.address_start or address > self.address_end) return false;
-        const byte: u8 = @truncate((value >> 8) & 0xFF);
-        self.old_sda = self.sda;
-        self.old_scl = self.scl;
-        self.sda = @truncate((byte >> self.sda_in_bit) & 1);
-        self.scl = @truncate((byte >> self.scl_in_bit) & 1);
-        self.update();
+        if (!self.inWriteWindow(address)) return false;
+        switch (self.wiring) {
+            // The lines sit on D0-D7, so a word write drives them from the
+            // LOW byte of the value.
+            .sega, .ea, .acclaim_16m, .codemasters => self.latchLines(@truncate(value)),
+            // Word writes (both strobes) hit the PAL bank-shift register.
+            .acclaim_32m => self.rom_readable = (value & 1) != 0,
+        }
         return true;
+    }
+
+    /// The mutable I2C protocol state, for save states.  Configuration
+    /// (spec, wiring, address window) is rebuilt from the ROM; the storage
+    /// bytes travel separately.
+    pub const ProtocolState = struct {
+        sda: u1 = 0,
+        scl: u1 = 0,
+        old_sda: u1 = 0,
+        old_scl: u1 = 0,
+        cycles: u4 = 0,
+        rw: u1 = 0,
+        device_address: u16 = 0,
+        word_address: u16 = 0,
+        buffer: u8 = 0,
+        state: I2cState = .stand_by,
+        dirty: bool = false,
+        rom_readable: bool = true,
+    };
+
+    pub fn captureProtocolState(self: *const EepromI2c) ProtocolState {
+        return .{
+            .sda = self.sda,
+            .scl = self.scl,
+            .old_sda = self.old_sda,
+            .old_scl = self.old_scl,
+            .cycles = self.cycles,
+            .rw = self.rw,
+            .device_address = self.device_address,
+            .word_address = self.word_address,
+            .buffer = self.buffer,
+            .state = self.state,
+            .dirty = self.dirty,
+            .rom_readable = self.rom_readable,
+        };
+    }
+
+    pub fn restoreProtocolState(self: *EepromI2c, state: ProtocolState) void {
+        self.sda = state.sda;
+        self.scl = state.scl;
+        self.old_sda = state.old_sda;
+        self.old_scl = state.old_scl;
+        self.cycles = state.cycles;
+        self.rw = state.rw;
+        self.device_address = state.device_address;
+        self.word_address = state.word_address;
+        self.buffer = state.buffer;
+        self.state = state.state;
+        self.dirty = state.dirty;
+        self.rom_readable = state.rom_readable;
     }
 
     pub fn resetState(self: *EepromI2c) void {
@@ -369,6 +470,7 @@ pub const EepromI2c = struct {
         self.word_address = 0;
         self.buffer = 0;
         self.state = .stand_by;
+        self.rom_readable = true;
     }
 };
 
@@ -445,7 +547,7 @@ pub fn storageSize(spec_index: usize) usize {
 // ---- Tests ----
 
 fn makeTestEeprom(spec_index: usize, wiring: WiringConfig, data: []u8) EepromI2c {
-    return EepromI2c.init(spec_index, wiring, data, 0x200000, 0x3FFFFF);
+    return EepromI2c.init(spec_index, wiring, data);
 }
 
 fn sendStart(eeprom: *EepromI2c, wiring: WiringConfig) void {
@@ -634,6 +736,77 @@ test "i2c eeprom resetState clears protocol state but not data" {
     eeprom.resetState();
     try std.testing.expectEqual(I2cState.stand_by, eeprom.state);
     try std.testing.expectEqual(@as(u8, 0xAB), data[0x00]); // data preserved
+}
+
+test "i2c eeprom 16-bit mode write and read cycle" {
+    var data = [_]u8{0} ** 0x10000;
+    var eeprom = makeTestEeprom(12, .sega, &data); // 24C512, 16-bit word address
+
+    // Write 0x5C to address 0x1234
+    sendStart(&eeprom, .sega);
+    try std.testing.expectEqual(I2cState.get_device_adr, eeprom.state);
+    sendDataByte(&eeprom, .sega, 0xA0); // device addr, W=0
+    sendDataByte(&eeprom, .sega, 0x12); // word address high
+    sendDataByte(&eeprom, .sega, 0x34); // word address low
+    sendDataByte(&eeprom, .sega, 0x5C);
+    sendStop(&eeprom, .sega);
+
+    try std.testing.expectEqual(@as(u8, 0x5C), data[0x1234]);
+
+    // Read back
+    sendStart(&eeprom, .sega);
+    sendDataByte(&eeprom, .sega, 0xA0);
+    sendDataByte(&eeprom, .sega, 0x12);
+    sendDataByte(&eeprom, .sega, 0x34);
+    sendStart(&eeprom, .sega); // repeated START
+    sendDataByte(&eeprom, .sega, 0xA1); // device addr, R=1
+    const result = readDataByte(&eeprom, .sega, false);
+    sendStop(&eeprom, .sega);
+
+    try std.testing.expectEqual(@as(u8, 0x5C), result);
+}
+
+test "acclaim 32m bank-shift exposes rom until the eeprom is selected" {
+    var data = [_]u8{0xFF} ** 512;
+    var eeprom = makeTestEeprom(4, .acclaim_32m, &data); // 24C04 (NBA Jam TE)
+
+    // Power-on: reads fall through to cartridge ROM across the window.
+    try std.testing.expectEqual(@as(?u8, null), eeprom.readByte(0x20_0001));
+    try std.testing.expectEqual(@as(?u16, null), eeprom.readWord(0x2A_BCDE));
+
+    // Word write with bit 0 clear selects the EEPROM for reads.
+    try std.testing.expect(eeprom.writeWord(0x20_0000, 0x0000));
+    try std.testing.expect(eeprom.readWord(0x20_0000) != null);
+    // ...but only in $200000-$2FFFFF; above stays ROM.
+    try std.testing.expectEqual(@as(?u16, null), eeprom.readWord(0x30_0000));
+
+    // Bit 0 set switches reads back to ROM.
+    try std.testing.expect(eeprom.writeWord(0x20_0000, 0x0001));
+    try std.testing.expectEqual(@as(?u8, null), eeprom.readByte(0x20_0001));
+}
+
+test "sega wiring word writes drive the i2c lines from the low byte" {
+    var data = [_]u8{0} ** 128;
+    var eeprom = makeTestEeprom(0, .sega, &data);
+
+    // SCL is D1, SDA is D0 — both live in the LOW byte of a word write.
+    try std.testing.expect(eeprom.writeWord(0x20_0000, 0x0003));
+    try std.testing.expectEqual(@as(u1, 1), eeprom.sda);
+    try std.testing.expectEqual(@as(u1, 1), eeprom.scl);
+
+    try std.testing.expect(eeprom.writeWord(0x20_0000, 0x0300));
+    try std.testing.expectEqual(@as(u1, 0), eeprom.sda);
+    try std.testing.expectEqual(@as(u1, 0), eeprom.scl);
+}
+
+test "codemasters wiring uses split write and read windows" {
+    var data = [_]u8{0} ** 1024;
+    var eeprom = makeTestEeprom(5, .codemasters, &data); // 24C08
+
+    try std.testing.expect(!eeprom.writeByte(0x20_0001, 0xFF)); // outside write window
+    try std.testing.expect(eeprom.writeByte(0x30_0000, 0x03));
+    try std.testing.expectEqual(@as(?u8, null), eeprom.readByte(0x30_0001)); // no reads here
+    try std.testing.expect(eeprom.readByte(0x38_0001) != null);
 }
 
 test "i2c detect finds known game by product code" {

@@ -138,6 +138,11 @@ pub fn BlipBuf(comptime capacity: usize) type {
             const interp: i32 = @intCast((fixed >> (phase_shift - delta_bits)) & (@as(u32, @intCast(delta_unit)) - 1));
             const pos: usize = @intCast(fixed >> frac_bits);
 
+            // Guard against writes past the buffer (the reference C code
+            // asserts here): a caller that accumulates more than the blip
+            // capacity before reading must not corrupt memory.
+            if (pos + 2 * half_width > buf_len) return;
+
             // In the original C code, `in` is a pointer to bl_step[phase][0].
             // Accessing in[half_width + i] reads into bl_step[phase + 1][i].
             // Similarly, rev points to bl_step[phase_count - phase][0] and

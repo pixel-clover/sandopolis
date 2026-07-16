@@ -4,16 +4,20 @@ const c = @cImport({
 
 const std = @import("std");
 const clock = @import("../clock.zig");
+const audio_events = @import("../audio/events.zig");
 
 pub const Z80 = struct {
     handle: ?*c.Jgz80Handle,
 
-    pub const YmWriteEvent = c.Jgz80YmWriteEvent;
+    // The audio event types are owned by audio/events.zig (both files
+    // translate the same C header, so the types are identical); these
+    // aliases keep the producer side readable.
+    pub const YmWriteEvent = audio_events.YmWriteEvent;
+    pub const YmDacSampleEvent = audio_events.YmDacSampleEvent;
+    pub const YmResetEvent = audio_events.YmResetEvent;
+    pub const PsgCommandEvent = audio_events.PsgCommandEvent;
     pub const AudioOpTraceEntry = c.Jgz80AudioOpTraceEntry;
     pub const InstructionTraceEntry = c.Jgz80InstructionTraceEntry;
-    pub const YmDacSampleEvent = c.Jgz80YmDacSampleEvent;
-    pub const YmResetEvent = c.Jgz80YmResetEvent;
-    pub const PsgCommandEvent = c.Jgz80PsgCommandEvent;
     pub const RegisterDump = c.Jgz80RegisterDump;
     pub const State = c.Jgz80State;
 
@@ -43,6 +47,75 @@ pub const Z80 = struct {
 
     pub fn restoreState(self: *Z80, state: *const State) void {
         if (self.handle) |h| c.jgz80_restore_state(h, state);
+    }
+
+    /// State fields that belong to the audio side (YM shadow registers,
+    /// timers, event queues, PSG latches) rather than Z80 CPU execution.
+    const audio_state_fields = [_][]const u8{
+        "audio_master_offset",
+        "ym_addr",
+        "ym_regs",
+        "ym_key_mask",
+        "ym_offset_cursor",
+        "ym_internal_master_remainder",
+        "ym_cycle",
+        "ym_busy",
+        "ym_busy_cycles_remaining",
+        "ym_last_status_read",
+        "ym_timer_a_cnt",
+        "ym_timer_a_reg",
+        "ym_timer_a_load_lock",
+        "ym_timer_a_load",
+        "ym_timer_a_enable",
+        "ym_timer_a_reset",
+        "ym_timer_a_load_latch",
+        "ym_timer_a_overflow_flag",
+        "ym_timer_a_overflow",
+        "ym_timer_b_cnt",
+        "ym_timer_b_subcnt",
+        "ym_timer_b_reg",
+        "ym_timer_b_load_lock",
+        "ym_timer_b_load",
+        "ym_timer_b_enable",
+        "ym_timer_b_reset",
+        "ym_timer_b_load_latch",
+        "ym_timer_b_overflow_flag",
+        "ym_timer_b_overflow",
+        "audio_event_sequence",
+        "ym_write_events",
+        "ym_write_write_index",
+        "ym_write_read_index",
+        "ym_write_count",
+        "ym_dac_samples",
+        "ym_dac_write_index",
+        "ym_dac_read_index",
+        "ym_dac_count",
+        "ym_reset_events",
+        "ym_reset_write_index",
+        "ym_reset_read_index",
+        "ym_reset_count",
+        "psg_commands",
+        "psg_command_write_index",
+        "psg_command_read_index",
+        "psg_command_count",
+        "psg_last",
+        "psg_tone",
+        "psg_volume",
+        "psg_noise",
+        "psg_latched_channel",
+        "psg_latched_is_volume",
+    };
+
+    /// Re-apply only the audio-side state from `after`, keeping the current
+    /// CPU execution state. Used when the bus rewinds and replays a Z80
+    /// control-line window: the CPU re-executes the window, but chip time
+    /// and the audio event queues must not advance twice.
+    pub fn restoreAudioState(self: *Z80, after: *const State) void {
+        var merged = self.captureState();
+        inline for (audio_state_fields) |name| {
+            @field(merged, name) = @field(after, name);
+        }
+        self.restoreState(&merged);
     }
 
     pub fn deinit(self: *Z80) void {
@@ -207,27 +280,51 @@ pub const Z80 = struct {
             self.pendingPsgCommandCount() != 0;
     }
 
+    /// The audio-owned event structs must mirror the C bridge structs
+    /// exactly: the take* functions reinterpret the destination buffers
+    /// across the C boundary.
+    fn assertEventLayoutMatches(comptime ZigType: type, comptime CType: type) void {
+        comptime {
+            const zig_fields = @typeInfo(ZigType).@"struct".fields;
+            const c_fields = @typeInfo(CType).@"struct".fields;
+            std.debug.assert(@sizeOf(ZigType) == @sizeOf(CType));
+            std.debug.assert(@alignOf(ZigType) == @alignOf(CType));
+            std.debug.assert(zig_fields.len == c_fields.len);
+            for (zig_fields) |field| {
+                std.debug.assert(@offsetOf(ZigType, field.name) == @offsetOf(CType, field.name));
+                std.debug.assert(field.type == @FieldType(CType, field.name));
+            }
+        }
+    }
+
+    comptime {
+        assertEventLayoutMatches(YmWriteEvent, c.Jgz80YmWriteEvent);
+        assertEventLayoutMatches(YmDacSampleEvent, c.Jgz80YmDacSampleEvent);
+        assertEventLayoutMatches(YmResetEvent, c.Jgz80YmResetEvent);
+        assertEventLayoutMatches(PsgCommandEvent, c.Jgz80PsgCommandEvent);
+    }
+
     pub fn takeYmWrites(self: *Z80, dest: []YmWriteEvent) usize {
         if (dest.len == 0) return 0;
-        if (self.handle) |h| return c.jgz80_take_ym_writes(h, dest.ptr, @intCast(dest.len));
+        if (self.handle) |h| return c.jgz80_take_ym_writes(h, @ptrCast(dest.ptr), @intCast(dest.len));
         return 0;
     }
 
     pub fn takeYmDacSamples(self: *Z80, dest: []YmDacSampleEvent) usize {
         if (dest.len == 0) return 0;
-        if (self.handle) |h| return c.jgz80_take_ym_dac_samples(h, dest.ptr, @intCast(dest.len));
+        if (self.handle) |h| return c.jgz80_take_ym_dac_samples(h, @ptrCast(dest.ptr), @intCast(dest.len));
         return 0;
     }
 
     pub fn takeYmResets(self: *Z80, dest: []YmResetEvent) usize {
         if (dest.len == 0) return 0;
-        if (self.handle) |h| return c.jgz80_take_ym_resets(h, dest.ptr, @intCast(dest.len));
+        if (self.handle) |h| return c.jgz80_take_ym_resets(h, @ptrCast(dest.ptr), @intCast(dest.len));
         return 0;
     }
 
     pub fn takePsgCommands(self: *Z80, dest: []PsgCommandEvent) usize {
         if (dest.len == 0) return 0;
-        if (self.handle) |h| return c.jgz80_take_psg_commands(h, dest.ptr, @intCast(dest.len));
+        if (self.handle) |h| return c.jgz80_take_psg_commands(h, @ptrCast(dest.ptr), @intCast(dest.len));
         return 0;
     }
 

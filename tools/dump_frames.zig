@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
 const c = @cImport({
@@ -61,7 +62,7 @@ fn sym(lib: *std.DynLib, comptime T: type, name: [:0]const u8) !T {
 
 // Captured reference video frame (RGB, one byte per channel).
 const Captured = struct {
-    rgb: std.ArrayListUnmanaged(u8) = .{},
+    rgb: std.ArrayListUnmanaged(u8) = .empty,
     width: usize = 0,
     height: usize = 0,
 };
@@ -169,7 +170,7 @@ fn inputStateCb(_: c_uint, _: c_uint, _: c_uint, _: c_uint) callconv(.c) i16 {
 }
 
 fn writePpm(path: []const u8, rgb: []const u8, width: usize, height: usize) !void {
-    var file = try std.fs.cwd().createFile(path, .{});
+    var file = try platform.cwd().createFile(path, .{});
     defer file.close();
     var buf: [64]u8 = undefined;
     const header = try std.fmt.bufPrint(&buf, "P6\n{d} {d}\n255\n", .{ width, height });
@@ -177,19 +178,20 @@ fn writePpm(path: []const u8, rgb: []const u8, width: usize, height: usize) !voi
     try file.writeAll(rgb);
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var arg_it = try std.process.argsWithAllocator(allocator);
+    var arg_it = try platform.argsWithAllocator(allocator);
     defer arg_it.deinit();
     const args = try parseArgs(&arg_it);
 
     var api = try ReferenceApi.open(default_core_path);
     defer api.lib.close();
 
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try platform.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
     const cwd_z = try allocator.dupeZ(u8, cwd);
     defer allocator.free(cwd_z);
@@ -248,7 +250,7 @@ pub fn main() !void {
     try writePpm(sando_path, srgb, sw, sh);
 
     var out_buf: [512]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&out_buf);
+    var w = platform.stdout().writer(&out_buf);
     const stdout = &w.interface;
     try stdout.print(
         "frame {d} ({s}) pixfmt={d}\n  gpgx : {d}x{d} -> {s}\n  sando: {d}x{d} -> {s}\n",
@@ -257,7 +259,7 @@ pub fn main() !void {
     try stdout.flush();
 }
 
-fn parseArgs(it: *std.process.ArgIterator) !Args {
+fn parseArgs(it: *std.process.Args.Iterator) !Args {
     _ = it.next();
     const rom = it.next() orelse {
         std.debug.print("Usage: dump-frames <rom> <frame> [--pal] [--out PREFIX]\n", .{});

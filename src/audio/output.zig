@@ -6,10 +6,11 @@ const eq_mod = @import("eq.zig");
 const Eq3Band = eq_mod.Eq3Band;
 const PendingAudioFrames = @import("timing.zig").PendingAudioFrames;
 const Z80 = @import("../cpu/z80.zig").Z80;
-const YmWriteEvent = Z80.YmWriteEvent;
-const YmDacSampleEvent = Z80.YmDacSampleEvent;
-const YmResetEvent = Z80.YmResetEvent;
-const PsgCommandEvent = Z80.PsgCommandEvent;
+const audio_events = @import("events.zig");
+const YmWriteEvent = audio_events.YmWriteEvent;
+const YmDacSampleEvent = audio_events.YmDacSampleEvent;
+const YmResetEvent = audio_events.YmResetEvent;
+const PsgCommandEvent = audio_events.PsgCommandEvent;
 const psg_mod = @import("psg.zig");
 const Psg = psg_mod.Psg;
 const PsgStereoSample = psg_mod.PsgStereoSample;
@@ -24,6 +25,12 @@ const YmEventKind = enum {
 const YmEventOrder = struct {
     master_offset: u32,
     sequence: u32,
+
+    fn isBefore(self: YmEventOrder, other: YmEventOrder) bool {
+        if (self.master_offset != other.master_offset)
+            return self.master_offset < other.master_offset;
+        return self.sequence < other.sequence;
+    }
 };
 
 const PendingAudioEvents = struct {
@@ -229,7 +236,17 @@ pub const AudioOutput = struct {
     }
 
     pub fn setPsgVolume(self: *AudioOutput, percent: u8) void {
+        const old_gain = self.blipPsgGainForVolume();
         self.psg_volume_percent = @min(percent, 200);
+        // Rebase the cached emitted levels to the new gain: the standing
+        // output level converges at the next PSG transition instead of the
+        // gain change itself being emitted as an instantaneous step (pop).
+        const new_gain = self.blipPsgGainForVolume();
+        if (old_gain > 0.0 and new_gain != old_gain) {
+            const scale = new_gain / old_gain;
+            self.blip_psg_last_left = @intFromFloat(@as(f32, @floatFromInt(self.blip_psg_last_left)) * scale);
+            self.blip_psg_last_right = @intFromFloat(@as(f32, @floatFromInt(self.blip_psg_last_right)) * scale);
+        }
     }
 
     pub fn setTimingMode(self: *AudioOutput, is_pal: bool) void {
@@ -430,30 +447,49 @@ pub const AudioOutput = struct {
         var produced: u32 = 0;
 
         while (produced < pending.fm_frames) {
-            const master_time: u32 = pending.fm_start_remainder + produced * fm_period;
-            const next_boundary: u32 = master_time + fm_period;
+            // fm_start_remainder is time already elapsed into the current
+            // sample period at window start, so sample N completes
+            // (period - remainder) + N*period master cycles into the window.
+            const boundary: u32 = (fm_period - pending.fm_start_remainder) + produced * fm_period;
 
             // Apply all events that fall before this sample boundary.
             while (true) {
-                // Find the next event (write, DAC, or reset) by timestamp.
-                var best_offset: u32 = next_boundary;
+                // Find the next event by (timestamp, emission sequence):
+                // same-offset events must apply in the order the guest
+                // emitted them, not in a fixed kind order.
+                var best_order = YmEventOrder{
+                    .master_offset = boundary,
+                    .sequence = std.math.maxInt(u32),
+                };
                 var best_kind: ?YmEventKind = null;
 
-                if (yw < ym_writes.len and ym_writes[yw].master_offset < next_boundary) {
-                    if (ym_writes[yw].master_offset < best_offset or best_kind == null) {
-                        best_offset = ym_writes[yw].master_offset;
+                if (yw < ym_writes.len and ym_writes[yw].master_offset < boundary) {
+                    const order = YmEventOrder{
+                        .master_offset = ym_writes[yw].master_offset,
+                        .sequence = ym_writes[yw].sequence,
+                    };
+                    if (best_kind == null or order.isBefore(best_order)) {
+                        best_order = order;
                         best_kind = .write;
                     }
                 }
-                if (yd < ym_dac_samples.len and ym_dac_samples[yd].master_offset < next_boundary) {
-                    if (ym_dac_samples[yd].master_offset < best_offset or best_kind == null) {
-                        best_offset = ym_dac_samples[yd].master_offset;
+                if (yd < ym_dac_samples.len and ym_dac_samples[yd].master_offset < boundary) {
+                    const order = YmEventOrder{
+                        .master_offset = ym_dac_samples[yd].master_offset,
+                        .sequence = ym_dac_samples[yd].sequence,
+                    };
+                    if (best_kind == null or order.isBefore(best_order)) {
+                        best_order = order;
                         best_kind = .dac;
                     }
                 }
-                if (yr < ym_reset_events.len and ym_reset_events[yr].master_offset < next_boundary) {
-                    if (ym_reset_events[yr].master_offset < best_offset or best_kind == null) {
-                        best_offset = ym_reset_events[yr].master_offset;
+                if (yr < ym_reset_events.len and ym_reset_events[yr].master_offset < boundary) {
+                    const order = YmEventOrder{
+                        .master_offset = ym_reset_events[yr].master_offset,
+                        .sequence = ym_reset_events[yr].sequence,
+                    };
+                    if (best_kind == null or order.isBefore(best_order)) {
+                        best_order = order;
                         best_kind = .reset;
                     }
                 }
@@ -493,12 +529,14 @@ pub const AudioOutput = struct {
                 cur_r = 0;
             }
 
-            // Feed delta into blip buffer.
+            // Feed delta into blip buffer.  The last sample of a window can
+            // complete exactly at the window end; clamp inside the frame.
+            const delta_time = @min(boundary, pending.master_cycles -| 1);
             const dl = cur_l - self.blip_fm_last_left;
             const dr = cur_r - self.blip_fm_last_right;
             self.blip_fm_last_left = cur_l;
             self.blip_fm_last_right = cur_r;
-            self.blip.addDelta(master_time, dl, dr);
+            self.blip.addDelta(delta_time, dl, dr);
 
             self.last_ym_left = @as(f32, @floatFromInt(cur_l)) / 49152.0;
             self.last_ym_right = @as(f32, @floatFromInt(cur_r)) / 49152.0;
@@ -539,16 +577,21 @@ pub const AudioOutput = struct {
         const psg_gain = self.blipPsgGainForVolume();
         const psg_clock: u32 = clock.psg_master_cycles_per_sample;
         var psg_cmd_cursor: usize = 0;
-        var master_cursor: u32 = 0;
         var produced: u32 = 0;
 
         while (produced < pending.psg_frames) {
-            const master_time: u32 = pending.psg_start_remainder + produced * psg_clock;
+            // See feedYmNativeSamplesToBlip: the start remainder is time
+            // already elapsed into the current PSG period at window start.
+            const boundary: u32 = (psg_clock - pending.psg_start_remainder) + produced * psg_clock;
+            const delta_time = @min(boundary, pending.master_cycles -| 1);
 
-            while (psg_cmd_cursor < psg_commands.len and psg_commands[psg_cmd_cursor].master_offset <= master_cursor) : (psg_cmd_cursor += 1) {
+            // Apply commands stamped before this sample's completion time
+            // (a `<= cursor` comparison against the previous boundary used
+            // to delay every command by one full sample).
+            while (psg_cmd_cursor < psg_commands.len and psg_commands[psg_cmd_cursor].master_offset < boundary) : (psg_cmd_cursor += 1) {
                 self.psg.doCommand(psg_commands[psg_cmd_cursor].value);
                 // Volume/frequency change: emit delta at command time.
-                self.emitPsgBlipDelta(master_time, psg_gain, psg_enabled);
+                self.emitPsgBlipDelta(delta_time, psg_gain, psg_enabled);
             }
 
             // Step PSG one clock and check for transitions.
@@ -557,9 +600,8 @@ pub const AudioOutput = struct {
             self.last_psg_sample_right = self.psg.currentStereoSample().right;
 
             // Emit delta if the PSG output level changed after this step.
-            self.emitPsgBlipDelta(master_time, psg_gain, psg_enabled);
+            self.emitPsgBlipDelta(delta_time, psg_gain, psg_enabled);
 
-            master_cursor = master_time + psg_clock;
             produced += 1;
         }
 

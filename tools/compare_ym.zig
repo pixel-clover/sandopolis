@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
 const c = @cImport({
@@ -1045,16 +1046,21 @@ const status_scenarios = [_]StatusScenario{
     },
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    const args = try std.process.argsAlloc(allocator);
+    var arg_it = try platform.argsWithAllocator(allocator);
+    defer arg_it.deinit();
+    var args_list = std.ArrayList([]const u8).empty;
+    while (arg_it.next()) |arg| try args_list.append(allocator, arg);
+    const args = args_list.items;
     var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stdout_writer = platform.stdout().writer(&stdout_buffer);
+    var stderr_writer = platform.stderr().writer(&stderr_buffer);
     const stdout = &stdout_writer.interface;
     const stderr = &stderr_writer.interface;
 

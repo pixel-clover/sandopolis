@@ -343,10 +343,11 @@ pub const Vdp = struct {
         var sprites_on_line: u8 = 0;
         var sprite_index: u8 = 0;
         var count: u8 = 0;
+        const v_line: i32 = @intCast(self.effectiveVerticalLine(line));
         while (count < max_total) : (count += 1) {
             const entry = self.sprite_cache_entries[sprite_index];
             const sprite_v_px = @as(i32, entry.v_size) * @as(i32, tile_h);
-            const y_in = @as(i32, @intCast(line)) - @as(i32, entry.y_pos);
+            const y_in = v_line - self.spriteYPos(entry.y_pos);
             if (y_in >= 0 and y_in < sprite_v_px) {
                 sprites_on_line += 1;
                 if (sprites_on_line > max_sprites) {
@@ -369,6 +370,24 @@ pub const Vdp = struct {
 
     pub fn isInterlaceMode2(self: *const Vdp) bool {
         return (self.regs[12] & 0x06) == 0x06;
+    }
+
+    /// Vertical coordinate used for plane sampling and sprite comparisons.
+    /// In interlace mode 2 the vertical axis is double resolution: each
+    /// displayed line samples row line*2 (even field) or line*2+1 (odd
+    /// field); tiles are 16 pixels tall and sprite Y is in 10-bit units.
+    pub fn effectiveVerticalLine(self: *const Vdp, line: u16) u16 {
+        if (self.isInterlaceMode2()) {
+            return (line << 1) | @intFromBool(self.odd_frame);
+        }
+        return line;
+    }
+
+    /// Sprite Y offset for the current mode: SAT Y is offset by 128 in the
+    /// normal modes and by 256 in interlace mode 2 (double-resolution).
+    pub fn spriteYPos(self: *const Vdp, cached_y_pos: i16) i32 {
+        if (self.isInterlaceMode2()) return @as(i32, cached_y_pos) - 128;
+        return cached_y_pos;
     }
 
     pub fn isHVCounterLatchEnabled(self: *const Vdp) bool {
@@ -484,9 +503,11 @@ pub const Vdp = struct {
         else
             self.line_master_cycle / 10;
 
-        const screen_w = self.screenWidth();
-        if (pixel >= screen_w) return;
-
+        // Keep HBlank changes (pixel >= screen width): they produce no
+        // visible pixels this line, but the undo pass in renderScanline
+        // needs them to reconstruct start-of-line register state — exactly
+        // like the CRAM-dot events above.  Dropping them would apply the
+        // write retroactively to the line that already elapsed.
         self.reg_change_events[self.reg_change_event_count] = .{
             .pixel_x = pixel,
             .reg = reg_index,
@@ -530,6 +551,11 @@ pub const Vdp = struct {
     pub const frameMasterCycles = timing_mod.frameMasterCycles;
     pub const setScanlineState = timing_mod.setScanlineState;
     pub const setHBlank = timing_mod.setHBlank;
+    pub const masterCyclesPerLine = timing_mod.masterCyclesPerLine;
+    pub const LinePosition = timing_mod.LinePosition;
+    pub const linePosition = timing_mod.linePosition;
+    pub const restoreHBlankFlag = timing_mod.restoreHBlankFlag;
+    pub const advanceFrameParity = timing_mod.advanceFrameParity;
     pub const isVBlankInterruptEnabled = timing_mod.isVBlankInterruptEnabled;
     pub const currentInterruptLevel = timing_mod.currentInterruptLevel;
     pub const beginFrame = timing_mod.beginFrame;

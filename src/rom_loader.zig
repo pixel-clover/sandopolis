@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("platform.zig");
 const testing = std.testing;
 
 /// ROM file extensions recognized inside ZIP archives.
@@ -8,7 +9,7 @@ const rom_extensions = [_][]const u8{ ".bin", ".md", ".smd", ".gen", ".sms", ".g
 /// magic bytes), the first entry with a recognized ROM extension is extracted
 /// and returned. Otherwise the raw file contents are returned as-is.
 pub fn readRomFile(allocator: std.mem.Allocator, path: []const u8, max_size: usize) ![]u8 {
-    const file_data = try std.fs.cwd().readFileAlloc(allocator, path, max_size);
+    const file_data = try platform.cwd().readFileAlloc(allocator, path, max_size);
     errdefer allocator.free(file_data);
 
     if (isZip(file_data)) {
@@ -34,75 +35,103 @@ fn isZip(data: []const u8) bool {
     return data.len >= 4 and data[0] == 'P' and data[1] == 'K' and data[2] == 3 and data[3] == 4;
 }
 
+/// Upper bound on an extracted ROM: comfortably above the largest real
+/// cartridge, small enough that a zip-bomb header can't force a huge
+/// allocation.
+const max_extracted_size: u32 = 64 * 1024 * 1024;
+
+/// Entry metadata taken from the central directory. The central directory
+/// always carries real sizes, unlike the local header, which has zero sizes
+/// for entries written in streaming mode (data-descriptor flag).
+const CdEntry = struct {
+    method: u16,
+    compressed_size: u32,
+    uncompressed_size: u32,
+    local_header_offset: u32,
+};
+
+fn readCdEntry(zip_data: []const u8, offset: u64) CdEntry {
+    return .{
+        .method = readU16(zip_data, @intCast(offset + 10)),
+        .compressed_size = readU32(zip_data, @intCast(offset + 20)),
+        .uncompressed_size = readU32(zip_data, @intCast(offset + 24)),
+        .local_header_offset = readU32(zip_data, @intCast(offset + 42)),
+    };
+}
+
 /// Extract the first ROM file from a ZIP archive stored in memory.
 fn extractRomFromZip(allocator: std.mem.Allocator, zip_data: []const u8) ![]u8 {
     // Find the End of Central Directory record by searching backward.
     const eocd = try findEndOfCentralDirectory(zip_data);
-    const cd_offset = eocd.cd_offset;
     const cd_entries = eocd.cd_entries;
 
-    // Walk central directory entries to find a ROM file.
-    var offset = cd_offset;
+    // Walk central directory entries to find a ROM file. All offset
+    // arithmetic is done in u64: the raw header fields are untrusted and can
+    // otherwise wrap the bounds checks.
+    var first_entry: ?CdEntry = null;
+    var offset: u64 = eocd.cd_offset;
     for (0..cd_entries) |_| {
         if (offset + 46 > zip_data.len) return error.ZipCorrupt;
         // Central directory file header signature: "PK\x01\x02"
-        if (zip_data[offset] != 'P' or zip_data[offset + 1] != 'K' or
-            zip_data[offset + 2] != 1 or zip_data[offset + 3] != 2)
+        const base: usize = @intCast(offset);
+        if (zip_data[base] != 'P' or zip_data[base + 1] != 'K' or
+            zip_data[base + 2] != 1 or zip_data[base + 3] != 2)
             return error.ZipCorrupt;
 
-        const filename_len = readU16(zip_data, offset + 28);
-        const extra_len = readU16(zip_data, offset + 30);
-        const comment_len = readU16(zip_data, offset + 32);
-        const local_header_offset = readU32(zip_data, offset + 42);
+        const filename_len = readU16(zip_data, base + 28);
+        const extra_len = readU16(zip_data, base + 30);
+        const comment_len = readU16(zip_data, base + 32);
 
         if (offset + 46 + filename_len > zip_data.len) return error.ZipCorrupt;
-        const filename = zip_data[offset + 46 ..][0..filename_len];
+        const filename = zip_data[base + 46 ..][0..filename_len];
+        const entry = readCdEntry(zip_data, offset);
+        if (first_entry == null) first_entry = entry;
 
         // Check if this entry has a recognized ROM extension.
         if (hasRomExtension(filename)) {
-            return try extractLocalEntry(allocator, zip_data, local_header_offset);
+            return try extractLocalEntry(allocator, zip_data, entry);
         }
 
-        offset += 46 + filename_len + extra_len + comment_len;
+        offset += 46 + @as(u64, filename_len) + extra_len + comment_len;
     }
 
     // No entry with a ROM extension found; try extracting the first file.
-    if (cd_entries > 0) {
-        const first_offset = cd_offset;
-        if (first_offset + 46 > zip_data.len) return error.ZipCorrupt;
-        const local_header_offset = readU32(zip_data, first_offset + 42);
-        return try extractLocalEntry(allocator, zip_data, local_header_offset);
+    if (first_entry) |entry| {
+        return try extractLocalEntry(allocator, zip_data, entry);
     }
 
     return error.ZipEmpty;
 }
 
-/// Extract a single file from its local file header offset.
-fn extractLocalEntry(allocator: std.mem.Allocator, zip_data: []const u8, local_offset: u32) ![]u8 {
+/// Extract a single file described by a central-directory entry.
+fn extractLocalEntry(allocator: std.mem.Allocator, zip_data: []const u8, entry: CdEntry) ![]u8 {
+    const local_offset: u64 = entry.local_header_offset;
     if (local_offset + 30 > zip_data.len) return error.ZipCorrupt;
+    const base: usize = @intCast(local_offset);
     // Local file header signature: "PK\x03\x04"
-    if (zip_data[local_offset] != 'P' or zip_data[local_offset + 1] != 'K' or
-        zip_data[local_offset + 2] != 3 or zip_data[local_offset + 3] != 4)
+    if (zip_data[base] != 'P' or zip_data[base + 1] != 'K' or
+        zip_data[base + 2] != 3 or zip_data[base + 3] != 4)
         return error.ZipCorrupt;
 
-    const method = readU16(zip_data, local_offset + 8);
-    const compressed_size = readU32(zip_data, local_offset + 18);
-    const uncompressed_size = readU32(zip_data, local_offset + 22);
-    const filename_len = readU16(zip_data, local_offset + 26);
-    const extra_len = readU16(zip_data, local_offset + 28);
+    // Sizes and method come from the central directory; the local header is
+    // only used to locate the file data.
+    const filename_len = readU16(zip_data, base + 26);
+    const extra_len = readU16(zip_data, base + 28);
 
     const data_offset = local_offset + 30 + filename_len + extra_len;
-    if (data_offset + compressed_size > zip_data.len) return error.ZipCorrupt;
-    const compressed_data = zip_data[data_offset..][0..compressed_size];
+    if (data_offset + entry.compressed_size > zip_data.len) return error.ZipCorrupt;
+    if (entry.uncompressed_size > max_extracted_size) return error.ZipCorrupt;
+    const compressed_data = zip_data[@intCast(data_offset)..][0..entry.compressed_size];
 
-    if (method == 0) {
-        // Stored (uncompressed)
-        const result = try allocator.alloc(u8, uncompressed_size);
-        @memcpy(result, compressed_data[0..uncompressed_size]);
+    if (entry.method == 0) {
+        // Stored (uncompressed): both sizes describe the same bytes.
+        if (entry.uncompressed_size != entry.compressed_size) return error.ZipCorrupt;
+        const result = try allocator.alloc(u8, entry.uncompressed_size);
+        @memcpy(result, compressed_data);
         return result;
-    } else if (method == 8) {
+    } else if (entry.method == 8) {
         // Deflate
-        return try inflateData(allocator, compressed_data, uncompressed_size);
+        return try inflateData(allocator, compressed_data, entry.uncompressed_size);
     } else {
         return error.ZipUnsupportedCompression;
     }

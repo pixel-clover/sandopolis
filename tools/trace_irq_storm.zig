@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
 // Per-ROM timing/regression diagnostic with two modes.
@@ -34,7 +35,7 @@ const Args = struct {
     pal: bool = false,
 };
 
-fn parseArgs(it: *std.process.ArgIterator) !Args {
+fn parseArgs(it: *std.process.Args.Iterator) !Args {
     _ = it.next(); // exe
     const rom_path = it.next() orelse {
         std.debug.print("Usage: trace-irq-storm <rom-path> [warmup] [frames] [--derail] [--dump N]\n", .{});
@@ -66,12 +67,13 @@ fn parseArgs(it: *std.process.ArgIterator) !Args {
     return args;
 }
 
-pub fn main() !void {
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
+    var gpa_state = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa_state.deinit();
     const allocator = gpa_state.allocator();
 
-    var arg_it = try std.process.argsWithAllocator(allocator);
+    var arg_it = try platform.argsWithAllocator(allocator);
     defer arg_it.deinit();
     const args = try parseArgs(&arg_it);
 
@@ -118,7 +120,7 @@ fn runProgress(allocator: std.mem.Allocator, emulator: *testing.Emulator, output
     for (entries) |e| try unique_pcs.put(e.ppc, {});
 
     var out_buf: [1024]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&out_buf);
+    var w = platform.stdout().writer(&out_buf);
     const stdout = &w.interface;
     try stdout.print(
         "rom={s}\n  distinct_frames={d}/{d}  avg_m68k_instrs/frame={d}\n  trace_entries={d} unique_pcs={d}  pc=0x{X:0>8} sr=0x{X:0>4}\n",
@@ -141,7 +143,7 @@ fn runDerail(allocator: std.mem.Allocator, emulator: *testing.Emulator, output: 
     emulator.setM68kInstructionTraceEnabled(true);
 
     var out_buf: [8192]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&out_buf);
+    var w = platform.stdout().writer(&out_buf);
     const stdout = &w.interface;
 
     // Tally which exception vectors fire before the derail (2=bus,3=addr,4=illegal,

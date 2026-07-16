@@ -373,29 +373,28 @@ pub const Machine = struct {
         if (self.pending_frame_phase != .none) {
             const startup_visible_lines = self.bus.vdp.activeVisibleLines();
             const startup_total_lines = self.bus.vdp.totalLinesForCurrentFrame();
-            const startup_master_cycles_per_line: u16 = if (self.bus.vdp.pal_mode) clock.pal_master_cycles_per_line else clock.ntsc_master_cycles_per_line;
-            const startup_line = self.bus.vdp.scanline;
-            const startup_line_master_cycle = self.bus.vdp.line_master_cycle;
+            const startup_master_cycles_per_line = self.bus.vdp.masterCyclesPerLine();
+            const startup_pos = self.bus.vdp.linePosition();
 
             self.pending_frame_phase = .none;
             self.bus.vdp.beginFrame();
-            for (startup_line..startup_total_lines) |line_idx| {
+            for (startup_pos.line..startup_total_lines) |line_idx| {
                 const line: u16 = @intCast(line_idx);
-                const line_start_master_cycles: u16 = if (line == startup_line) startup_line_master_cycle else 0;
+                const line_start_master_cycles: u16 = if (line == startup_pos.line) startup_pos.master_cycle else 0;
                 self.runScheduledScanline(line, startup_visible_lines, startup_total_lines, startup_master_cycles_per_line, line_start_master_cycles, false, null);
             }
         }
 
         const visible_lines = self.bus.vdp.activeVisibleLines();
         const total_lines = self.bus.vdp.totalLinesForCurrentFrame();
-        const master_cycles_per_line: u16 = if (self.bus.vdp.pal_mode) clock.pal_master_cycles_per_line else clock.ntsc_master_cycles_per_line;
+        const master_cycles_per_line = self.bus.vdp.masterCyclesPerLine();
 
         self.bus.vdp.beginFrame();
         for (0..total_lines) |line_idx| {
             const line: u16 = @intCast(line_idx);
             self.runScheduledScanline(line, visible_lines, total_lines, master_cycles_per_line, 0, true, counters);
         }
-        self.bus.vdp.odd_frame = !self.bus.vdp.odd_frame;
+        self.bus.vdp.advanceFrameParity();
     }
 
     fn runScheduledScanline(
@@ -409,7 +408,13 @@ pub const Machine = struct {
         counters: ?*CoreFrameCounters,
     ) void {
         const entering_vblank = self.bus.vdp.setScanlineState(line, visible_lines, total_lines);
-        if (!entering_vblank and !self.bus.vdp.vint_pending) {
+        if (!entering_vblank) {
+            // The Z80 /INT line is held from VInt until the start of the
+            // next line (gpgx semantics), independent of the 68K's
+            // vint_pending flag: coupling it to vint_pending kept /INT
+            // asserted for whole frames when the 68K masks VInt, making
+            // sound drivers that re-enable interrupts in their handler
+            // re-enter once per EI instead of once per frame.
             self.bus.z80.clearIrq();
         }
 
@@ -419,7 +424,9 @@ pub const Machine = struct {
 
         const hint_master_cycles = self.bus.vdp.hInterruptMasterCycles();
         const hblank_start_master_cycles = self.bus.vdp.hblankStartMasterCycles();
-        self.bus.vdp.hblank = start_master_cycles >= hblank_start_master_cycles;
+        // Re-establish (not transition) the flag for the line's starting
+        // offset, so setHBlank's live side effects don't fire on a resume.
+        self.bus.vdp.restoreHBlankFlag(start_master_cycles >= hblank_start_master_cycles);
 
         // Collect all scanline events and sort by time. VInt fires at a specific
         // cycle offset into the vblank entry line (matching real hardware timing), not
@@ -460,7 +467,11 @@ pub const Machine = struct {
                 );
                 current_master_cycles = event_mc;
             }
-            if (event_mc > start_master_cycles or event_mc == events[0]) {
+            // Fire events strictly after the slice start; the only event at
+            // the start position that may fire is cycle 0 of a full line.
+            // (Comparing against events[0] instead used to re-fire events
+            // that already elapsed before a mid-line save-state resume.)
+            if (event_mc > start_master_cycles or (start_master_cycles == 0 and event_mc == 0)) {
                 self.applyScanlineEvent(line, visible_lines, entering_vblank, hint_master_cycles, hblank_start_master_cycles, vint_master_cycles, event_mc);
             }
             prev_event = event_mc;
@@ -526,6 +537,14 @@ pub const Machine = struct {
         return self.bus.rom.len;
     }
 
+    pub fn workRam(self: *Machine) []u8 {
+        return &self.bus.ram;
+    }
+
+    pub fn persistentSaveRam(self: *Machine) ?[]u8 {
+        return self.bus.cartridge.persistentSaveRam();
+    }
+
     pub fn displayModeFlags(self: *const Machine) u32 {
         var mode: u32 = 0;
         if (self.bus.vdp.isH40()) mode |= 1;
@@ -543,7 +562,7 @@ pub const Machine = struct {
     }
 
     pub fn controllerType(self: *const Machine, port: usize) Io.ControllerType {
-        return self.bus.io.controller_types[port];
+        return self.bus.io.getControllerType(port);
     }
 
     pub fn romMetadata(self: *const Machine) RomMetadata {

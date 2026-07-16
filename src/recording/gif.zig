@@ -1,8 +1,9 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const testing = std.testing;
 
 pub const GifRecorder = struct {
-    file: std.fs.File,
+    file: platform.File,
     frame_count: u32,
     delay_cs: u16,
     width: u16,
@@ -23,7 +24,7 @@ pub const GifRecorder = struct {
         if (height == 0 or height > max_height) return error.InvalidFrameHeight;
         if (fb_width == 0 or fb_width > max_width) return error.InvalidFrameWidth;
 
-        const file = try std.fs.cwd().createFile(path, .{});
+        const file = try platform.cwd().createFile(path, .{});
         errdefer file.close();
 
         const delay_cs: u16 = if (fps > 0) @intCast(@min(65535, (100 + fps / 2) / fps)) else 2;
@@ -54,9 +55,15 @@ pub const GifRecorder = struct {
         return self;
     }
 
-    pub fn addFrame(self: *GifRecorder, framebuffer: []const u32) !void {
-        const pixel_count = @as(usize, self.width) * @as(usize, self.height);
-        if (framebuffer.len != pixel_count) return error.InvalidFrameSize;
+    /// `stride` is the row pitch of `framebuffer` in pixels; it can exceed
+    /// the recorded width (e.g. the Genesis framebuffer is always 320 wide
+    /// even in the 256-pixel H32 mode).
+    pub fn addFrame(self: *GifRecorder, framebuffer: []const u32, stride: usize) !void {
+        const width: usize = self.width;
+        const height: usize = self.height;
+        const pixel_count = width * height;
+        if (stride < width or height == 0) return error.InvalidFrameSize;
+        if (framebuffer.len < stride * (height - 1) + width) return error.InvalidFrameSize;
 
         if (self.frame_count > 0) {
             const pos = self.file.getPos() catch 0;
@@ -70,9 +77,13 @@ pub const GifRecorder = struct {
 
         var indices: [max_pixel_count]u8 = undefined;
 
-        for (framebuffer, 0..) |pixel, i| {
-            const color = pixel & 0x00FFFFFF;
-            indices[i] = findOrAddColor(&palette, &palette_size, &color_map, color);
+        var pi: usize = 0;
+        for (0..height) |row| {
+            for (framebuffer[row * stride ..][0..width]) |pixel| {
+                const color = pixel & 0x00FFFFFF;
+                indices[pi] = findOrAddColor(&palette, &palette_size, &color_map, color);
+                pi += 1;
+            }
         }
 
         self.bufWrite(&.{ 0x21, 0xF9, 0x04, 0x00 });
@@ -283,6 +294,9 @@ fn lzwCompress(rec: *GifRecorder, data: []const u8) !void {
         block_len += 1;
     }
     if (block_len > 0) {
+        // emitCode can leave the buffer exactly full; make room before the
+        // final partial sub-block or bufWriteByte overruns out_buf.
+        if (rec.out_len + 256 > GifRecorder.out_buf_size) try rec.flushBuf();
         rec.bufWriteByte(block_len);
         rec.bufWrite(block_buf[0..block_len]);
     }
@@ -315,7 +329,7 @@ fn emitCode(
 }
 
 fn tempGifPath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: []const u8) ![]u8 {
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }
@@ -336,10 +350,10 @@ test "GIF recorder creates valid single-frame GIF" {
     const tmp_path = try tempGifPath(testing.allocator, &tmp, "test_output.gif");
     defer testing.allocator.free(tmp_path);
     var recorder = try GifRecorder.start(tmp_path, 60, 320, 224);
-    try recorder.addFrame(framebuffer[0..]);
+    try recorder.addFrame(framebuffer[0..], 320);
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_output.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_output.gif", .{});
     defer file.close();
     var header: [6]u8 = undefined;
     _ = try file.readAll(&header);
@@ -361,13 +375,13 @@ test "GIF recorder handles multiple frames" {
     for (0..3) |frame| {
         const shade: u32 = @intCast(frame * 80);
         @memset(&fb, 0xFF000000 | (shade << 16) | (shade << 8) | shade);
-        try recorder.addFrame(fb[0..]);
+        try recorder.addFrame(fb[0..], recorder.width);
     }
     recorder.finish();
 
     try std.testing.expectEqual(@as(u32, 3), recorder.frame_count);
 
-    const file = try tmp.dir.openFile("test_multi.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_multi.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 2000);
@@ -386,10 +400,10 @@ test "GIF recorder handles noisy framebuffer without overflow" {
         const v: u32 = @truncate(i *% 2654435761);
         fb[i] = 0xFF000000 | (v & 0x00FFFFFF);
     }
-    try recorder.addFrame(fb[0..]);
+    try recorder.addFrame(fb[0..], recorder.width);
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_noisy.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_noisy.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);
@@ -409,10 +423,10 @@ test "GIF recorder accepts 240-line frames" {
         @memset(fb[y * 320 .. (y + 1) * 320], 0xFF000000 | (shade << 8));
     }
 
-    try recorder.addFrame(fb[0..]);
+    try recorder.addFrame(fb[0..], recorder.width);
     recorder.finish();
 
-    const file = try tmp.dir.openFile("test_240.gif", .{});
+    const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_240.gif", .{});
     defer file.close();
     const stat = try file.stat();
     try std.testing.expect(stat.size > 1000);

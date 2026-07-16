@@ -84,7 +84,10 @@ pub const SmsBus = struct {
             .ram = self.ram,
             .vdp = self.vdp,
             .input = self.input,
-            .io = undefined, // Rebind after placement
+            // Keeps port state (memory/io control, GG regs); the embedded
+            // pointers and callbacks are stale until rebindPointers /
+            // machine.bindPointers run after placement.
+            .io = self.io,
             .page = self.page,
             .ram_bank_enabled = self.ram_bank_enabled,
             .ram_bank = self.ram_bank,
@@ -180,8 +183,11 @@ pub const SmsBus = struct {
 
     fn clampPage(self: *const SmsBus, page: u8) u8 {
         if (self.rom.len == 0) return 0;
-        const total_pages = @as(u8, @intCast(@max(1, self.rom.len / 0x4000)));
-        return page % total_pages;
+        // Widened: a ROM of 4MB+ has >= 256 pages, which overflowed the u8
+        // page count (the paging register itself is only 8 bits anyway).
+        const total_pages: u32 = @intCast(@max(1, self.rom.len / 0x4000));
+        if (total_pages >= 256) return page;
+        return page % @as(u8, @intCast(total_pages));
     }
 
     // -- Z80 bridge host callbacks (C-compatible) --

@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
 const c = @cImport({
@@ -141,12 +142,13 @@ fn diffCount(sando: []const u8, ref: []const u8, swapped: bool) usize {
     return n;
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    platform.init(init);
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var arg_it = try std.process.argsWithAllocator(allocator);
+    var arg_it = try platform.argsWithAllocator(allocator);
     defer arg_it.deinit();
     const args = try parseArgs(&arg_it);
 
@@ -163,7 +165,7 @@ pub fn main() !void {
     };
     defer api.lib.close();
 
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try platform.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
     const cwd_z = try allocator.dupeZ(u8, cwd);
     defer allocator.free(cwd_z);
@@ -203,7 +205,7 @@ pub fn main() !void {
     const ref_ram = ref_ram_ptr[0..ref_ram_len];
 
     var out_buf: [4096]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&out_buf);
+    var w = platform.stdout().writer(&out_buf);
     const stdout = &w.interface;
     try stdout.print("trace-diff rom={s} region={s} frames={d} ram={d}B skip={d}\n", .{
         std.fs.path.basename(args.rom_path),
@@ -282,7 +284,7 @@ pub fn main() !void {
     try stdout.flush();
 }
 
-fn parseArgs(it: *std.process.ArgIterator) !Args {
+fn parseArgs(it: *std.process.Args.Iterator) !Args {
     _ = it.next();
     const rom = it.next() orelse {
         std.debug.print("Usage: trace-diff <rom> [frames] [--pal] [--skip N] [--every N] [--spike N]\n", .{});

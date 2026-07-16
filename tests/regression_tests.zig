@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("sandopolis_src").platform;
 const testing = std.testing;
 const sandopolis = @import("sandopolis_src");
 const clock = sandopolis.clock;
@@ -651,10 +652,20 @@ test "window plane uses tile height shift for interlace mode 2 tile row" {
     const red: u32 = 0xFFFF0000;
     const green: u32 = 0xFF00FF00;
 
-    try testing.expectEqual(red, fb[8 * 320]);
-    try testing.expect(fb[8 * 320] != green);
+    // In interlace mode 2 each display line samples double-resolution row
+    // line*2 (+field), so display line 4 hits tile 0's row 8 (red) and
+    // display line 8 hits tile row 1's row 0 (green).  (This test used to
+    // lock in non-doubled sampling, which stretched the top half of the
+    // plane across the whole screen.)
+    try testing.expectEqual(red, fb[4 * 320]);
+    try testing.expect(fb[4 * 320] != green);
 
-    try testing.expectEqual(green, fb[16 * 320]);
+    try testing.expectEqual(green, fb[8 * 320]);
+
+    // Display line 16 samples double-res row 32: tile row 2 is empty in
+    // this layout, so neither color appears.
+    try testing.expect(fb[16 * 320] != red);
+    try testing.expect(fb[16 * 320] != green);
 }
 
 test "frame scheduler carries instruction overshoot between slices" {
@@ -959,7 +970,10 @@ test "vctest rom framebuffer matches golden hash after 60 frames" {
     const hash = framebufferCrc32(fb);
     // Golden hash captured from the current V counter implementation.
     // Update ONLY after manually verifying the new rendering is correct.
-    try testing.expectEqual(@as(u32, 3247741144), hash);
+    // 2026-07: rebaselined after fixing byteswapped 16-bit VRAM data-port
+    // reads; the frame was verified pixel-identical in layout against the
+    // Genesis Plus GX reference via `zig build dump-frames`.
+    try testing.expectEqual(@as(u32, 538108016), hash);
 }
 
 test "vctest rom runs stably in both ntsc and pal modes" {
@@ -1225,7 +1239,11 @@ test "fm test rom audio pipeline output matches golden hash" {
 
     // Golden hash for the full audio pipeline output.
     // Re-baselined for Rocket 68 v0.2.2 + live-cycle VDP read sampling.
-    try testing.expectEqual(@as(u32, 3882299550), collector.hash);
+    // Re-baselined 2026-07 for output-path fixes (sample boundaries now
+    // account for the window start remainder; same-timestamp YM events
+    // apply in emission order); verified against Genesis Plus GX via
+    // dump-audio envelope correlation.
+    try testing.expectEqual(@as(u32, 317022487), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1283,20 +1301,22 @@ fn captureYmGoldenHash(rom_path: []const u8, frames: usize) !?u32 {
 
 test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sn.smd", 900) orelse return;
-    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
-    try testing.expectEqual(@as(u32, 3327217102), hash);
+    // Re-baselined 2026-07 for Nuked-parity fixes (LFO PM depth, shared
+    // $A4/$AC latch, $27 timer write semantics, SSG-EG key-off); spectral
+    // content verified against Genesis Plus GX via dump-audio.
+    try testing.expectEqual(@as(u32, 147268861), hash);
 }
 
 test "streets of rage ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sor.smd", 900) orelse return;
-    // Re-baselined for Rocket 68 v0.2.2 (cycle-timing changes).
-    try testing.expectEqual(@as(u32, 73816007), hash);
+    // Re-baselined 2026-07 for Nuked-parity fixes (see above).
+    try testing.expectEqual(@as(u32, 46223587), hash);
 }
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
-    // Re-baselined for Rocket 68 v0.2.2 + live-cycle VDP read sampling.
-    try testing.expectEqual(@as(u32, 1356361046), hash);
+    // Re-baselined 2026-07 for Nuked-parity fixes (see above).
+    try testing.expectEqual(@as(u32, 3509395807), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {
@@ -1487,7 +1507,7 @@ test "zabu palette investigation: detect bulk cram rewrites during scene transit
 const SmsMachine = sandopolis.testing.SmsMachine;
 
 fn initSg1000(rom_path: []const u8) !SmsMachine {
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, rom_path, 1024 * 1024) catch |err| {
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, rom_path, 1024 * 1024) catch |err| {
         return err;
     };
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);

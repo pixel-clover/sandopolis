@@ -1059,11 +1059,13 @@ fn fifoWaitUntilDrained(self: *const Vdp) u32 {
 fn dataPortReadTargetFor(code: u8, addr: u16) ?Vdp.DataPortReadTarget {
     switch (code & 0x1F) {
         0x00 => {
-            const high_index = addr ^ 1;
+            // Word reads ignore A0 and return the word in the same byte
+            // order writeTargetWord stores it: high byte at the even index.
+            const base = addr & 0xFFFE;
             return .{
                 .storage = .vram,
-                .high_index = high_index,
-                .low_index = high_index ^ 1,
+                .high_index = base,
+                .low_index = base | 1,
             };
         },
         0x08 => {
@@ -1102,7 +1104,8 @@ fn applyUndrivenReadBits(code: u8, value: u16, fifo_word: u16) u16 {
 
 fn current8BitVramReadWordWithQueuedWrites(self: *const Vdp, addr: u16) ?u16 {
     const word = currentDataPortReadWordWithQueuedWrites(self, 0x00, addr) orelse return null;
-    return @as(u16, @truncate(word >> 8));
+    // The undocumented 8-bit VRAM read returns the byte at addr ^ 1.
+    return if ((addr & 1) == 0) word & 0xFF else word >> 8;
 }
 
 fn currentDataPortReadWord(self: *const Vdp, code: u8, addr: u16) ?u16 {
@@ -1928,6 +1931,24 @@ test "undocumented 8-bit VRAM reads use the adjacent byte and fifo high bits" {
 
     try testing.expectEqual(@as(u16, 0), vdp.readData());
     try testing.expectEqual(@as(u16, 0xAB12), vdp.read_buffer);
+}
+
+test "VRAM data port word write then read round-trips" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 0;
+    vdp.code = 0x1; // VRAM write
+    vdp.addr = 0x0040;
+    vdp.writeData(0xABCD);
+
+    vdp.code = 0x0; // VRAM read
+    vdp.addr = 0x0040;
+    _ = vdp.readData();
+    try testing.expectEqual(@as(u16, 0xABCD), vdp.read_buffer);
+
+    // Reads ignore A0: an odd address returns the same word.
+    vdp.addr = 0x0041;
+    _ = vdp.readData();
+    try testing.expectEqual(@as(u16, 0xABCD), vdp.read_buffer);
 }
 
 test "data port read wait crosses the external hblank edge" {

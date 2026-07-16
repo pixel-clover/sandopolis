@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("platform.zig");
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const FrontendConfig = @import("frontend/config.zig").FrontendConfig;
 const FontFace = @import("frontend/config.zig").FontFace;
@@ -17,7 +18,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Result {
     var frontend = FrontendConfig{};
     var bindings = InputBindings.Bindings.defaults();
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+    const file = platform.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{ .frontend = frontend, .bindings = bindings },
         else => return err,
     };
@@ -55,7 +56,7 @@ pub fn save(
     bindings: *const InputBindings.Bindings,
     path: []const u8,
 ) !void {
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    const file = try platform.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
 
     var buf: [4096]u8 = undefined;
@@ -128,7 +129,7 @@ test "unified config round-trips whole-pixel scale and font face" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const config_path = try std.fs.path.join(allocator, &.{ dir_path, "sandopolis.cfg" });
     defer allocator.free(config_path);

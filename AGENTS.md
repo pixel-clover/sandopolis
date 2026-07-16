@@ -59,11 +59,13 @@ Quick examples:
   audio, GG 12-bit CRAM, and GG viewport cropping.
 - `src/frontend/`: SDL frontend helpers including config, UI state, save manager, menu, dialog, toast, and performance overlay logic.
 - `src/unit_test_root.zig`: internal test root that aggregates module-local unit tests for `zig build test-unit`.
-- `src/wasm.zig`: WebAssembly export layer wrapping the Machine API for browser deployment.
+- `src/wasm.zig`: WebAssembly export layer wrapping the `SystemMachine` facade for browser deployment.
 - `src/wasm_stubs.c`: minimal C stubs (setjmp/longjmp and main) needed for WASM builds.
-- `src/libretro.zig`: Libretro core shared library wrapping the Machine API for RetroArch and other Libretro frontends.
+- `src/libretro.zig`: Libretro core shared library wrapping the `SystemMachine` facade for RetroArch and other Libretro frontends; runs Genesis,
+  SMS, Game Gear, and SG-1000 content.
 - `src/system.zig`: system type detection (Genesis, SMS, or Game Gear) from ROM headers and cartridge region codes.
-- `src/system_machine.zig`: `SystemMachine` tagged union abstracting Genesis and SMS/GG for the SDL frontend.
+- `src/system_machine.zig`: `SystemMachine` tagged union abstracting Genesis and SMS/GG for all frontends, including unified input mapping and
+  save-state serialization that dispatches on the state-buffer magic.
 - `src/rom_loader.zig`: ROM file loading with ZIP archive extraction (deflate and stored).
 - `src/`: remaining core emulator modules (`machine.zig`, `cli.zig`, `performance_profile.zig`, `rom_metadata.zig`, `state_file.zig`, etc.).
 - `tests/`: non-unit suites only:
@@ -111,6 +113,14 @@ Quick examples:
 - The PSG is reachable from both the Z80 (address `0x7F11`) and the M68K (VDP port `0xC00011`). Both paths must push timestamped events through the
   Z80 bridge.
 - Keep frontend concerns separate from emulation concerns.
+- Frontends (`src/main.zig`, `src/wasm.zig`, and `src/libretro.zig`) must drive the emulator through the `SystemMachine` facade instead of
+  switching on the system variant or reaching into `Machine`/`SmsMachine` internals. Add missing capabilities to the facade; use the
+  `asGenesis()` escape hatch only for deliberately Genesis-only features.
+- The YM/PSG audio event types are owned by `src/audio/events.zig` as native extern structs; `src/cpu/z80.zig` casts them across the C boundary
+  with comptime layout asserts against `jgz80_bridge.h`. Keep both sides in lockstep when changing event layouts.
+- `src/platform.zig` is the only place allowed to use `std.Io`, `std.fs`, or `std.process` directly. All other code must go through the `platform`
+  module for file, directory, clock, env, args, and sleep operations. This contains standard-library churn between Zig versions to one file. When a
+  Zig upgrade changes these APIs, update the wrapper bodies in `src/platform.zig` instead of spreading fixes across call sites.
 - Preserve MIT-license boundaries. Treat external emulator repos and AGPL code as references unless licensing has been reviewed explicitly.
 - `external/Nuked-OPN2` is an optional LGPL developer-reference dependency. Keep it isolated to the `compare-ym` tool and never make it part of the
   default `sandopolis`, `check`, `test`, or release build paths.

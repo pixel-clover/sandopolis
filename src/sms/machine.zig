@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const testing = std.testing;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const SmsBus = @import("bus.zig").SmsBus;
@@ -46,6 +47,9 @@ pub const SmsMachine = struct {
         self.bus.io.is_game_gear = self.is_game_gear;
         self.bus.vdp.is_sg1000 = self.is_sg1000;
         self.bus.is_sg1000 = self.is_sg1000;
+        // The region lives on the machine; vdp.reset() would otherwise
+        // silently drop PAL timing (313-line frames vs 262).
+        self.bus.vdp.pal_mode = self.pal_mode;
 
         // Fix SmsBus internal pointers (io.vdp, io.input)
         self.bus.rebindPointers();
@@ -94,7 +98,7 @@ pub const SmsMachine = struct {
 
     fn psgWriteCallback(ctx: ?*anyopaque, value: u8) void {
         const audio: *SmsAudio = @ptrCast(@alignCast(ctx orelse return));
-        audio.pushPsgCommand(0, value);
+        audio.pushPsgCommand(audio.current_z80_cycle, value);
     }
 
     fn psgStereoCallback(ctx: ?*anyopaque, value: u8) void {
@@ -131,6 +135,8 @@ pub const SmsMachine = struct {
     }
 
     fn runScanline(self: *SmsMachine) void {
+        // Scanline-granular timestamp for PSG writes issued this line.
+        self.audio.current_z80_cycle = self.z80_cycle_count;
         // Run Z80 for one scanline worth of cycles
         const target_cycles = self.z80_cycle_count + sms_clock.z80_cycles_per_line;
 
@@ -182,7 +188,11 @@ pub const SmsMachine = struct {
     }
 
     pub fn softReset(self: *SmsMachine) void {
-        self.reset();
+        // The console RESET pulses the Z80 /RESET line only; RAM, VDP, PSG,
+        // and mapper state persist. A power cycle goes through reset().
+        if (!self.bound) self.bindPointers();
+        self.z80.softReset();
+        self.z80_cycle_count = 0;
     }
 
     pub fn audioBuffer(self: *const SmsMachine) []const i16 {
@@ -191,6 +201,10 @@ pub const SmsMachine = struct {
 
     pub fn romSize(self: *const SmsMachine) usize {
         return self.bus.rom.len;
+    }
+
+    pub fn workRam(self: *SmsMachine) []u8 {
+        return &self.bus.ram;
     }
 
     // -- Save state --
@@ -210,6 +224,7 @@ pub const SmsMachine = struct {
             .audio = self.audio,
             .pal_mode = self.pal_mode,
             .is_game_gear = self.is_game_gear,
+            .is_sg1000 = self.is_sg1000,
             .z80_cycle_count = self.z80_cycle_count,
             .audio_buffer = self.audio_buffer,
             .audio_sample_count = self.audio_sample_count,
@@ -240,7 +255,7 @@ test "sms machine init" {
 }
 
 test "sms machine run frames produces visible output" {
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Pac-Mania (Europe).sms", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Pac-Mania (Europe).sms", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);
@@ -296,8 +311,38 @@ test "sms machine save and restore state" {
     try testing.expectEqual(@as(u8, 0xE0), machine.bus.vdp.regs[1]);
 }
 
+test "sms soft reset preserves ram, vdp, and mapper state" {
+    var rom = [_]u8{0} ** 1024;
+    // LD A, 0xE0; OUT (0xBF), A; LD A, 0x81; OUT (0xBF), A; JR -2 (loop)
+    rom[0] = 0x3E;
+    rom[1] = 0xE0;
+    rom[2] = 0xD3;
+    rom[3] = 0xBF;
+    rom[4] = 0x3E;
+    rom[5] = 0x81;
+    rom[6] = 0xD3;
+    rom[7] = 0xBF;
+    rom[8] = 0x18;
+    rom[9] = 0xFE;
+
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+
+    for (0..5) |_| machine.runFrame();
+    machine.bus.ram[0x100] = 0xA5;
+    machine.bus.page[2] = 5;
+
+    machine.softReset();
+
+    try testing.expectEqual(@as(u16, 0x0000), machine.z80.getPc());
+    try testing.expectEqual(@as(u8, 0xA5), machine.bus.ram[0x100]);
+    try testing.expectEqual(@as(u8, 5), machine.bus.page[2]);
+    try testing.expectEqual(@as(u8, 0xE0), machine.bus.vdp.regs[1]);
+}
+
 test "sms aladdin shows graphics after extended init" {
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Disney's Aladdin (Europe).sms", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Disney's Aladdin (Europe).sms", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom_data);
@@ -348,7 +393,7 @@ test "sms vdp register write via z80 port" {
 
 test "gg aerial assault detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Aerial Assault (World).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Aerial Assault (World).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));
@@ -378,7 +423,7 @@ test "gg aerial assault detected and produces visible output" {
 
 test "gg addams family detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Addams Family, The (World).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Addams Family, The (World).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));
@@ -405,7 +450,7 @@ test "gg addams family detected and produces visible output" {
 
 test "gg 5 in one funpak detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/5 in One FunPak (USA).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/5 in One FunPak (USA).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));
@@ -432,7 +477,7 @@ test "gg 5 in one funpak detected and produces visible output" {
 
 test "gg batman robin detected and produces visible output" {
     const system_detect = @import("../system.zig");
-    const rom_data = std.fs.cwd().readFileAlloc(testing.allocator, "roms/Adventures of Batman & Robin, The (USA, Europe) (Beta) (1995-05-02).gg", 8 * 1024 * 1024) catch return;
+    const rom_data = platform.cwd().readFileAlloc(testing.allocator, "roms/Adventures of Batman & Robin, The (USA, Europe) (Beta) (1995-05-02).gg", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom_data);
 
     try testing.expectEqual(system_detect.SystemType.gg, system_detect.detectSystem(rom_data));

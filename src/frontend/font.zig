@@ -61,6 +61,9 @@ pub const Font = struct {
 
     pub fn deinit(self: *Font) void {
         if (self.atlas) |*a| a.deinit();
+        // Null the slot so a second deinit (e.g. via UiRender.deinitFont
+        // AND the owner's defer) doesn't destroy the texture twice.
+        self.atlas = null;
     }
 
     /// Get (or rebuild) the atlas for the given pixel height. Returns null if font is not initialized.

@@ -1,11 +1,16 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 
 /// Save framebuffer as BMP file
 /// framebuffer format: XRGB8888 (u32 per pixel, 0x00RRGGBB)
-pub fn saveBmp(path: []const u8, framebuffer: []const u32, width: u32, height: u32) !void {
-    if (framebuffer.len != width * height) return error.InvalidFrameSize;
+/// `stride` is the row pitch of `framebuffer` in pixels (>= width).
+pub fn saveBmp(path: []const u8, framebuffer: []const u32, width: u32, height: u32, stride: u32) !void {
+    if (width == 0 or height == 0 or stride < width) return error.InvalidFrameSize;
+    // Widened arithmetic: caller-supplied dimensions must not overflow u32.
+    if (@as(u64, width) * height > 1 << 26) return error.InvalidFrameSize;
+    if (framebuffer.len < @as(usize, stride) * (height - 1) + width) return error.InvalidFrameSize;
 
-    const file = try std.fs.cwd().createFile(path, .{});
+    const file = try platform.cwd().createFile(path, .{});
     defer file.close();
 
     var buffer: [4096]u8 = undefined;
@@ -44,7 +49,7 @@ pub fn saveBmp(path: []const u8, framebuffer: []const u32, width: u32, height: u
     var y: usize = height;
     while (y > 0) {
         y -= 1;
-        const row_start = y * width;
+        const row_start = y * stride;
         for (0..width) |x| {
             const pixel = framebuffer[row_start + x];
             const r: u8 = @truncate((pixel >> 16) & 0xFF);
@@ -64,7 +69,7 @@ test "bmp file has correct header structure" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const path = try std.fs.path.join(allocator, &.{ dir_path, "test.bmp" });
     defer allocator.free(path);
@@ -75,10 +80,10 @@ test "bmp file has correct header structure" {
         0x00000000, 0x00808080, 0x00FFFF00, 0x00FF00FF, // Row 1: black, gray, yellow, magenta
     };
 
-    try saveBmp(path, &pixels, 4, 2);
+    try saveBmp(path, &pixels, 4, 2, 4);
 
     // Read and verify the file
-    const file = try std.fs.cwd().openFile(path, .{});
+    const file = try platform.cwd().openFile(path, .{});
     defer file.close();
 
     var header: [54]u8 = undefined;
@@ -108,16 +113,16 @@ test "bmp pixel data is correct" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const path = try std.fs.path.join(allocator, &.{ dir_path, "test2.bmp" });
     defer allocator.free(path);
 
     // Single red pixel
     const pixels = [_]u32{0x00FF0000};
-    try saveBmp(path, &pixels, 1, 1);
+    try saveBmp(path, &pixels, 1, 1, 1);
 
-    const file = try std.fs.cwd().openFile(path, .{});
+    const file = try platform.cwd().openFile(path, .{});
     defer file.close();
 
     // Skip header, read pixel data

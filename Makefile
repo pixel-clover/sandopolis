@@ -1,10 +1,22 @@
 ################################################################################
 # Configuration and Variables
 ################################################################################
-ZIG           ?= $(shell which zig || echo ~/.local/share/zig/0.15.2/zig)
-ZIG_VERSION   := $(shell $(ZIG) version)
+# The required Zig version is single-sourced from `build.zig.zon`
+ZIG_VERSION := $(shell sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' build.zig.zon)
+ZIG_LOCAL  := $(HOME)/.local/share/zig/$(ZIG_VERSION)/zig
+ZIG        ?= $(shell test -x $(ZIG_LOCAL) && echo $(ZIG_LOCAL) || which zig)
+
+# A helper macro to guarantee the Zig compiler exists
+check_zig = \
+    if [ ! -x "$(ZIG)" ]; then \
+      echo "ERROR: Zig compiler not found at '$(ZIG)'."; \
+      echo "       Install Zig $(ZIG_VERSION) and/or set ZIG=/path/to/zig."; \
+      echo "       See: https://ziglang.org/download/"; \
+      exit 1; \
+    fi
+
 BUILD_TYPE    ?= ReleaseSafe
-BUILD_OPTS      = -Doptimize=$(BUILD_TYPE)
+BUILD_OPTS    = -Doptimize=$(BUILD_TYPE)
 JOBS          ?= $(shell nproc || echo 2)
 SRC_DIR       := src
 TEST_DIR      := tests

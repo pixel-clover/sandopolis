@@ -8,6 +8,10 @@ const sms_clock = @import("clock.zig");
 pub const SmsAudio = struct {
     psg: Psg = Psg{},
 
+    /// Frame-relative Z80 cycle of the machine, updated per scanline so PSG
+    /// writes carry real intra-frame timestamps instead of collapsing to 0.
+    current_z80_cycle: u32 = 0,
+
     // PSG command buffer (timestamped for accurate rendering)
     psg_commands: [4096]PsgCommand = undefined,
     psg_command_count: u16 = 0,

@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("platform.zig");
 const builtin = @import("builtin");
 
 pub const config_file_name = "sandopolis.cfg";
@@ -19,7 +20,7 @@ pub fn resolveConfigPath(allocator: std.mem.Allocator) ![]u8 {
     // 2. Platform-specific app data directory
     if (platformConfigDir(allocator)) |dir| {
         defer allocator.free(dir);
-        std.fs.cwd().makePath(dir) catch {};
+        platform.cwd().makePath(dir) catch {};
         return std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ dir, std.fs.path.sep, config_file_name });
     }
 
@@ -58,7 +59,7 @@ fn platformConfigDir(allocator: std.mem.Allocator) ?[]u8 {
 }
 
 fn getEnvOwned(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
-    return std.process.getEnvVarOwned(allocator, name) catch null;
+    return platform.getEnvVarOwned(allocator, name) catch null;
 }
 
 test "resolve config path returns a non-empty string" {

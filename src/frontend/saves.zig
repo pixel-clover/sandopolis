@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const Vdp = @import("../video/vdp.zig").Vdp;
 const StateFile = @import("../state_file.zig");
 const rom_paths = @import("../rom_paths.zig");
@@ -43,7 +44,7 @@ pub const Preview = struct {
     pub fn saveToFile(self: *const Preview, path: []const u8) !void {
         if (!self.available) return;
 
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        var file = try platform.cwd().createFile(path, .{ .truncate = true });
         defer file.close();
 
         var buffer: [4096]u8 = undefined;
@@ -60,7 +61,7 @@ pub const Preview = struct {
     }
 
     pub fn loadFromFile(path: []const u8) !Preview {
-        var file = try std.fs.cwd().openFile(path, .{});
+        var file = try platform.cwd().openFile(path, .{});
         defer file.close();
 
         var buffer: [4096]u8 = undefined;
@@ -111,7 +112,7 @@ pub const ManagerState = struct {
             var metadata = SlotMetadata{};
             metadata.path.set(path);
 
-            const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+            const file = platform.cwd().openFile(path, .{}) catch |err| switch (err) {
                 error.FileNotFound => {
                     self.slots[slot_index] = metadata;
                     continue;
@@ -123,7 +124,7 @@ pub const ManagerState = struct {
             const stat = try file.stat();
             metadata.exists = true;
             metadata.size_bytes = stat.size;
-            metadata.modified_ns = stat.mtime;
+            metadata.modified_ns = stat.mtime.nanoseconds;
             const preview_path = try resolvePreviewPath(allocator, path);
             defer allocator.free(preview_path);
             metadata.preview = Preview.loadFromFile(preview_path) catch |err| switch (err) {
@@ -185,7 +186,7 @@ pub fn deletePreviewFile(allocator: std.mem.Allocator, state_path: []const u8) !
     const preview_path = try resolvePreviewPath(allocator, state_path);
     defer allocator.free(preview_path);
 
-    std.fs.cwd().deleteFile(preview_path) catch |err| switch (err) {
+    platform.cwd().deleteFile(preview_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
@@ -195,7 +196,7 @@ pub fn deletePreviewFile(allocator: std.mem.Allocator, state_path: []const u8) !
 pub fn formatTimestampRelative(buffer: []u8, ns: i128) ![]const u8 {
     if (ns <= 0) return std.fmt.bufPrint(buffer, "UNKNOWN", .{});
 
-    const now_ns: i128 = std.time.nanoTimestamp();
+    const now_ns: i128 = platform.nanoTimestamp();
     const diff_ns = now_ns - ns;
 
     if (diff_ns < 0) {
@@ -234,7 +235,8 @@ pub fn formatTimestampRelative(buffer: []u8, ns: i128) ![]const u8 {
 
         return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2}", .{
             year_day.year,
-            @intFromEnum(month_day.month) + 1,
+            // std.time.epoch.Month is already 1-based (jan = 1).
+            @intFromEnum(month_day.month),
             month_day.day_index + 1,
         });
     }

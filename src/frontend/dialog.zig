@@ -1,4 +1,5 @@
 const std = @import("std");
+const platform = @import("../platform.zig");
 const config = @import("config.zig");
 const toast = @import("toast.zig");
 
@@ -16,7 +17,7 @@ pub const Outcome = union(enum) {
 
 // Thread-safe file dialog state
 pub const State = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: platform.Mutex = .{},
     in_flight: bool = false,
     selected_path: PathCopy = .{},
     failure_message: MessageCopy = .{},

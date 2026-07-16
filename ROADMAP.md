@@ -76,6 +76,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Startup home screen with recent-ROM history and remembered open-directory state
 - [x] Modal save manager for persistent state slots with runtime metadata and delete support
 - [x] GIF animation recording, WAV audio recording, and BMP screenshot capture
+- [x] WAV recording correctness (SMS and Game Gear audio captured, pause no longer flushes unplayed audio into an active recording)
+- [x] Quick-load and save-manager slot consistency after a cross-game quick-state load
 - [x] Save-state previews/screenshots and pause the flow
 - [x] EA 4-Way Play multitap adapter (4-player support)
 - [x] Sega Mouse peripheral support with 8-nibble TH-toggle protocol
@@ -102,6 +104,13 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Street Fighter II Special Champion Edition graphics corruption (lazy SSF mapper activation on bank register write)
 - [ ] Ultimate Mortal Kombat Trilogy romhack loading failure on desktop (works on web)
 - [x] Color cycling artifacts during screen transitions (root cause: VBlank status flag bug on last scanline; fixed alongside Zabu crash)
+- [x] PAL Overdrive execution derailed at frame 2813 (root cause: pending interrupt levels dropped when a higher level was serviced; fixed with a
+  pending-level bitmask in the rocket68 wrapper and Z80 INT line handling decoupled from the 68K VINT flag)
+- [x] I2C EEPROM per-wiring address decoding matched to Genesis Plus GX (Acclaim 32M bank shift, byte-lane parity, and random-read address
+  retention; fixes NBA Jam TE ROM shadowing)
+- [x] Save-state format v3 with mapper bank registers, EEPROM state, and validated deserialization of untrusted input
+- [x] Interlace mode 2 vertical geometry (doubled line sampling and sprite Y offset)
+- [x] GIF and BMP screenshot stride handling for H32 display mode
 
 ### Future Goals
 
@@ -112,6 +121,11 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Browser performance HUD, about panel, and Genesis/Zig-themed UI with light/dark modes
 - [x] Docker image for Sandopolis Web (`Dockerfile`, published to GHCR)
 - [x] Libretro core packaging (`zig build libretro`, shared library with all 25 API functions)
+- [x] Libretro XRGB8888 pixel format negotiation and reload handling (fixes garbled video in RetroArch)
+- [x] Libretro save RAM interface (`RETRO_MEMORY_SAVE_RAM` exposing battery SRAM and I2C EEPROM data)
+- [x] Libretro SMS, Game Gear, and SG-1000 support (core routed through the `SystemMachine` facade)
+- [x] Frontend decoupling: all three frontends (SDL, wasm, libretro) drive the emulator through the shared `SystemMachine` facade, including
+  unified button mapping and magic-dispatched save-state serialization (`saveStateToBuffer`/`loadStateFromBuffer`)
 - [x] Browser keyboard remapping UI with localStorage persistence and duplicate-swap
 - [x] Browser integer scaling mode (whole-pixel multiples)
 - [x] Desktop integer scaling and pixel-perfect aspect ratio correction (nearest-neighbor texture filtering)
@@ -166,6 +180,11 @@ This document outlines the features implemented in Sandopolis emulator and the f
   auto-detection from cartridge region codes
 - [x] SMS quick save states (in-memory capture and restore of Z80, VDP, bus, and audio state)
 - [x] SMS persistent save states (file-based serialization with source path, Z80, VDP, bus, and audio state)
+- [x] SMS VDP accuracy fixes (name table base in 224-line mode, sprite Y wraparound, line counter reload, VRAM port address masking, and Game Gear
+  viewport top in 224-line mode)
+- [x] SMS save-state hardening (format v4 with byte-level sanitization of untrusted input, SG-1000 flag preserved across clone and save, PAL mode
+  preserved across reset, and I/O port and PSG state included)
+- [x] SMS soft reset semantics (Z80 reset pulse with RAM, VDP, PSG, and mapper state preserved instead of a full power cycle)
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
 - [ ] Codemasters mapper
 - [ ] BIOS/boot ROM support
