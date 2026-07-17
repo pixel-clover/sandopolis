@@ -449,6 +449,48 @@ pub const Z80 = struct {
     }
 };
 
+test "z80 restore clamps corrupt audio ring indices and mode fields" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+    z80.reset();
+
+    // A corrupt or hostile state file can carry arbitrary u16 ring indices;
+    // the buffers are 32768/4096/64/8192 entries, and the push functions
+    // index before wrapping, so unclamped values write far out of bounds.
+    var state = z80.captureState();
+    state.ym_write_write_index = 0xFFFF;
+    state.ym_write_read_index = 0xFFFF;
+    state.ym_write_count = 0xFFFF;
+    state.ym_dac_write_index = 0xFFFF;
+    state.ym_dac_read_index = 0xFFFF;
+    state.ym_dac_count = 0xFFFF;
+    state.ym_reset_write_index = 0xFFFF;
+    state.ym_reset_read_index = 0xFFFF;
+    state.ym_reset_count = 0xFFFF;
+    state.psg_command_write_index = 0xFFFF;
+    state.psg_command_read_index = 0xFFFF;
+    state.psg_command_count = 0xFFFF;
+    state.interrupt_mode = 7;
+    state.psg_latched_channel = 9;
+    z80.restoreState(&state);
+
+    const readback = z80.captureState();
+    try std.testing.expect(readback.ym_write_write_index < 32768);
+    try std.testing.expect(readback.ym_write_read_index < 32768);
+    try std.testing.expect(readback.ym_write_count <= 32768);
+    try std.testing.expect(readback.ym_dac_write_index < 4096);
+    try std.testing.expect(readback.ym_dac_read_index < 4096);
+    try std.testing.expect(readback.ym_dac_count <= 4096);
+    try std.testing.expect(readback.ym_reset_write_index < 64);
+    try std.testing.expect(readback.ym_reset_read_index < 64);
+    try std.testing.expect(readback.ym_reset_count <= 64);
+    try std.testing.expect(readback.psg_command_write_index < 8192);
+    try std.testing.expect(readback.psg_command_read_index < 8192);
+    try std.testing.expect(readback.psg_command_count <= 8192);
+    try std.testing.expect(readback.interrupt_mode <= 2);
+    try std.testing.expect(readback.psg_latched_channel <= 3);
+}
+
 test "z80 register dump reflects stepped state" {
     var z80 = Z80.init();
     defer z80.deinit();

@@ -1419,6 +1419,19 @@ void jgz80_capture_state(const Jgz80Handle *handle, Jgz80State *state) {
     state->m68k_bus_access_count = handle->m68k_bus_access_count;
 }
 
+/* Ring indices/counts come from state files that may be truncated or
+ * corrupt; the push functions index before wrapping, so an unclamped
+ * u16 index would write far outside these fixed-size arrays. */
+static uint16_t clamp_ring_index(uint16_t value, size_t capacity) {
+    return (uint16_t)(value % (uint16_t)capacity);
+}
+
+static uint16_t clamp_ring_count(uint16_t value, size_t capacity) {
+    return value > (uint16_t)capacity ? (uint16_t)capacity : value;
+}
+
+#define JGZ80_RING_CAPACITY(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state) {
     if (!handle || !state) return;
 
@@ -1438,7 +1451,7 @@ void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state) {
     handle->core.i = state->i;
     handle->core.r = state->r;
     handle->core.iff_delay = state->iff_delay;
-    handle->core.interrupt_mode = state->interrupt_mode;
+    handle->core.interrupt_mode = state->interrupt_mode <= 2u ? state->interrupt_mode : 0u;
     handle->core.irq_data = state->irq_data;
     handle->core.irq_pending = state->irq_pending;
     handle->core.nmi_pending = state->nmi_pending;
@@ -1482,26 +1495,26 @@ void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state) {
     handle->ym_timer_b_overflow = state->ym_timer_b_overflow;
     handle->audio_event_sequence = state->audio_event_sequence;
     memcpy(handle->ym_write_events, state->ym_write_events, sizeof(handle->ym_write_events));
-    handle->ym_write_write_index = state->ym_write_write_index;
-    handle->ym_write_read_index = state->ym_write_read_index;
-    handle->ym_write_count = state->ym_write_count;
+    handle->ym_write_write_index = clamp_ring_index(state->ym_write_write_index, JGZ80_RING_CAPACITY(handle->ym_write_events));
+    handle->ym_write_read_index = clamp_ring_index(state->ym_write_read_index, JGZ80_RING_CAPACITY(handle->ym_write_events));
+    handle->ym_write_count = clamp_ring_count(state->ym_write_count, JGZ80_RING_CAPACITY(handle->ym_write_events));
     memcpy(handle->ym_dac_samples, state->ym_dac_samples, sizeof(handle->ym_dac_samples));
-    handle->ym_dac_write_index = state->ym_dac_write_index;
-    handle->ym_dac_read_index = state->ym_dac_read_index;
-    handle->ym_dac_count = state->ym_dac_count;
+    handle->ym_dac_write_index = clamp_ring_index(state->ym_dac_write_index, JGZ80_RING_CAPACITY(handle->ym_dac_samples));
+    handle->ym_dac_read_index = clamp_ring_index(state->ym_dac_read_index, JGZ80_RING_CAPACITY(handle->ym_dac_samples));
+    handle->ym_dac_count = clamp_ring_count(state->ym_dac_count, JGZ80_RING_CAPACITY(handle->ym_dac_samples));
     memcpy(handle->ym_reset_events, state->ym_reset_events, sizeof(handle->ym_reset_events));
-    handle->ym_reset_write_index = state->ym_reset_write_index;
-    handle->ym_reset_read_index = state->ym_reset_read_index;
-    handle->ym_reset_count = state->ym_reset_count;
+    handle->ym_reset_write_index = clamp_ring_index(state->ym_reset_write_index, JGZ80_RING_CAPACITY(handle->ym_reset_events));
+    handle->ym_reset_read_index = clamp_ring_index(state->ym_reset_read_index, JGZ80_RING_CAPACITY(handle->ym_reset_events));
+    handle->ym_reset_count = clamp_ring_count(state->ym_reset_count, JGZ80_RING_CAPACITY(handle->ym_reset_events));
     memcpy(handle->psg_commands, state->psg_commands, sizeof(handle->psg_commands));
-    handle->psg_command_write_index = state->psg_command_write_index;
-    handle->psg_command_read_index = state->psg_command_read_index;
-    handle->psg_command_count = state->psg_command_count;
+    handle->psg_command_write_index = clamp_ring_index(state->psg_command_write_index, JGZ80_RING_CAPACITY(handle->psg_commands));
+    handle->psg_command_read_index = clamp_ring_index(state->psg_command_read_index, JGZ80_RING_CAPACITY(handle->psg_commands));
+    handle->psg_command_count = clamp_ring_count(state->psg_command_count, JGZ80_RING_CAPACITY(handle->psg_commands));
     handle->psg_last = state->psg_last;
     memcpy(handle->psg_tone, state->psg_tone, sizeof(handle->psg_tone));
     memcpy(handle->psg_volume, state->psg_volume, sizeof(handle->psg_volume));
     handle->psg_noise = state->psg_noise;
-    handle->psg_latched_channel = state->psg_latched_channel;
+    handle->psg_latched_channel = state->psg_latched_channel & 0x03u;
     handle->psg_latched_is_volume = state->psg_latched_is_volume != 0u;
     handle->bus_req = state->bus_req != 0u;
     handle->bus_ack = state->bus_ack != 0u;

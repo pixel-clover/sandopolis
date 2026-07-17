@@ -1087,6 +1087,9 @@ fn renderSpritesToBuffer(
             }
 
             if (pixel_budget_used >= max_pixels) {
+                // Exceeding the per-line dot budget sets the overflow status
+                // flag (bit 6) on hardware, same as the sprite-count limit.
+                self.sprite_overflow = true;
                 next_line_mask = true;
                 break;
             }
@@ -1257,6 +1260,43 @@ test "backdrop honors s/h raises from high-priority transparent tiles" {
     // intensity; elsewhere it stays shadowed.
     try std.testing.expectEqual(getPaletteColor(&vdp, 1), vdp.framebuffer[0]);
     try std.testing.expectEqual(getPaletteColorShadow(&vdp, 1), vdp.framebuffer[8]);
+}
+
+test "sprite pixel budget overflow sets the sprite overflow status flag" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    seedAscendingSpritePattern(&vdp, 0);
+
+    // Nine 4-cell-wide sprites on one H32 line: 288 dots exceeds the
+    // 256-dot budget while staying under the 16-sprite-per-line limit,
+    // so only the dot budget (not the sprite count) overflows.
+    const sprite_base: u16 = 0x0200;
+    for (0..9) |i| {
+        const link: u8 = if (i == 8) 0 else @intCast(i + 1);
+        writeTestSpriteEntryFull(
+            &vdp,
+            sprite_base + @as(u16, @intCast(i * 8)),
+            128,
+            0x0C,
+            link,
+            0x0000,
+            128 + @as(u16, @intCast(i * 32)),
+        );
+    }
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+
+    // Exceeding the per-line dot budget sets status bit 6 on hardware, in
+    // addition to arming next-line masking.
+    try std.testing.expect(vdp.sprite_dot_overflow);
+    try std.testing.expect(vdp.sprite_overflow);
 }
 
 test "sprite Y is masked to 9 bits outside interlace mode 2" {
