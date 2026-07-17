@@ -11,7 +11,9 @@ const Z80 = @import("cpu/z80.zig").Z80;
 const save_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
 // v3: added cartridge mapper state (SSF banks, EEPROM protocol) to the bus
 // state and an eeprom_len byte stream after cartridge RAM.
-pub const save_state_version: u16 = 3;
+// v4: Jgz80State gained ym_timer_watermark (YM timer shadow no longer
+// double-advances across deferred-burst offset rewinds).
+pub const save_state_version: u16 = 4;
 const default_state_name = "sandopolis.state";
 pub const default_persistent_state_slot: u8 = 1;
 pub const persistent_state_slot_count: u8 = 3;

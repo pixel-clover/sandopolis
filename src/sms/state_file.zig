@@ -12,7 +12,8 @@ pub const magic = [8]u8{ 'S', 'N', 'D', 'S', 'M', 'S', 'S', 'T' };
 //     both were silently reset to power-on defaults on load.
 // v5: SmsVdp gained latched_vscroll (reg 9 latched per frame), which
 //     changes the raw-struct serialization layout.
-pub const version: u16 = 5;
+// v6: Jgz80State gained ym_timer_watermark.
+pub const version: u16 = 6;
 
 /// Serialize SMS machine state into a byte buffer.
 pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 {

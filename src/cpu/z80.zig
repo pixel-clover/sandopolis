@@ -57,6 +57,7 @@ pub const Z80 = struct {
         "ym_regs",
         "ym_key_mask",
         "ym_offset_cursor",
+        "ym_timer_watermark",
         "ym_internal_master_remainder",
         "ym_cycle",
         "ym_busy",
@@ -247,6 +248,13 @@ pub const Z80 = struct {
     pub fn getYmRegister(self: *const Z80, port: u1, reg: u8) u8 {
         if (self.handle) |h| return c.jgz80_get_ym_register(h, port, reg);
         return 0;
+    }
+
+    /// Restart the window-relative audio timeline after the pending audio
+    /// window is taken/discarded. Advances the YM timer shadow to the end
+    /// of the retired window first so timers never lose the tail.
+    pub fn resetAudioWindow(self: *Z80, window_end_master_offset: u32) void {
+        if (self.handle) |h| c.jgz80_reset_audio_window(h, window_end_master_offset);
     }
 
     pub fn getYmKeyMask(self: *const Z80) u8 {
@@ -832,7 +840,7 @@ test "z80 ym timers do not double-advance across deferred-burst offset rewinds" 
 
     const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
 
-    z80.resetAudioWindow();
+    z80.resetAudioWindow(0);
     // Timer A period 4 samples (reg = 1020): overflows after ~96+2 internal
     // cycles of chip time.
     z80.writeByte(0x4000, 0x24);
@@ -864,7 +872,7 @@ test "z80 ym timers do not double-advance across deferred-burst offset rewinds" 
     // timer-driven drivers after every frame drain).
     z80.writeByte(0x4000, 0x27);
     z80.writeByte(0x4001, 0x10);
-    z80.resetAudioWindow();
+    z80.resetAudioWindow(130 * ym_internal_master_cycles);
     z80.writeByte(0x4000, 0x27);
     z80.writeByte(0x4001, 0x05);
     z80.setAudioMasterOffset(130 * ym_internal_master_cycles);

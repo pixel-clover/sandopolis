@@ -634,7 +634,11 @@ pub const Machine = struct {
     }
 
     pub fn takePendingAudio(self: *Machine) PendingAudioFrames {
-        return self.bus.audio_timing.takePending();
+        const pending = self.bus.audio_timing.takePending();
+        // Event timestamps are window-relative; retiring the window restarts
+        // the Z80 bridge's audio timeline (and its YM timer watermark).
+        self.bus.z80.resetAudioWindow(pending.master_cycles);
+        return pending;
     }
 
     pub fn drainPendingAudio(self: *Machine, sink: anytype) !void {

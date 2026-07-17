@@ -550,7 +550,7 @@ pub const Bus = struct {
     pub fn clearPendingAudioTransferState(self: *Bus) void {
         self.audio_timing = .{};
         self.z80.discardPendingAudioEvents();
-        self.z80.setAudioMasterOffset(0);
+        self.z80.resetAudioWindow(0);
     }
 
     pub fn replaceStoragePaths(self: *Bus, allocator: std.mem.Allocator, save_path: ?[]u8, source_path: ?[]u8) void {
