@@ -973,7 +973,10 @@ test "vctest rom framebuffer matches golden hash after 60 frames" {
     // 2026-07: rebaselined after fixing byteswapped 16-bit VRAM data-port
     // reads; the frame was verified pixel-identical in layout against the
     // Genesis Plus GX reference via `zig build dump-frames`.
-    try testing.expectEqual(@as(u32, 538108016), hash);
+    // 2026-07: rebaselined again after gating the ODD status bit (bit 4)
+    // on interlace mode; jgenesis only toggles interlaced_odd during
+    // interlaced frames, so the bit reads 0 in the modes vctest displays.
+    try testing.expectEqual(@as(u32, 1988477211), hash);
 }
 
 test "vctest rom runs stably in both ntsc and pal modes" {
@@ -1243,7 +1246,11 @@ test "fm test rom audio pipeline output matches golden hash" {
     // account for the window start remainder; same-timestamp YM events
     // apply in emission order); verified against Genesis Plus GX via
     // dump-audio envelope correlation.
-    try testing.expectEqual(@as(u32, 317022487), collector.hash);
+    // Re-baselined 2026-07 after fixing the in-burst Z80 stall accounting
+    // (stalls now charge Z80 credit instead of booking pre-advanced debt
+    // that swallowed VDP/audio time); trace-diff vs Genesis Plus GX shows
+    // unchanged 68K-RAM sync.
+    try testing.expectEqual(@as(u32, 3720877847), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1304,7 +1311,9 @@ test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
     // Re-baselined 2026-07 for Nuked-parity fixes (LFO PM depth, shared
     // $A4/$AC latch, $27 timer write semantics, SSG-EG key-off); spectral
     // content verified against Genesis Plus GX via dump-audio.
-    try testing.expectEqual(@as(u32, 147268861), hash);
+    // Re-baselined 2026-07 for the in-burst Z80 stall accounting fix
+    // (see the fm test rom pipeline test).
+    try testing.expectEqual(@as(u32, 4256582225), hash);
 }
 
 test "streets of rage ym synthesis matches golden hash (900 frames)" {
@@ -1316,7 +1325,10 @@ test "streets of rage ym synthesis matches golden hash (900 frames)" {
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
     // Re-baselined 2026-07 for Nuked-parity fixes (see above).
-    try testing.expectEqual(@as(u32, 3509395807), hash);
+    // Re-baselined 2026-07 for the in-burst Z80 stall accounting fix;
+    // trace-diff vs Genesis Plus GX on this ROM shows the same desync
+    // onset (frame 213) and magnitude before and after the change.
+    try testing.expectEqual(@as(u32, 4029617712), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {
