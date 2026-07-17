@@ -510,6 +510,20 @@ pub const SystemMachine = union(enum) {
         }
     }
 
+    /// True when a state buffer targets the same system family as the
+    /// running machine. loadStateFromBuffer can switch the variant, but
+    /// libretro requires serialize size, geometry, and region to stay
+    /// stable within a session, so retro_unserialize must reject
+    /// cross-family buffers instead of switching.
+    pub fn stateBufferMatchesSystem(self: *const SystemMachine, data: []const u8) bool {
+        const buffer_is_sms = data.len >= sms_state_file.magic.len and
+            std.mem.eql(u8, data[0..sms_state_file.magic.len], &sms_state_file.magic);
+        return switch (self.*) {
+            .sms => buffer_is_sms,
+            .genesis => !buffer_is_sms,
+        };
+    }
+
     pub fn captureSnapshot(self: *SystemMachine, allocator: std.mem.Allocator) !Snapshot {
         return switch (self.*) {
             .genesis => |*g| .{ .state = .{ .genesis = try g.captureSnapshot(allocator) } },
@@ -686,6 +700,30 @@ test "state buffer round-trips through the facade and dispatches on magic" {
     const junk = [_]u8{0} ** 64;
     try t.expectError(error.InvalidSaveState, machine.loadStateFromBuffer(testing_alloc, &junk));
     try t.expectEqual(system_detect.SystemType.genesis, machine.systemType());
+}
+
+test "stateBufferMatchesSystem distinguishes system families by magic" {
+    const t = @import("std").testing;
+
+    var sms_rom = [_]u8{0xC7} ** 1024;
+    var sms_machine = try SystemMachine.initFromRomBytes(testing_alloc, &sms_rom, .sms);
+    defer sms_machine.deinit(testing_alloc);
+    const sms_buf = try sms_machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(sms_buf);
+
+    var gen_rom = [_]u8{0} ** 0x400;
+    @memcpy(gen_rom[0x100..0x104], "SEGA");
+    var gen_machine = try SystemMachine.initFromRomBytes(testing_alloc, &gen_rom, null);
+    defer gen_machine.deinit(testing_alloc);
+    const gen_buf = try gen_machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(gen_buf);
+
+    try t.expect(sms_machine.stateBufferMatchesSystem(sms_buf));
+    try t.expect(gen_machine.stateBufferMatchesSystem(gen_buf));
+    try t.expect(!sms_machine.stateBufferMatchesSystem(gen_buf));
+    try t.expect(!gen_machine.stateBufferMatchesSystem(sms_buf));
+    // Short/garbage buffers classify as non-SMS and only match Genesis.
+    try t.expect(!sms_machine.stateBufferMatchesSystem("junk"));
 }
 
 test "loadStateFromBuffer keeps the persistent save RAM allocation stable" {

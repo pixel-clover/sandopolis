@@ -870,12 +870,20 @@ function onMasterVolumeChange() {
     saveSettings();
 }
 
+function flushWorkletAudio() {
+    if (audioNode) audioNode.port.postMessage("flush");
+    audioBufferLevel = 0;
+}
+
 function toggleAudio() {
     audioEnabled = !audioEnabled;
     updateAudioToggleLabel();
     if (audioCtx) {
         if (audioEnabled) audioCtx.resume(); else audioCtx.suspend();
     }
+    // Drop whatever sits in the worklet ring so re-enabling audio never
+    // replays stale samples or starts hundreds of milliseconds behind.
+    flushWorkletAudio();
     saveSettings();
 }
 
@@ -929,6 +937,11 @@ function renderAudio() {
     const e = wasm.instance.exports;
     const sampleCount = e.sandopolis_audio_render(emu);
     if (sampleCount === 0) return;
+    // The core's audio is always drained above so its event queues don't
+    // back up, but don't fill the worklet ring while nothing is playing:
+    // a suspended context stops draining and the ring would hold stale
+    // audio indefinitely.
+    if (!audioEnabled || !audioCtx || audioCtx.state !== "running") return;
     const bufPtr = e.sandopolis_audio_buffer_ptr(emu);
     // Re-read memory.buffer after render call (may have grown via memory.grow)
     const samples = new Int16Array(e.memory.buffer, bufPtr, sampleCount);
@@ -1026,15 +1039,12 @@ function onFileSelected(ev) {
 }
 
 async function loadRom(file) {
-    // Close help overlay if open
-    if (helpOpen) {
-        document.getElementById("help-overlay").classList.remove("visible");
-        helpOpen = false;
-    }
-    if (aboutOpen) {
-        document.getElementById("about-overlay").classList.remove("visible");
-        aboutOpen = false;
-    }
+    // Close any open overlays through their toggles so overlayDepth stays
+    // balanced; closing them by hand left the depth stuck above zero and
+    // permanently broke overlay pause/resume for the session. The restart
+    // below supersedes the resume this triggers.
+    if (helpOpen) toggleHelp();
+    if (aboutOpen) toggleAbout();
 
     const e = wasm.instance.exports;
     if (emu) {
@@ -1052,6 +1062,9 @@ async function loadRom(file) {
     audioBufferLevel = 0;
     audioBufferCapacity = 1;
     renderAudioFrameCount = 0;
+    // Also drop buffered samples in the worklet so the previous game's
+    // audio tail never plays under the new one.
+    flushWorkletAudio();
 
     await initAudio();
 

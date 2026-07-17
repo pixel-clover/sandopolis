@@ -268,7 +268,17 @@ export fn retro_serialize(data: ?*anyopaque, size: usize) callconv(.c) bool {
 export fn retro_unserialize(data: ?*const anyopaque, size: usize) callconv(.c) bool {
     const c_state = core orelse return false;
     const in: [*]const u8 = @ptrCast(data orelse return false);
-    c_state.machine.loadStateFromBuffer(allocator, in[0..size]) catch return false;
+    const buf = in[0..size];
+    // The magic dispatch could switch the system variant, but libretro
+    // requires serialize size, geometry, and region to stay stable within
+    // a session (rewind preallocates from retro_serialize_size), so reject
+    // states from a different system family.
+    if (!c_state.machine.stateBufferMatchesSystem(buf)) return false;
+    c_state.machine.loadStateFromBuffer(allocator, buf) catch return false;
+    // Reset resampler/filter/queue state before resyncing the FM core, the
+    // same as the SDL and wasm frontends, to avoid a transient pop and
+    // stale filter history on every rewind step.
+    c_state.audio.reset();
     if (c_state.machine.audioZ80()) |z80| c_state.audio.syncYmStateFromZ80(z80);
     return true;
 }
