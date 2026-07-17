@@ -220,6 +220,11 @@ pub fn BlipBuf(comptime capacity: usize) type {
             const interp: i32 = @intCast((fixed >> (frac_bits - delta_bits)) & (@as(u32, @intCast(delta_unit)) - 1));
             const pos: usize = @intCast(fixed >> frac_bits);
 
+            // Guard against writes past the buffer, mirroring addDelta: a
+            // caller that accumulates more than the blip capacity before
+            // reading must not corrupt memory.
+            if (pos + 9 > buf_len) return;
+
             if (delta_l == delta_r) {
                 const delta = delta_l * interp;
                 const val_7 = delta_l * delta_unit - delta;
@@ -350,6 +355,17 @@ test "blip buffer addDeltaFast produces nonzero output" {
         if (s != 0) has_nonzero = true;
     }
     try testing.expect(has_nonzero);
+}
+
+test "blip buffer addDeltaFast guards writes past the buffer" {
+    var buf = BlipBuf(64){};
+    buf.setRates(53693175.0, 48000.0);
+    // ~89 output samples worth of master cycles: past the 64-sample
+    // capacity. addDelta already guards this; addDeltaFast must too
+    // instead of indexing out of bounds.
+    buf.addDelta(100_000, 4000, 4000);
+    buf.addDeltaFast(100_000, 4000, 4000);
+    try testing.expectEqual(@as(usize, 0), buf.samplesAvail());
 }
 
 test "blip buffer stereo separation works" {

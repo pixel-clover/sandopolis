@@ -62,7 +62,9 @@ async function init() {
         fd_pread: () => ERRNO_NOSYS, fd_pwrite: () => ERRNO_NOSYS, fd_readdir: () => ERRNO_NOSYS,
         fd_fdstat_get: () => 0, fd_fdstat_set_flags: () => 0, fd_fdstat_set_rights: () => 0,
         fd_filestat_get: () => 0, fd_filestat_set_size: () => 0, fd_filestat_set_times: () => 0,
-        fd_prestat_get: () => -1, fd_prestat_dir_name: () => -1,
+        // 8 = WASI EBADF: the std preopen scan loop terminates on it; -1
+        // truncates to 0xFFFF, which is not a valid errno tag.
+        fd_prestat_get: () => 8, fd_prestat_dir_name: () => 8,
         path_open: () => ERRNO_NOSYS, path_create_directory: () => ERRNO_NOSYS,
         path_link: () => ERRNO_NOSYS, path_readlink: () => ERRNO_NOSYS,
         path_rename: () => ERRNO_NOSYS, path_symlink: () => ERRNO_NOSYS,
@@ -82,7 +84,13 @@ async function init() {
             v.setUint32(sp, 0, true);
             return 0;
         },
-        clock_time_get: () => 0,
+        clock_time_get: (clockId, precision, timePtr) => {
+            // Write a real (zero) timestamp: returning success without
+            // writing would hand callers whatever bytes sit at the result
+            // pointer as a valid time.
+            new DataView(wasm.instance.exports.memory.buffer).setBigUint64(timePtr, 0n, true);
+            return 0;
+        },
         clock_res_get: (clockId, resPtr) => {
             new DataView(wasm.instance.exports.memory.buffer).setBigUint64(resPtr, 1n, true);
             return 0;
@@ -123,6 +131,7 @@ async function init() {
     });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
+    window.addEventListener("gamepaddisconnected", releaseAllGamepadButtons);
     // Click-to-pause is a 2D-only affordance. While a VR session is active
     // the canvas is not visible to the user and Quest browser sometimes fires
     // synthetic clicks on the focused canvas when a BT controller button is
@@ -192,6 +201,10 @@ async function init() {
     // Fullscreen change handler
     document.addEventListener("fullscreenchange", onFullscreenChange);
 
+    // Auto-pause when the tab is hidden so the browser's rAF throttling
+    // doesn't slow the emulator and drain the audio buffer in the background.
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     loadSettings();
     initRemapUI();
     db = await openDB();
@@ -207,6 +220,12 @@ async function init() {
             },
             isRomLoaded: () => !!emu,
             getAspectMode: () => aspectMode,
+            onSessionStart: () => {
+                // Click-to-unpause is disabled inside VR, so entering VR
+                // with the game paused would show a permanently frozen
+                // screen with no way to resume from the headset.
+                if (emu && !running) togglePause();
+            },
             onSessionEnd: () => {
                 // Pause the emulator when leaving VR so the game doesn't run unattended.
                 if (emu && running) {
@@ -363,7 +382,10 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
-        if (saved.keyMap) keyMap = {...DEFAULT_KEY_MAP, ...saved.keyMap};
+        // The saved map is complete (saveSettings persists all bindings);
+        // spreading defaults underneath would resurrect bindings the user
+        // deliberately remapped away.
+        if (saved.keyMap) keyMap = {...saved.keyMap};
         if (saved.scaleMode !== undefined) {
             scaleMode = saved.scaleMode;
             document.getElementById("scale-mode").value = saved.scaleMode;
@@ -695,6 +717,26 @@ function pauseForOverlay() {
     }
 }
 
+let pausedByVisibility = false;
+
+function onVisibilityChange() {
+    if (document.hidden) {
+        if (running) {
+            pausedByVisibility = true;
+            running = false;
+            if (rafId) cancelAnimationFrame(rafId);
+            if (audioCtx) audioCtx.suspend();
+        }
+    } else if (pausedByVisibility) {
+        pausedByVisibility = false;
+        if (emu) {
+            running = true;
+            resumeFrame();
+            if (audioCtx && audioEnabled) audioCtx.resume();
+        }
+    }
+}
+
 function resumeAfterOverlay() {
     if (overlayDepth > 0) overlayDepth--;
     if (overlayDepth > 0) return;
@@ -1017,7 +1059,7 @@ async function persistentLoad() {
     const ok = e.sandopolis_load_state(emu, ptr, data.length);
     e.sandopolis_free(ptr, data.length);
     if (ok) {
-        frameInterval = 1000 / (e.sandopolis_is_pal(emu) ? 50 : 60);
+        frameInterval = e.sandopolis_is_pal(emu) ? (1000 / 49.7015) : (1000 / 59.9227);
     }
     showToast(ok ? `Loaded slot ${currentSlot}` : "Load failed");
 }
@@ -1028,14 +1070,19 @@ function showToast(msg) {
     const el = document.getElementById("toast");
     el.textContent = msg;
     el.classList.add("visible");
-    clearTimeout(el._timer);
-    el._timer = setTimeout(() => el.classList.remove("visible"), 2000);
+    // Shared timer property with vr.js's showVrToast: both must clear the
+    // same handle or one side's stale timer hides the other's message.
+    clearTimeout(el._toastTimer);
+    el._toastTimer = setTimeout(() => el.classList.remove("visible"), 2000);
 }
 
 // ROM loading
 
 function onFileSelected(ev) {
     if (ev.target.files.length > 0) loadRom(ev.target.files[0]);
+    // Clear the input so picking the same file again re-fires "change"
+    // (used to restart a game by re-selecting its ROM).
+    ev.target.value = "";
 }
 
 async function loadRom(file) {
@@ -1273,6 +1320,21 @@ const GAMEPAD_FACE_MAP = [
 ];
 
 const AXIS_THRESHOLD = 0.5;
+
+function releaseAllGamepadButtons() {
+    // A disconnected pad (unplug, battery sleep) never sends releases for
+    // buttons it held, and stdPlayer compaction can hand its stale edge
+    // state to another pad. Release everything and start clean.
+    prevGamepadStates[0] = {};
+    prevGamepadStates[1] = {};
+    if (!emu || !wasm) return;
+    const e = wasm.instance.exports;
+    for (let player = 0; player < 2; player++) {
+        for (const name in BUTTONS) {
+            e.sandopolis_set_button(emu, player, BUTTONS[name], false);
+        }
+    }
+}
 
 function pollGamepads() {
     if (!emu) return;

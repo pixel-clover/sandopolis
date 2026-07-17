@@ -844,9 +844,13 @@ pub const SmsVdp = struct {
             const b2 = self.vram[(tile_addr + 2) & 0x3FFF];
             const b3 = self.vram[(tile_addr + 3) & 0x3FFF];
 
-            const pixel_count: u8 = if (is_double) 16 else 8;
+            // The VDP's sprite line buffer only fits four doubled sprites:
+            // sprites 5-8 on a line render at normal width even with zoom
+            // enabled (they are still doubled vertically).
+            const h_doubled = is_double and sprite_count < 4;
+            const pixel_count: u8 = if (h_doubled) 16 else 8;
             for (0..pixel_count) |px_idx| {
-                const base_px = if (is_double) @as(u8, @intCast(px_idx)) / 2 else @as(u8, @intCast(px_idx));
+                const base_px = if (h_doubled) @as(u8, @intCast(px_idx)) / 2 else @as(u8, @intCast(px_idx));
                 const bit: u3 = @intCast(7 - base_px);
                 const p0: u8 = (b0 >> bit) & 1;
                 const p1: u8 = (b1 >> bit) & 1;
@@ -913,6 +917,39 @@ test "sms vdp latches vertical scroll once per frame" {
     while (vdp.scanline != 0) _ = vdp.stepScanline();
     _ = vdp.stepScanline();
     try testing.expect(vdp.framebuffer[0] != line0);
+}
+
+test "sms vdp zoom magnifies only the first four sprites on a line" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] |= 0x41; // display enable + sprite zoom
+
+    // Sprite tile 1: solid color 1 (bitplane 0 set on every row).
+    for (0..8) |row| {
+        vdp.vram[32 + row * 4] = 0xFF;
+    }
+
+    // Five sprites on the same line at x = 0, 40, 80, 120, 160.
+    const sat = vdp.spriteAttributeTableBase();
+    for (0..5) |i| {
+        vdp.vram[(sat + i) & 0x3FFF] = 0;
+        vdp.vram[(sat + 128 + i * 2) & 0x3FFF] = @intCast(i * 40);
+        vdp.vram[(sat + 128 + i * 2 + 1) & 0x3FFF] = 1;
+    }
+    vdp.vram[(sat + 5) & 0x3FFF] = 0xD0;
+
+    var line_buf = [_]u32{0} ** SmsVdp.framebuffer_width;
+    var priority_buf = [_]bool{false} ** SmsVdp.framebuffer_width;
+    vdp.renderSprites(4, &line_buf, &priority_buf);
+
+    var first_width: usize = 0;
+    while (first_width < 32 and line_buf[first_width] != 0) first_width += 1;
+    var fifth_width: usize = 0;
+    while (fifth_width < 32 and line_buf[160 + fifth_width] != 0) fifth_width += 1;
+
+    // The VDP only doubles the first four sprites on a line horizontally;
+    // the rest render at normal width (all are still doubled vertically).
+    try testing.expectEqual(@as(usize, 16), first_width);
+    try testing.expectEqual(@as(usize, 8), fifth_width);
 }
 
 test "sms vdp init defaults" {

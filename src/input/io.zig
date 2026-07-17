@@ -58,7 +58,10 @@ pub const Io = struct {
 
     pub fn read(self: *Io, address: u32) u8 {
         switch (address & 0xFF) {
-            0x01 => return self.readVersionRegister(false),
+            // 0x01 (version register) is deliberately not handled here: it
+            // needs the console's PAL flag, which Io does not know. The 68K
+            // path reads it through bus/io_window.readRegisterByte, which
+            // passes vdp.pal_mode to readVersionRegister.
             0x03 => return self.readData(0),
             0x05 => return self.readData(1),
             0x07 => return self.data[2],
