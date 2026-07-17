@@ -29,7 +29,7 @@ pub const enable_dma_refresh_windows: bool = false;
 
 /// Wait cycles added per refresh event, indexed by (ppc >> 21) & 7.
 /// ROM regions get 2, RAM gets 3, I/O gets 0.
-pub const refresh_wait_by_region: [8]u32 = .{ 2, 2, 2, 2, 0, 0, 0, 3 };
+pub const refresh_wait_by_region: [8]u32 = .{ 2, 2, 2, 2, 2, 2, 2, 2 };
 
 pub inline fn m68kCyclesToMaster(cycles: u32) u32 {
     return cycles * m68k_divider;

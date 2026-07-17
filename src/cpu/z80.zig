@@ -826,6 +826,51 @@ test "z80 ym status read exposes busy on data writes" {
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
 }
 
+test "z80 ym timers do not double-advance across deferred-burst offset rewinds" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.resetAudioWindow();
+    // Timer A period 4 samples (reg = 1020): overflows after ~96+2 internal
+    // cycles of chip time.
+    z80.writeByte(0x4000, 0x24);
+    z80.writeByte(0x4001, 0xFF);
+    z80.writeByte(0x4000, 0x25);
+    z80.writeByte(0x4001, 0x00);
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x05);
+
+    // A mid-slice 68K status read advances the shadow to 60 internal cycles.
+    z80.setAudioMasterOffset(60 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
+
+    // The deferred Z80 burst then replays with back-dated timestamps: the
+    // offset cursor rewinds to the burst base and walks forward through the
+    // same span. Chip time must NOT advance twice: 60 + 60 replayed internal
+    // cycles would overflow the 98-cycle timer even though only 60 cycles of
+    // real time have passed.
+    z80.setAudioMasterOffset(0);
+    z80.setAudioMasterOffset(60 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
+
+    // Genuinely new time past the watermark still advances the timers.
+    z80.setAudioMasterOffset(130 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x01), z80.readByte(0x4000) & 0x01);
+
+    // An audio-window reset starts a fresh timeline: timers must keep
+    // running from the new base (a frozen watermark here would starve
+    // timer-driven drivers after every frame drain).
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x10);
+    z80.resetAudioWindow();
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x05);
+    z80.setAudioMasterOffset(130 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x01), z80.readByte(0x4000) & 0x01);
+}
+
 test "z80 ym status read reports and clears timer a overflow" {
     var z80 = Z80.init();
     defer z80.deinit();
