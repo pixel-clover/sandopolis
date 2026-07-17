@@ -384,11 +384,18 @@ pub const AudioOutput = struct {
             }
         }
 
-        // Replay key-on state: register 0x28 on port 0 controls all channels.
-        // The shadow stores the last value written; replay it to restore
-        // which operators are keyed on.
-        self.ym_sample.write(0, 0x28);
-        self.ym_sample.write(1, z80.getYmRegister(0, 0x28));
+        // Replay key-on state: register 0x28 on port 0 controls all channels,
+        // one channel per write, so the shadow's last value names only one
+        // channel. The bridge tracks a per-channel key mask; synthesize one
+        // 0x28 write per held channel (all four slots; per-slot granularity
+        // is not tracked, and drivers key whole channels in practice).
+        const key_mask = z80.getYmKeyMask();
+        for (0..6) |ch| {
+            if ((key_mask >> @intCast(ch)) & 1 == 0) continue;
+            const ch_code: u8 = if (ch >= 3) @intCast(ch - 3 + 4) else @intCast(ch);
+            self.ym_sample.write(0, 0x28);
+            self.ym_sample.write(1, 0xF0 | ch_code);
+        }
 
         // Reset blip delta tracking so the first sample after restore
         // doesn't produce a huge discontinuity pop.
@@ -771,6 +778,35 @@ test "audio output init seeds runtime power-on psg state" {
     try std.testing.expectEqual(@as(u1, 1), output.psg.tones[0].output_bit);
     try std.testing.expectEqual(@as(u1, 1), output.psg.tones[1].output_bit);
     try std.testing.expectEqual(@as(u1, 1), output.psg.tones[2].output_bit);
+}
+
+test "syncYmStateFromZ80 restores key-on for every held channel, not just the last 0x28 write" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    // Key on channels 0, 2, and 5 (all four slots each), then key off
+    // channel 1 last so the register shadow's final 0x28 value names a
+    // channel that is not held.
+    const key_writes = [_]u8{ 0xF0, 0xF2, 0xF6, 0x01 };
+    for (key_writes) |value| {
+        z80.writeByte(0x4000, 0x28);
+        z80.writeByte(0x4001, value);
+    }
+    try std.testing.expectEqual(@as(u8, 0b100101), z80.getYmKeyMask());
+
+    var audio = AudioOutput.init();
+    audio.syncYmStateFromZ80(&z80);
+
+    for ([_]usize{ 0, 2, 5 }) |ch| {
+        for (0..4) |slot| {
+            try std.testing.expectEqual(@as(u8, 1), audio.ym_sample.ch[ch].slot[slot].key);
+        }
+    }
+    for ([_]usize{ 1, 3, 4 }) |ch| {
+        for (0..4) |slot| {
+            try std.testing.expectEqual(@as(u8, 0), audio.ym_sample.ch[ch].slot[slot].key);
+        }
+    }
 }
 
 test "psg commands produce nonzero blip output before mute" {

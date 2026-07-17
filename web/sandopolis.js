@@ -1180,14 +1180,20 @@ function tickEmulator(now) {
 
     const fb = new Uint32Array(e.memory.buffer, fbPtr, fbLen);
     const pixels = imageData.data;
-    const count = Math.min(fbLen, width * height);
-    for (let i = 0; i < count; i++) {
-        const argb = fb[i];
-        const off = i * 4;
-        pixels[off] = (argb >> 16) & 0xFF;
-        pixels[off + 1] = (argb >> 8) & 0xFF;
-        pixels[off + 2] = argb & 0xFF;
-        pixels[off + 3] = 0xFF;
+    // Framebuffer rows are `stride` pixels apart (320 on Genesis even in 256-wide H32 mode);
+    // reading rows packed at `width` shears the image.
+    const stride = e.sandopolis_framebuffer_stride(emu);
+    for (let y = 0; y < height; y++) {
+        const rowBase = y * stride;
+        if (rowBase + width > fbLen) break;
+        for (let x = 0; x < width; x++) {
+            const argb = fb[rowBase + x];
+            const off = (y * width + x) * 4;
+            pixels[off] = (argb >> 16) & 0xFF;
+            pixels[off + 1] = (argb >> 8) & 0xFF;
+            pixels[off + 2] = argb & 0xFF;
+            pixels[off + 3] = 0xFF;
+        }
     }
     ctx.putImageData(imageData, 0, 0);
 }

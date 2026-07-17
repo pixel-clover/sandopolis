@@ -390,15 +390,14 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             if (!display_on) {
                 self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
             } else if (seg_sh) {
-                if (pal_idx == 0) {
-                    self.framebuffer[line_start + x] = getPaletteColorShadow(self, seg_backdrop_idx);
-                } else {
-                    self.framebuffer[line_start + x] = switch (sh_buf[x]) {
-                        SH_SHADOW => getPaletteColorShadow(self, pal_idx),
-                        SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
-                        else => getPaletteColor(self, pal_idx),
-                    };
-                }
+                // The backdrop also honors the s/h buffer: high-priority
+                // transparent tiles and sprite operators lift or lower it.
+                const sh_idx = if (pal_idx == 0) seg_backdrop_idx else pal_idx;
+                self.framebuffer[line_start + x] = switch (sh_buf[x]) {
+                    SH_SHADOW => getPaletteColorShadow(self, sh_idx),
+                    SH_HIGHLIGHT => getPaletteColorHighlight(self, sh_idx),
+                    else => getPaletteColor(self, sh_idx),
+                };
             } else {
                 if (pal_idx == 0) {
                     self.framebuffer[line_start + x] = getPaletteColor(self, seg_backdrop_idx);
@@ -498,15 +497,11 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             // Render the pixel with the current palette (pre-event for dots).
             const pal_idx = if (pixel_buf[x] == 0) backdrop_idx else pixel_buf[x];
             if (sh_mode) {
-                if (pixel_buf[x] == 0) {
-                    self.framebuffer[line_start + x] = getPaletteColorShadow(self, backdrop_idx);
-                } else {
-                    self.framebuffer[line_start + x] = switch (sh_buf[x]) {
-                        SH_SHADOW => getPaletteColorShadow(self, pal_idx),
-                        SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
-                        else => getPaletteColor(self, pal_idx),
-                    };
-                }
+                self.framebuffer[line_start + x] = switch (sh_buf[x]) {
+                    SH_SHADOW => getPaletteColorShadow(self, pal_idx),
+                    SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
+                    else => getPaletteColor(self, pal_idx),
+                };
             } else {
                 self.framebuffer[line_start + x] = getPaletteColor(self, pal_idx);
             }
@@ -1057,15 +1052,21 @@ fn renderSpritesToBuffer(
                         const palette_index = (entry.palette * 16) + color_idx;
 
                         if (sh_mode and entry.palette == 3 and color_idx == 14) {
-                            sh_buf[sx] = SH_NORMAL;
-                            continue;
-                        }
-                        if (sh_mode and entry.palette == 3 and color_idx == 15) {
+                            // Highlight operator (sprite color 0x3E): the
+                            // pixel is not drawn; the underlying pixel is
+                            // raised one intensity step.
                             if (sh_buf[sx] == SH_SHADOW) {
                                 sh_buf[sx] = SH_NORMAL;
                             } else {
                                 sh_buf[sx] = SH_HIGHLIGHT;
                             }
+                            continue;
+                        }
+                        if (sh_mode and entry.palette == 3 and color_idx == 15) {
+                            // Shadow operator (sprite color 0x3F): the pixel
+                            // is not drawn; the underlying pixel is forced
+                            // to shadow.
+                            sh_buf[sx] = SH_SHADOW;
                             continue;
                         }
 
@@ -1074,7 +1075,9 @@ fn renderSpritesToBuffer(
                             pixel_buf[sx] = palette_index;
                             layer_buf[sx] = entry.new_layer;
                             source_buf[sx] = 3;
-                            if (sh_mode and entry.is_high) {
+                            // Priority sprites and sprite color 14 of any
+                            // palette always display at normal intensity.
+                            if (sh_mode and (entry.is_high or color_idx == 14)) {
                                 sh_buf[sx] = SH_NORMAL;
                             }
                         }
@@ -1147,6 +1150,135 @@ fn renderSpriteLineForTest(
         sh_buf,
         false,
     );
+}
+
+test "s/h highlight operator sprite color 3E raises intensity one step" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    // Tile 0 row 0: eight pixels of color index 14.
+    vdp.vramWriteByte(0x0000, 0xEE);
+    vdp.vramWriteByte(0x0001, 0xEE);
+    vdp.vramWriteByte(0x0002, 0xEE);
+    vdp.vramWriteByte(0x0003, 0xEE);
+
+    const sprite_base: u16 = 0x0200;
+    writeTestSpriteEntry(&vdp, sprite_base, 0x6000, 128); // palette 3
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_SHADOW} ** Vdp.framebuffer_width;
+    @memset(sh_buf[4..8], SH_NORMAL);
+
+    renderSpritesToBuffer(&vdp, 0, vdp.tileHeight(), vdp.tileHeightMask(), vdp.tileSizeBytes(), &pixel_buf, &layer_buf, &source_buf, &sh_buf, true);
+
+    // The operator pixel is not drawn; it raises the underlying pixel one
+    // intensity step: shadow -> normal, normal -> highlight.
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ SH_NORMAL, SH_NORMAL, SH_NORMAL, SH_NORMAL }, sh_buf[0..4]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ SH_HIGHLIGHT, SH_HIGHLIGHT, SH_HIGHLIGHT, SH_HIGHLIGHT }, sh_buf[4..8]);
+}
+
+test "s/h shadow operator sprite color 3F forces shadow" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    // Tile 0 row 0: eight pixels of color index 15.
+    vdp.vramWriteByte(0x0000, 0xFF);
+    vdp.vramWriteByte(0x0001, 0xFF);
+    vdp.vramWriteByte(0x0002, 0xFF);
+    vdp.vramWriteByte(0x0003, 0xFF);
+
+    const sprite_base: u16 = 0x0200;
+    writeTestSpriteEntry(&vdp, sprite_base, 0x6000, 128); // palette 3
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    @memset(sh_buf[4..8], SH_HIGHLIGHT);
+
+    renderSpritesToBuffer(&vdp, 0, vdp.tileHeight(), vdp.tileHeightMask(), vdp.tileSizeBytes(), &pixel_buf, &layer_buf, &source_buf, &sh_buf, true);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{SH_SHADOW} ** 8, sh_buf[0..8]);
+}
+
+test "s/h sprite pixels of color 14 in palettes 0-2 are never shadowed" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    // Tile 0 row 0: eight pixels of color index 14, palette 0 (a normal
+    // opaque sprite pixel, not the palette-3 operator).
+    vdp.vramWriteByte(0x0000, 0xEE);
+    vdp.vramWriteByte(0x0001, 0xEE);
+    vdp.vramWriteByte(0x0002, 0xEE);
+    vdp.vramWriteByte(0x0003, 0xEE);
+
+    const sprite_base: u16 = 0x0200;
+    writeTestSpriteEntry(&vdp, sprite_base, 0x0000, 128); // palette 0, low priority
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_SHADOW} ** Vdp.framebuffer_width;
+
+    renderSpritesToBuffer(&vdp, 0, vdp.tileHeight(), vdp.tileHeightMask(), vdp.tileSizeBytes(), &pixel_buf, &layer_buf, &source_buf, &sh_buf, true);
+
+    // The pixel is drawn, and the hardware quirk exempts sprite color 14 of
+    // any palette from shadow: it always displays at normal intensity.
+    try std.testing.expectEqualSlices(u8, &[_]u8{14} ** 8, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{SH_NORMAL} ** 8, sh_buf[0..8]);
+}
+
+test "backdrop honors s/h raises from high-priority transparent tiles" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40; // display enable
+    vdp.regs[12] = 0x08; // shadow/highlight mode, H32
+    vdp.regs[7] = 0x01; // backdrop: palette 0, color 1
+    vdp.regs[2] = 0x30; // plane A base 0xC000
+    vdp.regs[4] = 0x07; // plane B base 0xE000 (all-transparent)
+
+    // CRAM color 1: full red.
+    vdp.cram[2] = 0x00;
+    vdp.cram[3] = 0x0E;
+
+    // Plane A tile (0,0): priority set, tile 1 whose pattern is all zeros,
+    // so the tile is fully transparent but lifts shadow for its 8 pixels.
+    vdp.vramWriteWord(0xC000, 0x8001);
+
+    vdp.renderScanline(0);
+
+    // Backdrop under the high-priority transparent tile renders at normal
+    // intensity; elsewhere it stays shadowed.
+    try std.testing.expectEqual(getPaletteColor(&vdp, 1), vdp.framebuffer[0]);
+    try std.testing.expectEqual(getPaletteColorShadow(&vdp, 1), vdp.framebuffer[8]);
+}
+
+test "sprite Y is masked to 9 bits outside interlace mode 2" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x01;
+
+    seedAscendingSpritePattern(&vdp, 0);
+
+    const sprite_base: u16 = 0x0200;
+    // SAT Y = 0x280: bit 9 set. Outside interlace mode 2 the hardware only
+    // uses 9 bits, so this reads as 0x080 and the sprite lands on line 0.
+    writeTestSpriteEntryFull(&vdp, sprite_base, 0x0280, 0x00, 0x00, 0x0000, 128);
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[0..8]);
 }
 
 test "sprite renderer draws a simple sprite row and tracks counters" {

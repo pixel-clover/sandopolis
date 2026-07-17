@@ -250,7 +250,10 @@ fn statusWordForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) u16
     if (adjusted.hblank) status |= 0x0004;
     if (dmaBusyFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0002;
     if (self.pal_mode) status |= 0x0001;
-    if (self.odd_frame) status |= 0x0010;
+    // The odd-frame bit reads back only while an interlace mode is enabled;
+    // in non-interlaced modes hardware reports it as 0 even though the
+    // internal field parity keeps toggling.
+    if (self.odd_frame and self.isInterlaceEnabled()) status |= 0x0010;
     if (self.sprite_collision) status |= 0x0020;
     if (self.sprite_overflow) status |= 0x0040;
     if (vintFlagForAdjustedState(self, adjusted)) status |= 0x0080;
@@ -467,6 +470,23 @@ test "vdp step wraps correctly across multiple line periods" {
     vdp.line_master_cycle = 0;
     vdp.step(clock.ntsc_master_cycles_per_line * 3);
     try testing.expectEqual(@as(u16, 0), vdp.line_master_cycle);
+}
+
+test "odd frame status bit reads zero outside interlace mode" {
+    var vdp = Vdp.init();
+    vdp.odd_frame = true;
+
+    // Non-interlaced: hardware always reports status bit 4 clear.
+    vdp.regs[12] = 0x81;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0010);
+
+    // Interlace mode 1: bit 4 reflects the field parity.
+    vdp.regs[12] = 0x83;
+    try testing.expectEqual(@as(u16, 0x0010), vdp.readControl() & 0x0010);
+
+    // Interlace mode 2: same.
+    vdp.regs[12] = 0x87;
+    try testing.expectEqual(@as(u16, 0x0010), vdp.readControl() & 0x0010);
 }
 
 test "H40 status hblank flag turns on after the external hblank edge" {

@@ -209,6 +209,9 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(unit_tests, b, cpu_deps);
     linkSdl3(unit_tests, sdl3_lib);
+    // Debug-mode by-value Machine moves need more than the default 8 MB
+    // main-thread stack (see the matching setting on every test target).
+    unit_tests.stack_size = 64 * 1024 * 1024;
 
     const unit_run = b.addRunArtifact(unit_tests);
     const unit_step = b.step("test-unit", "Run unit tests");
@@ -229,6 +232,10 @@ pub fn build(b: *std.Build) void {
     addExternalCpuCores(frontend_tests, b, cpu_deps);
     linkSdl3(frontend_tests, sdl3_lib);
     addStbTruetype(frontend_tests, b);
+    // Debug-mode by-value Machine moves need more than the default 8 MB
+    // main-thread stack; without this the test binary segfaults under the
+    // default ulimit.
+    frontend_tests.stack_size = 64 * 1024 * 1024;
     const frontend_run = b.addRunArtifact(frontend_tests);
     const frontend_step = b.step("test-frontend", "Run frontend helper tests");
     frontend_step.dependOn(&frontend_run.step);
@@ -244,6 +251,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(integration_tests, b, cpu_deps);
+    integration_tests.stack_size = 64 * 1024 * 1024;
 
     const integration_run = b.addRunArtifact(integration_tests);
     const integration_step = b.step("test-integration", "Run integration tests");
@@ -260,6 +268,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(regression_tests, b, cpu_deps);
+    regression_tests.stack_size = 64 * 1024 * 1024;
 
     const regression_run = b.addRunArtifact(regression_tests);
     const regression_step = b.step("test-regression", "Run regression tests");
@@ -277,6 +286,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(property_tests, b, cpu_deps);
+    property_tests.stack_size = 64 * 1024 * 1024;
     const property_run = b.addRunArtifact(property_tests);
     const property_step = b.step("test-property", "Run property-based tests");
     property_step.dependOn(&property_run.step);
