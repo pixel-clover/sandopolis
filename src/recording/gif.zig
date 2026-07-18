@@ -66,8 +66,8 @@ pub const GifRecorder = struct {
         if (framebuffer.len < stride * (height - 1) + width) return error.InvalidFrameSize;
 
         if (self.frame_count > 0) {
-            const pos = self.file.getPos() catch 0;
-            if (pos > 0) self.file.seekTo(pos - 1) catch {};
+            // Step back over the GIF trailer byte so the new frame overwrites it.
+            self.file.seekBy(-1) catch {};
         }
 
         var palette: [max_colors]u32 = [_]u32{0} ** max_colors;

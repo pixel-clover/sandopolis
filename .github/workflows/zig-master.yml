@@ -1,9 +1,5 @@
 name: Zig Master Canary
 
-# Early-warning build against the Zig master toolchain. A failure here does not block anything;
-# it signals upcoming breakage (std API churn, bundled Clang changes, dependency build.zig incompatibilities)
-# months before the next Zig release forces an upgrade.
-
 on:
   workflow_dispatch:
   schedule: # Run every Monday at 06:00 (UTC)

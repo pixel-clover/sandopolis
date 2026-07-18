@@ -9,8 +9,8 @@
             .hash = "minish-0.3.0-SQtSTYI3AgCxWdWbKxS_lvmfbp0wJk29ZW5C9CozJaxm",
         },
         .chilli = .{
-            .url = "https://github.com/CogitatorTech/chilli/archive/refs/tags/v0.3.1.tar.gz",
-            .hash = "chilli-0.3.1-c19PrjizAQByQrJlXzEb8SrMY6cDJyWaZ9FnxFfN0kYl",
+            .url = "https://github.com/CogitatorTech/chilli/archive/refs/tags/v0.3.2.tar.gz",
+            .hash = "chilli-0.3.2-c19PrireAQAXEfA7xrmJW2lrSiNiuuG8wtJI-MJVZgFU",
         },
         .zsdl = .{
             .url = "https://github.com/zig-gamedev/zsdl/archive/100f46b336a112497436144e14877118573e0adf.tar.gz",

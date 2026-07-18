@@ -39,6 +39,7 @@ const frontend_saves = @import("frontend/saves.zig");
 const input_gamepad = @import("input/gamepad.zig");
 const input_keyboard = @import("input/keyboard.zig");
 const libretro = @import("libretro.zig");
+const platform_mod = @import("platform.zig");
 
 comptime {
     _ = audio_blip_buf;
@@ -82,4 +83,5 @@ comptime {
     _ = input_gamepad;
     _ = input_keyboard;
     _ = libretro;
+    _ = platform_mod;
 }
