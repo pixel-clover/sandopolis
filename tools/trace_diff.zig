@@ -248,17 +248,6 @@ pub fn main(init: std.process.Init) !void {
 
         const diverge = if (alignment_locked) diffCount(sando_ram[0..compare_len], ref_ram, swapped) else 0;
 
-        // TEMP diagnostic: watch beam-phase probe bytes the demo stores.
-        if (alignment_locked and frame >= 300 and frame % 50 == 0) {
-            const watch = [_]usize{ 0x4E01, 0x4E51, 0x0502, 0x0271 };
-            try stdout.print("  WATCH f{d}:", .{frame});
-            for (watch) |a| {
-                const rb = if (swapped) ref_ram[a ^ 1] else ref_ram[a];
-                try stdout.print(" {X:0>4}={X:0>2}/{X:0>2}", .{ a, sando_ram[a], rb });
-            }
-            try stdout.print("\n", .{});
-        }
-
         const is_sample = (frame % args.every == 0) or (frame + 1 == args.frames);
         if (is_sample) {
             const pct = @as(f64, @floatFromInt(diverge)) * 100.0 / @as(f64, @floatFromInt(compare_len));
