@@ -31,18 +31,23 @@ pub const SmsBus = struct {
     cartridge_ram: [2 * 16 * 1024]u8 = [_]u8{0} ** (2 * 16 * 1024),
 
     /// Create a bus with a borrowed ROM slice (caller keeps ownership).
+    /// The io pointers are left undefined: taking &bus.vdp here would
+    /// dangle once the local is returned by value. rebindPointers() must
+    /// run once the bus has its final address (the SmsMachine `bound`
+    /// discipline enforces this before any port I/O).
     pub fn init(rom: []const u8) SmsBus {
         var bus = SmsBus{ .rom = rom };
-        bus.io = SmsIo{ .vdp = &bus.vdp, .input = &bus.input };
+        bus.io = SmsIo{ .vdp = undefined, .input = undefined };
         return bus;
     }
 
-    /// Create a bus with a copied ROM (bus owns the memory).
+    /// Create a bus with a copied ROM (bus owns the memory). Same io
+    /// pointer caveat as init().
     pub fn initOwned(alloc: std.mem.Allocator, rom_bytes: []const u8) !SmsBus {
         const rom_copy = try alloc.alloc(u8, rom_bytes.len);
         @memcpy(rom_copy, rom_bytes);
         var bus = SmsBus{ .rom = rom_copy, .rom_owned = true };
-        bus.io = SmsIo{ .vdp = &bus.vdp, .input = &bus.input };
+        bus.io = SmsIo{ .vdp = undefined, .input = undefined };
         return bus;
     }
 

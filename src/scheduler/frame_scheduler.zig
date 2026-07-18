@@ -29,7 +29,6 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
                 const gap = bus.dmaRefreshGapMasterCycles();
                 if (gap > 0) {
                     // Not in a refresh slot: stall until one begins.
-                    bus.resetRefreshCounter();
                     const stall = @min(remaining, gap);
                     remaining -= stall;
                     bus.stepMaster(m68k_sync.flushStalledMaster(stall));
@@ -41,16 +40,16 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
                 // instruction naturally stretches across refresh slots
                 // if it requires multiple bus accesses.
                 if (remaining >= clock.m68k_divider) {
+                    const fetch_wall_master = m68k_sync.master_cycles;
                     const step = cpu.stepInstruction(&memory);
                     const stepped_master = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles;
                     if (stepped_master == 0) {
-                        bus.resetRefreshCounter();
                         const quantum = @min(remaining, idle_master_quantum);
                         remaining -= quantum;
                         bus.stepMaster(m68k_sync.commitMasterCycles(quantum));
                         continue;
                     }
-                    bus.recordRefreshCycles(step.m68k_cycles, step.ppc);
+                    bus.recordRefreshCycles(fetch_wall_master);
                     bus.stepMaster(m68k_sync.commitMasterCycles(stepped_master));
                     if (stepped_master > remaining) {
                         m68k_sync.addDebt(stepped_master - remaining);
@@ -62,9 +61,9 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
                 }
             }
             // Fallback (or refresh windows disabled): monolithic halt.
-            bus.resetRefreshCounter();
             const quantum = @min(remaining, bus.dmaHaltQuantum());
             remaining -= quantum;
+            bus.noteM68kDmaHaltMaster(quantum);
             bus.stepMaster(m68k_sync.flushStalledMaster(quantum));
             continue;
         }
@@ -75,17 +74,20 @@ pub fn runMasterSlice(bus: SchedulerBus, cpu: SchedulerCpu, m68k_sync: *clock.M6
             continue;
         }
 
+        // Charge the refresh delay at the fetch position (the CPU's wall
+        // position before this instruction), Genesis Plus GX semantics.  A
+        // stopped CPU fetches nothing, so the idle path charges nothing.
+        const fetch_wall_master = m68k_sync.master_cycles;
         const step = cpu.stepInstruction(&memory);
         const stepped_master = clock.m68kCyclesToMaster(step.m68k_cycles) + step.wait.master_cycles;
         if (stepped_master == 0) {
-            bus.resetRefreshCounter();
             const quantum = @min(remaining, idle_master_quantum);
             remaining -= quantum;
             bus.stepMaster(m68k_sync.commitMasterCycles(quantum));
             continue;
         }
 
-        bus.recordRefreshCycles(step.m68k_cycles, step.ppc);
+        bus.recordRefreshCycles(fetch_wall_master);
         bus.stepMaster(m68k_sync.commitMasterCycles(stepped_master));
         if (stepped_master > remaining) {
             m68k_sync.addDebt(stepped_master - remaining);

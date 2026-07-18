@@ -127,6 +127,10 @@ export fn sandopolis_screen_width(emu: *const WasmEmulator) u32 {
     return emu.machine.framebufferWidth();
 }
 
+export fn sandopolis_framebuffer_stride(emu: *const WasmEmulator) u32 {
+    return emu.machine.framebufferStride();
+}
+
 export fn sandopolis_screen_height(emu: *const WasmEmulator) u32 {
     return emu.machine.screenHeight();
 }
@@ -455,6 +459,25 @@ test "wasm emulator creation resets the machine before the first frame" {
     const pc_before = genesis.programCounter();
     emu.machine.runFrame();
     try std.testing.expect(genesis.programCounter() != pc_before);
+}
+
+test "wasm framebuffer stride export reports the row stride independent of screen width" {
+    const test_allocator = std.testing.allocator;
+    const rom = try makeGenesisRom(test_allocator, 0x00FF_FE00, 0x0000_0200, &[_]u8{
+        0x4E, 0x71,
+        0x4E, 0x71,
+        0x60, 0xFC,
+    });
+    defer test_allocator.free(rom);
+
+    var emu = try initWasmEmulator(test_allocator, rom, 0);
+    defer emu.machine.deinit(test_allocator);
+
+    // The Genesis VDP boots in H32 (256-wide screen), but framebuffer rows
+    // are always 320 pixels apart. Reading the framebuffer packed at
+    // screen_width shears every row after the first.
+    try std.testing.expectEqual(@as(u32, 256), sandopolis_screen_width(&emu));
+    try std.testing.expectEqual(@as(u32, 320), sandopolis_framebuffer_stride(&emu));
 }
 
 test "wasm sms audio sample count returns interleaved i16 count not stereo pairs" {

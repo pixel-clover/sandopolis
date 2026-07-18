@@ -598,6 +598,7 @@ fn handleSaveManagerKey(
     wav_recorder: *?WavRecorder,
     audio: ?*AudioInit,
     frame_counter: *u32,
+    current_rom_path: *DialogPathCopy,
     scancode: zsdl3.Scancode,
     hotkey_action: ?InputBindings.HotkeyAction,
     pressed: bool,
@@ -633,7 +634,7 @@ fn handleSaveManagerKey(
                 _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
                 refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
             } else {
-                _ = handlePersistentStateAction(
+                const load_result = handlePersistentStateAction(
                     allocator,
                     .load_state_file,
                     machine,
@@ -645,6 +646,12 @@ fn handleSaveManagerKey(
                     frame_counter,
                     notifications,
                 );
+                if (load_result == .loaded_machine) {
+                    // A state can come from a different game; keep the save
+                    // manager and title bar targeting the running ROM, the
+                    // same as the hotkey load path.
+                    syncFrontendAfterPersistentStateLoad(ui, current_rom_path, machine);
+                }
                 refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
             }
             return true;
@@ -3466,6 +3473,7 @@ pub fn main(init: std.process.Init) !void {
                         &wav_recorder,
                         if (audio) |*a| a else null,
                         &frame_counter,
+                        &current_rom_path,
                         scancode,
                         hotkey_action,
                         pressed,
@@ -4965,6 +4973,59 @@ test "persistent state load sync exits home screen and updates current rom path"
 
     try std.testing.expectEqual(@as(u8, 0x5A), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expect(ui.overlay != .home);
+    try std.testing.expectEqualStrings(rom_path, current_rom_path.slice());
+}
+
+test "save manager enter load resyncs the current rom path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rom = [_]u8{0} ** 0x400;
+    const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+    const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
+    defer allocator.free(rom_path);
+
+    var saved_machine = try Machine.initFromRomBytes(allocator, rom[0..]);
+    defer saved_machine.deinit(allocator);
+    saved_machine.bus.replaceStoragePaths(allocator, null, try allocator.dupe(u8, rom_path));
+
+    const state_path = try rom_paths.statePath(allocator, rom_path, StateFile.default_persistent_state_slot);
+    defer allocator.free(state_path);
+    try StateFile.saveToFile(&saved_machine, state_path);
+
+    var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
+    defer machine.deinit(allocator);
+
+    var gif_recorder: ?GifRecorder = null;
+    var wav_recorder: ?WavRecorder = null;
+    var frame_counter: u32 = 0;
+    var persistent_state_slot: u8 = StateFile.default_persistent_state_slot;
+    var ui = FrontendUi{ .overlay = .save_manager };
+    var save_manager = SaveManagerState{};
+    var current_rom_path = DialogPathCopy{};
+    current_rom_path.set("something-else.bin");
+
+    // Loading through the save manager must resync current_rom_path the
+    // same way the hotkey path does: a state can come from another game.
+    try std.testing.expect(handleSaveManagerKey(
+        &ui,
+        &save_manager,
+        allocator,
+        &machine,
+        rom_path,
+        &persistent_state_slot,
+        &gif_recorder,
+        &wav_recorder,
+        null,
+        &frame_counter,
+        &current_rom_path,
+        .@"return",
+        null,
+        true,
+        .{},
+    ));
     try std.testing.expectEqualStrings(rom_path, current_rom_path.slice());
 }
 

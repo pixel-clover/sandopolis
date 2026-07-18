@@ -209,6 +209,9 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(unit_tests, b, cpu_deps);
     linkSdl3(unit_tests, sdl3_lib);
+    // Debug-mode by-value Machine moves need more than the default 8 MB
+    // main-thread stack (see the matching setting on every test target).
+    unit_tests.stack_size = 64 * 1024 * 1024;
 
     const unit_run = b.addRunArtifact(unit_tests);
     const unit_step = b.step("test-unit", "Run unit tests");
@@ -229,6 +232,10 @@ pub fn build(b: *std.Build) void {
     addExternalCpuCores(frontend_tests, b, cpu_deps);
     linkSdl3(frontend_tests, sdl3_lib);
     addStbTruetype(frontend_tests, b);
+    // Debug-mode by-value Machine moves need more than the default 8 MB
+    // main-thread stack; without this the test binary segfaults under the
+    // default ulimit.
+    frontend_tests.stack_size = 64 * 1024 * 1024;
     const frontend_run = b.addRunArtifact(frontend_tests);
     const frontend_step = b.step("test-frontend", "Run frontend helper tests");
     frontend_step.dependOn(&frontend_run.step);
@@ -244,6 +251,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(integration_tests, b, cpu_deps);
+    integration_tests.stack_size = 64 * 1024 * 1024;
 
     const integration_run = b.addRunArtifact(integration_tests);
     const integration_step = b.step("test-integration", "Run integration tests");
@@ -260,6 +268,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(regression_tests, b, cpu_deps);
+    regression_tests.stack_size = 64 * 1024 * 1024;
 
     const regression_run = b.addRunArtifact(regression_tests);
     const regression_step = b.step("test-regression", "Run regression tests");
@@ -277,6 +286,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(property_tests, b, cpu_deps);
+    property_tests.stack_size = 64 * 1024 * 1024;
     const property_run = b.addRunArtifact(property_tests);
     const property_step = b.step("test-property", "Run property-based tests");
     property_step.dependOn(&property_run.step);
@@ -353,6 +363,27 @@ pub fn build(b: *std.Build) void {
     }
     const trace_diff_step = b.step("trace-diff", "Differential test vs Genesis Plus GX: report first 68K-RAM divergence");
     trace_diff_step.dependOn(&trace_diff_run.step);
+
+    const stall_diff = b.addExecutable(.{
+        .name = "stall-diff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/stall_diff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(stall_diff, b, cpu_deps);
+    stall_diff.root_module.addIncludePath(b.path("external/libretro"));
+    stall_diff.root_module.link_libc = true;
+    const stall_diff_run = b.addRunArtifact(stall_diff);
+    if (b.args) |args| {
+        stall_diff_run.addArgs(args);
+    }
+    const stall_diff_step = b.step("stall-diff", "Compare per-mechanism 68K stall accounting vs instrumented Genesis Plus GX");
+    stall_diff_step.dependOn(&stall_diff_run.step);
 
     const dump_frames = b.addExecutable(.{
         .name = "dump-frames",

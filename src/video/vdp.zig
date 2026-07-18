@@ -372,6 +372,10 @@ pub const Vdp = struct {
         return (self.regs[12] & 0x06) == 0x06;
     }
 
+    pub fn isInterlaceEnabled(self: *const Vdp) bool {
+        return (self.regs[12] & 0x02) != 0;
+    }
+
     /// Vertical coordinate used for plane sampling and sprite comparisons.
     /// In interlace mode 2 the vertical axis is double resolution: each
     /// displayed line samples row line*2 (even field) or line*2+1 (odd
@@ -385,9 +389,11 @@ pub const Vdp = struct {
 
     /// Sprite Y offset for the current mode: SAT Y is offset by 128 in the
     /// normal modes and by 256 in interlace mode 2 (double-resolution).
+    /// Outside interlace mode 2 the hardware only uses 9 bits of SAT Y.
     pub fn spriteYPos(self: *const Vdp, cached_y_pos: i16) i32 {
-        if (self.isInterlaceMode2()) return @as(i32, cached_y_pos) - 128;
-        return cached_y_pos;
+        const raw_y: i32 = @as(i32, cached_y_pos) + 128;
+        if (self.isInterlaceMode2()) return raw_y - 256;
+        return (raw_y & 0x1FF) - 128;
     }
 
     pub fn isHVCounterLatchEnabled(self: *const Vdp) bool {

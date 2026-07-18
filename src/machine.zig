@@ -428,6 +428,10 @@ pub const Machine = struct {
         // offset, so setHBlank's live side effects don't fire on a resume.
         self.bus.vdp.restoreHBlankFlag(start_master_cycles >= hblank_start_master_cycles);
 
+        // Snap the 68K refresh deadline back to the absolute grid at each
+        // line start, as the reference core does per execution run.
+        self.bus.reanchorRefreshDeadline(self.m68k_sync.master_cycles);
+
         // Collect all scanline events and sort by time. VInt fires at a specific
         // cycle offset into the vblank entry line (matching real hardware timing), not
         // at cycle 0. This lets HInt fire first when both occur on the same line.
@@ -634,7 +638,11 @@ pub const Machine = struct {
     }
 
     pub fn takePendingAudio(self: *Machine) PendingAudioFrames {
-        return self.bus.audio_timing.takePending();
+        const pending = self.bus.audio_timing.takePending();
+        // Event timestamps are window-relative; retiring the window restarts
+        // the Z80 bridge's audio timeline (and its YM timer watermark).
+        self.bus.z80.resetAudioWindow(pending.master_cycles);
+        return pending;
     }
 
     pub fn drainPendingAudio(self: *Machine, sink: anytype) !void {

@@ -10,7 +10,10 @@ pub const magic = [8]u8{ 'S', 'N', 'D', 'S', 'M', 'S', 'S', 'T' };
 // v3: added is_sg1000 flag (SG-1000 games silently became SMS on load).
 // v4: added I/O port state (memory/io control, GG regs) and PSG state;
 //     both were silently reset to power-on defaults on load.
-pub const version: u16 = 4;
+// v5: SmsVdp gained latched_vscroll (reg 9 latched per frame), which
+//     changes the raw-struct serialization layout.
+// v6: Jgz80State gained ym_timer_watermark.
+pub const version: u16 = 6;
 
 /// Serialize SMS machine state into a byte buffer.
 pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 {

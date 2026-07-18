@@ -77,15 +77,17 @@ pub const File = struct {
         return self.f.writer(io(), buffer);
     }
 
+    // std.Io.File exposes no public seek wrappers (only positional reads and
+    // writes), so go through the Io vtable, which implements seeking for
+    // every supported OS.
     pub fn seekTo(self: File, offset: u64) !void {
-        const rc = std.os.linux.lseek(self.f.handle, @intCast(offset), std.os.linux.SEEK.SET);
-        if (std.os.linux.errno(rc) != .SUCCESS) return error.Unseekable;
+        const i = io();
+        return i.vtable.fileSeekTo(i.userdata, self.f, offset);
     }
 
-    pub fn getPos(self: File) !u64 {
-        const rc = std.os.linux.lseek(self.f.handle, 0, std.os.linux.SEEK.CUR);
-        if (std.os.linux.errno(rc) != .SUCCESS) return error.Unseekable;
-        return rc;
+    pub fn seekBy(self: File, offset: i64) !void {
+        const i = io();
+        return i.vtable.fileSeekBy(i.userdata, self.f, offset);
     }
 
     pub fn readToEndAlloc(self: File, allocator: std.mem.Allocator, max_bytes: usize) ![]u8 {
@@ -96,6 +98,28 @@ pub const File = struct {
         };
     }
 };
+
+test "File seekTo and seekBy reposition the stream" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try (Dir{ .d = tmp.dir }).createFile("seek.bin", .{ .read = true });
+    defer file.close();
+    try file.writeAll("abcdef");
+
+    try file.seekTo(1);
+    var buf: [2]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), try file.readAll(buf[0..2]));
+    try std.testing.expectEqualSlices(u8, "bc", buf[0..2]);
+
+    try file.seekBy(-1);
+    try std.testing.expectEqual(@as(usize, 1), try file.readAll(buf[0..1]));
+    try std.testing.expectEqual(@as(u8, 'c'), buf[0]);
+
+    try file.seekTo(0);
+    try std.testing.expectEqual(@as(usize, 1), try file.readAll(buf[0..1]));
+    try std.testing.expectEqual(@as(u8, 'a'), buf[0]);
+}
 
 pub fn stdout() File {
     return .{ .f = std.Io.File.stdout() };

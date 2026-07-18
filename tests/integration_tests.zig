@@ -247,7 +247,10 @@ test "cpu data-port writes accrue vdp fifo wait accounting" {
 
     const wait = emulator.takeCpuWaitAccounting();
     try testing.expect(wait.m68k_cycles > 0);
-    try testing.expectEqual(expected_wait, wait.master_cycles);
+    // The CPU resumes from a port stall on its own clock edge, so the
+    // charged wait is the VDP's raw slot distance rounded up to a whole
+    // number of 68K clocks (Genesis Plus GX: (((cycles + 6) / 7) * 7)).
+    try testing.expectEqual(clock.roundMasterWaitToM68kPhase(expected_wait), wait.master_cycles);
     try testing.expect(!emulator.vdpShouldHaltCpu());
     try testing.expectEqual(@as(u16, 0x000A), emulator.vdpAddr());
 }
@@ -266,7 +269,9 @@ test "cpu data-port reads accrue vdp fifo drain wait accounting" {
     emulator.noteCpuBusAccessWait(0x00C0_0000, 2, false);
     const wait = emulator.takeCpuWaitAccounting();
     try testing.expect(wait.m68k_cycles > 0);
-    try testing.expectEqual(expected_wait, wait.master_cycles);
+    // See the write-accounting test: port stalls release on the 68K's
+    // clock edge, so the charged wait rounds up to a whole 68K clock.
+    try testing.expectEqual(clock.roundMasterWaitToM68kPhase(expected_wait), wait.master_cycles);
 }
 
 test "cpu z80-window accesses accrue wait accounting only when bus is granted" {

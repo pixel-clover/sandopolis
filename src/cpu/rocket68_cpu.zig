@@ -395,7 +395,9 @@ pub const Cpu = struct {
                 const m68k_raw = c.m68k_cycles_run(&self.core);
                 const m68k_run: u32 = if (m68k_raw > 0) @intCast(m68k_raw) else 0;
                 const elapsed = clock.m68kCyclesToMaster(m68k_run) + self.pending_wait_master_cycles;
-                self.addBusWaitMaster(memory.projectedDmaWaitMasterCycles(elapsed));
+                const dma_wait = memory.projectedDmaWaitMasterCycles(elapsed);
+                if (self.active_execution_counters) |counters| counters.m68k_dma_halt_master += dma_wait;
+                self.addBusWaitMaster(dma_wait);
             }
             return;
         }
@@ -419,33 +421,55 @@ pub const Cpu = struct {
             }
         }
 
-        self.addBusWaitMaster(memory.m68kAccessWaitMasterCycles(address, size_bytes));
+        self.addAccessWaitMaster(memory.m68kAccessWaitMasterCycles(address, size_bytes));
 
         if (!isVdpDataPortAddress(address)) {
             if (is_write and isVdpControlPortAddress(address)) {
-                self.addBusWaitMaster(memory.controlPortWriteWaitMasterCycles());
+                self.addCtrlPortWriteWaitMaster(memory.controlPortWriteWaitMasterCycles());
             }
             return;
         }
 
         if (!is_write) {
             if (size_bytes >= 4) {
-                self.addBusWaitMaster(memory.dataPortReadWaitMasterCycles());
-                self.addBusWaitMaster(memory.dataPortReadWaitMasterCycles());
+                self.addDataPortReadWaitMaster(memory.dataPortReadWaitMasterCycles());
+                self.addDataPortReadWaitMaster(memory.dataPortReadWaitMasterCycles());
                 return;
             }
 
-            self.addBusWaitMaster(memory.dataPortReadWaitMasterCycles());
+            self.addDataPortReadWaitMaster(memory.dataPortReadWaitMasterCycles());
             return;
         }
 
         if (size_bytes >= 4) {
-            self.addBusWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
-            self.addBusWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
+            self.addDataPortWriteWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
+            self.addDataPortWriteWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
             return;
         }
 
-        self.addBusWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
+        self.addDataPortWriteWaitMaster(memory.reserveDataPortWriteWaitMasterCycles());
+    }
+
+    fn addAccessWaitMaster(self: *Cpu, master_cycles: u32) void {
+        if (self.active_execution_counters) |counters| counters.m68k_access_wait_master += master_cycles;
+        self.addBusWaitMaster(master_cycles);
+    }
+
+    fn addCtrlPortWriteWaitMaster(self: *Cpu, master_cycles: u32) void {
+        if (self.active_execution_counters) |counters| counters.m68k_ctrlport_write_wait_master += master_cycles;
+        self.addBusWaitMaster(master_cycles);
+    }
+
+    fn addDataPortReadWaitMaster(self: *Cpu, master_cycles: u32) void {
+        const rounded = clock.roundMasterWaitToM68kPhase(master_cycles);
+        if (self.active_execution_counters) |counters| counters.m68k_dataport_read_wait_master += rounded;
+        self.addBusWaitMaster(rounded);
+    }
+
+    fn addDataPortWriteWaitMaster(self: *Cpu, master_cycles: u32) void {
+        const rounded = clock.roundMasterWaitToM68kPhase(master_cycles);
+        if (self.active_execution_counters) |counters| counters.m68k_dataport_write_wait_master += rounded;
+        self.addBusWaitMaster(rounded);
     }
 
     pub fn step(self: *Cpu, memory: *MemoryInterface) void {
@@ -472,7 +496,10 @@ pub const Cpu = struct {
         self.cycles += ran_cycles;
         self.halted = self.core.stopped;
         self.reconcileServicedInterrupt();
-        if (self.active_execution_counters) |counters| counters.m68k_instructions += 1;
+        if (self.active_execution_counters) |counters| {
+            counters.m68k_instructions += 1;
+            counters.m68k_executed_cycles += ran_cycles;
+        }
 
         self.instruction_trace.record(
             self.core.ppc,

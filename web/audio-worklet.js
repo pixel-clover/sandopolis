@@ -28,6 +28,17 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
                 this.port.postMessage({type: "level", count: this.count, capacity: this.bufferSize});
                 return;
             }
+            if (e.data === "flush") {
+                // Drop everything buffered (ROM change, audio toggle) so
+                // stale audio is never replayed later; fade back in to
+                // avoid a click on the next samples.
+                this.readPos = 0;
+                this.writePos = 0;
+                this.count = 0;
+                this.fadeGain = 0.0;
+                this.port.postMessage({type: "level", count: 0, capacity: this.bufferSize});
+                return;
+            }
             const samples = e.data;
             const len = samples.length;
             for (let i = 0; i < len; i++) {

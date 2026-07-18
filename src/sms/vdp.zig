@@ -24,6 +24,9 @@ pub const SmsVdp = struct {
 
     // Frame state
     scanline: u16 = 0,
+    // Reg 9 (vscroll) is latched once per frame; mid-frame writes take
+    // effect on the next frame (SMSPower VDP documentation).
+    latched_vscroll: u8 = 0,
     pal_mode: bool = false,
     is_game_gear: bool = false,
     is_sg1000: bool = false,
@@ -280,6 +283,10 @@ pub const SmsVdp = struct {
         const total = self.totalLines();
         var entering_vblank = false;
 
+        if (self.scanline == 0) {
+            self.latched_vscroll = self.regs[9];
+        }
+
         if (self.scanline < visible_lines) {
             // Active display: render and decrement line counter
             if (self.isDisplayEnabled()) {
@@ -324,6 +331,7 @@ pub const SmsVdp = struct {
 
     pub fn beginFrame(self: *SmsVdp) void {
         self.scanline = 0;
+        self.latched_vscroll = self.regs[9];
     }
 
     pub fn isDisplayEnabled(self: *const SmsVdp) bool {
@@ -704,7 +712,7 @@ pub const SmsVdp = struct {
         const name_base = self.nameTableBase();
         const visible_lines = self.activeVisibleLines();
 
-        const vscroll: u16 = self.regs[9];
+        const vscroll: u16 = self.latched_vscroll;
         const hscroll_locked = (self.regs[0] & 0x40) != 0 and line < 16;
         const hscroll: u16 = if (hscroll_locked) 0 else self.regs[8];
         const coarse_hscroll: u16 = (hscroll >> 3) & 0x1F;
@@ -836,9 +844,13 @@ pub const SmsVdp = struct {
             const b2 = self.vram[(tile_addr + 2) & 0x3FFF];
             const b3 = self.vram[(tile_addr + 3) & 0x3FFF];
 
-            const pixel_count: u8 = if (is_double) 16 else 8;
+            // The VDP's sprite line buffer only fits four doubled sprites:
+            // sprites 5-8 on a line render at normal width even with zoom
+            // enabled (they are still doubled vertically).
+            const h_doubled = is_double and sprite_count < 4;
+            const pixel_count: u8 = if (h_doubled) 16 else 8;
             for (0..pixel_count) |px_idx| {
-                const base_px = if (is_double) @as(u8, @intCast(px_idx)) / 2 else @as(u8, @intCast(px_idx));
+                const base_px = if (h_doubled) @as(u8, @intCast(px_idx)) / 2 else @as(u8, @intCast(px_idx));
                 const bit: u3 = @intCast(7 - base_px);
                 const p0: u8 = (b0 >> bit) & 1;
                 const p1: u8 = (b1 >> bit) & 1;
@@ -870,6 +882,75 @@ pub const SmsVdp = struct {
 };
 
 // -- Tests --
+
+test "sms vdp latches vertical scroll once per frame" {
+    var vdp = SmsVdp.init();
+    vdp.reset();
+    vdp.regs[1] |= 0x40; // display enable
+
+    // Tile 0: every row bitplane 0 set (color 1). Tile 1: bitplane 1 (color 2).
+    for (0..8) |row| {
+        vdp.vram[row * 4] = 0xFF;
+        vdp.vram[32 + row * 4 + 1] = 0xFF;
+    }
+    // Nametable (0x3800): row 0 column 0 = tile 0, row 1 column 0 = tile 1.
+    vdp.vram[0x3800] = 0;
+    vdp.vram[0x3800 + 64] = 1;
+    vdp.cram[1] = 0x03;
+    vdp.cram[2] = 0x30;
+    // Terminate the sprite list: the all-zero SAT would otherwise place 64
+    // sprites at y=0 that cover lines 1-8.
+    vdp.vram[0x3F00] = 0xD0;
+
+    _ = vdp.stepScanline(); // renders line 0 with the frame's latched vscroll (0)
+    const line0 = vdp.framebuffer[0];
+
+    // A mid-frame vscroll write takes effect on the NEXT frame, not this one
+    // (SMSPower VDP documentation: register 9 is latched at frame start).
+    vdp.regs[9] = 8;
+    _ = vdp.stepScanline(); // renders line 1
+    const line1 = vdp.framebuffer[SmsVdp.framebuffer_width];
+    try testing.expectEqual(line0, line1);
+
+    // Run out the frame; the new value applies from the next frame's line 0,
+    // which now samples tilemap row 8 (tile 1, a different color).
+    while (vdp.scanline != 0) _ = vdp.stepScanline();
+    _ = vdp.stepScanline();
+    try testing.expect(vdp.framebuffer[0] != line0);
+}
+
+test "sms vdp zoom magnifies only the first four sprites on a line" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] |= 0x41; // display enable + sprite zoom
+
+    // Sprite tile 1: solid color 1 (bitplane 0 set on every row).
+    for (0..8) |row| {
+        vdp.vram[32 + row * 4] = 0xFF;
+    }
+
+    // Five sprites on the same line at x = 0, 40, 80, 120, 160.
+    const sat = vdp.spriteAttributeTableBase();
+    for (0..5) |i| {
+        vdp.vram[(sat + i) & 0x3FFF] = 0;
+        vdp.vram[(sat + 128 + i * 2) & 0x3FFF] = @intCast(i * 40);
+        vdp.vram[(sat + 128 + i * 2 + 1) & 0x3FFF] = 1;
+    }
+    vdp.vram[(sat + 5) & 0x3FFF] = 0xD0;
+
+    var line_buf = [_]u32{0} ** SmsVdp.framebuffer_width;
+    var priority_buf = [_]bool{false} ** SmsVdp.framebuffer_width;
+    vdp.renderSprites(4, &line_buf, &priority_buf);
+
+    var first_width: usize = 0;
+    while (first_width < 32 and line_buf[first_width] != 0) first_width += 1;
+    var fifth_width: usize = 0;
+    while (fifth_width < 32 and line_buf[160 + fifth_width] != 0) fifth_width += 1;
+
+    // The VDP only doubles the first four sprites on a line horizontally;
+    // the rest render at normal width (all are still doubled vertically).
+    try testing.expectEqual(@as(usize, 16), first_width);
+    try testing.expectEqual(@as(usize, 8), fifth_width);
+}
 
 test "sms vdp init defaults" {
     const vdp = SmsVdp.init();

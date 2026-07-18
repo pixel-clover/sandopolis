@@ -246,11 +246,21 @@ fn statusWordForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) u16
     if (fifoEmptyFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0200;
     if (fifoFullFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0100;
 
-    if (adjusted.vblank or !self.isDisplayEnabled()) status |= 0x0008;
+    // The VBLANK flag follows the scanline, transitioning at line starts
+    // (set entering the first vblank line, cleared entering line 0), matching
+    // Genesis Plus GX.  Tying it to the v-counter increment instead flipped
+    // it ~640 master cycles earlier mid-line, which released Titan
+    // Overdrive's PAL frame-sync spin one line early and let a HINT land in
+    // the demo's RAM-handler rewrite (derail at frame ~2780).
+    const scanline_vblank = adjusted.scanline >= activeVisibleLines(self);
+    if (scanline_vblank or !self.isDisplayEnabled()) status |= 0x0008;
     if (adjusted.hblank) status |= 0x0004;
     if (dmaBusyFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0002;
     if (self.pal_mode) status |= 0x0001;
-    if (self.odd_frame) status |= 0x0010;
+    // The odd-frame bit reads back only while an interlace mode is enabled;
+    // in non-interlaced modes hardware reports it as 0 even though the
+    // internal field parity keeps toggling.
+    if (self.odd_frame and self.isInterlaceEnabled()) status |= 0x0010;
     if (self.sprite_collision) status |= 0x0020;
     if (self.sprite_overflow) status |= 0x0040;
     if (vintFlagForAdjustedState(self, adjusted)) status |= 0x0080;
@@ -425,7 +435,16 @@ pub fn applyPowerOnResetTiming(self: *Vdp) void {
 }
 
 pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
-    if (line >= visible_lines) return false;
+    // The H-Int counter also runs its check on the first vblank line: it
+    // fires there when the counter sits at zero, but neither decrements nor
+    // reloads (hardware & Genesis Plus GX).  With a per-line counter
+    // (reg 10 = 0) that is 225 HInts per NTSC frame, not 224 -- skipping it
+    // slid HINT-streamed raster effects one step per frame vs the
+    // reference (Titan Overdrive's PAL "TITAN" gradient shear).
+    if (line == visible_lines) {
+        return self.hint_counter == 0 and (self.regs[0] & 0x10) != 0;
+    }
+    if (line > visible_lines) return false;
     self.hint_counter -= 1;
     if (self.hint_counter < 0) {
         self.hint_counter = @intCast(self.regs[10]);
@@ -434,7 +453,13 @@ pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
     return false;
 }
 
-test "consumeHintForLine does not decrement counter on the first vblank line" {
+test "consumeHintForLine fires on the first vblank line without touching the counter" {
+    // Hardware (and Genesis Plus GX) run the H-Int counter check on the
+    // first vblank line too: it fires there when the counter sits at zero,
+    // but neither decrements nor reloads.  Skipping line 224 entirely cost
+    // one HINT per frame for per-line raster effects (reg 10 = 0), which
+    // slid Titan Overdrive's HINT-streamed CRAM gradient by one palette
+    // entry every frame vs the reference (the PAL "TITAN" gradient shear).
     var vdp = Vdp.init();
     vdp.regs[10] = 1;
     vdp.regs[0] = 0x10; // HInt enabled
@@ -450,9 +475,26 @@ test "consumeHintForLine does not decrement counter on the first vblank line" {
     try testing.expect(vdp.consumeHintForLine(223, 224));
     try testing.expectEqual(@as(i16, 1), vdp.hint_counter);
 
-    // Line 224 (first VBlank line): counter must NOT be decremented.
+    // Line 224 (first VBlank line): counter is 1, so no HInt, and the
+    // counter must stay untouched.
     try testing.expect(!vdp.consumeHintForLine(224, 224));
     try testing.expectEqual(@as(i16, 1), vdp.hint_counter);
+
+    // Deeper vblank lines never fire.
+    try testing.expect(!vdp.consumeHintForLine(225, 224));
+
+    // With a per-line counter (reg 10 = 0) the reload leaves the counter at
+    // zero after the line-223 HInt, so line 224 fires as well: 225 HInts
+    // per NTSC frame, matching the reference.
+    var per_line = Vdp.init();
+    per_line.regs[10] = 0;
+    per_line.regs[0] = 0x10;
+    per_line.beginFrame();
+    try testing.expect(per_line.consumeHintForLine(223, 224));
+    try testing.expectEqual(@as(i16, 0), per_line.hint_counter);
+    try testing.expect(per_line.consumeHintForLine(224, 224));
+    try testing.expectEqual(@as(i16, 0), per_line.hint_counter);
+    try testing.expect(!per_line.consumeHintForLine(225, 224));
 }
 
 test "vdp step wraps correctly across multiple line periods" {
@@ -467,6 +509,23 @@ test "vdp step wraps correctly across multiple line periods" {
     vdp.line_master_cycle = 0;
     vdp.step(clock.ntsc_master_cycles_per_line * 3);
     try testing.expectEqual(@as(u16, 0), vdp.line_master_cycle);
+}
+
+test "odd frame status bit reads zero outside interlace mode" {
+    var vdp = Vdp.init();
+    vdp.odd_frame = true;
+
+    // Non-interlaced: hardware always reports status bit 4 clear.
+    vdp.regs[12] = 0x81;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0010);
+
+    // Interlace mode 1: bit 4 reflects the field parity.
+    vdp.regs[12] = 0x83;
+    try testing.expectEqual(@as(u16, 0x0010), vdp.readControl() & 0x0010);
+
+    // Interlace mode 2: same.
+    vdp.regs[12] = 0x87;
+    try testing.expectEqual(@as(u16, 0x0010), vdp.readControl() & 0x0010);
 }
 
 test "H40 status hblank flag turns on after the external hblank edge" {
@@ -816,4 +875,42 @@ test "V counter is monotonic through the visible area" {
         prev = v;
     }
     try testing.expectEqual(@as(u8, 0xDF), prev);
+}
+
+test "status VBLANK flag transitions at vblank line starts, not the v-counter increment" {
+    // Titan Overdrive (PAL) frame-syncs by polling status bit 3 and rewrites
+    // its RAM-resident HINT handler right after the transition.  Genesis Plus
+    // GX (our lockstep timing oracle) sets the flag at the start of the first
+    // vblank line and clears it at the start of line 0; flipping it ~640
+    // master cycles earlier, at the mid-line v-counter increment, released
+    // the demo's spin one line early and let a HINT land mid-rewrite (the
+    // PAL derail at frame ~2780).
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+    vdp.regs[1] = 0x40; // display enabled, 224-line mode
+    vdp.regs[12] = 0x81;
+
+    const visible = activeVisibleLines(&vdp);
+
+    // Late in the last active line (past the v-counter increment point) the
+    // flag must still read clear.
+    vdp.scanline = visible - 1;
+    vdp.line_master_cycle = 3000;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0008);
+
+    // From the very start of the first vblank line it reads set.
+    vdp.scanline = visible;
+    vdp.line_master_cycle = 0;
+    try testing.expectEqual(@as(u16, 0x0008), vdp.readControl() & 0x0008);
+
+    // Late in the last line of the frame (v-counter already wrapped to the
+    // pre-line-0 value) it still reads set.
+    vdp.scanline = totalLinesForCurrentFrame(&vdp) - 1;
+    vdp.line_master_cycle = 3000;
+    try testing.expectEqual(@as(u16, 0x0008), vdp.readControl() & 0x0008);
+
+    // And it clears from the start of line 0.
+    vdp.scanline = 0;
+    vdp.line_master_cycle = 0;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0008);
 }

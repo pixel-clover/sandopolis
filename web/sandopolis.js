@@ -62,7 +62,9 @@ async function init() {
         fd_pread: () => ERRNO_NOSYS, fd_pwrite: () => ERRNO_NOSYS, fd_readdir: () => ERRNO_NOSYS,
         fd_fdstat_get: () => 0, fd_fdstat_set_flags: () => 0, fd_fdstat_set_rights: () => 0,
         fd_filestat_get: () => 0, fd_filestat_set_size: () => 0, fd_filestat_set_times: () => 0,
-        fd_prestat_get: () => -1, fd_prestat_dir_name: () => -1,
+        // 8 = WASI EBADF: the std preopen scan loop terminates on it; -1
+        // truncates to 0xFFFF, which is not a valid errno tag.
+        fd_prestat_get: () => 8, fd_prestat_dir_name: () => 8,
         path_open: () => ERRNO_NOSYS, path_create_directory: () => ERRNO_NOSYS,
         path_link: () => ERRNO_NOSYS, path_readlink: () => ERRNO_NOSYS,
         path_rename: () => ERRNO_NOSYS, path_symlink: () => ERRNO_NOSYS,
@@ -82,7 +84,18 @@ async function init() {
             v.setUint32(sp, 0, true);
             return 0;
         },
-        clock_time_get: () => 0,
+        clock_time_get: (clockId, precision, timePtr) => {
+            // Write a real (zero) timestamp: returning success without
+            // writing would hand callers whatever bytes sit at the result
+            // pointer as a valid time.
+            new DataView(wasm.instance.exports.memory.buffer).setBigUint64(timePtr, 0n, true);
+            return 0;
+        },
+        clock_res_get: (clockId, resPtr) => {
+            new DataView(wasm.instance.exports.memory.buffer).setBigUint64(resPtr, 1n, true);
+            return 0;
+        },
+        poll_oneoff: () => ERRNO_NOSYS,
         proc_exit: () => {
         },
         random_get: (buf, len) => {
@@ -91,9 +104,15 @@ async function init() {
         },
     };
 
+    // Fall back to a NOSYS stub for any WASI import the list above does not
+    // name, so a std-library upgrade adding imports cannot break instantiation.
+    const wasiImports = new Proxy(wasiStubs, {
+        get: (target, prop) => target[prop] ?? (() => ERRNO_NOSYS),
+    });
+
     const response = await fetch("sandopolis.wasm");
     const bytes = await response.arrayBuffer();
-    wasm = await WebAssembly.instantiate(bytes, {wasi_snapshot_preview1: wasiStubs});
+    wasm = await WebAssembly.instantiate(bytes, {wasi_snapshot_preview1: wasiImports});
 
     const e = wasm.instance.exports;
     BUTTONS = {
@@ -112,6 +131,7 @@ async function init() {
     });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
+    window.addEventListener("gamepaddisconnected", releaseAllGamepadButtons);
     // Click-to-pause is a 2D-only affordance. While a VR session is active
     // the canvas is not visible to the user and Quest browser sometimes fires
     // synthetic clicks on the focused canvas when a BT controller button is
@@ -181,6 +201,10 @@ async function init() {
     // Fullscreen change handler
     document.addEventListener("fullscreenchange", onFullscreenChange);
 
+    // Auto-pause when the tab is hidden so the browser's rAF throttling
+    // doesn't slow the emulator and drain the audio buffer in the background.
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     loadSettings();
     initRemapUI();
     db = await openDB();
@@ -196,6 +220,12 @@ async function init() {
             },
             isRomLoaded: () => !!emu,
             getAspectMode: () => aspectMode,
+            onSessionStart: () => {
+                // Click-to-unpause is disabled inside VR, so entering VR
+                // with the game paused would show a permanently frozen
+                // screen with no way to resume from the headset.
+                if (emu && !running) togglePause();
+            },
             onSessionEnd: () => {
                 // Pause the emulator when leaving VR so the game doesn't run unattended.
                 if (emu && running) {
@@ -352,7 +382,10 @@ function loadSettings() {
             masterVolume = saved.masterVolume;
             document.getElementById("master-volume").value = saved.masterVolume;
         }
-        if (saved.keyMap) keyMap = {...DEFAULT_KEY_MAP, ...saved.keyMap};
+        // The saved map is complete (saveSettings persists all bindings);
+        // spreading defaults underneath would resurrect bindings the user
+        // deliberately remapped away.
+        if (saved.keyMap) keyMap = {...saved.keyMap};
         if (saved.scaleMode !== undefined) {
             scaleMode = saved.scaleMode;
             document.getElementById("scale-mode").value = saved.scaleMode;
@@ -684,6 +717,26 @@ function pauseForOverlay() {
     }
 }
 
+let pausedByVisibility = false;
+
+function onVisibilityChange() {
+    if (document.hidden) {
+        if (running) {
+            pausedByVisibility = true;
+            running = false;
+            if (rafId) cancelAnimationFrame(rafId);
+            if (audioCtx) audioCtx.suspend();
+        }
+    } else if (pausedByVisibility) {
+        pausedByVisibility = false;
+        if (emu) {
+            running = true;
+            resumeFrame();
+            if (audioCtx && audioEnabled) audioCtx.resume();
+        }
+    }
+}
+
 function resumeAfterOverlay() {
     if (overlayDepth > 0) overlayDepth--;
     if (overlayDepth > 0) return;
@@ -859,12 +912,20 @@ function onMasterVolumeChange() {
     saveSettings();
 }
 
+function flushWorkletAudio() {
+    if (audioNode) audioNode.port.postMessage("flush");
+    audioBufferLevel = 0;
+}
+
 function toggleAudio() {
     audioEnabled = !audioEnabled;
     updateAudioToggleLabel();
     if (audioCtx) {
         if (audioEnabled) audioCtx.resume(); else audioCtx.suspend();
     }
+    // Drop whatever sits in the worklet ring so re-enabling audio never
+    // replays stale samples or starts hundreds of milliseconds behind.
+    flushWorkletAudio();
     saveSettings();
 }
 
@@ -918,12 +979,18 @@ function renderAudio() {
     const e = wasm.instance.exports;
     const sampleCount = e.sandopolis_audio_render(emu);
     if (sampleCount === 0) return;
+    // The core's audio is always drained above so its event queues don't
+    // back up, but don't fill the worklet ring while nothing is playing:
+    // a suspended context stops draining and the ring would hold stale
+    // audio indefinitely.
+    if (!audioEnabled || !audioCtx || audioCtx.state !== "running") return;
     const bufPtr = e.sandopolis_audio_buffer_ptr(emu);
     // Re-read memory.buffer after render call (may have grown via memory.grow)
     const samples = new Int16Array(e.memory.buffer, bufPtr, sampleCount);
     audioNode.port.postMessage(samples.slice());
-    // Query buffer level for pacing at ~10 Hz instead of every frame.
-    if ((++renderAudioFrameCount % 6) === 0) {
+    // Query buffer level for pacing at ~30 Hz; the rate-trim controller is
+    // gentle, so mildly stale feedback is fine but fresher converges faster.
+    if ((++renderAudioFrameCount % 2) === 0) {
         audioNode.port.postMessage("query-level");
     }
 }
@@ -992,7 +1059,7 @@ async function persistentLoad() {
     const ok = e.sandopolis_load_state(emu, ptr, data.length);
     e.sandopolis_free(ptr, data.length);
     if (ok) {
-        frameInterval = 1000 / (e.sandopolis_is_pal(emu) ? 50 : 60);
+        frameInterval = e.sandopolis_is_pal(emu) ? (1000 / 49.7015) : (1000 / 59.9227);
     }
     showToast(ok ? `Loaded slot ${currentSlot}` : "Load failed");
 }
@@ -1003,26 +1070,28 @@ function showToast(msg) {
     const el = document.getElementById("toast");
     el.textContent = msg;
     el.classList.add("visible");
-    clearTimeout(el._timer);
-    el._timer = setTimeout(() => el.classList.remove("visible"), 2000);
+    // Shared timer property with vr.js's showVrToast: both must clear the
+    // same handle or one side's stale timer hides the other's message.
+    clearTimeout(el._toastTimer);
+    el._toastTimer = setTimeout(() => el.classList.remove("visible"), 2000);
 }
 
 // ROM loading
 
 function onFileSelected(ev) {
     if (ev.target.files.length > 0) loadRom(ev.target.files[0]);
+    // Clear the input so picking the same file again re-fires "change"
+    // (used to restart a game by re-selecting its ROM).
+    ev.target.value = "";
 }
 
 async function loadRom(file) {
-    // Close help overlay if open
-    if (helpOpen) {
-        document.getElementById("help-overlay").classList.remove("visible");
-        helpOpen = false;
-    }
-    if (aboutOpen) {
-        document.getElementById("about-overlay").classList.remove("visible");
-        aboutOpen = false;
-    }
+    // Close any open overlays through their toggles so overlayDepth stays
+    // balanced; closing them by hand left the depth stuck above zero and
+    // permanently broke overlay pause/resume for the session. The restart
+    // below supersedes the resume this triggers.
+    if (helpOpen) toggleHelp();
+    if (aboutOpen) toggleAbout();
 
     const e = wasm.instance.exports;
     if (emu) {
@@ -1036,10 +1105,13 @@ async function loadRom(file) {
     // doesn't inherit fast/slow pacing or stale buffer-fill numbers from
     // the previous game. Without this the first second of playback can run
     // at ~2x or ~0.5x speed.
-    pacingState = "normal";
+    rateTrim = 1.0;
     audioBufferLevel = 0;
     audioBufferCapacity = 1;
     renderAudioFrameCount = 0;
+    // Also drop buffered samples in the worklet so the previous game's
+    // audio tail never plays under the new one.
+    flushWorkletAudio();
 
     await initAudio();
 
@@ -1100,39 +1172,58 @@ function frameLoop(now) {
     tickEmulator(now);
 }
 
-// Pacing state machine with hysteresis. Without hysteresis the discrete
-// thresholds flip every frame whenever the buffer fill hovers near a
-// boundary, producing visible micro-judder.
-let pacingState = "normal"; // "fast" | "normal" | "slow"
+// Frame pacing: fixed-timestep accumulator with audio-driven rate trim.
+//
+// Emulation is decoupled from the display refresh rate: each rAF tick runs
+// however many emulated frames the elapsed wall time calls for (0 to
+// MAX_FRAME_STEPS), carrying the fractional remainder forward, so the exact
+// console frame rate is held on any panel (60/75/120/144 Hz). Drift between
+// the emulator clock and the audio device clock is absorbed by trimming the
+// effective frame interval by a fraction of a percent to hold the worklet
+// ring buffer at a small fixed level, instead of skipping whole frames.
+const MAX_FRAME_STEPS = 3;
+// Target buffered audio in interleaved stereo samples at 48kHz (~90 ms).
+const AUDIO_TARGET_SAMPLES = 8640;
+let rateTrim = 1.0;
 
-function updatePacingState(fill) {
-    if (pacingState === "fast") {
-        if (fill > 0.20) pacingState = "normal";
-    } else if (pacingState === "slow") {
-        if (fill < 0.50) pacingState = "normal";
-    } else {
-        if (fill < 0.05) pacingState = "fast";
-        else if (fill > 0.65) pacingState = "slow";
+function updateRateTrim() {
+    if (!audioNode || !audioCtx || audioCtx.state !== "running" || audioBufferCapacity <= 1) {
+        rateTrim = 1.0;
+        return;
     }
+    // Proportional control: buffer above target runs slightly slower so the
+    // device drains it, below target slightly faster. Steady-state trim stays
+    // well under 0.5%; the 5% clamp only engages while (re)filling after a
+    // ROM load or a stall.
+    const err = (audioBufferLevel - AUDIO_TARGET_SAMPLES) / AUDIO_TARGET_SAMPLES;
+    rateTrim = 1 + Math.max(-0.05, Math.min(0.05, err * 0.05));
 }
 
 function tickEmulator(now) {
     if (!running || !emu) return;
 
-    if (audioBufferCapacity > 0) {
-        updatePacingState(audioBufferLevel / audioBufferCapacity);
-    }
-    let paceMultiplier = 0.8;
-    if (pacingState === "fast") paceMultiplier = 0.5;
-    else if (pacingState === "slow") paceMultiplier = 0.95;
+    updateRateTrim();
+    const effInterval = frameInterval * rateTrim;
+    const elapsed = now - lastFrameTime;
+    if (elapsed < effInterval) return;
 
-    if (now - lastFrameTime < frameInterval * paceMultiplier) return;
-    lastFrameTime = now;
+    let steps = Math.floor(elapsed / effInterval);
+    if (steps > MAX_FRAME_STEPS) {
+        // Long stall (hidden tab, GC pause): drop the backlog instead of
+        // fast-forwarding the game to catch up.
+        steps = 1;
+        lastFrameTime = now;
+    } else {
+        lastFrameTime += steps * effInterval;
+    }
 
     const e = wasm.instance.exports;
     pollGamepads();
-    e.sandopolis_run_frame(emu);
-    renderAudio();
+    for (let i = 0; i < steps; i++) {
+        e.sandopolis_run_frame(emu);
+        renderAudio();
+        updateFps();
+    }
 
     const width = e.sandopolis_screen_width(emu);
     const height = e.sandopolis_screen_height(emu);
@@ -1149,17 +1240,22 @@ function tickEmulator(now) {
 
     const fb = new Uint32Array(e.memory.buffer, fbPtr, fbLen);
     const pixels = imageData.data;
-    const count = Math.min(fbLen, width * height);
-    for (let i = 0; i < count; i++) {
-        const argb = fb[i];
-        const off = i * 4;
-        pixels[off] = (argb >> 16) & 0xFF;
-        pixels[off + 1] = (argb >> 8) & 0xFF;
-        pixels[off + 2] = argb & 0xFF;
-        pixels[off + 3] = 0xFF;
+    // Framebuffer rows are `stride` pixels apart (320 on Genesis even in 256-wide H32 mode);
+    // reading rows packed at `width` shears the image.
+    const stride = e.sandopolis_framebuffer_stride(emu);
+    for (let y = 0; y < height; y++) {
+        const rowBase = y * stride;
+        if (rowBase + width > fbLen) break;
+        for (let x = 0; x < width; x++) {
+            const argb = fb[rowBase + x];
+            const off = (y * width + x) * 4;
+            pixels[off] = (argb >> 16) & 0xFF;
+            pixels[off + 1] = (argb >> 8) & 0xFF;
+            pixels[off + 2] = argb & 0xFF;
+            pixels[off + 3] = 0xFF;
+        }
     }
     ctx.putImageData(imageData, 0, 0);
-    updateFps();
 }
 
 function resumeFrame() {
@@ -1224,6 +1320,21 @@ const GAMEPAD_FACE_MAP = [
 ];
 
 const AXIS_THRESHOLD = 0.5;
+
+function releaseAllGamepadButtons() {
+    // A disconnected pad (unplug, battery sleep) never sends releases for
+    // buttons it held, and stdPlayer compaction can hand its stale edge
+    // state to another pad. Release everything and start clean.
+    prevGamepadStates[0] = {};
+    prevGamepadStates[1] = {};
+    if (!emu || !wasm) return;
+    const e = wasm.instance.exports;
+    for (let player = 0; player < 2; player++) {
+        for (const name in BUTTONS) {
+            e.sandopolis_set_button(emu, player, BUTTONS[name], false);
+        }
+    }
+}
 
 function pollGamepads() {
     if (!emu) return;

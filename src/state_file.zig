@@ -11,7 +11,9 @@ const Z80 = @import("cpu/z80.zig").Z80;
 const save_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
 // v3: added cartridge mapper state (SSF banks, EEPROM protocol) to the bus
 // state and an eeprom_len byte stream after cartridge RAM.
-pub const save_state_version: u16 = 3;
+// v4: Jgz80State gained ym_timer_watermark (YM timer shadow no longer
+// double-advances across deferred-burst offset rewinds).
+pub const save_state_version: u16 = 4;
 const default_state_name = "sandopolis.state";
 pub const default_persistent_state_slot: u8 = 1;
 pub const persistent_state_slot_count: u8 = 3;
@@ -320,6 +322,10 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
 
     machine.cpu.restoreState(&cpu_state);
     machine.bus.z80.restoreState(&z80_state);
+    // The runnable cache sampled during restoreSaveState saw a factory-fresh
+    // Z80 whose BUSREQ/RESET lines are not asserted; re-sync it now that the
+    // real lines have been restored.
+    machine.bus.syncZ80RunCache();
     machine.bus.rebindRuntimePointers();
     machine.clearPendingAudioTransferState();
 
@@ -546,6 +552,30 @@ test "save-state buffers round-trip machine state" {
     try testing.expectEqual(@as(u8, 0xAB), restored.bus.rom[0]);
     try testing.expectEqual(@as(u8, 0xCD), restored.bus.ram[0x100]);
     try testing.expectEqual(@as(u32, 0x0000_5678), @as(u32, restored.cpu.core.pc));
+}
+
+test "save-state load preserves the Z80 runnable cache under a BUSREQ hold" {
+    const allocator = testing.allocator;
+
+    const rom = try makeRomWithSramHeader(allocator, 0x4000, 0xF8, 0x200001, 0x203FFF);
+    defer allocator.free(rom);
+
+    var machine = try Machine.initFromRomBytes(allocator, rom);
+    defer machine.deinit(allocator);
+
+    // 68K requests the Z80 bus and holds it across the save.
+    machine.bus.write16(0x00A1_1100, 0x0100);
+    try testing.expect(!machine.bus.z80.canRun());
+    try testing.expect(!machine.bus.timing_state.z80_cached_can_run);
+
+    const buf = try saveToBuffer(allocator, &machine);
+    defer allocator.free(buf);
+
+    var restored = try loadFromBuffer(allocator, buf);
+    defer restored.deinit(allocator);
+
+    try testing.expect(!restored.bus.z80.canRun());
+    try testing.expect(!restored.bus.timing_state.z80_cached_can_run);
 }
 
 test "save-state files round-trip machine state" {

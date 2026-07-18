@@ -103,6 +103,7 @@ typedef struct Jgz80State {
     uint8_t ym_regs[2][256];
     uint8_t ym_key_mask;
     uint32_t ym_offset_cursor;
+    uint32_t ym_timer_watermark;
     uint16_t ym_internal_master_remainder;
     uint8_t ym_cycle;
     uint8_t ym_busy;
@@ -255,6 +256,7 @@ uint16_t jgz80_peek_instruction_trace_count(const Jgz80Handle *handle);
 uint16_t jgz80_take_instruction_trace(Jgz80Handle *handle, Jgz80InstructionTraceEntry *dest, uint16_t max_events);
 
 void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset);
+void jgz80_reset_audio_window(Jgz80Handle *handle, uint32_t window_end_master_offset);
 
 void jgz80_assert_irq(Jgz80Handle *handle, uint8_t data);
 

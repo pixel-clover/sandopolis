@@ -39,6 +39,7 @@ struct Jgz80Handle {
     uint8_t ym_regs[2][256];
     uint8_t ym_key_mask;
     uint32_t ym_offset_cursor;
+    uint32_t ym_timer_watermark;
     uint16_t ym_internal_master_remainder;
     uint8_t ym_cycle;
     uint8_t ym_busy;
@@ -677,6 +678,7 @@ static void clear_ym2612_shadow_state(Jgz80Handle *h) {
 
 static void clear_ym2612_runtime_state(Jgz80Handle *h) {
     h->ym_offset_cursor = h->audio_master_offset;
+    h->ym_timer_watermark = h->audio_master_offset;
     h->ym_internal_master_remainder = 0;
     h->ym_cycle = 0;
     h->ym_busy = 0;
@@ -1020,19 +1022,26 @@ static void ym_do_timer_b(Jgz80Handle *h) {
     h->ym_timer_b_cnt = (uint16_t)(time & 0x00FFu);
 }
 
-static void advance_ym_internal_cycle(Jgz80Handle *h) {
-    h->ym_busy = (uint8_t)(h->ym_busy_cycles_remaining != 0u);
-    if (h->ym_busy_cycles_remaining != 0u) {
-        --h->ym_busy_cycles_remaining;
+/* Deferred Z80 bursts replay instructions with back-dated timestamps: the
+ * offset cursor rewinds to the burst base and walks forward through spans
+ * a mid-slice 68K access may already have advanced the shadow through.
+ * Two clocks with different semantics live here:
+ *  - BUSY follows LOCAL (replay) time, so a Z80 driver polling the flag
+ *    inside the burst sees it clear (a frozen busy clock silences Streets
+ *    of Rage's GEMS driver).
+ *  - Timers and the 24-slot phase follow REAL chip time: they only advance
+ *    into offsets beyond ym_timer_watermark, so replayed spans are never
+ *    counted twice (a double-advance runs timer-driven music fast, which
+ *    shifted Titan Overdrive's tempo-keyed scene transitions).
+ * The watermark is reset by jgz80_reset_audio_window when the audio window
+ * restarts (offsets are window-relative). */
+static void advance_ym_to_master_offset(Jgz80Handle *h, uint32_t master_offset) {
+    if (master_offset < h->ym_offset_cursor) {
+        h->ym_offset_cursor = master_offset;
+        return;
     }
-
-    ym_do_timer_a(h);
-    ym_do_timer_b(h);
-    h->ym_cycle = (uint8_t)((h->ym_cycle + 1u) % 24u);
-}
-
-static void advance_ym_master(Jgz80Handle *h, uint32_t master_cycles) {
-    uint32_t remaining = master_cycles;
+    uint32_t pos = h->ym_offset_cursor;
+    uint32_t remaining = master_offset - pos;
     while (remaining != 0u) {
         const uint32_t until_boundary = h->ym_internal_master_remainder == 0u
                                             ? YM_INTERNAL_MASTER_CYCLES
@@ -1041,30 +1050,25 @@ static void advance_ym_master(Jgz80Handle *h, uint32_t master_cycles) {
         if (remaining < until_boundary) {
             h->ym_internal_master_remainder =
                     (uint16_t)(h->ym_internal_master_remainder + remaining);
-            return;
+            break;
         }
 
         remaining -= until_boundary;
+        pos += until_boundary;
         h->ym_internal_master_remainder = 0u;
-        advance_ym_internal_cycle(h);
-    }
-}
 
-/* KNOWN ISSUE: when the offset cursor rewinds (deferred Z80 bursts restart
- * from their base offset) and then advances again, spans that a mid-slice
- * 68K access already advanced through are run through the timer shadow a
- * second time, so Timer A/B can run slightly fast in slices where the 68K
- * touches the sound hardware.  A monotonic high-water mark is NOT a valid
- * fix: it freezes chip time for the whole burst replay, so a Z80 driver
- * polling the BUSY flag inside the burst never sees it clear (verified to
- * silence Streets of Rage's GEMS driver).  A correct fix needs the timer
- * shadow to snapshot at the burst base and roll forward per-instruction. */
-static void advance_ym_to_master_offset(Jgz80Handle *h, uint32_t master_offset) {
-    if (master_offset < h->ym_offset_cursor) {
-        h->ym_offset_cursor = master_offset;
-        return;
+        h->ym_busy = (uint8_t)(h->ym_busy_cycles_remaining != 0u);
+        if (h->ym_busy_cycles_remaining != 0u) {
+            --h->ym_busy_cycles_remaining;
+        }
+
+        if (pos > h->ym_timer_watermark) {
+            ym_do_timer_a(h);
+            ym_do_timer_b(h);
+            h->ym_cycle = (uint8_t)((h->ym_cycle + 1u) % 24u);
+            h->ym_timer_watermark = pos;
+        }
     }
-    advance_ym_master(h, master_offset - h->ym_offset_cursor);
     h->ym_offset_cursor = master_offset;
 }
 
@@ -1391,6 +1395,7 @@ void jgz80_capture_state(const Jgz80Handle *handle, Jgz80State *state) {
     state->ym_timer_b_overflow_flag = handle->ym_timer_b_overflow_flag;
     state->ym_timer_b_overflow = handle->ym_timer_b_overflow;
     state->audio_event_sequence = handle->audio_event_sequence;
+    state->ym_timer_watermark = handle->ym_timer_watermark;
     memcpy(state->ym_write_events, handle->ym_write_events, sizeof(state->ym_write_events));
     state->ym_write_write_index = handle->ym_write_write_index;
     state->ym_write_read_index = handle->ym_write_read_index;
@@ -1419,6 +1424,19 @@ void jgz80_capture_state(const Jgz80Handle *handle, Jgz80State *state) {
     state->m68k_bus_access_count = handle->m68k_bus_access_count;
 }
 
+/* Ring indices/counts come from state files that may be truncated or
+ * corrupt; the push functions index before wrapping, so an unclamped
+ * u16 index would write far outside these fixed-size arrays. */
+static uint16_t clamp_ring_index(uint16_t value, size_t capacity) {
+    return (uint16_t)(value % (uint16_t)capacity);
+}
+
+static uint16_t clamp_ring_count(uint16_t value, size_t capacity) {
+    return value > (uint16_t)capacity ? (uint16_t)capacity : value;
+}
+
+#define JGZ80_RING_CAPACITY(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state) {
     if (!handle || !state) return;
 
@@ -1438,7 +1456,7 @@ void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state) {
     handle->core.i = state->i;
     handle->core.r = state->r;
     handle->core.iff_delay = state->iff_delay;
-    handle->core.interrupt_mode = state->interrupt_mode;
+    handle->core.interrupt_mode = state->interrupt_mode <= 2u ? state->interrupt_mode : 0u;
     handle->core.irq_data = state->irq_data;
     handle->core.irq_pending = state->irq_pending;
     handle->core.nmi_pending = state->nmi_pending;
@@ -1481,27 +1499,28 @@ void jgz80_restore_state(Jgz80Handle *handle, const Jgz80State *state) {
     handle->ym_timer_b_overflow_flag = state->ym_timer_b_overflow_flag;
     handle->ym_timer_b_overflow = state->ym_timer_b_overflow;
     handle->audio_event_sequence = state->audio_event_sequence;
+    handle->ym_timer_watermark = state->ym_timer_watermark;
     memcpy(handle->ym_write_events, state->ym_write_events, sizeof(handle->ym_write_events));
-    handle->ym_write_write_index = state->ym_write_write_index;
-    handle->ym_write_read_index = state->ym_write_read_index;
-    handle->ym_write_count = state->ym_write_count;
+    handle->ym_write_write_index = clamp_ring_index(state->ym_write_write_index, JGZ80_RING_CAPACITY(handle->ym_write_events));
+    handle->ym_write_read_index = clamp_ring_index(state->ym_write_read_index, JGZ80_RING_CAPACITY(handle->ym_write_events));
+    handle->ym_write_count = clamp_ring_count(state->ym_write_count, JGZ80_RING_CAPACITY(handle->ym_write_events));
     memcpy(handle->ym_dac_samples, state->ym_dac_samples, sizeof(handle->ym_dac_samples));
-    handle->ym_dac_write_index = state->ym_dac_write_index;
-    handle->ym_dac_read_index = state->ym_dac_read_index;
-    handle->ym_dac_count = state->ym_dac_count;
+    handle->ym_dac_write_index = clamp_ring_index(state->ym_dac_write_index, JGZ80_RING_CAPACITY(handle->ym_dac_samples));
+    handle->ym_dac_read_index = clamp_ring_index(state->ym_dac_read_index, JGZ80_RING_CAPACITY(handle->ym_dac_samples));
+    handle->ym_dac_count = clamp_ring_count(state->ym_dac_count, JGZ80_RING_CAPACITY(handle->ym_dac_samples));
     memcpy(handle->ym_reset_events, state->ym_reset_events, sizeof(handle->ym_reset_events));
-    handle->ym_reset_write_index = state->ym_reset_write_index;
-    handle->ym_reset_read_index = state->ym_reset_read_index;
-    handle->ym_reset_count = state->ym_reset_count;
+    handle->ym_reset_write_index = clamp_ring_index(state->ym_reset_write_index, JGZ80_RING_CAPACITY(handle->ym_reset_events));
+    handle->ym_reset_read_index = clamp_ring_index(state->ym_reset_read_index, JGZ80_RING_CAPACITY(handle->ym_reset_events));
+    handle->ym_reset_count = clamp_ring_count(state->ym_reset_count, JGZ80_RING_CAPACITY(handle->ym_reset_events));
     memcpy(handle->psg_commands, state->psg_commands, sizeof(handle->psg_commands));
-    handle->psg_command_write_index = state->psg_command_write_index;
-    handle->psg_command_read_index = state->psg_command_read_index;
-    handle->psg_command_count = state->psg_command_count;
+    handle->psg_command_write_index = clamp_ring_index(state->psg_command_write_index, JGZ80_RING_CAPACITY(handle->psg_commands));
+    handle->psg_command_read_index = clamp_ring_index(state->psg_command_read_index, JGZ80_RING_CAPACITY(handle->psg_commands));
+    handle->psg_command_count = clamp_ring_count(state->psg_command_count, JGZ80_RING_CAPACITY(handle->psg_commands));
     handle->psg_last = state->psg_last;
     memcpy(handle->psg_tone, state->psg_tone, sizeof(handle->psg_tone));
     memcpy(handle->psg_volume, state->psg_volume, sizeof(handle->psg_volume));
     handle->psg_noise = state->psg_noise;
-    handle->psg_latched_channel = state->psg_latched_channel;
+    handle->psg_latched_channel = state->psg_latched_channel & 0x03u;
     handle->psg_latched_is_volume = state->psg_latched_is_volume != 0u;
     handle->bus_req = state->bus_req != 0u;
     handle->bus_ack = state->bus_ack != 0u;
@@ -1557,7 +1576,7 @@ void jgz80_step(Jgz80Handle *handle, uint32_t cycles) {
     bind_callbacks(handle);
     if (handle->bus_req || handle->reset_line) return;
     (void) z80_step_n(&handle->core, cycles);
-    advance_ym_master(handle, cycles * 15u);
+    advance_ym_to_master_offset(handle, handle->ym_offset_cursor + cycles * 15u);
 }
 
 uint32_t jgz80_step_one(Jgz80Handle *handle) {
@@ -1823,6 +1842,17 @@ void jgz80_set_audio_master_offset(Jgz80Handle *handle, uint32_t master_offset) 
     if (!handle) return;
     advance_ym_to_master_offset(handle, master_offset);
     handle->audio_master_offset = master_offset;
+}
+
+/* Restart the window-relative audio timeline. Chip time first advances to
+ * the end of the window being retired so the timers never lose the tail,
+ * then all cursors (including the timer watermark) restart at zero. */
+void jgz80_reset_audio_window(Jgz80Handle *handle, uint32_t window_end_master_offset) {
+    if (!handle) return;
+    advance_ym_to_master_offset(handle, window_end_master_offset);
+    handle->audio_master_offset = 0;
+    handle->ym_offset_cursor = 0;
+    handle->ym_timer_watermark = 0;
 }
 
 void jgz80_assert_irq(Jgz80Handle *handle, uint8_t data) {

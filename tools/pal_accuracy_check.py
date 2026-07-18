@@ -24,6 +24,9 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The repo needs a specific Zig version (the Makefile resolves it from
+# build.zig.zon); honor the same override instead of trusting PATH.
+ZIG = os.environ.get("ZIG", "zig")
 OD1 = "tests/testroms/TiTAN - Overdrive (Rev1.1-106-Final) (Hardware).bin"
 OD2 = "tests/testroms/titan-overdrive2.bin"
 
@@ -46,7 +49,7 @@ def rmse(ppm_a: str, ppm_b: str) -> float:
 
 
 def dump(rom: str, frame: int, pal: bool, prefix: str) -> None:
-    args = ["zig", "build", "dump-frames", "-Doptimize=ReleaseFast", "--",
+    args = [ZIG, "build", "dump-frames", "-Doptimize=ReleaseFast", "--",
             rom, str(frame)]
     if pal:
         args.append("--pal")

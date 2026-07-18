@@ -475,9 +475,53 @@ pub const SystemMachine = union(enum) {
         var next = try genesis_state_file.loadFromBuffer(allocator, data);
         errdefer next.deinit(allocator);
         var old = self.*;
+        if (old == .genesis) adoptStableSaveRam(&old.genesis, &next);
         self.* = .{ .genesis = next };
         self.rebindRuntimePointers();
         old.deinit(allocator);
+    }
+
+    /// Keep the battery-RAM allocation that frontends already hold (libretro
+    /// RETRO_MEMORY_SAVE_RAM promises a stable pointer until unload) alive
+    /// across a same-system state load: copy the loaded contents into the old
+    /// machine's buffer, hand that buffer to the new machine, and let the old
+    /// machine's deinit free the replacement instead.
+    fn adoptStableSaveRam(old_machine: *Machine, next_machine: *Machine) void {
+        const old_cart = &old_machine.bus.cartridge;
+        const new_cart = &next_machine.bus.cartridge;
+        if (old_cart.ram.data) |old_data| {
+            if (new_cart.ram.data) |new_data| {
+                if (old_data.len == new_data.len) {
+                    @memcpy(old_data, new_data);
+                    new_cart.ram.data = old_data;
+                    old_cart.ram.data = new_data;
+                }
+            }
+        }
+        if (old_cart.mapper == .eeprom_i2c and new_cart.mapper == .eeprom_i2c) {
+            const old_eeprom = &old_cart.mapper.eeprom_i2c.eeprom;
+            const new_eeprom = &new_cart.mapper.eeprom_i2c.eeprom;
+            if (old_eeprom.data.len == new_eeprom.data.len) {
+                @memcpy(old_eeprom.data, new_eeprom.data);
+                const replacement = new_eeprom.data;
+                new_eeprom.data = old_eeprom.data;
+                old_eeprom.data = replacement;
+            }
+        }
+    }
+
+    /// True when a state buffer targets the same system family as the
+    /// running machine. loadStateFromBuffer can switch the variant, but
+    /// libretro requires serialize size, geometry, and region to stay
+    /// stable within a session, so retro_unserialize must reject
+    /// cross-family buffers instead of switching.
+    pub fn stateBufferMatchesSystem(self: *const SystemMachine, data: []const u8) bool {
+        const buffer_is_sms = data.len >= sms_state_file.magic.len and
+            std.mem.eql(u8, data[0..sms_state_file.magic.len], &sms_state_file.magic);
+        return switch (self.*) {
+            .sms => buffer_is_sms,
+            .genesis => !buffer_is_sms,
+        };
     }
 
     pub fn captureSnapshot(self: *SystemMachine, allocator: std.mem.Allocator) !Snapshot {
@@ -656,6 +700,62 @@ test "state buffer round-trips through the facade and dispatches on magic" {
     const junk = [_]u8{0} ** 64;
     try t.expectError(error.InvalidSaveState, machine.loadStateFromBuffer(testing_alloc, &junk));
     try t.expectEqual(system_detect.SystemType.genesis, machine.systemType());
+}
+
+test "stateBufferMatchesSystem distinguishes system families by magic" {
+    const t = @import("std").testing;
+
+    var sms_rom = [_]u8{0xC7} ** 1024;
+    var sms_machine = try SystemMachine.initFromRomBytes(testing_alloc, &sms_rom, .sms);
+    defer sms_machine.deinit(testing_alloc);
+    const sms_buf = try sms_machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(sms_buf);
+
+    var gen_rom = [_]u8{0} ** 0x400;
+    @memcpy(gen_rom[0x100..0x104], "SEGA");
+    var gen_machine = try SystemMachine.initFromRomBytes(testing_alloc, &gen_rom, null);
+    defer gen_machine.deinit(testing_alloc);
+    const gen_buf = try gen_machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(gen_buf);
+
+    try t.expect(sms_machine.stateBufferMatchesSystem(sms_buf));
+    try t.expect(gen_machine.stateBufferMatchesSystem(gen_buf));
+    try t.expect(!sms_machine.stateBufferMatchesSystem(gen_buf));
+    try t.expect(!gen_machine.stateBufferMatchesSystem(sms_buf));
+    // Short/garbage buffers classify as non-SMS and only match Genesis.
+    try t.expect(!sms_machine.stateBufferMatchesSystem("junk"));
+}
+
+test "loadStateFromBuffer keeps the persistent save RAM allocation stable" {
+    const t = @import("std").testing;
+
+    // Genesis ROM with a battery-backed SRAM header at 0x200001-0x203FFF.
+    var rom = [_]u8{0} ** 0x400;
+    @memcpy(rom[0x100..0x104], "SEGA");
+    rom[0x1B0] = 'R';
+    rom[0x1B1] = 'A';
+    rom[0x1B2] = 0xF8;
+    rom[0x1B3] = 0x20;
+    @import("std").mem.writeInt(u32, rom[0x1B4..0x1B8], 0x200001, .big);
+    @import("std").mem.writeInt(u32, rom[0x1B8..0x1BC], 0x203FFF, .big);
+
+    var machine = try SystemMachine.initFromRomBytes(testing_alloc, &rom, null);
+    defer machine.deinit(testing_alloc);
+
+    const before = machine.persistentSaveRam().?;
+    before[0] = 0xAB;
+
+    const buf = try machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(buf);
+    try machine.loadStateFromBuffer(testing_alloc, buf);
+
+    // Frontends (libretro RETRO_MEMORY_SAVE_RAM) hand this pointer out once
+    // and hosts read it every frame, so a same-system state load must not
+    // move the allocation.
+    const after = machine.persistentSaveRam().?;
+    try t.expectEqual(before.ptr, after.ptr);
+    try t.expectEqual(before.len, after.len);
+    try t.expectEqual(@as(u8, 0xAB), after[0]);
 }
 
 test "unified setButton maps genesis masks to sms buttons" {

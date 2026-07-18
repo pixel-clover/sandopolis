@@ -57,6 +57,7 @@ pub const Z80 = struct {
         "ym_regs",
         "ym_key_mask",
         "ym_offset_cursor",
+        "ym_timer_watermark",
         "ym_internal_master_remainder",
         "ym_cycle",
         "ym_busy",
@@ -247,6 +248,13 @@ pub const Z80 = struct {
     pub fn getYmRegister(self: *const Z80, port: u1, reg: u8) u8 {
         if (self.handle) |h| return c.jgz80_get_ym_register(h, port, reg);
         return 0;
+    }
+
+    /// Restart the window-relative audio timeline after the pending audio
+    /// window is taken/discarded. Advances the YM timer shadow to the end
+    /// of the retired window first so timers never lose the tail.
+    pub fn resetAudioWindow(self: *Z80, window_end_master_offset: u32) void {
+        if (self.handle) |h| c.jgz80_reset_audio_window(h, window_end_master_offset);
     }
 
     pub fn getYmKeyMask(self: *const Z80) u8 {
@@ -448,6 +456,48 @@ pub const Z80 = struct {
         if (self.handle) |h| c.jgz80_set_reset_line_asserted(h, @intFromBool(asserted));
     }
 };
+
+test "z80 restore clamps corrupt audio ring indices and mode fields" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+    z80.reset();
+
+    // A corrupt or hostile state file can carry arbitrary u16 ring indices;
+    // the buffers are 32768/4096/64/8192 entries, and the push functions
+    // index before wrapping, so unclamped values write far out of bounds.
+    var state = z80.captureState();
+    state.ym_write_write_index = 0xFFFF;
+    state.ym_write_read_index = 0xFFFF;
+    state.ym_write_count = 0xFFFF;
+    state.ym_dac_write_index = 0xFFFF;
+    state.ym_dac_read_index = 0xFFFF;
+    state.ym_dac_count = 0xFFFF;
+    state.ym_reset_write_index = 0xFFFF;
+    state.ym_reset_read_index = 0xFFFF;
+    state.ym_reset_count = 0xFFFF;
+    state.psg_command_write_index = 0xFFFF;
+    state.psg_command_read_index = 0xFFFF;
+    state.psg_command_count = 0xFFFF;
+    state.interrupt_mode = 7;
+    state.psg_latched_channel = 9;
+    z80.restoreState(&state);
+
+    const readback = z80.captureState();
+    try std.testing.expect(readback.ym_write_write_index < 32768);
+    try std.testing.expect(readback.ym_write_read_index < 32768);
+    try std.testing.expect(readback.ym_write_count <= 32768);
+    try std.testing.expect(readback.ym_dac_write_index < 4096);
+    try std.testing.expect(readback.ym_dac_read_index < 4096);
+    try std.testing.expect(readback.ym_dac_count <= 4096);
+    try std.testing.expect(readback.ym_reset_write_index < 64);
+    try std.testing.expect(readback.ym_reset_read_index < 64);
+    try std.testing.expect(readback.ym_reset_count <= 64);
+    try std.testing.expect(readback.psg_command_write_index < 8192);
+    try std.testing.expect(readback.psg_command_read_index < 8192);
+    try std.testing.expect(readback.psg_command_count <= 8192);
+    try std.testing.expect(readback.interrupt_mode <= 2);
+    try std.testing.expect(readback.psg_latched_channel <= 3);
+}
 
 test "z80 register dump reflects stepped state" {
     var z80 = Z80.init();
@@ -782,6 +832,51 @@ test "z80 ym status read exposes busy on data writes" {
     z80.setAudioMasterOffset(65 * ym_internal_master_cycles);
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4001) & 0x80);
     try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x80);
+}
+
+test "z80 ym timers do not double-advance across deferred-burst offset rewinds" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    const ym_internal_master_cycles: u32 = @as(u32, clock.m68k_divider) * 6;
+
+    z80.resetAudioWindow(0);
+    // Timer A period 4 samples (reg = 1020): overflows after ~96+2 internal
+    // cycles of chip time.
+    z80.writeByte(0x4000, 0x24);
+    z80.writeByte(0x4001, 0xFF);
+    z80.writeByte(0x4000, 0x25);
+    z80.writeByte(0x4001, 0x00);
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x05);
+
+    // A mid-slice 68K status read advances the shadow to 60 internal cycles.
+    z80.setAudioMasterOffset(60 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
+
+    // The deferred Z80 burst then replays with back-dated timestamps: the
+    // offset cursor rewinds to the burst base and walks forward through the
+    // same span. Chip time must NOT advance twice: 60 + 60 replayed internal
+    // cycles would overflow the 98-cycle timer even though only 60 cycles of
+    // real time have passed.
+    z80.setAudioMasterOffset(0);
+    z80.setAudioMasterOffset(60 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x00), z80.readByte(0x4000) & 0x01);
+
+    // Genuinely new time past the watermark still advances the timers.
+    z80.setAudioMasterOffset(130 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x01), z80.readByte(0x4000) & 0x01);
+
+    // An audio-window reset starts a fresh timeline: timers must keep
+    // running from the new base (a frozen watermark here would starve
+    // timer-driven drivers after every frame drain).
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x10);
+    z80.resetAudioWindow(130 * ym_internal_master_cycles);
+    z80.writeByte(0x4000, 0x27);
+    z80.writeByte(0x4001, 0x05);
+    z80.setAudioMasterOffset(130 * ym_internal_master_cycles);
+    try std.testing.expectEqual(@as(u8, 0x01), z80.readByte(0x4000) & 0x01);
 }
 
 test "z80 ym status read reports and clears timer a overflow" {

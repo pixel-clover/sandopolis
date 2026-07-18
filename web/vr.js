@@ -132,6 +132,13 @@
             session.addEventListener("end", () => handleSessionEnd(buttonEl));
             session.requestAnimationFrame(onXRFrame);
             buttonEl.textContent = "Exit VR";
+            if (onSessionStartCallback) {
+                try {
+                    onSessionStartCallback();
+                } catch (err) {
+                    console.warn("[VR] onSessionStart callback threw:", err);
+                }
+            }
         } finally {
             entering = false;
         }
@@ -757,6 +764,7 @@
     let buttonEl = null;
     let isRomLoaded = null;
     let getAspectMode = null;
+    let onSessionStartCallback = null;
     let onSessionEndCallback = null;
 
     function attachButton() {
@@ -777,8 +785,9 @@
         if (!toast) return;
         toast.textContent = msg;
         toast.classList.add("visible");
-        clearTimeout(toast._vrTimer);
-        toast._vrTimer = setTimeout(() => toast.classList.remove("visible"), 2000);
+        // Shared timer property with the 2D UI's showToast (see sandopolis.js).
+        clearTimeout(toast._toastTimer);
+        toast._toastTimer = setTimeout(() => toast.classList.remove("visible"), 2000);
     }
 
     function autoProbe() {
@@ -800,6 +809,7 @@
             buttonNames = opts.buttons;
             isRomLoaded = opts.isRomLoaded || null;
             getAspectMode = opts.getAspectMode || null;
+            onSessionStartCallback = opts.onSessionStart || null;
             onSessionEndCallback = opts.onSessionEnd || null;
             attachButton();
         },

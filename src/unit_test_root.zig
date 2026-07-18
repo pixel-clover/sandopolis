@@ -5,6 +5,7 @@ const audio_psg = @import("audio/psg.zig");
 const audio_timing = @import("audio/timing.zig");
 const audio_ym2612 = @import("audio/ym2612.zig");
 const bus = @import("bus/bus.zig");
+const clock_mod = @import("clock.zig");
 const bus_eeprom_i2c = @import("bus/eeprom_i2c.zig");
 const z80 = @import("cpu/z80.zig");
 const input_io = @import("input/io.zig");
@@ -38,6 +39,7 @@ const frontend_saves = @import("frontend/saves.zig");
 const input_gamepad = @import("input/gamepad.zig");
 const input_keyboard = @import("input/keyboard.zig");
 const libretro = @import("libretro.zig");
+const platform_mod = @import("platform.zig");
 
 comptime {
     _ = audio_blip_buf;
@@ -47,6 +49,7 @@ comptime {
     _ = audio_timing;
     _ = audio_ym2612;
     _ = bus;
+    _ = clock_mod;
     _ = bus_eeprom_i2c;
     _ = z80;
     _ = input_io;
@@ -80,4 +83,5 @@ comptime {
     _ = input_gamepad;
     _ = input_keyboard;
     _ = libretro;
+    _ = platform_mod;
 }

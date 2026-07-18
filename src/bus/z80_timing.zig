@@ -15,9 +15,20 @@ pub const State = struct {
     z80_wait_master_cycles: u32 = 0,
     z80_cached_can_run: bool = false,
     m68k_wait_master_cycles: u32 = 0,
+    // Unused since the refresh model moved to an absolute deadline; kept so
+    // the save-state layout is unchanged.
     m68k_refresh_counter: u32 = 0,
     z80_dma_halted: bool = false,
     z80_in_burst: bool = false,
+    /// Absolute master-cycle position of the next 68K refresh charge.  Not
+    /// serialized: it is re-anchored at every line start, so a stale value
+    /// after a state load self-corrects within one line.  Starts one period
+    /// ahead so a freshly reset machine doesn't charge on its first fetch.
+    refresh_deadline_master: u64 = refresh_period_master,
+
+    pub const save_state_skip_fields = .{"refresh_deadline_master"};
+
+    const refresh_period_master: u64 = @as(u64, clock.refresh_interval) * clock.m68k_divider;
 
     pub fn pendingM68kWaitMasterCycles(self: *const State) u32 {
         return self.m68k_wait_master_cycles;
@@ -33,18 +44,25 @@ pub const State = struct {
         self.m68k_wait_master_cycles = master_cycles;
     }
 
-    pub fn applyRefreshPenalty(self: *State, m68k_cycles: u32, ppc: u32) void {
-        self.m68k_refresh_counter += m68k_cycles;
-        if (self.m68k_refresh_counter >= clock.refresh_interval) {
-            self.m68k_refresh_counter -= clock.refresh_interval;
-            const region = (ppc >> 21) & 7;
-            const wait = clock.refresh_wait_by_region[region];
-            self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(wait);
-        }
+    /// 68K DRAM refresh delay, Genesis Plus GX semantics: +2 CPU cycles when
+    /// the CPU's absolute master-cycle position crosses the deadline, which
+    /// keeps ticking through stalls (a long DMA halt or FIFO wait swallows
+    /// the missed periods and costs exactly one charge afterwards).
+    /// Counting executed cycles instead over-charged stall-heavy scenes by
+    /// ~4% (Titan Overdrive NTSC).
+    pub fn applyRefreshPenalty(self: *State, wall_master_cycles: u64) u32 {
+        if (wall_master_cycles < self.refresh_deadline_master) return 0;
+        self.refresh_deadline_master = wall_master_cycles + refresh_period_master;
+        const wait = clock.m68kCyclesToMaster(2);
+        self.m68k_wait_master_cycles += wait;
+        return wait;
     }
 
-    pub fn resetRefreshCounter(self: *State) void {
-        self.m68k_refresh_counter = 0;
+    /// Snap the deadline back to the absolute 896-master-cycle grid, as the
+    /// reference does at the start of each line's execution run.
+    pub fn reanchorRefreshDeadline(self: *State, wall_master_cycles: u64) void {
+        self.refresh_deadline_master =
+            (wall_master_cycles / refresh_period_master) * refresh_period_master + refresh_period_master;
     }
 };
 
@@ -93,10 +111,18 @@ pub const View = struct {
     fn recordZ80EarlyAdvancedMaster(self: *View, master_cycles: u32, count_toward_z80_credit: bool) void {
         if (master_cycles == 0) return;
         // During deferred Z80 burst execution, VDP/audio/I/O have already
-        // been advanced for the full slice: skip to avoid double-counting.
-        if (!self.state.z80_in_burst) {
-            self.advanceNonZ80Master(master_cycles);
+        // been advanced for the full slice, so a stall here only costs the
+        // Z80 its own budget. Booking pre-advanced debt instead would make
+        // the next stepMaster consume master cycles without advancing the
+        // world. Charge credit directly and let it go negative like
+        // instruction overshoot; the deficit carries into the next slice.
+        if (self.state.z80_in_burst) {
+            if (!count_toward_z80_credit) {
+                self.state.z80_master_credit -= @intCast(master_cycles);
+            }
+            return;
         }
+        self.advanceNonZ80Master(master_cycles);
         self.state.z80_stall_master_debt += master_cycles;
         if (count_toward_z80_credit) {
             self.state.z80_master_credit += @intCast(master_cycles);
@@ -124,7 +150,9 @@ pub const View = struct {
         if (self.vdp.shouldHaltCpu()) {
             self.state.z80_dma_halted = true;
         } else {
-            self.state.m68k_wait_master_cycles += self.z80ContentionM68kWaitMasterCycles();
+            const contention = self.z80ContentionM68kWaitMasterCycles();
+            if (self.active_execution_counters) |counters| counters.m68k_contention_wait_master += contention;
+            self.state.m68k_wait_master_cycles += contention;
         }
 
         // Z80 stalls for 3 Z80 cycles (45 master cycles) per bank access,
@@ -335,17 +363,11 @@ pub const View = struct {
                 continue;
             }
 
-            // Stall debt from recordZ80EarlyAdvancedMaster during burst:
-            // consume from credit.
-            if (self.state.z80_stall_master_debt != 0) {
-                const consumed: i64 = @intCast(@min(
-                    self.state.z80_stall_master_debt,
-                    @as(u32, @intCast(@max(self.state.z80_master_credit, 0))),
-                ));
-                self.state.z80_stall_master_debt -= @intCast(consumed);
-                self.state.z80_master_credit -= consumed;
-                continue;
-            }
+            // Pending z80_stall_master_debt is deliberately left alone here:
+            // it records world time that was already advanced early during
+            // 68K bus accesses, and the next stepMaster consumes it by
+            // skipping that many cycles. Burst-internal stalls never create
+            // debt (recordZ80EarlyAdvancedMaster charges credit directly).
 
             // Compute the current Z80 instruction's position within the
             // audio window based on how much credit has been consumed.
@@ -622,6 +644,61 @@ test "z80 timing aligns to next 15-cycle boundary on control-line release" {
     try testing.expectEqual(@as(u16, 0x0001), z80.getPc());
 }
 
+test "in-burst z80 stall does not swallow master time from the next slice" {
+    const testing = std.testing;
+
+    const TestHooks = struct {
+        fn ensureZ80HostWindow(_: ?*anyopaque) void {}
+    };
+
+    var vdp = Vdp.init();
+    var z80 = Z80.init();
+    defer z80.deinit();
+    var audio_timing: AudioTiming = .{};
+    var io = Io.init();
+    var state: State = .{};
+
+    var view = View.init(
+        &vdp,
+        &z80,
+        &audio_timing,
+        &io,
+        &state,
+        null,
+        null,
+        TestHooks.ensureZ80HostWindow,
+        null,
+        null,
+    );
+
+    z80.reset();
+    z80.writeByte(0x0000, 0x00); // NOP
+    z80.writeByte(0x0001, 0x00); // NOP
+    view.refreshZ80CanRunCache();
+
+    // Accrue a small slice of credit, deliberately less than the stall the
+    // burst is about to take, so the stall cannot be fully paid from credit.
+    view.stepMaster(60);
+    try testing.expectEqual(@as(u32, 60), audio_timing.pending_master_cycles);
+
+    // Simulate a banked read-modify-write during the deferred burst: the
+    // first access left 45 master cycles of pending wait, and the second
+    // access flushes it while z80_in_burst is set.
+    state.z80_in_burst = true;
+    state.z80_wait_master_cycles = 45;
+    view.recordZ80M68kBusAccess(0);
+    state.z80_in_burst = false;
+
+    view.flushDeferredZ80();
+
+    // Whatever the burst could not pay from credit must not be booked as
+    // pre-advanced debt: the next slice has to advance VDP/audio/I-O for
+    // every one of its master cycles.
+    const audio_before = audio_timing.pending_master_cycles;
+    view.stepMaster(100);
+    try testing.expectEqual(audio_before + 100, audio_timing.pending_master_cycles);
+}
+
 test "z80 accumulates credit during 68k-to-vdp dma" {
     // On real hardware, the Z80 runs at its own clock rate during DMA.
     // Only bus-window accesses (0x8000-0xFFFF) are blocked; local RAM
@@ -692,4 +769,30 @@ test "z80 accumulates credit during 68k-to-vdp dma" {
     // instructions; only bus-window accesses are blocked.
     view.stepMaster(60);
     try testing.expect(state.z80_master_credit > credit_after_access);
+}
+
+test "refresh charges follow the absolute master-cycle deadline" {
+    // Genesis Plus GX charges the 68K refresh delay (+2 CPU cycles) when the
+    // CPU's absolute master-cycle position crosses a deadline that keeps
+    // ticking through stalls (m68kcpu.c: refresh_cycles = cycles + 128*7 on
+    // charge, re-anchored to the next 896-multiple at each line).  Counting
+    // executed cycles instead over-charged stall-heavy scenes by ~4% (Titan
+    // Overdrive NTSC), delaying the 68K into a VINT-vs-handler-rewrite race.
+    const testing_local = std.testing;
+    var state = State{};
+
+    state.reanchorRefreshDeadline(0); // deadline -> 896
+    try testing_local.expectEqual(@as(u32, 0), state.applyRefreshPenalty(500));
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(900)); // deadline -> 1796
+    try testing_local.expectEqual(@as(u32, 0), state.applyRefreshPenalty(1700));
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(1800));
+
+    // A long stall (DMA halt, FIFO wait) swallows the missed deadlines:
+    // exactly one charge on the first instruction after it.
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(50_000));
+    try testing_local.expectEqual(@as(u32, 0), state.applyRefreshPenalty(50_100));
+
+    // Re-anchoring at a line start snaps the deadline back to the 896 grid.
+    state.reanchorRefreshDeadline(50_100); // grid next = 50_176
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(50_200));
 }

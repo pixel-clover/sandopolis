@@ -219,7 +219,11 @@ fn phaseIsVBlank(self: *const Vdp, phase: TransferPhaseState) bool {
 }
 
 fn phaseIsBlanking(self: *const Vdp, phase: TransferPhaseState) bool {
-    return phaseIsVBlank(self, phase) or phase.hblank;
+    // Blanking (full slot rate) means vertical blank or display disabled.
+    // The hblank window of an active line does NOT count: hardware exposes
+    // exactly 16 (H32) / 18 (H40) external access slots across the whole
+    // line, matching Genesis Plus GX's fifo_timing/dma_timing tables.
+    return phaseIsVBlank(self, phase) or (self.regs[1] & 0x40) == 0;
 }
 
 fn currentTransferPhase(self: *const Vdp) TransferPhaseState {
@@ -424,8 +428,14 @@ fn moveSimPendingIntoFifo(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8,
     shiftSimEntriesLeft(pending_entries, pending_len);
 }
 
-fn processSimAccessSlot(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8, pending_entries: []Vdp.ProjectedFifoEntry, pending_len: *u8) void {
+fn processSimAccessSlot(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8, pending_entries: []Vdp.ProjectedFifoEntry, pending_len: *u8, blocks_single_service: bool) void {
     if (fifo_len.* == 0 or fifo_entries[0].latency != 0) return;
+
+    // During blanking, the slot directly after a refresh slot cannot
+    // service a CRAM/VSRAM (single-service) word: hardware loses one
+    // access per refresh slot there (Genesis Plus GX: 166 -> 161 H32,
+    // 204 -> 198 H40 for 68k-bus DMA).  VRAM transfers are unaffected.
+    if (blocks_single_service and !fifo_entries[0].requires_second_service) return;
 
     if (fifo_entries[0].requires_second_service and !fifo_entries[0].second_service_pending) {
         fifo_entries[0].second_service_pending = true;
@@ -434,6 +444,10 @@ fn processSimAccessSlot(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: *u8, p
 
     shiftSimEntriesLeft(fifo_entries, fifo_len);
     moveSimPendingIntoFifo(fifo_entries, fifo_len, pending_entries, pending_len);
+}
+
+fn slotFollowsRefresh(self: *const Vdp, slot_idx: u16) bool {
+    return slot_idx != 0 and transferSlotIsRefresh(self, slot_idx - 1);
 }
 
 fn tickSimLatency(fifo_entries: []Vdp.ProjectedFifoEntry, fifo_len: u8) void {
@@ -450,7 +464,7 @@ fn processSimTransferSlot(self: *const Vdp, slot_idx: u16, blanking: bool, fifo_
 
     tickSimLatency(fifo_entries, fifo_len.*);
     if (transferSlotIsAccess(self, slot_idx, blanking)) {
-        processSimAccessSlot(fifo_entries, fifo_len, pending_entries, pending_len);
+        processSimAccessSlot(fifo_entries, fifo_len, pending_entries, pending_len, blanking and slotFollowsRefresh(self, slot_idx));
     }
 }
 
@@ -563,13 +577,14 @@ fn projectedProgressDmaFill(projected: *ProjectedDmaTransferState) void {
     projectedFinishDmaIfIdle(projected);
 }
 
-fn projectedServiceAccessSlot(projected: *ProjectedDmaTransferState) void {
+fn projectedServiceAccessSlot(projected: *ProjectedDmaTransferState, blocks_single_service: bool) void {
     if (projected.fifo_len != 0) {
         processSimAccessSlot(
             projected.fifo_entries[0..],
             &projected.fifo_len,
             projected.pending_fifo_entries[0..],
             &projected.pending_fifo_len,
+            blocks_single_service,
         );
         return;
     }
@@ -613,7 +628,7 @@ pub fn dmaBusyAfterMasterCycles(self: *const Vdp, master_cycles: u32) bool {
                 }
 
                 if (transferSlotIsAccess(self, slot_event.slot_idx, phaseIsBlanking(self, phase))) {
-                    projectedServiceAccessSlot(&projected);
+                    projectedServiceAccessSlot(&projected, phaseIsBlanking(self, phase) and slotFollowsRefresh(self, slot_event.slot_idx));
                     projectedFinishDmaIfIdle(&projected);
                 }
 
@@ -882,6 +897,7 @@ fn projectedWaitUntilReplayDmaStopsBlocking(self: *const Vdp, projected: *Vdp.Pr
                         &projected.fifo_len,
                         projected.pending_fifo_entries[0..],
                         &projected.pending_fifo_len,
+                        phaseIsBlanking(self, phase) and slotFollowsRefresh(self, slot_event.slot_idx),
                     );
                     projectedFinishReplayDmaIfIdle(self, projected);
                 }
@@ -1404,8 +1420,11 @@ fn progressDmaFill(self: *Vdp, access_slots: u32) void {
     finishDmaIfIdle(self);
 }
 
-fn serviceAccessSlot(self: *Vdp) void {
+fn serviceAccessSlot(self: *Vdp, blocks_single_service: bool) void {
     if (!fifoIsEmpty(self)) {
+        // See processSimAccessSlot: during blanking the slot after a refresh
+        // slot cannot service a CRAM/VSRAM (single-service) word.
+        if (blocks_single_service and !entryRequiresSecondService(fifoFront(self).code)) return;
         serviceFifoFront(self);
         if (!fifoIsFull(self) and !pendingFifoIsEmpty(self)) {
             const pending = pendingFifoFront(self).*;
@@ -1500,7 +1519,7 @@ pub fn progressTransfers(self: *Vdp, master_cycles: u32, read_ctx: ?*anyopaque, 
                 if (transferSlotIsAccess(self, slot_event.slot_idx, phaseIsBlanking(self, phase))) {
                     if (self.active_execution_counters) |counters| counters.access_slots += 1;
                     self.transfer_line_master_cycle = phase.line_master_cycle;
-                    serviceAccessSlot(self);
+                    serviceAccessSlot(self, phaseIsBlanking(self, phase) and slotFollowsRefresh(self, slot_event.slot_idx));
                 }
 
                 if (slot_event.wait_master_cycles == boundary.wait_master_cycles) {
@@ -1696,6 +1715,82 @@ pub fn writeControl(self: *Vdp, value: u16) void {
             // pipeline, corrupting VRAM (e.g. Warsong's stats panel tiles).
         }
     }
+}
+
+test "CRAM writes skip the slot after a refresh slot during blanking" {
+    // Genesis Plus GX / hardware: 68k-bus DMA to CRAM or VSRAM during
+    // blanking loses one access slot per refresh slot (166 -> 161 words per
+    // H32 line, 204 -> 198 H40).  VRAM transfers do not lose these slots.
+    // Not modeling this made our CRAM-DMA halts ~3% short, which let Titan
+    // Overdrive NTSC reach its post-DMA interrupt-unmask a few hundred
+    // master cycles before the VINT it expects to be pending (derail at
+    // frame ~13540).
+    var cram = Vdp.init();
+    cram.code = 0x3; // CRAM: single service slot
+    cram.scanline = 0;
+    cram.hblank = false;
+    // Inside H32 refresh slot 33 (660..680); the next slot (34) directly
+    // follows a refresh slot and must not service a CRAM entry.
+    cram.transfer_line_master_cycle = 665;
+    cram.writeData(0x0EEE);
+    cram.fifo[cram.fifo_head].latency = 0;
+    try testing.expectEqual(@as(u32, 55), cram.dataPortReadWaitMasterCycles());
+
+    // A VRAM word (two service slots) still uses the post-refresh slot.
+    var vram = Vdp.init();
+    vram.code = 0x1;
+    vram.scanline = 0;
+    vram.hblank = false;
+    vram.transfer_line_master_cycle = 665;
+    vram.writeData(0x1234);
+    vram.fifo[vram.fifo_head].latency = 0;
+    try testing.expectEqual(@as(u32, 55), vram.dataPortReadWaitMasterCycles());
+}
+
+test "fifo keeps per-line access slot rate through hblank on active display lines" {
+    // Genesis Plus GX (and hardware): an active-display line exposes exactly
+    // 16 (H32) / 18 (H40) FIFO access slots across the WHOLE line -- the
+    // hblank window does not open extra slots.  Draining at every
+    // non-refresh slot during hblank made the FIFO empty ~2x too fast in
+    // Titan Overdrive's write-flood scenes, letting our 68K run ahead of
+    // the reference (PAL derail at frame 2781).
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81; // H40
+    vdp.regs[1] = 0x40; // display enabled
+    vdp.code = 0x3; // CRAM: one service slot per word
+    vdp.scanline = 0;
+    vdp.hblank = true;
+    vdp.transfer_line_master_cycle = 3000; // inside the hblank window
+
+    for (0..4) |i| {
+        vdp.writeData(@intCast(0x0E00 + i));
+    }
+
+    // Only the sparse end-of-line access slots plus the next line's early
+    // slots may service these 4 entries; hblank must not accelerate this.
+    try testing.expect(vdp.dataPortReadWaitMasterCycles() > 500);
+}
+
+test "fifo drains at blanking rate when the display is disabled" {
+    // Genesis Plus GX charges no FIFO timing at all while the display is
+    // off (status bit 3 is forced set); the practical effect is that the
+    // FIFO drains at the blanking slot rate on every line, active range or
+    // not.  We previously kept the active-display slot table whenever the
+    // scanline was in the visible range, charging phantom write stalls in
+    // Titan Overdrive's display-off loader scenes.
+    var vdp = Vdp.init();
+    vdp.regs[12] = 0x81; // H40
+    vdp.regs[1] = 0x00; // display disabled
+    vdp.code = 0x3; // CRAM: one service slot per word
+    vdp.scanline = 0; // visible range
+    vdp.hblank = false;
+    vdp.transfer_line_master_cycle = 1500; // mid-line, far from hblank
+
+    for (0..4) |i| {
+        vdp.writeData(@intCast(0x0E00 + i));
+    }
+
+    try testing.expect(vdp.dataPortReadWaitMasterCycles() < 200);
 }
 
 test "data port write wait accounts for pending fifo entries" {
@@ -1954,6 +2049,7 @@ test "VRAM data port word write then read round-trips" {
 test "data port read wait crosses the external hblank edge" {
     var vdp = Vdp.init();
     vdp.regs[12] = 0x81;
+    vdp.regs[1] = 0x40; // display enabled: per-line access slot table applies
     vdp.code = 0x3;
     vdp.addr = 0x0000;
     vdp.scanline = 12;
@@ -1975,9 +2071,14 @@ test "data port read wait crosses the external hblank edge" {
     try testing.expectEqual(@as(u8, 0), progressed.fifo_len);
 }
 
-test "progressTransfers uses hblank access rules when a chunk crosses the hblank boundary" {
+test "progressTransfers stays consistent when a chunk crosses the hblank boundary" {
+    // Active-line access slots are position-anchored for the whole line (no
+    // rule change at the hblank edge), so the projected drain wait must be
+    // honored by live progression whether the span is stepped monolithically
+    // or split at the hblank edge.
     var split = Vdp.init();
     split.regs[12] = 0x81;
+    split.regs[1] = 0x40;
     split.code = 0x3;
     split.addr = 0x0000;
     split.scanline = 12;
@@ -1986,17 +2087,19 @@ test "progressTransfers uses hblank access rules when a chunk crosses the hblank
     split.writeData(0x1234);
     split.fifo[split.fifo_head].latency = 0;
 
+    const drain_wait = split.dataPortReadWaitMasterCycles();
+    try testing.expect(drain_wait > 1);
+
     split.step(1);
     split.progressTransfers(1, null, null);
     split.setHBlank(true);
-    const hblank_wait = split.nextTransferStepMasterCycles();
-    try testing.expect(hblank_wait > 0);
-    split.step(hblank_wait);
-    split.progressTransfers(hblank_wait, null, null);
+    split.step(drain_wait - 1);
+    split.progressTransfers(drain_wait - 1, null, null);
     try testing.expectEqual(@as(u8, 0), split.fifo_len);
 
     var combined = Vdp.init();
     combined.regs[12] = 0x81;
+    combined.regs[1] = 0x40;
     combined.code = 0x3;
     combined.addr = 0x0000;
     combined.scanline = 12;
@@ -2005,15 +2108,15 @@ test "progressTransfers uses hblank access rules when a chunk crosses the hblank
     combined.writeData(0x1234);
     combined.fifo[combined.fifo_head].latency = 0;
 
-    const total = 1 + hblank_wait;
-    combined.step(total);
-    combined.progressTransfers(total, null, null);
+    combined.step(drain_wait);
+    combined.progressTransfers(drain_wait, null, null);
     try testing.expectEqual(@as(u8, 0), combined.fifo_len);
 }
 
 test "nextTransferStepMasterCycles crosses the external hblank edge for dma copy" {
     var split = Vdp.init();
     split.regs[12] = 0x81;
+    split.regs[1] = 0x40;
     split.scanline = 12;
     split.line_master_cycle = split.hblankStartMasterCycles() - 1;
     split.transfer_line_master_cycle = split.line_master_cycle;
@@ -2031,6 +2134,7 @@ test "nextTransferStepMasterCycles crosses the external hblank edge for dma copy
 
     var combined = Vdp.init();
     combined.regs[12] = 0x81;
+    combined.regs[1] = 0x40;
     combined.scanline = 12;
     combined.line_master_cycle = combined.hblankStartMasterCycles() - 1;
     combined.transfer_line_master_cycle = combined.line_master_cycle;

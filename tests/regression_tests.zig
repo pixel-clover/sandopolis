@@ -247,7 +247,7 @@ test "ssf mapper remaps switchable rom windows" {
 }
 
 // NOTE: these two run NTSC.  Overdrive is really a PAL demo; the PAL path
-// still derails and is tracked by the known-fail test below.
+// is covered by the test below.
 test "overdrive rom runs for 5000 frames without wedging the core" {
     var emulator = try Emulator.init(testing.allocator, overdrive_rom);
     defer emulator.deinit(testing.allocator);
@@ -265,22 +265,23 @@ test "overdrive rom runs for 5000 frames without wedging the core" {
     try testing.expect(emulator.cpuState().program_counter != 0);
 }
 
-test "overdrive rom runs in PAL without derailing (known-fail: v0.2.2 CPU-phase timing)" {
-    // Overdrive auto-detects as PAL (on hardware and in the frontend).  With
-    // Rocket 68 v0.2.2's cycle-accurate control-flow EA timing it derails
-    // ~frame 2813: a level-6 VINT fires while the copied-to-RAM HINT handler is
-    // mid vector-rewrite, hitting a null vector (0x78=0) -> PC=0.
+test "overdrive rom runs in PAL without derailing" {
+    // Overdrive auto-detects as PAL (on hardware and in the frontend).  It
+    // used to derail ~frame 2780 (HINT taken mid-rewrite of the RAM-resident
+    // handler at 0xFF0000 -> PC=0; NTSC later exposed a sibling race at
+    // ~frame 13540, a VINT racing the demo's post-copy interrupt unmask).
+    // Fixed 2026-07 by five timing calibrations against Genesis Plus GX
+    // (measured with zig build stall-diff): the FIFO drain-rate predicate
+    // (per-line access slots through hblank, blanking rate only when
+    // vblank/display-off), the ceil-7 stall release, the VBLANK status flag
+    // transitioning at vblank line starts, the deadline-based 68K refresh
+    // delay, and the CRAM-DMA post-refresh slot loss during blanking.
+    // After these, 68K work RAM stays byte-identical to Genesis Plus GX
+    // through the formerly fatal frames and the demo plays start to end in
+    // both regions (verified 28000 PAL / 30000 NTSC frames).
     //
-    // This is an open Sandopolis CPU-vs-interrupt phase-calibration gap that
-    // v0.2.1's (incorrect, ~4-cycle-too-high) control-flow timing was masking;
-    // v0.2.2's timing matches the 68000 manual and is correct, so the fix
-    // belongs in Sandopolis's system timing, not the core.  The NTSC path
-    // (fixed by live-cycle VDP read sampling) does not exercise this.
-    //
-    // Self-healing known-fail: skips while the derail persists (PC in the
-    // vector/header region), and starts asserting liveness again once the phase
-    // gap is reconciled.  Diagnose with: zig build trace-irq-storm --
-    //   "<overdrive>.bin" 4000 --pal --derail
+    // Diagnose regressions with: zig build trace-irq-storm --
+    //   "<overdrive>.bin" 0 28000 --pal --derail
     var emulator = try Emulator.init(testing.allocator, overdrive_rom);
     defer emulator.deinit(testing.allocator);
     emulator.setPalMode(true);
@@ -288,7 +289,9 @@ test "overdrive rom runs in PAL without derailing (known-fail: v0.2.2 CPU-phase 
 
     emulator.runFramesDiscardingAudio(5000);
 
-    if (emulator.cpuState().program_counter < 0x200) return error.SkipZigTest;
+    // A derail lands the PC in the vector/header region (the old failure
+    // mode was PC=0); assert hard so any timing regression is caught.
+    try testing.expect(emulator.cpuState().program_counter >= 0x200);
 
     var non_black_pixels: usize = 0;
     for (emulator.framebuffer()) |pixel| {
@@ -973,7 +976,10 @@ test "vctest rom framebuffer matches golden hash after 60 frames" {
     // 2026-07: rebaselined after fixing byteswapped 16-bit VRAM data-port
     // reads; the frame was verified pixel-identical in layout against the
     // Genesis Plus GX reference via `zig build dump-frames`.
-    try testing.expectEqual(@as(u32, 538108016), hash);
+    // 2026-07: rebaselined again after gating the ODD status bit (bit 4)
+    // on interlace mode; jgenesis only toggles interlaced_odd during
+    // interlaced frames, so the bit reads 0 in the modes vctest displays.
+    try testing.expectEqual(@as(u32, 1988477211), hash);
 }
 
 test "vctest rom runs stably in both ntsc and pal modes" {
@@ -1243,7 +1249,21 @@ test "fm test rom audio pipeline output matches golden hash" {
     // account for the window start remainder; same-timestamp YM events
     // apply in emission order); verified against Genesis Plus GX via
     // dump-audio envelope correlation.
-    try testing.expectEqual(@as(u32, 317022487), collector.hash);
+    // Re-baselined 2026-07 after fixing the in-burst Z80 stall accounting
+    // (stalls now charge Z80 credit instead of booking pre-advanced debt
+    // that swallowed VDP/audio time); trace-diff vs Genesis Plus GX shows
+    // unchanged 68K-RAM sync.
+    // Re-baselined 2026-07 after the YM timer watermark fix (timers no
+    // longer double-advance across deferred-burst offset rewinds, so
+    // timer-driven music tempo slowed to the correct rate); trace-diff vs
+    // Genesis Plus GX unchanged, and the fix let NTSC Titan Overdrive run
+    // the full demo without derailing.
+    // Re-baselined 2026-07 for the VDP timing calibration that fixed Titan
+    // Overdrive in both regions (FIFO drain rate, ceil-7 stall release,
+    // VBLANK status flag at line starts, deadline-based 68K refresh, CRAM
+    // DMA post-refresh slot loss); real-audio RMS verified unchanged via
+    // dump-audio.
+    try testing.expectEqual(@as(u32, 4065629464), collector.hash);
 }
 
 // --- ROM-backed YM2612 register stream comparison for key titles ---
@@ -1274,19 +1294,34 @@ fn captureYmGoldenHash(rom_path: []const u8, frames: usize) !?u32 {
     var hash: u32 = 0;
     var clock_buf: [clocks_per_frame * 2]i16 = undefined;
 
+    // Spread each frame's writes across the frame's internal clocks by their
+    // master-cycle timestamps.  Collapsing a whole frame into one batch let
+    // the synth's mode-write fast path (reg < 0x30 jumps ahead of queued
+    // operator writes) reorder co-pending writes, so the hash depended on
+    // exactly how writes happened to group into frames: a one-frame shift in
+    // 68K timing could scramble a driver's [params, key-on] pairs and
+    // degenerate the whole capture to silence (seen with Streets of Rage's
+    // GEMS driver when the VDP FIFO drain rate was fixed).
+    const masters_per_frame: u64 = 262 * 3420; // NTSC frame, master cycles
+
     for (0..frames) |_| {
         emulator.runFrame();
 
         var writes: [512]YmWriteEvent = undefined;
         const write_count = emulator.takeYmWrites(&writes);
-        for (writes[0..write_count]) |w| {
-            synth.applyWrite(w);
-        }
 
+        var wi: usize = 0;
         for (0..clocks_per_frame) |ci| {
+            const cutoff: u64 = (@as(u64, ci) + 1) * masters_per_frame / clocks_per_frame;
+            while (wi < write_count and writes[wi].master_offset < cutoff) : (wi += 1) {
+                synth.applyWrite(writes[wi]);
+            }
             const pins = synth.clockOneInternal();
             clock_buf[ci * 2] = pins[0];
             clock_buf[ci * 2 + 1] = pins[1];
+        }
+        while (wi < write_count) : (wi += 1) {
+            synth.applyWrite(writes[wi]);
         }
 
         // Fold this frame's samples into the running hash.
@@ -1304,19 +1339,41 @@ test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
     // Re-baselined 2026-07 for Nuked-parity fixes (LFO PM depth, shared
     // $A4/$AC latch, $27 timer write semantics, SSG-EG key-off); spectral
     // content verified against Genesis Plus GX via dump-audio.
-    try testing.expectEqual(@as(u32, 147268861), hash);
+    // Re-baselined 2026-07 for the in-burst Z80 stall accounting fix and
+    // again for the YM timer watermark fix (see the fm test rom pipeline
+    // test).
+    // Re-baselined 2026-07 for the VDP timing calibration that fixed Titan
+    // Overdrive in both regions (FIFO drain rate: per-line access slot rate
+    // through hblank + blanking rate when display disabled; ceil-7 stall
+    // release; VBLANK status flag at line starts; deadline-based 68K
+    // refresh; CRAM DMA post-refresh slot loss) plus the timestamp-aware
+    // write replay in this harness; real-audio RMS verified unchanged via
+    // dump-audio before/after (4773 -> 4796).
+    try testing.expectEqual(@as(u32, 4225238829), hash);
 }
 
 test "streets of rage ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/sor.smd", 900) orelse return;
     // Re-baselined 2026-07 for Nuked-parity fixes (see above).
-    try testing.expectEqual(@as(u32, 46223587), hash);
+    // Re-baselined 2026-07 for the VDP FIFO drain-rate fix + timestamp-aware
+    // replay (see the sonic and knuckles test).  Under the old batched
+    // replay this ROM degenerated to constant silence (hash 0) after the
+    // FIFO fix shifted which frame each GEMS write burst landed in; the
+    // emulator's real audio was verified unchanged (RMS 1150 -> 1174).
+    try testing.expectEqual(@as(u32, 3887966128), hash);
 }
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
     const hash = try captureYmGoldenHash("roms/Warsong.smd", 900) orelse return;
     // Re-baselined 2026-07 for Nuked-parity fixes (see above).
-    try testing.expectEqual(@as(u32, 3509395807), hash);
+    // Re-baselined 2026-07 for the in-burst Z80 stall accounting fix and
+    // the YM timer watermark fix; trace-diff vs Genesis Plus GX on this
+    // ROM shows the same desync onset (frame 213) and magnitude across
+    // all three baselines.
+    // Re-baselined 2026-07 for the VDP timing calibration that fixed PAL
+    // Titan Overdrive + timestamp-aware replay (see the sonic and knuckles
+    // test); real-audio RMS verified unchanged (3154 -> 3139).
+    try testing.expectEqual(@as(u32, 2797099301), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {
