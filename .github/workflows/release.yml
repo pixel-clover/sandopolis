@@ -103,7 +103,16 @@ jobs:
 
       - name: Determine Zig version
         id: zigver
-        run: echo "version=$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' build.zig.zon)" >> "$GITHUB_OUTPUT"
+        # shell must be Bash: the Windows runner defaults to PowerShell, where
+        # $GITHUB_OUTPUT does not expand and the empty version silently installs zig master.
+        shell: bash
+        run: |
+          version="$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' build.zig.zon)"
+          if [ -z "$version" ]; then
+            echo "Failed to read minimum_zig_version from build.zig.zon" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
@@ -297,8 +306,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/sandopolis-web
           # `latest` is reserved for actual tag pushes; manual workflow_dispatch
-          # runs publish under `develop` instead so they cannot overwrite a
-          # released image.
+          # runs publish under `develop` instead so they cannot overwrite a released image.
           tags: |
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=develop,enable=${{ github.event_name == 'workflow_dispatch' }}
