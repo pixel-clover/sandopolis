@@ -435,7 +435,16 @@ pub fn applyPowerOnResetTiming(self: *Vdp) void {
 }
 
 pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
-    if (line >= visible_lines) return false;
+    // The H-Int counter also runs its check on the first vblank line: it
+    // fires there when the counter sits at zero, but neither decrements nor
+    // reloads (hardware & Genesis Plus GX).  With a per-line counter
+    // (reg 10 = 0) that is 225 HInts per NTSC frame, not 224 -- skipping it
+    // slid HINT-streamed raster effects one step per frame vs the
+    // reference (Titan Overdrive's PAL "TITAN" gradient shear).
+    if (line == visible_lines) {
+        return self.hint_counter == 0 and (self.regs[0] & 0x10) != 0;
+    }
+    if (line > visible_lines) return false;
     self.hint_counter -= 1;
     if (self.hint_counter < 0) {
         self.hint_counter = @intCast(self.regs[10]);
@@ -444,7 +453,13 @@ pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
     return false;
 }
 
-test "consumeHintForLine does not decrement counter on the first vblank line" {
+test "consumeHintForLine fires on the first vblank line without touching the counter" {
+    // Hardware (and Genesis Plus GX) run the H-Int counter check on the
+    // first vblank line too: it fires there when the counter sits at zero,
+    // but neither decrements nor reloads.  Skipping line 224 entirely cost
+    // one HINT per frame for per-line raster effects (reg 10 = 0), which
+    // slid Titan Overdrive's HINT-streamed CRAM gradient by one palette
+    // entry every frame vs the reference (the PAL "TITAN" gradient shear).
     var vdp = Vdp.init();
     vdp.regs[10] = 1;
     vdp.regs[0] = 0x10; // HInt enabled
@@ -460,9 +475,26 @@ test "consumeHintForLine does not decrement counter on the first vblank line" {
     try testing.expect(vdp.consumeHintForLine(223, 224));
     try testing.expectEqual(@as(i16, 1), vdp.hint_counter);
 
-    // Line 224 (first VBlank line): counter must NOT be decremented.
+    // Line 224 (first VBlank line): counter is 1, so no HInt, and the
+    // counter must stay untouched.
     try testing.expect(!vdp.consumeHintForLine(224, 224));
     try testing.expectEqual(@as(i16, 1), vdp.hint_counter);
+
+    // Deeper vblank lines never fire.
+    try testing.expect(!vdp.consumeHintForLine(225, 224));
+
+    // With a per-line counter (reg 10 = 0) the reload leaves the counter at
+    // zero after the line-223 HInt, so line 224 fires as well: 225 HInts
+    // per NTSC frame, matching the reference.
+    var per_line = Vdp.init();
+    per_line.regs[10] = 0;
+    per_line.regs[0] = 0x10;
+    per_line.beginFrame();
+    try testing.expect(per_line.consumeHintForLine(223, 224));
+    try testing.expectEqual(@as(i16, 0), per_line.hint_counter);
+    try testing.expect(per_line.consumeHintForLine(224, 224));
+    try testing.expectEqual(@as(i16, 0), per_line.hint_counter);
+    try testing.expect(!per_line.consumeHintForLine(225, 224));
 }
 
 test "vdp step wraps correctly across multiple line periods" {

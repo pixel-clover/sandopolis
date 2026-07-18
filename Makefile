@@ -39,8 +39,9 @@ SHELL         := /usr/bin/env bash
 # Targets
 ################################################################################
 
-.PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs docs-serve clean \
- install-deps release help setup-hooks test-hooks wasm web web-serve reference-core trace-diff dump-audio trace-ym-writes pal-accuracy
+.PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs docs-serve \
+clean install-deps release help setup-hooks test-hooks wasm web web-serve reference-core trace-diff dump-audio \
+trace-ym-writes pal-accuracy
 .DEFAULT_GOAL := help
 
 help: ## Show the help messages for all targets
