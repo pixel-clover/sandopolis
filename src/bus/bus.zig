@@ -492,12 +492,17 @@ pub const Bus = struct {
         return self.vdp.refreshSlotDurationMasterCycles();
     }
 
-    pub fn recordRefreshCycles(self: *Bus, m68k_cycles: u32, ppc: u32) void {
-        self.timing_state.applyRefreshPenalty(m68k_cycles, ppc);
+    pub fn recordRefreshCycles(self: *Bus, wall_master_cycles: u64) void {
+        const charged = self.timing_state.applyRefreshPenalty(wall_master_cycles);
+        if (self.active_execution_counters) |counters| counters.m68k_refresh_wait_master += charged;
     }
 
-    pub fn resetRefreshCounter(self: *Bus) void {
-        self.timing_state.resetRefreshCounter();
+    pub fn reanchorRefreshDeadline(self: *Bus, wall_master_cycles: u64) void {
+        self.timing_state.reanchorRefreshDeadline(wall_master_cycles);
+    }
+
+    pub fn noteM68kDmaHaltMaster(self: *Bus, master_cycles: u32) void {
+        if (self.active_execution_counters) |counters| counters.m68k_dma_halt_master += master_cycles;
     }
 
     pub fn setPendingM68kWaitMasterCycles(self: *Bus, master_cycles: u32) void {

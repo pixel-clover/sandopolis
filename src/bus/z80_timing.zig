@@ -15,9 +15,20 @@ pub const State = struct {
     z80_wait_master_cycles: u32 = 0,
     z80_cached_can_run: bool = false,
     m68k_wait_master_cycles: u32 = 0,
+    // Unused since the refresh model moved to an absolute deadline; kept so
+    // the save-state layout is unchanged.
     m68k_refresh_counter: u32 = 0,
     z80_dma_halted: bool = false,
     z80_in_burst: bool = false,
+    /// Absolute master-cycle position of the next 68K refresh charge.  Not
+    /// serialized: it is re-anchored at every line start, so a stale value
+    /// after a state load self-corrects within one line.  Starts one period
+    /// ahead so a freshly reset machine doesn't charge on its first fetch.
+    refresh_deadline_master: u64 = refresh_period_master,
+
+    pub const save_state_skip_fields = .{"refresh_deadline_master"};
+
+    const refresh_period_master: u64 = @as(u64, clock.refresh_interval) * clock.m68k_divider;
 
     pub fn pendingM68kWaitMasterCycles(self: *const State) u32 {
         return self.m68k_wait_master_cycles;
@@ -33,18 +44,25 @@ pub const State = struct {
         self.m68k_wait_master_cycles = master_cycles;
     }
 
-    pub fn applyRefreshPenalty(self: *State, m68k_cycles: u32, ppc: u32) void {
-        self.m68k_refresh_counter += m68k_cycles;
-        if (self.m68k_refresh_counter >= clock.refresh_interval) {
-            self.m68k_refresh_counter -= clock.refresh_interval;
-            const region = (ppc >> 21) & 7;
-            const wait = clock.refresh_wait_by_region[region];
-            self.m68k_wait_master_cycles += clock.m68kCyclesToMaster(wait);
-        }
+    /// 68K DRAM refresh delay, Genesis Plus GX semantics: +2 CPU cycles when
+    /// the CPU's absolute master-cycle position crosses the deadline, which
+    /// keeps ticking through stalls (a long DMA halt or FIFO wait swallows
+    /// the missed periods and costs exactly one charge afterwards).
+    /// Counting executed cycles instead over-charged stall-heavy scenes by
+    /// ~4% (Titan Overdrive NTSC).
+    pub fn applyRefreshPenalty(self: *State, wall_master_cycles: u64) u32 {
+        if (wall_master_cycles < self.refresh_deadline_master) return 0;
+        self.refresh_deadline_master = wall_master_cycles + refresh_period_master;
+        const wait = clock.m68kCyclesToMaster(2);
+        self.m68k_wait_master_cycles += wait;
+        return wait;
     }
 
-    pub fn resetRefreshCounter(self: *State) void {
-        self.m68k_refresh_counter = 0;
+    /// Snap the deadline back to the absolute 896-master-cycle grid, as the
+    /// reference does at the start of each line's execution run.
+    pub fn reanchorRefreshDeadline(self: *State, wall_master_cycles: u64) void {
+        self.refresh_deadline_master =
+            (wall_master_cycles / refresh_period_master) * refresh_period_master + refresh_period_master;
     }
 };
 
@@ -132,7 +150,9 @@ pub const View = struct {
         if (self.vdp.shouldHaltCpu()) {
             self.state.z80_dma_halted = true;
         } else {
-            self.state.m68k_wait_master_cycles += self.z80ContentionM68kWaitMasterCycles();
+            const contention = self.z80ContentionM68kWaitMasterCycles();
+            if (self.active_execution_counters) |counters| counters.m68k_contention_wait_master += contention;
+            self.state.m68k_wait_master_cycles += contention;
         }
 
         // Z80 stalls for 3 Z80 cycles (45 master cycles) per bank access,
@@ -749,4 +769,30 @@ test "z80 accumulates credit during 68k-to-vdp dma" {
     // instructions; only bus-window accesses are blocked.
     view.stepMaster(60);
     try testing.expect(state.z80_master_credit > credit_after_access);
+}
+
+test "refresh charges follow the absolute master-cycle deadline" {
+    // Genesis Plus GX charges the 68K refresh delay (+2 CPU cycles) when the
+    // CPU's absolute master-cycle position crosses a deadline that keeps
+    // ticking through stalls (m68kcpu.c: refresh_cycles = cycles + 128*7 on
+    // charge, re-anchored to the next 896-multiple at each line).  Counting
+    // executed cycles instead over-charged stall-heavy scenes by ~4% (Titan
+    // Overdrive NTSC), delaying the 68K into a VINT-vs-handler-rewrite race.
+    const testing_local = std.testing;
+    var state = State{};
+
+    state.reanchorRefreshDeadline(0); // deadline -> 896
+    try testing_local.expectEqual(@as(u32, 0), state.applyRefreshPenalty(500));
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(900)); // deadline -> 1796
+    try testing_local.expectEqual(@as(u32, 0), state.applyRefreshPenalty(1700));
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(1800));
+
+    // A long stall (DMA halt, FIFO wait) swallows the missed deadlines:
+    // exactly one charge on the first instruction after it.
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(50_000));
+    try testing_local.expectEqual(@as(u32, 0), state.applyRefreshPenalty(50_100));
+
+    // Re-anchoring at a line start snaps the deadline back to the 896 grid.
+    state.reanchorRefreshDeadline(50_100); // grid next = 50_176
+    try testing_local.expectEqual(@as(u32, 14), state.applyRefreshPenalty(50_200));
 }

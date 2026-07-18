@@ -23,8 +23,8 @@ pub const SchedulerBus = struct {
     dma_halt_quantum_fn: *const fn (?*anyopaque) u32,
     dma_refresh_gap_fn: *const fn (?*anyopaque) u32,
     dma_refresh_slot_duration_fn: *const fn (?*anyopaque) u32,
-    record_refresh_cycles_fn: *const fn (?*anyopaque, u32, u32) void,
-    reset_refresh_counter_fn: *const fn (?*anyopaque) void,
+    record_refresh_cycles_fn: *const fn (?*anyopaque, u64) void,
+    note_m68k_dma_halt_fn: *const fn (?*anyopaque, u32) void,
 
     pub fn bind(comptime Context: type, ctx: *Context) SchedulerBus {
         return .{
@@ -84,15 +84,15 @@ pub const SchedulerBus = struct {
                 }
             }.call,
             .record_refresh_cycles_fn = struct {
-                fn call(raw_ctx: ?*anyopaque, m68k_cycles: u32, ppc: u32) void {
+                fn call(raw_ctx: ?*anyopaque, wall_master_cycles: u64) void {
                     const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
-                    self.recordRefreshCycles(m68k_cycles, ppc);
+                    self.recordRefreshCycles(wall_master_cycles);
                 }
             }.call,
-            .reset_refresh_counter_fn = struct {
-                fn call(raw_ctx: ?*anyopaque) void {
+            .note_m68k_dma_halt_fn = struct {
+                fn call(raw_ctx: ?*anyopaque, master_cycles: u32) void {
                     const self: *Context = @ptrCast(@alignCast(raw_ctx orelse unreachable));
-                    self.resetRefreshCounter();
+                    self.noteM68kDmaHaltMaster(master_cycles);
                 }
             }.call,
         };
@@ -134,12 +134,12 @@ pub const SchedulerBus = struct {
         return self.dma_refresh_slot_duration_fn(self.ctx);
     }
 
-    pub fn recordRefreshCycles(self: SchedulerBus, m68k_cycles: u32, ppc: u32) void {
-        self.record_refresh_cycles_fn(self.ctx, m68k_cycles, ppc);
+    pub fn recordRefreshCycles(self: SchedulerBus, wall_master_cycles: u64) void {
+        self.record_refresh_cycles_fn(self.ctx, wall_master_cycles);
     }
 
-    pub fn resetRefreshCounter(self: SchedulerBus) void {
-        self.reset_refresh_counter_fn(self.ctx);
+    pub fn noteM68kDmaHaltMaster(self: SchedulerBus, master_cycles: u32) void {
+        self.note_m68k_dma_halt_fn(self.ctx, master_cycles);
     }
 };
 
@@ -255,8 +255,8 @@ test "scheduler bus bind forwards wait, step, memory, and dma queries" {
             return 16;
         }
         fn flushDeferredZ80(_: *@This()) void {}
-        fn recordRefreshCycles(_: *@This(), _: u32, _: u32) void {}
-        fn resetRefreshCounter(_: *@This()) void {}
+        fn recordRefreshCycles(_: *@This(), _: u64) void {}
+        fn noteM68kDmaHaltMaster(_: *@This(), _: u32) void {}
     };
 
     var probe = BusProbe{};

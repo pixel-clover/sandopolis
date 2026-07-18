@@ -246,7 +246,14 @@ fn statusWordForAdjustedState(self: *const Vdp, adjusted: AdjustedLineState) u16
     if (fifoEmptyFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0200;
     if (fifoFullFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0100;
 
-    if (adjusted.vblank or !self.isDisplayEnabled()) status |= 0x0008;
+    // The VBLANK flag follows the scanline, transitioning at line starts
+    // (set entering the first vblank line, cleared entering line 0), matching
+    // Genesis Plus GX.  Tying it to the v-counter increment instead flipped
+    // it ~640 master cycles earlier mid-line, which released Titan
+    // Overdrive's PAL frame-sync spin one line early and let a HINT land in
+    // the demo's RAM-handler rewrite (derail at frame ~2780).
+    const scanline_vblank = adjusted.scanline >= activeVisibleLines(self);
+    if (scanline_vblank or !self.isDisplayEnabled()) status |= 0x0008;
     if (adjusted.hblank) status |= 0x0004;
     if (dmaBusyFlagForAdjustedState(self, adjustment_master_cycles)) status |= 0x0002;
     if (self.pal_mode) status |= 0x0001;
@@ -836,4 +843,42 @@ test "V counter is monotonic through the visible area" {
         prev = v;
     }
     try testing.expectEqual(@as(u8, 0xDF), prev);
+}
+
+test "status VBLANK flag transitions at vblank line starts, not the v-counter increment" {
+    // Titan Overdrive (PAL) frame-syncs by polling status bit 3 and rewrites
+    // its RAM-resident HINT handler right after the transition.  Genesis Plus
+    // GX (our lockstep timing oracle) sets the flag at the start of the first
+    // vblank line and clears it at the start of line 0; flipping it ~640
+    // master cycles earlier, at the mid-line v-counter increment, released
+    // the demo's spin one line early and let a HINT land mid-rewrite (the
+    // PAL derail at frame ~2780).
+    var vdp = Vdp.init();
+    vdp.pal_mode = true;
+    vdp.regs[1] = 0x40; // display enabled, 224-line mode
+    vdp.regs[12] = 0x81;
+
+    const visible = activeVisibleLines(&vdp);
+
+    // Late in the last active line (past the v-counter increment point) the
+    // flag must still read clear.
+    vdp.scanline = visible - 1;
+    vdp.line_master_cycle = 3000;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0008);
+
+    // From the very start of the first vblank line it reads set.
+    vdp.scanline = visible;
+    vdp.line_master_cycle = 0;
+    try testing.expectEqual(@as(u16, 0x0008), vdp.readControl() & 0x0008);
+
+    // Late in the last line of the frame (v-counter already wrapped to the
+    // pre-line-0 value) it still reads set.
+    vdp.scanline = totalLinesForCurrentFrame(&vdp) - 1;
+    vdp.line_master_cycle = 3000;
+    try testing.expectEqual(@as(u16, 0x0008), vdp.readControl() & 0x0008);
+
+    // And it clears from the start of line 0.
+    vdp.scanline = 0;
+    vdp.line_master_cycle = 0;
+    try testing.expectEqual(@as(u16, 0), vdp.readControl() & 0x0008);
 }

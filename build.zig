@@ -364,6 +364,27 @@ pub fn build(b: *std.Build) void {
     const trace_diff_step = b.step("trace-diff", "Differential test vs Genesis Plus GX: report first 68K-RAM divergence");
     trace_diff_step.dependOn(&trace_diff_run.step);
 
+    const stall_diff = b.addExecutable(.{
+        .name = "stall-diff",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/stall_diff.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(stall_diff, b, cpu_deps);
+    stall_diff.root_module.addIncludePath(b.path("external/libretro"));
+    stall_diff.root_module.link_libc = true;
+    const stall_diff_run = b.addRunArtifact(stall_diff);
+    if (b.args) |args| {
+        stall_diff_run.addArgs(args);
+    }
+    const stall_diff_step = b.step("stall-diff", "Compare per-mechanism 68K stall accounting vs instrumented Genesis Plus GX");
+    stall_diff_step.dependOn(&stall_diff_run.step);
+
     const dump_frames = b.addExecutable(.{
         .name = "dump-frames",
         .root_module = b.createModule(.{

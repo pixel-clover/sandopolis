@@ -27,13 +27,17 @@ pub const refresh_interval: u32 = 128;
 /// 68K is fully halted for the entire DMA duration (legacy behavior).
 pub const enable_dma_refresh_windows: bool = false;
 
-/// Wait cycles added per refresh event, indexed by (ppc >> 21) & 7.
-/// ROM and RAM both get 2 (matching Genesis Plus GX's flat 2-cycle model,
-/// which the differential-timing calibration is anchored to); I/O gets 0.
-pub const refresh_wait_by_region: [8]u32 = .{ 2, 2, 2, 2, 0, 0, 0, 2 };
 
 pub inline fn m68kCyclesToMaster(cycles: u32) u32 {
     return cycles * m68k_divider;
+}
+
+/// Round a master-cycle wait up to a whole number of 68K clocks.  The 68K
+/// resumes from a bus stall on its own clock edge, so a stalled access is
+/// released at the next multiple of the divider (Genesis Plus GX models the
+/// FIFO-full release as `(((cycles + 6) / 7) * 7)`).
+pub inline fn roundMasterWaitToM68kPhase(master_cycles: u32) u32 {
+    return (master_cycles + m68k_divider - 1) / m68k_divider * m68k_divider;
 }
 
 pub const M68kSync = struct {
@@ -83,3 +87,16 @@ pub const M68kSync = struct {
         return total;
     }
 };
+
+test "VDP port stall waits round up to the 68K clock phase" {
+    // Genesis Plus GX releases a FIFO-stalled 68K at the next multiple of 7
+    // master cycles ((((fifo_cycles + 6) / 7) * 7)); charging the raw slot
+    // distance instead leaks ~3.5 master cycles per stall event, which adds
+    // up to ~3% missing stall time in Titan Overdrive's write-flood scenes.
+    const t = @import("std").testing;
+    try t.expectEqual(@as(u32, 0), roundMasterWaitToM68kPhase(0));
+    try t.expectEqual(@as(u32, 7), roundMasterWaitToM68kPhase(1));
+    try t.expectEqual(@as(u32, 7), roundMasterWaitToM68kPhase(7));
+    try t.expectEqual(@as(u32, 14), roundMasterWaitToM68kPhase(8));
+    try t.expectEqual(@as(u32, 154), roundMasterWaitToM68kPhase(150));
+}

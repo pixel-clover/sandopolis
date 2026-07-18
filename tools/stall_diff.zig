@@ -6,24 +6,36 @@ const c = @cImport({
     @cInclude("libretro.h");
 });
 
-// VRAM differential: run BOTH Sandopolis and the Genesis Plus GX reference core
-// to the same frame, then compare their 64KB VRAM byte-for-byte.  trace-diff
-// only compares 68K work RAM (0xFF0000), so a picture that differs while RAM
-// matches (e.g. the OD1 PAL "TITAN" gradient shear) points at VDP memory that
-// trace-diff can't see. This closes that blind spot.
+// 68K stall-accounting differential: lockstep-run Sandopolis and an
+// instrumented Genesis Plus GX build (sando_probe_counters in vdp_ctrl.c)
+// on the same ROM and compare, per frame, how many master cycles each
+// emulator charged the 68K per stall mechanism:
 //
-// Output: total differing bytes (for the better of the two byte alignments)
-// plus a per-4KB-region histogram, so tile data (low VRAM) vs nametables
-// (high VRAM) divergence is immediately visible.
+//   fifo_w  - data port write stall (FIFO full)
+//   dma     - 68K halt during 68k-bus DMA
+//   refresh - DRAM refresh delay
+//   cont    - 68K wait-states while the Z80 accesses the 68K bus
 //
-// Usage: vram-diff <rom> <frame> [--pal]
+// The purpose is CPU-throughput calibration: if Sandopolis's 68K finishes
+// work-bounded scenes earlier than GPGX (Titan Overdrive loader scenes),
+// the mechanism whose cumulative total falls short is the lever to fix.
+//
+// The reference core must be built with the stall probes applied:
+//   git -C external/Genesis-Plus-GX apply ../../tools/genesis-plus-gx-stall-probes.patch
+//   make -C external/Genesis-Plus-GX -f Makefile.libretro
+// (The probes only add counters; oracle behavior is unchanged, so the
+// instrumented .so is also fine for trace-diff / vram-diff.)
+//
+// Usage: stall-diff <rom> [frames] [--pal] [--csv path] [--window N]
 
 const default_core_path = "external/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
 
 const Args = struct {
     rom_path: []const u8,
-    frame: usize = 2000,
+    frames: usize = 3000,
     pal: bool = false,
+    csv_path: ?[]const u8 = null,
+    window: usize = 100,
 };
 
 const ReferenceApi = struct {
@@ -119,21 +131,20 @@ fn inputStateCb(_: c_uint, _: c_uint, _: c_uint, _: c_uint) callconv(.c) i16 {
     return 0;
 }
 
-// Genesis Plus GX keeps vram/cram/vsram as file-local BSS globals, so they are
-// NOT in the .so's dynamic symbol table (dlsym can't see them) and libretro
-// exposes no VRAM memory id.  Resolve the address directly: the symbol's
-// link-time offset (from `nm`) plus the .so's runtime load base (from
-// /proc/self/maps).  Robust to rebuilds because both are read live.
+// The probe counters are file-local BSS in the .so (the libretro version
+// script hides everything but retro_*), so resolve their address via the
+// symbol's link-time offset (nm) plus the runtime load base (/proc/self/maps),
+// same technique as vram-diff.
 fn soLoadBase(allocator: std.mem.Allocator, so_realpath: []const u8) !usize {
     // procfs files stat as 0 bytes, so size-based readFileAlloc returns
     // nothing; read in a plain loop instead.
-    var maps_file = try platform.cwd().openFile("/proc/self/maps", .{});
-    defer maps_file.close();
+    var file = try platform.cwd().openFile("/proc/self/maps", .{});
+    defer file.close();
     var maps_list: std.ArrayList(u8) = .empty;
     defer maps_list.deinit(allocator);
     var chunk: [64 * 1024]u8 = undefined;
     while (true) {
-        const n = maps_file.read(&chunk) catch |err| switch (err) {
+        const n = file.read(&chunk) catch |err| switch (err) {
             error.EndOfStream => break,
             else => return err,
         };
@@ -170,35 +181,6 @@ fn symOffset(allocator: std.mem.Allocator, so_path: []const u8, name: []const u8
     return error.SymbolNotFound;
 }
 
-fn refMemory(allocator: std.mem.Allocator, base: usize, so_path: []const u8, name: []const u8, len: usize) ![]const u8 {
-    const off = try symOffset(allocator, so_path, name);
-    const ptr: [*]const u8 = @ptrFromInt(base + off);
-    return ptr[0..len];
-}
-
-fn diffSmall(stdout: anytype, allocator: std.mem.Allocator, base: usize, so_path: []const u8, name: []const u8, sando: []const u8) !void {
-    const ref = refMemory(allocator, base, so_path, name, sando.len) catch |err| {
-        try stdout.print("{s}: (unavailable: {s})\n", .{ name, @errorName(err) });
-        return;
-    };
-    const direct = diffCount(sando, ref, false);
-    const swap = diffCount(sando, ref, true);
-    const swapped = swap < direct;
-    const total = @min(direct, swap);
-    try stdout.print("{s}: {d}/{d} bytes differ (align={s})\n", .{
-        name, total, sando.len, if (swapped) "swapped" else "direct",
-    });
-    if (total != 0 and total <= 32) {
-        var i: usize = 0;
-        while (i < sando.len) : (i += 1) {
-            const rb = if (swapped) ref[i ^ 1] else ref[i];
-            if (sando[i] != rb) {
-                try stdout.print("    [0x{X:0>2}] sando=0x{X:0>2} gpgx=0x{X:0>2}\n", .{ i, sando[i], rb });
-            }
-        }
-    }
-}
-
 fn diffCount(sando: []const u8, ref: []const u8, swapped: bool) usize {
     var n: usize = 0;
     for (sando, 0..) |b, i| {
@@ -207,6 +189,20 @@ fn diffCount(sando: []const u8, ref: []const u8, swapped: bool) usize {
     }
     return n;
 }
+
+const Totals = struct {
+    fifo_w: u64 = 0,
+    dma: u64 = 0,
+    refresh: u64 = 0,
+    cont: u64 = 0,
+
+    fn add(self: *Totals, other: Totals) void {
+        self.fifo_w += other.fifo_w;
+        self.dma += other.dma;
+        self.refresh += other.refresh;
+        self.cont += other.cont;
+    }
+};
 
 pub fn main(init: std.process.Init) !void {
     platform.init(init);
@@ -218,7 +214,16 @@ pub fn main(init: std.process.Init) !void {
     defer arg_it.deinit();
     const args = try parseArgs(&arg_it);
 
-    var api = try ReferenceApi.open(default_core_path);
+    var api = ReferenceApi.open(default_core_path) catch |err| {
+        std.debug.print(
+            "error: cannot open Genesis Plus GX reference core at {s} ({s}).\n" ++
+                "Build it once:\n" ++
+                "  git submodule update --init external/Genesis-Plus-GX\n" ++
+                "  make -C external/Genesis-Plus-GX -f Makefile.libretro\n",
+            .{ default_core_path, @errorName(err) },
+        );
+        return err;
+    };
     defer api.lib.close();
 
     const cwd = try platform.cwd().realpathAlloc(allocator, ".");
@@ -244,12 +249,25 @@ pub fn main(init: std.process.Init) !void {
     if (!api.load_game(&game)) return error.RetroLoadGameFailed;
     defer api.unload_game();
 
+    const ref_ram_ptr = api.get_memory_data(c.RETRO_MEMORY_SYSTEM_RAM) orelse return error.NoReferenceRam;
+    const ref_ram_len = api.get_memory_size(c.RETRO_MEMORY_SYSTEM_RAM);
+    const ref_ram = ref_ram_ptr[0..ref_ram_len];
+
+    // Resolve the probe counter array in the instrumented core.
     const so_real = try platform.cwd().realpathAlloc(allocator, default_core_path);
     defer allocator.free(so_real);
     const base = try soLoadBase(allocator, so_real);
-    const ref_vram = try refMemory(allocator, base, so_real, "vram", 0x10000);
-    const ref_vram_len: usize = 0x10000;
+    const probe_off = symOffset(allocator, so_real, "sando_probe_counters") catch {
+        std.debug.print(
+            "error: sando_probe_counters not found in {s}.\n" ++
+                "Rebuild the instrumented core: make -C external/Genesis-Plus-GX -f Makefile.libretro\n",
+            .{default_core_path},
+        );
+        return error.SymbolNotFound;
+    };
+    const ref_probes: *const [4]u64 = @ptrFromInt(base + probe_off);
 
+    // --- Sandopolis ---
     var emu = try testing.Emulator.init(allocator, args.rom_path);
     defer emu.deinit(allocator);
     if (args.pal) {
@@ -257,95 +275,141 @@ pub fn main(init: std.process.Init) !void {
         emu.reset();
     }
     var output = testing.AudioOutput.init();
+    const sando_ram = emu.workRamSlice();
+    const compare_len = @min(sando_ram.len, ref_ram_len);
 
-    // Run both cores to the target frame (inclusive).
-    var f: usize = 0;
-    while (f <= args.frame) : (f += 1) {
-        api.run();
-        emu.runFrame();
-        try emu.discardPendingAudioWithOutput(&output);
-    }
-
-    const vram_len: usize = @min(ref_vram_len, 0x10000);
-
-    // Snapshot Sandopolis VRAM.
-    const sando_vram = try allocator.alloc(u8, vram_len);
-    defer allocator.free(sando_vram);
-    for (0..vram_len) |i| sando_vram[i] = emu.vramReadByte(@intCast(i));
-
-    // gpgx may store VRAM byte-swapped on little-endian hosts; pick the better
-    // alignment (same trick trace-diff uses for work RAM).
-    const direct = diffCount(sando_vram, ref_vram[0..vram_len], false);
-    const swap = diffCount(sando_vram, ref_vram[0..vram_len], true);
-    const swapped = swap < direct;
-    const total = @min(direct, swap);
-
-    var out_buf: [8192]u8 = undefined;
+    var out_buf: [4096]u8 = undefined;
     var w = platform.stdout().writer(&out_buf);
     const stdout = &w.interface;
-
-    try stdout.print("vram-diff rom={s} region={s} frame={d} vram={d}B align={s}\n", .{
+    try stdout.print("stall-diff rom={s} region={s} frames={d} window={d}\n", .{
         std.fs.path.basename(args.rom_path),
         if (args.pal) "PAL" else "NTSC",
-        args.frame,
-        vram_len,
-        if (swapped) "swapped(addr^1)" else "direct",
+        args.frames,
+        args.window,
     });
-    const pct = @as(f64, @floatFromInt(total)) * 100.0 / @as(f64, @floatFromInt(vram_len));
-    try stdout.print("TOTAL diverging: {d} / {d} bytes ({d:.2}%)\n", .{ total, vram_len, pct });
+    try stdout.flush();
 
-    // Per-4KB-region histogram.
-    const region = 0x1000;
-    try stdout.print("per-4KB region (diff bytes, first differing addr):\n", .{});
-    var rbase: usize = 0;
-    while (rbase < vram_len) : (rbase += region) {
-        var rn: usize = 0;
-        var first: ?usize = null;
-        var i = rbase;
-        while (i < rbase + region and i < vram_len) : (i += 1) {
-            const rb = if (swapped) ref_vram[i ^ 1] else ref_vram[i];
-            if (sando_vram[i] != rb) {
-                rn += 1;
-                if (first == null) first = i;
-            }
+    var csv_file: ?platform.File = null;
+    defer if (csv_file) |*f| f.close();
+    if (args.csv_path) |path| {
+        csv_file = try platform.cwd().createFile(path, .{ .truncate = true });
+        try csv_file.?.writeAll(
+            "frame,ours_fifo_w,ours_dma,ours_refresh,ours_cont,ours_access,ours_read,ours_ctrl,ours_exec_m68k,gpgx_fifo_w,gpgx_dma,gpgx_refresh,gpgx_cont,ram_diff,scene_ours,scene_gpgx\n",
+        );
+    }
+
+    var prev_probes: [4]u64 = ref_probes.*;
+    var ours_total = Totals{};
+    var gpgx_total = Totals{};
+    var ours_window = Totals{};
+    var gpgx_window = Totals{};
+    var swapped = false;
+    var alignment_locked = false;
+
+    var frame: usize = 0;
+    while (frame < args.frames) : (frame += 1) {
+        api.run();
+        const counters = emu.runFrameProfiled();
+        try emu.discardPendingAudioWithOutput(&output);
+
+        if (!alignment_locked and frame >= 8) {
+            const direct = diffCount(sando_ram[0..compare_len], ref_ram, false);
+            const swap = diffCount(sando_ram[0..compare_len], ref_ram, true);
+            swapped = swap < direct;
+            alignment_locked = true;
         }
-        if (rn != 0) {
-            try stdout.print("  0x{X:0>4}-0x{X:0>4}: {d:>5} bytes, first@0x{X:0>4}\n", .{ rbase, rbase + region - 1, rn, first.? });
+
+        var gpgx_frame = Totals{};
+        gpgx_frame.fifo_w = ref_probes[0] - prev_probes[0];
+        gpgx_frame.dma = ref_probes[1] - prev_probes[1];
+        gpgx_frame.refresh = ref_probes[2] - prev_probes[2];
+        gpgx_frame.cont = ref_probes[3] - prev_probes[3];
+        prev_probes = ref_probes.*;
+
+        const ours_frame = Totals{
+            .fifo_w = counters.m68k_dataport_write_wait_master,
+            .dma = counters.m68k_dma_halt_master,
+            .refresh = counters.m68k_refresh_wait_master,
+            .cont = counters.m68k_contention_wait_master,
+        };
+
+        ours_total.add(ours_frame);
+        gpgx_total.add(gpgx_frame);
+        ours_window.add(ours_frame);
+        gpgx_window.add(gpgx_frame);
+
+        if (csv_file) |*cf| {
+            const ram_diff = if (alignment_locked) diffCount(sando_ram[0..compare_len], ref_ram, swapped) else 0;
+            const scene_ours = sando_ram[0x271];
+            const scene_gpgx = ref_ram[if (swapped) 0x271 ^ 1 else 0x271];
+            var line_buf: [512]u8 = undefined;
+            const line = try std.fmt.bufPrint(&line_buf, "{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d}\n", .{
+                frame,
+                ours_frame.fifo_w,
+                ours_frame.dma,
+                ours_frame.refresh,
+                ours_frame.cont,
+                counters.m68k_access_wait_master,
+                counters.m68k_dataport_read_wait_master,
+                counters.m68k_ctrlport_write_wait_master,
+                counters.m68k_executed_cycles,
+                gpgx_frame.fifo_w,
+                gpgx_frame.dma,
+                gpgx_frame.refresh,
+                gpgx_frame.cont,
+                ram_diff,
+                scene_ours,
+                scene_gpgx,
+            });
+            try cf.writeAll(line);
+        }
+
+        if ((frame + 1) % args.window == 0) {
+            try stdout.print(
+                "  f{d:>5}: ours fifo_w={d:>8} dma={d:>8} rfsh={d:>7} cont={d:>7} | gpgx fifo_w={d:>8} dma={d:>8} rfsh={d:>7} cont={d:>7}\n",
+                .{
+                    frame + 1,
+                    ours_window.fifo_w,
+                    ours_window.dma,
+                    ours_window.refresh,
+                    ours_window.cont,
+                    gpgx_window.fifo_w,
+                    gpgx_window.dma,
+                    gpgx_window.refresh,
+                    gpgx_window.cont,
+                },
+            );
+            try stdout.flush();
+            ours_window = .{};
+            gpgx_window = .{};
         }
     }
 
-    // CRAM (palette, 64x9-bit) and VSRAM (40x11-bit vscroll).  End-of-frame
-    // snapshot: if these match while the picture differs, the shear is in
-    // per-line render state, not memory content.
-    // CRAM must be compared on decoded 9-bit color, NOT raw bytes: Sandopolis
-    // stores the raw 0x0EEE bus word (big-endian); gpgx stores it packed to
-    // 9-bit BBBGGGRRR (little-endian).  Different encodings, same color.
-    const cram_ref = try refMemory(allocator, base, so_real, "cram", 0x80);
-    var cram_diff: usize = 0;
-    try stdout.print("cram (64 entries, decoded 9-bit BGR):\n", .{});
-    for (0..64) |e| {
-        const sw: u16 = (@as(u16, emu.cramReadByte(@intCast(e * 2))) << 8) | emu.cramReadByte(@intCast(e * 2 + 1));
-        const s9 = ((sw & 0xE00) >> 3) | ((sw & 0x0E0) >> 2) | ((sw & 0x00E) >> 1);
-        const g9: u16 = @as(u16, cram_ref[e * 2]) | (@as(u16, cram_ref[e * 2 + 1]) << 8);
-        if (s9 != g9) {
-            cram_diff += 1;
-            if (cram_diff <= 40)
-                try stdout.print("    [{d:>2}] sando=0x{X:0>3} gpgx=0x{X:0>3}\n", .{ e, s9, g9 });
-        }
-    }
-    try stdout.print("  -> {d}/64 color entries differ\n", .{cram_diff});
-
-    var vsram_buf: [0x50]u8 = undefined;
-    for (0..vsram_buf.len) |i| vsram_buf[i] = emu.vsramReadByte(@intCast(i));
-    try diffSmall(stdout, allocator, base, so_real, "vsram", &vsram_buf);
-
+    const ours_sum = ours_total.fifo_w + ours_total.dma + ours_total.refresh + ours_total.cont;
+    const gpgx_sum = gpgx_total.fifo_w + gpgx_total.dma + gpgx_total.refresh + gpgx_total.cont;
+    try stdout.print(
+        "\ntotals over {d} frames (master cycles):\n" ++
+            "  fifo_w : ours={d:>12} gpgx={d:>12} delta={d}\n" ++
+            "  dma    : ours={d:>12} gpgx={d:>12} delta={d}\n" ++
+            "  refresh: ours={d:>12} gpgx={d:>12} delta={d}\n" ++
+            "  cont   : ours={d:>12} gpgx={d:>12} delta={d}\n" ++
+            "  sum    : ours={d:>12} gpgx={d:>12} delta={d}\n",
+        .{
+            args.frames,
+            ours_total.fifo_w,      gpgx_total.fifo_w,      @as(i64, @intCast(ours_total.fifo_w)) - @as(i64, @intCast(gpgx_total.fifo_w)),
+            ours_total.dma,         gpgx_total.dma,         @as(i64, @intCast(ours_total.dma)) - @as(i64, @intCast(gpgx_total.dma)),
+            ours_total.refresh,     gpgx_total.refresh,     @as(i64, @intCast(ours_total.refresh)) - @as(i64, @intCast(gpgx_total.refresh)),
+            ours_total.cont,        gpgx_total.cont,        @as(i64, @intCast(ours_total.cont)) - @as(i64, @intCast(gpgx_total.cont)),
+            ours_sum,               gpgx_sum,               @as(i64, @intCast(ours_sum)) - @as(i64, @intCast(gpgx_sum)),
+        },
+    );
     try stdout.flush();
 }
 
 fn parseArgs(it: *std.process.Args.Iterator) !Args {
     _ = it.next();
     const rom = it.next() orelse {
-        std.debug.print("Usage: vram-diff <rom> <frame> [--pal]\n", .{});
+        std.debug.print("Usage: stall-diff <rom> [frames] [--pal] [--csv path] [--window N]\n", .{});
         return error.InvalidArgs;
     };
     var a = Args{ .rom_path = rom };
@@ -353,12 +417,15 @@ fn parseArgs(it: *std.process.Args.Iterator) !Args {
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--pal")) {
             a.pal = true;
-        } else {
-            switch (positional) {
-                0 => a.frame = try std.fmt.parseInt(usize, arg, 10),
-                else => return error.InvalidArgs,
-            }
+        } else if (std.mem.eql(u8, arg, "--csv")) {
+            a.csv_path = it.next() orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--window")) {
+            a.window = try std.fmt.parseInt(usize, it.next() orelse return error.InvalidArgs, 10);
+        } else if (positional == 0) {
+            a.frames = try std.fmt.parseInt(usize, arg, 10);
             positional += 1;
+        } else {
+            return error.InvalidArgs;
         }
     }
     return a;
