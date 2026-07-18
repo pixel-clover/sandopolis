@@ -32,7 +32,14 @@ jobs:
 
       - name: Determine Zig version
         id: zigver
-        run: echo "version=$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' build.zig.zon)" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          version="$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' build.zig.zon)"
+          if [ -z "$version" ]; then
+            echo "Failed to read minimum_zig_version from build.zig.zon" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
