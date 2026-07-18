@@ -93,7 +93,7 @@ trace-ym-writes: reference-core ## Dump decoded YM register writes (pass args vi
 	$(ZIG) build trace-ym-writes $(BUILD_OPTS) -- $(ARGS)
 
 pal-accuracy: reference-core ## Framebuffer RMSE vs Genesis Plus GX at diagnostic PAL/NTSC frames
-	python3 tools/pal_accuracy_check.py
+	ZIG=$(ZIG) python3 tools/pal_accuracy_check.py
 
 release: ## Build in Release mode
 	@echo "Building the project in Release mode..."
