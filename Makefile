@@ -41,7 +41,7 @@ SHELL         := /usr/bin/env bash
 
 .PHONY: all build rebuild run test test-unit test-integration test-regression test-property lint format docs docs-serve \
 clean install-deps release help setup-hooks test-hooks wasm web web-serve reference-core trace-diff dump-audio \
-trace-ym-writes pal-accuracy
+trace-ym-writes pal-accuracy retroarch retroarch-install
 .DEFAULT_GOAL := help
 
 help: ## Show the help messages for all targets
@@ -123,6 +123,18 @@ docs-serve: ## Regenerate Zig API docs and serve the MkDocs site locally
 	$(ZIG) build docs $(BUILD_OPTS) --prefix . -j$(JOBS)
 	@echo "Starting MkDocs dev server..."
 	$(UV) run mkdocs serve
+
+RETROARCH_CORES_DIR ?= $(HOME)/.config/retroarch/cores
+
+retroarch: ## Build the libretro core for RetroArch
+	@echo "Building Sandopolis libretro core in $(BUILD_TYPE) mode..."
+	$(ZIG) build libretro $(BUILD_OPTS) -j$(JOBS)
+	@echo "Core built: $(BUILD_DIR)/lib/libsandopolis_libretro.so"
+
+retroarch-install: retroarch ## Build the libretro core and install it into RetroArch's cores directory
+	mkdir -p $(RETROARCH_CORES_DIR)
+	cp $(BUILD_DIR)/lib/libsandopolis_libretro.so $(RETROARCH_CORES_DIR)/
+	@echo "Installed: $(RETROARCH_CORES_DIR)/libsandopolis_libretro.so"
 
 wasm: ## Build the WebAssembly module
 	@echo "Building WebAssembly module..."
