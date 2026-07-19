@@ -110,7 +110,14 @@ pub fn build(b: *std.Build) void {
         b.option(std.builtin.OptimizeMode, "regression-optimize", "Optimize mode for regression tests") orelse .ReleaseSafe;
     const version = @import("build.zig.zon").version;
 
-    const zsdl = b.dependency("zsdl", .{});
+    // SDL3 bindings vendored from zig-gamedev/zsdl (see external/zsdl3/):
+    // depending on the zsdl package pulled its build script into the graph,
+    // which lazily fetches prebuilt SDL tarballs whose pinned Windows
+    // package fails Zig 0.16's fetch-time validation. SDL3 itself is built
+    // from source via the sdl3 dependency.
+    const zsdl3_module = b.createModule(.{
+        .root_source_file = b.path("external/zsdl3/sdl3.zig"),
+    });
     const chilli = b.dependency("chilli", .{});
     const minish = b.dependency("minish", .{});
     const sdl3_dep = b.dependency("sdl3", .{
@@ -152,7 +159,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "zsdl3", .module = zsdl3_module },
                 .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
@@ -183,7 +190,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "zsdl3", .module = zsdl3_module },
                 .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
@@ -202,7 +209,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "zsdl3", .module = zsdl3_module },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
@@ -223,7 +230,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "zsdl3", .module = zsdl.module("zsdl3") },
+                .{ .name = "zsdl3", .module = zsdl3_module },
                 .{ .name = "chilli", .module = chilli.module("chilli") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
