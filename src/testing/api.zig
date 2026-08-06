@@ -28,3 +28,6 @@ pub fn ymWriteEvent(port: u1, reg: u8, value: u8) YmWriteEvent {
         .value = value,
     };
 }
+
+pub const SystemMachine = @import("../system_machine.zig").SystemMachine;
+pub const Scene = @import("../scene.zig");

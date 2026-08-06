@@ -254,6 +254,33 @@
             aspect-ratio: 4 / 3;
         }
 
+        /* 3D diorama view. Replaces the flat canvas while active. */
+        #screen3d {
+            display: none;
+            width: 100%;
+            aspect-ratio: 4 / 3;
+            touch-action: none;
+            cursor: grab;
+        }
+
+        #screen3d:active {
+            cursor: grabbing;
+        }
+
+        #screen-container.mode-3d #screen {
+            display: none;
+        }
+
+        #screen-container.mode-3d #screen3d {
+            display: block;
+        }
+
+        #screen-container.fullscreen.mode-3d #screen3d {
+            width: 100vw;
+            height: 100vh;
+            aspect-ratio: unset;
+        }
+
         #screen.aspect-stretch {
             aspect-ratio: 8 / 5;
         }
@@ -1112,6 +1139,7 @@
 
 <div id="screen-container">
     <canvas class="aspect-fit" height="224" id="screen" width="320"></canvas>
+    <canvas id="screen3d"></canvas>
 </div>
 
 <div class="action-bar">
@@ -1140,6 +1168,10 @@
     <div class="btn-group tone-view">
         <span class="btn-group-label">View</span>
         <button id="btn-fullscreen" title="Fullscreen [F11]">Fullscreen</button>
+        <button disabled id="btn-3d"
+                title="Render the frame as a depth-separated 3D diorama. Master System, Game Gear, and SG-1000 Mode 4 only. Drag to orbit, scroll to zoom.">
+            3D
+        </button>
         <button id="btn-vr" style="display:none"
                 title="Enter immersive VR theater mode (WebXR). Hold left grip for 1s to exit.">Enter VR
         </button>
@@ -1272,6 +1304,7 @@
     <a href="https://github.com/pixel-clover/sandopolis">Sandopolis on GitHub</a>
 </footer>
 
+<script src="scene3d.js"></script>
 <script src="vr.js"></script>
 <script src="sandopolis.js"></script>
 </body>

@@ -115,3 +115,4 @@ web/fonts/
 zig-pkg/
 .agents/
 *.so
+*.ppm

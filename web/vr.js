@@ -276,6 +276,23 @@
         setupRoom();
         setupSolid();
         setupHelp();
+
+        // The diorama renderer is context-agnostic, so the theater reuses the
+        // same code the desktop 3D view runs.
+        if (window.SandopolisScene3D) {
+            try {
+                sceneRenderer = window.SandopolisScene3D.createRenderer(gl);
+            } catch (err) {
+                console.warn("Scene3D unavailable in XR:", err.message);
+                sceneRenderer = null;
+            }
+        }
+    }
+
+    /// Current frame scene, or null when the diorama should not be drawn.
+    function activeScene() {
+        if (!sceneRenderer || !getScene) return null;
+        return getScene() || null;
     }
 
     function setupHelp() {
@@ -667,7 +684,9 @@
             session.end();
             return;
         }
-        uploadCanvasTexture();
+        const scene = activeScene();
+        if (scene) sceneRenderer.upload(scene);
+        else uploadCanvasTexture();
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
         gl.enable(gl.DEPTH_TEST);
@@ -706,26 +725,44 @@
             gl.uniformMatrix4fv(roomMvpLoc, false, viewProj);
             gl.drawArrays(gl.TRIANGLES, 0, roomVertCount);
 
-            // Bezel + stand share the solid program.
+            // Bezel + stand share the solid program. The diorama has real
+            // depth and would intersect the bezel box, so the bezel is only
+            // drawn around the flat screen.
             gl.useProgram(solidProgram);
             gl.bindVertexArray(solidVao);
-            gl.uniform3f(solidColorLoc, 0.04, 0.04, 0.05);
-            gl.uniformMatrix4fv(solidMvpLoc, false, mulMat4(viewProj, bezelModel));
-            gl.drawArrays(gl.TRIANGLES, 0, 36);
+            if (!scene) {
+                gl.uniform3f(solidColorLoc, 0.04, 0.04, 0.05);
+                gl.uniformMatrix4fv(solidMvpLoc, false, mulMat4(viewProj, bezelModel));
+                gl.drawArrays(gl.TRIANGLES, 0, 36);
+            }
             gl.uniform3f(solidColorLoc, 0.07, 0.06, 0.05);
             gl.uniformMatrix4fv(solidMvpLoc, false, mulMat4(viewProj, standModel));
             gl.drawArrays(gl.TRIANGLES, 0, 36);
 
-            // Screen quad
-            gl.useProgram(program);
-            gl.bindVertexArray(vao);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.uniform1i(sampLoc, 0);
-            const mv = mulMat4(view.transform.inverse.matrix, screenModel);
-            const mvp = mulMat4(view.projectionMatrix, mv);
-            gl.uniformMatrix4fv(mvpLoc, false, mvp);
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            if (scene) {
+                // The diorama's local space has the picture one unit tall, so
+                // a uniform scale to the screen's height places it where the
+                // flat quad would have been, with its depth to scale.
+                const size = dims.halfH * 2;
+                const dioramaModel = mulMat4(
+                    translate(0, SCREEN_Y, QUAD_DISTANCE),
+                    scaleXYZ(size, size, size)
+                );
+                const mvp = mulMat4(view.projectionMatrix,
+                    mulMat4(view.transform.inverse.matrix, dioramaModel));
+                sceneRenderer.draw(mvp);
+            } else {
+                // Screen quad
+                gl.useProgram(program);
+                gl.bindVertexArray(vao);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.uniform1i(sampLoc, 0);
+                const mv = mulMat4(view.transform.inverse.matrix, screenModel);
+                const mvp = mulMat4(view.projectionMatrix, mv);
+                gl.uniformMatrix4fv(mvpLoc, false, mvp);
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+            }
         }
 
         // Translucent help panel above the screen, drawn last with alpha blending.
@@ -766,6 +803,10 @@
     let getAspectMode = null;
     let onSessionStartCallback = null;
     let onSessionEndCallback = null;
+    // Supplied by the page: returns the current frame scene, or null when the
+    // 3D diorama is off or the system has no scene description.
+    let getScene = null;
+    let sceneRenderer = null;
 
     function attachButton() {
         if (buttonEl) return buttonEl;
@@ -811,6 +852,7 @@
             getAspectMode = opts.getAspectMode || null;
             onSessionStartCallback = opts.onSessionStart || null;
             onSessionEndCallback = opts.onSessionEnd || null;
+            getScene = opts.getScene || null;
             attachButton();
         },
         get active() {

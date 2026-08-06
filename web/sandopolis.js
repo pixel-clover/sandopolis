@@ -161,6 +161,7 @@ async function init() {
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
     document.getElementById("scale-mode").addEventListener("change", onScaleModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
+    document.getElementById("btn-3d").addEventListener("click", toggleScene3D);
     document.getElementById("btn-quick-save").addEventListener("click", quickSave);
     document.getElementById("btn-quick-load").addEventListener("click", quickLoad);
     document.getElementById("btn-save").addEventListener("click", persistentSave);
@@ -220,6 +221,9 @@ async function init() {
             },
             isRomLoaded: () => !!emu,
             getAspectMode: () => aspectMode,
+            // Non-null only while the 3D diorama is enabled, so the theater
+            // falls back to the flat screen otherwise.
+            getScene: () => (scene3dActive ? currentScene() : null),
             onSessionStart: () => {
                 // Click-to-unpause is disabled inside VR, so entering VR
                 // with the game paused would show a permanently frozen
@@ -1151,6 +1155,10 @@ async function loadRom(file) {
     setStatus(`Playing now: ${file.name} (${sysLabel} ${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
 
+    // The 3D diorama needs a system with a frame scene description, which
+    // is decided by the ROM that just loaded.
+    refreshScene3DButton();
+
     running = true;
     // Use precise Genesis frame rates to avoid audio drift.
     // NTSC: 53693175 / (262*3420) = 59.9227 fps
@@ -1256,6 +1264,92 @@ function tickEmulator(now) {
         }
     }
     ctx.putImageData(imageData, 0, 0);
+
+    renderScene3D();
+}
+
+// -- 3D diorama view --
+
+let scene3dViewer = null;
+let scene3dActive = false;
+let scene3dUnsupportedNoted = false;
+
+/// True when the loaded system has a frame scene description. Genesis does
+/// not yet, so the toggle stays disabled there.
+function scene3dAvailable() {
+    if (!wasm || !emu) return false;
+    const e = wasm.instance.exports;
+    if (typeof e.sandopolis_scene_extract !== "function") return false;
+    if (e.sandopolis_scene_layout_version() !== window.SandopolisScene3D.LAYOUT_VERSION) {
+        if (!scene3dUnsupportedNoted) {
+            console.warn("Scene layout version mismatch: core reports",
+                e.sandopolis_scene_layout_version(),
+                "but scene3d.js expects", window.SandopolisScene3D.LAYOUT_VERSION);
+            scene3dUnsupportedNoted = true;
+        }
+        return false;
+    }
+    return e.sandopolis_scene_extract(emu) === 1;
+}
+
+function refreshScene3DButton() {
+    const btn = document.getElementById("btn-3d");
+    if (!btn) return;
+    const ok = !!window.SandopolisScene3D && scene3dAvailable();
+    btn.disabled = !ok;
+    if (!ok && scene3dActive) setScene3D(false);
+    btn.textContent = scene3dActive ? "3D ON" : "3D";
+}
+
+function setScene3D(on) {
+    const container = document.getElementById("screen-container");
+    const canvas3d = document.getElementById("screen3d");
+    if (!container || !canvas3d || !window.SandopolisScene3D) return;
+
+    if (on && !scene3dViewer) {
+        scene3dViewer = window.SandopolisScene3D.createViewer(canvas3d, {
+            // The 3D canvas replaces the flat one, so it has to carry the
+            // click-to-pause affordance as well. Orbit drags are excluded.
+            onClick: () => {
+                if (window.SandopolisVR && window.SandopolisVR.active) return;
+                togglePause();
+            },
+        });
+        if (!scene3dViewer) {
+            showToast("3D view needs WebGL2");
+            return;
+        }
+    }
+    scene3dActive = on;
+    container.classList.toggle("mode-3d", on);
+    const btn = document.getElementById("btn-3d");
+    if (btn) btn.textContent = on ? "3D ON" : "3D";
+    if (on) renderScene3D();
+}
+
+function toggleScene3D() {
+    setScene3D(!scene3dActive);
+}
+
+/// Extract and parse the current frame scene, or null if unavailable.
+function currentScene() {
+    if (!emu || !wasm || !window.SandopolisScene3D) return null;
+    const e = wasm.instance.exports;
+    if (typeof e.sandopolis_scene_extract !== "function") return null;
+    if (e.sandopolis_scene_extract(emu) !== 1) return null;
+    return window.SandopolisScene3D.parseScene(
+        e.memory.buffer,
+        e.sandopolis_scene_ptr(emu),
+        e.sandopolis_scene_len()
+    );
+}
+
+function renderScene3D() {
+    if (!scene3dActive || !scene3dViewer) return;
+    // The headset draws its own diorama; skip the hidden desktop canvas.
+    if (window.SandopolisVR && window.SandopolisVR.active) return;
+    const scene = currentScene();
+    if (scene) scene3dViewer.render(scene);
 }
 
 function resumeFrame() {

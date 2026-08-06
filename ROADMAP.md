@@ -111,6 +111,8 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Save-state format v3 with mapper bank registers, EEPROM state, and validated deserialization of untrusted input
 - [x] Interlace mode 2 vertical geometry (doubled line sampling and sprite Y offset)
 - [x] GIF and BMP screenshot stride handling for H32 display mode
+- [x] `dump-scene` tool that reports the frame scene description, rebuilds the frame from it alone, and scores the result against the rasterizer
+  output per pixel
 
 ### Future Goals
 
@@ -185,6 +187,16 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] SMS save-state hardening (format v4 with byte-level sanitization of untrusted input, SG-1000 flag preserved across clone and save, PAL mode
   preserved across reset, and I/O port and PSG state included)
 - [x] SMS soft reset semantics (Z80 reset pulse with RAM, VDP, PSG, and mapper state preserved instead of a full power cycle)
+- [x] Mode 4 frame scene extraction: a read-only description of the tilemap, sprites, palette, tile atlas, viewport, and hardware scroll-lock HUD
+  regions, exposed through `SystemMachine.extractScene()` for frontends that render the picture as 3D geometry instead of pixels
+- [x] 3D diorama renderer for the browser frontend (`web/scene3d.js`): WebGL2 tilemap and sprite rendering of the frame scene as depth-separated
+  layers, with hardware scroll-lock regions kept flat at the front as a HUD plane, an orbit-camera desktop view, and the same renderer driving the
+  WebXR theater in place of the flat screen quad
+- [ ] Per-scanline horizontal scroll strips in the frame scene description (games using raster scroll splits currently collapse to one frame-level
+  offset)
+- [ ] Automatic per-tile extrusion in the 3D renderer (voxel slabs instead of flat layers)
+- [ ] Per-game 3D profiles mapping tile indexes to meshes and sprite slots to entities
+- [ ] TMS9918 mode coverage in the frame scene description (SG-1000 modes 0 through 3)
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
 - [ ] Codemasters mapper
 - [ ] BIOS/boot ROM support

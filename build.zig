@@ -350,6 +350,27 @@ pub fn build(b: *std.Build) void {
     const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or a reference libretro core");
     dump_audio_step.dependOn(&dump_audio_run.step);
 
+    const dump_scene = b.addExecutable(.{
+        .name = "dump-scene",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dump_scene.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(dump_scene, b, cpu_deps);
+    dump_scene.root_module.addIncludePath(b.path("external/libretro"));
+    dump_scene.root_module.link_libc = true;
+    const dump_scene_run = b.addRunArtifact(dump_scene);
+    if (b.args) |args| {
+        dump_scene_run.addArgs(args);
+    }
+    const dump_scene_step = b.step("dump-scene", "Dump the Master System frame scene description and rebuild the frame from it");
+    dump_scene_step.dependOn(&dump_scene_run.step);
+
     const trace_diff = b.addExecutable(.{
         .name = "trace-diff",
         .root_module = b.createModule(.{

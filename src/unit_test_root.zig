@@ -21,6 +21,8 @@ const video_timing = @import("video/timing.zig");
 const wasm = @import("wasm.zig");
 const system_detect = @import("system.zig");
 const sms_vdp = @import("sms/vdp.zig");
+const sms_scene = @import("sms/scene.zig");
+const scene_mod = @import("scene.zig");
 const sms_bus = @import("sms/bus.zig");
 const sms_io = @import("sms/io.zig");
 const sms_input = @import("sms/input.zig");
@@ -65,6 +67,8 @@ comptime {
     _ = wasm;
     _ = system_detect;
     _ = sms_vdp;
+    _ = sms_scene;
+    _ = scene_mod;
     _ = sms_bus;
     _ = sms_io;
     _ = sms_input;
