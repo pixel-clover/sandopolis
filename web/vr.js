@@ -148,6 +148,10 @@
         // Release GL resources explicitly so repeated VR sessions don't pile
         // up GPU memory while we wait for GC of the orphaned context.
         if (gl) {
+            if (sceneRenderer) {
+                sceneRenderer.dispose();
+                sceneRenderer = null;
+            }
             if (program) gl.deleteProgram(program);
             if (vao) gl.deleteVertexArray(vao);
             if (texture) gl.deleteTexture(texture);
@@ -740,12 +744,17 @@
             gl.drawArrays(gl.TRIANGLES, 0, 36);
 
             if (scene) {
-                // The diorama's local space has the picture one unit tall, so
-                // a uniform scale to the screen's height places it where the
-                // flat quad would have been, with its depth to scale.
-                const size = dims.halfH * 2;
+                // The diorama's local space has the picture one unit tall.
+                // The visible area is the viewport, which on Game Gear is a
+                // window on that picture, so scale it (not the full picture)
+                // to the screen height and center it on the screen.
+                const vScale = scene.pictureHeight / scene.viewportHeight;
+                const size = dims.halfH * 2 * vScale;
+                // Viewport center in the diorama's local space.
+                const cx = (scene.viewportX + scene.viewportWidth / 2 - scene.pictureWidth / 2) / scene.pictureHeight;
+                const cy = (scene.pictureHeight / 2 - (scene.viewportY + scene.viewportHeight / 2)) / scene.pictureHeight;
                 const dioramaModel = mulMat4(
-                    translate(0, SCREEN_Y, QUAD_DISTANCE),
+                    translate(-cx * size, SCREEN_Y - cy * size, QUAD_DISTANCE),
                     scaleXYZ(size, size, size)
                 );
                 const mvp = mulMat4(view.projectionMatrix,

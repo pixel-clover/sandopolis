@@ -786,6 +786,15 @@ function togglePerf() {
 
 function updatePerf() {
     const e = wasm ? wasm.instance.exports : null;
+
+    const scene3dEl = document.getElementById("perf-scene3d");
+    if (scene3dEl) {
+        const st = scene3dActive && scene3dViewer ? scene3dViewer.getStats() : null;
+        scene3dEl.textContent = st
+            ? `${st.uploadMs.toFixed(2)}+${st.drawMs.toFixed(2)} ms, ` +
+              `${st.drawCalls} calls x${st.slices}, ${st.bands} bands, ${st.dirtyTiles} tiles`
+            : "off";
+    }
     const fps = document.getElementById("fps-display").textContent || "--";
     document.getElementById("perf-fps").textContent = fps;
     const fpsNum = parseInt(fps);
@@ -1132,6 +1141,13 @@ async function loadRom(file) {
     const systemHint = name.endsWith(".sg") || name.endsWith(".sg.zip") ? 3
         : name.endsWith(".gg") || name.endsWith(".gg.zip") ? 2
             : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
+    currentRomKey = computeRomKey(romBytes);
+    // A new ROM means a fresh scene buffer: the renderer's cached atlas and
+    // any per-game profile belong to the previous game.
+    if (scene3dViewer) {
+        scene3dViewer.invalidate();
+        scene3dViewer.applyProfile(null);
+    }
     emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
     e.sandopolis_free(romPtr, romBytes.length);
     if (!emu) {
@@ -1324,18 +1340,90 @@ function setScene3D(on) {
     container.classList.toggle("mode-3d", on);
     const btn = document.getElementById("btn-3d");
     if (btn) btn.textContent = on ? "3D ON" : "3D";
-    if (on) renderScene3D();
+    if (on) {
+        loadScene3DProfile();
+        renderScene3D();
+    }
 }
 
 function toggleScene3D() {
     setScene3D(!scene3dActive);
 }
 
-/// Extract and parse the current frame scene, or null if unavailable.
+// Console handles for tuning the diorama while it runs. The depth constants
+// are judgement calls, so they are adjustable without a rebuild.
+window.sandopolisScene3D = {
+    // Depth bands the parallax inference currently derives from the game's
+    // own scroll rates.
+    bands: () => (scene3dViewer ? scene3dViewer.getBands() : null),
+    // 0 flattens the diorama back to the original picture, 1 is the default.
+    depthScale: (v) => scene3dViewer && scene3dViewer.setDepthScale(v),
+    // Turn off to compare against flat layers.
+    extrude: (on) => scene3dViewer && scene3dViewer.setExtrudeEnabled(on),
+    // Turn off to place every background band on one plane.
+    parallax: (on) => scene3dViewer && scene3dViewer.setParallaxEnabled(on),
+    // "overlay" pins the HUD to the screen, "scene" leaves it in the diorama.
+    hud: (mode) => scene3dViewer && scene3dViewer.setHudMode(mode),
+    // Depth slices per slab. Fewer is cheaper: the fragment shader discards,
+    // which defeats early-Z, so cost scales with the slice count.
+    slices: (n) => scene3dViewer && scene3dViewer.setSliceCount(n),
+    stats: () => (scene3dViewer ? scene3dViewer.getStats() : null),
+    // Key to name a profile file after: profiles/<romKey>.json
+    romKey: () => currentRomKey,
+    // Apply a per-game 3D profile object; null restores uniform extrusion.
+    profile: (p) => {
+        if (!scene3dViewer) return;
+        scene3dViewer.applyProfile(p);
+        scene3dViewer.redraw();
+    },
+    redraw: () => scene3dViewer && scene3dViewer.redraw(),
+    // Camera. faceOn() puts the eye at the design viewpoint, where the
+    // diorama reproduces the flat picture exactly.
+    faceOn: () => { if (scene3dViewer) { scene3dViewer.faceOn(); } },
+    view: (yaw, pitch, dist) => { if (scene3dViewer) { scene3dViewer.setView(yaw, pitch, dist); } },
+    depth: (v) => scene3dViewer && scene3dViewer.setExtrudeDepth(v),
+};
+
+/// Stable identifier for the loaded ROM. Master System and Game Gear
+/// cartridges carry no title in their header, so a content hash is the only
+/// dependable key; the filename is not, since the same game is distributed
+/// under many names.
+let currentRomKey = null;
+
+function computeRomKey(bytes) {
+    // FNV-1a, 32-bit.
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) {
+        h ^= bytes[i];
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0") + "-" + bytes.length.toString(16);
+}
+
+/// Per-game 3D profiles live in web/profiles/, named after the ROM key.
+/// A missing profile is the normal case and not an error: the game simply
+/// renders with uniform extrusion.
+async function loadScene3DProfile() {
+    if (!scene3dViewer || !currentRomKey) return;
+    try {
+        const res = await fetch(`profiles/${currentRomKey}.json`);
+        if (!res.ok) return;
+        const profile = await res.json();
+        scene3dViewer.applyProfile(profile);
+        scene3dViewer.redraw();
+        showToast(`3D profile: ${profile.name || currentRomKey}`);
+    } catch {
+        // No profile, or malformed. Uniform extrusion is a fine fallback.
+    }
+}
+
+/// Extract and parse the current frame scene, or null when the loaded system
+/// has no scene description or the core and this file disagree on the layout.
 function currentScene() {
     if (!emu || !wasm || !window.SandopolisScene3D) return null;
     const e = wasm.instance.exports;
     if (typeof e.sandopolis_scene_extract !== "function") return null;
+    if (e.sandopolis_scene_layout_version() !== window.SandopolisScene3D.LAYOUT_VERSION) return null;
     if (e.sandopolis_scene_extract(emu) !== 1) return null;
     return window.SandopolisScene3D.parseScene(
         e.memory.buffer,

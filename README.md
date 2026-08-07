@@ -47,6 +47,9 @@ Footage of Sandopolis running a few games:
 - Accurate Sega Genesis/Mega Drive, Master System, Game Gear, and SG-1000 emulation
 - Very portable; can be built and run on any platform that Zig supports
 - Very configurable, including gameplay input, frontend hotkeys, and rendering settings
+- 3D diorama mode in the browser frontend for all supported systems: the "3D" button renders the frame as depth-separated, extruded layers (drag to
+  orbit, scroll to zoom), with depth from the Genesis dual scroll planes or inferred from each game's own parallax scrolling, plus optional per-game
+  height profiles in `web/profiles/`; the WebXR theater uses the same renderer on a headset
 - Has a permissive license that allows commercial use
 
 See [ROADMAP.md](ROADMAP.md) for the list of implemented and planned features.

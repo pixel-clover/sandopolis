@@ -3,6 +3,8 @@ const sandopolis = @import("sandopolis_testing");
 const platform = sandopolis.platform;
 const SystemMachine = sandopolis.SystemMachine;
 const Scene = sandopolis.Scene;
+const recon_mod = sandopolis.SceneRecon;
+const Reconstruction = recon_mod.Reconstruction;
 
 // Dump the frame scene description a 3D frontend would consume, and check
 // that it is complete enough to rebuild the picture.
@@ -22,132 +24,8 @@ const Args = struct {
     out_prefix: []const u8 = "scene",
     show_tiles: bool = false,
     raw_path: ?[]const u8 = null,
+    atlas_path: ?[]const u8 = null,
 };
-
-const max_picture_pixels = Scene.max_columns * 8 * 256;
-
-const Reconstruction = struct {
-    pixels: []u32,
-    priority: []bool,
-    sprite_drawn: []bool,
-    width: usize,
-    height: usize,
-
-    fn init(allocator: std.mem.Allocator, width: usize, height: usize) !Reconstruction {
-        return .{
-            .pixels = try allocator.alloc(u32, width * height),
-            .priority = try allocator.alloc(bool, width * height),
-            .sprite_drawn = try allocator.alloc(bool, width * height),
-            .width = width,
-            .height = height,
-        };
-    }
-
-    fn deinit(self: *Reconstruction, allocator: std.mem.Allocator) void {
-        allocator.free(self.pixels);
-        allocator.free(self.priority);
-        allocator.free(self.sprite_drawn);
-    }
-};
-
-/// Rebuild the frame from the scene description alone, mirroring the order
-/// the VDP composites in: backdrop, background, sprites, left column blank.
-fn reconstruct(s: *const Scene.FrameScene, r: *Reconstruction) void {
-    @memset(r.pixels, s.backdrop);
-    @memset(r.priority, false);
-    @memset(r.sprite_drawn, false);
-
-    if (!s.contentValid()) return;
-    if (s.flags & Scene.scene_flag_display_enabled == 0) return;
-
-    const rows: usize = s.rows;
-    // The 224 and 240 line modes wrap the tilemap at 256 pixels, not 224.
-    const vertical_wrap: usize = if (rows > 28) 256 else 224;
-    const locked_lines: usize = @as(usize, s.hud_locked_rows) * 8;
-    const locked_col_start: usize = if (s.hud_locked_columns > 0)
-        Scene.max_columns - s.hud_locked_columns
-    else
-        Scene.max_columns;
-
-    for (0..r.height) |y| {
-        const h_locked = y < locked_lines;
-        const hscroll: usize = if (h_locked) 0 else s.scroll_x;
-        const coarse = (hscroll >> 3) & 0x1F;
-        const fine = hscroll & 0x7;
-
-        for (0..r.width) |x| {
-            const col = x / 8;
-            // Fine scrolling leaves the leftmost pixels on the backdrop
-            // rather than wrapping them in from the right edge.
-            if (!h_locked and fine != 0 and x < fine) continue;
-
-            const scrolled_x = if (h_locked) x else x - fine;
-            const source_col = if (h_locked)
-                col
-            else
-                (scrolled_x / 8 + Scene.max_columns - coarse) % Scene.max_columns;
-
-            const v_locked = col >= locked_col_start;
-            const effective_y = if (v_locked) y else (y + s.scroll_y) % vertical_wrap;
-            const row = effective_y / 8;
-            if (row >= rows) continue;
-
-            const cell = s.cell(source_col, row);
-            const fine_y = effective_y % 8;
-            const ty = if (cell.flags & Scene.cell_flag_v_flip != 0) 7 - fine_y else fine_y;
-            const fine_x = scrolled_x % 8;
-            const tx = if (cell.flags & Scene.cell_flag_h_flip != 0) 7 - fine_x else fine_x;
-
-            const color = s.tilePixels(cell.tile_index)[ty * 8 + tx];
-            if (color == 0) continue;
-
-            const at = y * r.width + x;
-            r.pixels[at] = s.palette[cell.palette + color];
-            r.priority[at] = cell.flags & Scene.cell_flag_priority != 0;
-        }
-    }
-
-    // Sprites composite in table order, so the lowest slot covering a pixel
-    // wins even when a higher slot is also opaque there.
-    for (0..s.sprite_count) |i| {
-        const sp = s.sprites[i];
-        const doubled = sp.flags & Scene.sprite_flag_doubled != 0;
-
-        for (0..sp.height) |ry| {
-            const sy = @as(i32, sp.y) + @as(i32, @intCast(ry));
-            if (sy < 0 or sy >= r.height) continue;
-
-            const source_row = if (doubled) ry / 2 else ry;
-            // Tall sprites continue into the next pattern after eight rows.
-            const tile = sp.tile_index + @as(u16, if (source_row >= 8) 1 else 0);
-            if (tile >= Scene.max_tiles) continue;
-            const pattern = s.tilePixels(tile);
-            const in_row = source_row % 8;
-
-            for (0..sp.width) |rx| {
-                const sx = @as(i32, sp.x) + @as(i32, @intCast(rx));
-                if (sx < 0 or sx >= r.width) continue;
-
-                const source_col = if (doubled) rx / 2 else rx;
-                const color = pattern[in_row * 8 + source_col];
-                if (color == 0) continue;
-
-                const at = @as(usize, @intCast(sy)) * r.width + @as(usize, @intCast(sx));
-                if (r.sprite_drawn[at]) continue;
-                r.sprite_drawn[at] = true;
-                // Background cells flagged as high priority stay in front.
-                if (r.priority[at]) continue;
-                r.pixels[at] = s.palette[sp.palette + color];
-            }
-        }
-    }
-
-    if (s.flags & Scene.scene_flag_left_column_blanked != 0) {
-        for (0..r.height) |y| {
-            for (0..@min(8, r.width)) |x| r.pixels[y * r.width + x] = s.backdrop;
-        }
-    }
-}
 
 fn writePpm(path: []const u8, pixels: []const u32, stride: usize, x0: usize, y0: usize, width: usize, height: usize, allocator: std.mem.Allocator) !void {
     const rgb = try allocator.alloc(u8, width * height * 3);
@@ -167,6 +45,71 @@ fn writePpm(path: []const u8, pixels: []const u32, stride: usize, x0: usize, y0:
     var buf: [64]u8 = undefined;
     try file.writeAll(try std.fmt.bufPrint(&buf, "P6\n{d} {d}\n255\n", .{ width, height }));
     try file.writeAll(rgb);
+}
+
+/// Write the tile atlas as a contact sheet, 32 tiles across, with a
+/// one-pixel gutter between tiles so indices can be counted by eye. This is
+/// the view a person needs in order to say "tiles 96 to 111 are the maze
+/// walls", which is the first step of authoring a per-game 3D profile.
+fn writeAtlasSheet(
+    path: []const u8,
+    s: *const Scene.FrameScene,
+    bank: u8,
+    allocator: std.mem.Allocator,
+) !void {
+    const cols: usize = 32;
+    const rows: usize = Scene.max_tiles / cols;
+    const cell: usize = 9; // 8 pixels plus a gutter
+    const w = cols * cell + 1;
+    const h = rows * cell + 1;
+
+    const rgb = try allocator.alloc(u8, w * h * 3);
+    defer allocator.free(rgb);
+    // Gutters in a mid grey so empty tiles stay distinguishable from them.
+    @memset(rgb, 0x40);
+
+    for (0..Scene.max_tiles) |tile| {
+        const tx = (tile % cols) * cell + 1;
+        const ty = (tile / cols) * cell + 1;
+        const pixels = s.tilePixels(tile);
+        for (0..8) |py| {
+            for (0..8) |px| {
+                const ci = pixels[py * 8 + px];
+                const color: u32 = if (ci == 0) 0xFF000000 else s.palette[bank + ci];
+                const at = ((ty + py) * w + (tx + px)) * 3;
+                rgb[at] = @truncate(color >> 16);
+                rgb[at + 1] = @truncate(color >> 8);
+                rgb[at + 2] = @truncate(color);
+            }
+        }
+    }
+
+    var file = try platform.cwd().createFile(path, .{});
+    defer file.close();
+    var buf: [64]u8 = undefined;
+    try file.writeAll(try std.fmt.bufPrint(&buf, "P6\n{d} {d}\n255\n", .{ w, h }));
+    try file.writeAll(rgb);
+}
+
+/// Report which tile indices the tilemap actually references, and how often.
+/// Rare tiles are usually decoration; the most common ones are the terrain
+/// worth assigning a height to.
+fn reportTileUsage(s: *const Scene.FrameScene, stdout: anytype) !void {
+    var counts = [_]u16{0} ** Scene.max_tiles;
+    for (0..s.rows) |row| {
+        for (0..s.columns) |col| {
+            counts[s.cell(col, row).tile_index] += 1;
+        }
+    }
+    try stdout.print("\ntilemap tile usage (index x count):\n  ", .{});
+    var shown: usize = 0;
+    for (0..Scene.max_tiles) |i| {
+        if (counts[i] == 0) continue;
+        try stdout.print("{d}x{d} ", .{ i, counts[i] });
+        shown += 1;
+        if (shown % 10 == 0) try stdout.print("\n  ", .{});
+    }
+    try stdout.print("\n  ({d} distinct tiles used)\n", .{shown});
 }
 
 fn systemName(kind: u8) []const u8 {
@@ -202,6 +145,10 @@ pub fn main(init: std.process.Init) !void {
 
     var machine = try SystemMachine.init(allocator, args.rom_path);
     defer machine.deinit(allocator);
+    // Genesis boots through an explicit reset (stack pointer and program
+    // counter come from the ROM vector table); SMS power-on state is the
+    // init state.
+    if (machine.asGenesis()) |g| g.reset();
     if (args.pal) {
         machine.setPalMode(true);
         machine.reset();
@@ -259,6 +206,24 @@ pub fn main(init: std.process.Init) !void {
         used, s.tile_count, dirty,
     });
 
+    if (s.system == @intFromEnum(Scene.SystemKind.genesis)) {
+        var hs = std.AutoHashMapUnmanaged(i16, void){};
+        defer hs.deinit(allocator);
+        var hsb = std.AutoHashMapUnmanaged(i16, void){};
+        defer hsb.deinit(allocator);
+        for (0..s.picture_height) |y| {
+            hs.put(allocator, s.gen_a_line_hscroll[y], {}) catch {};
+            hsb.put(allocator, s.gen_b_line_hscroll[y], {}) catch {};
+        }
+        try stdout.print("genesis : plane {d}x{d} tiles, {d} sprites, {d}/{d} distinct A/B hscroll values{s}{s}\n", .{
+            s.gen_plane_width,           s.gen_plane_height,
+            s.gen_sprite_count,          hs.count(),
+            hsb.count(),
+            if (s.gen_flags & Scene.gen_flag_shadow_highlight != 0) ", S/H" else "",
+            if (s.gen_flags & Scene.gen_flag_interlace2 != 0) ", interlace2" else "",
+        });
+    }
+
     try stdout.print("\nsprites ({d}):\n", .{s.sprite_count});
     const shown = @min(s.sprite_count, 16);
     for (0..shown) |i| {
@@ -287,7 +252,7 @@ pub fn main(init: std.process.Init) !void {
     // the rasterizer actually produced.
     var recon = try Reconstruction.init(allocator, s.picture_width, s.picture_height);
     defer recon.deinit(allocator);
-    reconstruct(s, &recon);
+    recon_mod.reconstruct(s, &recon);
 
     const actual = machine.framebuffer();
     const stride: usize = machine.framebufferStride();
@@ -321,6 +286,12 @@ pub fn main(init: std.process.Init) !void {
             matched, compared, pct,
         });
     }
+    if (args.atlas_path) |path| {
+        try writeAtlasSheet(path, s, 0, allocator);
+        try stdout.print("wrote {s} (tile contact sheet)\n", .{path});
+        try reportTileUsage(s, stdout);
+    }
+
     if (args.raw_path) |path| {
         // The exact bytes a WebAssembly frontend would read, so the JS
         // offset table can be checked against the real struct layout.
@@ -337,7 +308,7 @@ pub fn main(init: std.process.Init) !void {
 fn parseArgs(it: *std.process.Args.Iterator) !Args {
     _ = it.next();
     const rom = it.next() orelse {
-        std.debug.print("Usage: dump-scene <rom> [frame] [--pal] [--out PREFIX] [--tiles]\n", .{});
+        std.debug.print("Usage: dump-scene <rom> [frame] [--pal] [--out PREFIX] [--tiles] [--raw PATH] [--atlas PATH]\n", .{});
         return error.InvalidArgs;
     };
     var a = Args{ .rom_path = rom };
@@ -350,6 +321,8 @@ fn parseArgs(it: *std.process.Args.Iterator) !Args {
             a.out_prefix = it.next() orelse return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--raw")) {
             a.raw_path = it.next() orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--atlas")) {
+            a.atlas_path = it.next() orelse return error.InvalidArgs;
         } else {
             a.frame = std.fmt.parseInt(usize, arg, 10) catch return error.InvalidArgs;
         }

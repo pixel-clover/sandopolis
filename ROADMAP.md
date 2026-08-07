@@ -114,6 +114,25 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] `dump-scene` tool that reports the frame scene description, rebuilds the frame from it alone, and scores the result against the rasterizer
   output per pixel
 
+#### 3D Scene Extraction for Genesis
+
+- [x] Genesis frame scene extraction (scene layout v4): both scroll planes, the window plane, all 2048 patterns, 4 palette banks, per-plane per-line
+  horizontal scroll, per-column vertical scroll, and 80 sprites in link order, validated by a compositor-mirroring rebuild in `dump-scene` (gameplay
+  frames match the next rasterized frame at 100%, the one-frame lag being inherent to end-of-frame extraction)
+- [x] Genesis support in the 3D renderer: dedicated plane and sprite shader programs draw both scroll planes, the window plane, and all 4 palette
+  banks as six depth layers in the hardware's priority order, pixel-identical to the compositor head-on (verified 71680/71680 on a Golden Axe
+  gameplay frame) and a native two-plane parallax diorama when orbited
+- [x] Plane B parallax depth in the 3D renderer: per-line scroll velocity splits the far plane into depth bands (layered skies and water), with
+  head-on output still pixel-identical to the compositor
+- [x] Shadow/highlight in the scene reconstruction (`src/testing/scene_recon.zig`): priority-bit lift, sprite highlight/shadow operators, and
+  intensity transforms, pinned by synthetic unit tests; the Shadow-Highlight test ROM's residual is its mid-frame raster wave, guarded at its
+  measured floor
+- [x] Scene pipeline regression tests: the window plane, sprite masking, and graphics sampler test ROMs rebuild from the scene at exactly 100%,
+  run in CI from `tests/testroms/`
+- [x] Shadow/highlight in the 3D renderer: a CPU-computed per-pixel mask (priority lifts and sprite operators, mirroring the reconstruction)
+  drives bit-exact intensity transforms in the Genesis shaders, verified pixel-identical to the reconstruction on the Shadow-Highlight test ROM
+- [ ] Interlace mode 2 in the scene description (remains a flag)
+
 ### Future Goals
 
 - [x] Browser/WebAssembly build with Canvas rendering, keyboard input, and Web Audio playback (`zig build wasm`, `web/`)
@@ -192,11 +211,22 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] 3D diorama renderer for the browser frontend (`web/scene3d.js`): WebGL2 tilemap and sprite rendering of the frame scene as depth-separated
   layers, with hardware scroll-lock regions kept flat at the front as a HUD plane, an orbit-camera desktop view, and the same renderer driving the
   WebXR theater in place of the flat screen quad
-- [ ] Per-scanline horizontal scroll strips in the frame scene description (games using raster scroll splits currently collapse to one frame-level
-  offset)
-- [ ] Automatic per-tile extrusion in the 3D renderer (voxel slabs instead of flat layers)
-- [ ] Per-game 3D profiles mapping tile indexes to meshes and sprite slots to entities
-- [ ] TMS9918 mode coverage in the frame scene description (SG-1000 modes 0 through 3)
+- [x] Per-scanline horizontal scroll in the frame scene description (`SmsVdp.line_hscroll` samples register 8 at each visible line), with parallax
+  depth inference in the 3D renderer: bands that scroll faster are placed nearer, giving automatic depth without per-game authoring
+- [x] Automatic extrusion in the 3D renderer: instanced depth slices turn every tile and sprite into a shaded slab, at one draw call per layer, and
+  remain pixel-identical to the rasterizer when viewed head-on
+- [x] Screen-locked HUD mode so scroll-locked status displays stay square-on while the camera orbits, with the in-scene placement kept for headsets
+- [x] Incremental tile atlas upload driven by the scene's dirty-tile bits, repacking and re-uploading only the atlas rows that changed, plus renderer
+  timing and draw-call counters surfaced in the performance overlay
+- [x] Per-game 3D profiles: a JSON height map from tile index to extrusion height, keyed by a ROM content hash, applied through a per-tile height
+  texture so profiled and unprofiled games share one render path
+- [x] `dump-scene --atlas` tile contact sheet and tilemap usage report, the authoring view for writing a profile
+- [x] `make web-test`: headless-Chromium smoke test of the browser frontend covering page load, ROM load, scene layout agreement, 3D activation,
+  render coverage, brightness against the flat picture, and uncaught page exceptions
+- [ ] Profile editor (in-browser tile picker and height assignment) to replace hand-authored JSON
+- [ ] Sprite entity tracking bound to work RAM, for jitter-free per-object placement
+- [x] TMS9918 mode coverage in the frame scene description (SG-1000 modes 0 through 3): the color tables bind color to screen position, so each
+  screen cell is rasterized into its own atlas slot with final TMS color indices, and 16x16 sprites split into two 8-wide scene sprites
 - [ ] Korean mapper variants (MSX, Nemesis, and Janggun)
 - [ ] Codemasters mapper
 - [ ] BIOS/boot ROM support

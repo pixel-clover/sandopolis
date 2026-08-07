@@ -20,7 +20,15 @@ const std = @import("std");
 pub const magic: u32 = 0x534E4353;
 
 /// Bumped whenever the binary layout changes.
-pub const layout_version: u32 = 1;
+/// v2: added `line_scroll_x`.
+/// v3: `max_tiles` grew from 512 to 1024 for the TMS9918 modes, which need a
+///     slot per screen cell (768) plus sprite slots because their color
+///     tables make tile pixels position-dependent.
+/// v4: `max_tiles` grew to 2048 (the full Genesis pattern space) and a
+///     Genesis section was appended: two scroll planes, the window plane,
+///     palette banks 2-3, per-plane per-line horizontal scroll, per-column
+///     vertical scroll, and 80 link-ordered sprites.
+pub const layout_version: u32 = 4;
 
 pub const max_columns: usize = 32;
 pub const max_rows: usize = 32;
@@ -28,9 +36,50 @@ pub const max_cells: usize = max_columns * max_rows;
 pub const max_sprites: usize = 64;
 pub const max_palette: usize = 32;
 
-/// Tile atlas size. Master System Mode 4 addresses 512 patterns of 8x8
-/// pixels, which is the whole 16KB of VRAM.
-pub const max_tiles: usize = 512;
+/// Tallest picture any described system produces (Master System 240-line mode).
+pub const max_lines: usize = 240;
+
+/// Tile atlas size, covering the full Genesis pattern space (64KB of VRAM
+/// at 32 bytes per pattern). Master System Mode 4 uses 512 patterns; the
+/// TMS9918 modes use one slot per screen cell (32x24 = 768, indices 0-767)
+/// plus four per hardware sprite (768-895), because their color tables bind
+/// color to screen position rather than to the pattern.
+pub const max_tiles: usize = 2048;
+
+/// Genesis plane name tables hold at most 8KB of entries.
+pub const gen_plane_cells: usize = 4096;
+/// Genesis window name table: 64x32 in H40, 32x32 in H32.
+pub const gen_window_cells: usize = 2048;
+pub const gen_max_sprites: usize = 80;
+/// Vertical scroll RAM holds one entry per pair of tile columns.
+pub const gen_vscroll_columns: usize = 20;
+
+/// Genesis-only flags in `gen_flags`.
+pub const gen_flag_shadow_highlight: u32 = 1 << 0;
+pub const gen_flag_interlace2: u32 = 1 << 1;
+pub const gen_flag_h40: u32 = 1 << 2;
+/// Per-two-cell-column vertical scroll is active (register 11 bit 2);
+/// otherwise column 0 applies to the whole plane.
+pub const gen_flag_column_vscroll: u32 = 1 << 3;
+
+/// One Genesis sprite, in link order (which is also priority order: earlier
+/// entries win overlaps).
+pub const GenSprite = extern struct {
+    /// Screen coordinates; the hardware's 128-pixel offset is removed.
+    x: i16 = 0,
+    y: i16 = 0,
+    /// First pattern index. Tiles advance column-major: the pattern for
+    /// tile (tx, ty) of the sprite is `tile_base + tx * v_size + ty`.
+    tile_base: u16 = 0,
+    /// Size in tiles, 1-4 each.
+    h_size: u8 = 0,
+    v_size: u8 = 0,
+    /// Palette bank as a multiple of 16 entries (0, 16, 32, 48).
+    palette: u8 = 0,
+    flags: u8 = 0,
+    slot: u8 = 0,
+    reserved: u8 = 0,
+};
 pub const tile_width: usize = 8;
 pub const tile_height: usize = 8;
 pub const pixels_per_tile: usize = tile_width * tile_height;
@@ -125,9 +174,11 @@ pub const FrameScene = extern struct {
     viewport_width: u16 = 0,
     viewport_height: u16 = 0,
 
-    /// Frame-level playfield scroll. Per-scanline horizontal scroll is not
-    /// captured yet, so parallax raster effects collapse to one offset.
+    /// Playfield scroll as of the end of the frame. `line_scroll_x`
+    /// supersedes `scroll_x` for rendering; this remains as a summary and a
+    /// fallback for consumers that do not handle per-line scroll.
     scroll_x: u16 = 0,
+    /// Vertical scroll, latched once per frame by the hardware.
     scroll_y: u16 = 0,
 
     /// Number of entries populated in `tile_atlas`.
@@ -168,6 +219,51 @@ pub const FrameScene = extern struct {
     /// cell or sprite, not from the atlas.
     tile_atlas: [tile_atlas_bytes]u8 = [_]u8{0} ** tile_atlas_bytes,
 
+    /// Horizontal scroll sampled at each line of the picture, `picture_height`
+    /// entries valid. Games rewrite the scroll register mid-frame to split the
+    /// screen into bands that scroll at different rates. Reproducing that is a
+    /// rendering requirement, and the differing rates are also the strongest
+    /// depth cue the hardware offers: a band that scrolls faster is nearer.
+    line_scroll_x: [max_lines]u16 = [_]u16{0} ** max_lines,
+
+    // -- Genesis section. Zeroed for the other systems. --
+
+    /// `gen_flag_*` bits.
+    gen_flags: u32 = 0,
+    /// Both scroll planes share one size, in tiles.
+    gen_plane_width: u16 = 0,
+    gen_plane_height: u16 = 0,
+    /// Window name-table width in tiles (64 in H40, 32 in H32).
+    gen_window_width: u16 = 0,
+    /// Window layout registers, raw: 17 = horizontal split (bit 7 = right),
+    /// 18 = vertical split (bit 7 = down). The window replaces plane A in
+    /// the region they select.
+    gen_reg17: u8 = 0,
+    gen_reg18: u8 = 0,
+    gen_sprite_count: u8 = 0,
+    gen_reserved: [3]u8 = [_]u8{0} ** 3,
+
+    /// Palette banks 2 and 3 (CRAM entries 32-63).
+    gen_palette2: [max_palette]u32 = [_]u32{0} ** max_palette,
+
+    /// Horizontal scroll per display line for each plane, from the scroll
+    /// table as of the end of the frame.
+    gen_a_line_hscroll: [max_lines]i16 = [_]i16{0} ** max_lines,
+    gen_b_line_hscroll: [max_lines]i16 = [_]i16{0} ** max_lines,
+
+    /// Vertical scroll per pair of tile columns for each plane.
+    gen_a_col_vscroll: [gen_vscroll_columns]u16 = [_]u16{0} ** gen_vscroll_columns,
+    gen_b_col_vscroll: [gen_vscroll_columns]u16 = [_]u16{0} ** gen_vscroll_columns,
+
+    gen_sprites: [gen_max_sprites]GenSprite = [_]GenSprite{.{}} ** gen_max_sprites,
+
+    /// Scroll plane name tables, row-major at `gen_plane_width` entries per
+    /// row; entries past `gen_plane_width * gen_plane_height` are zero.
+    gen_plane_a: [gen_plane_cells]Cell = [_]Cell{.{}} ** gen_plane_cells,
+    gen_plane_b: [gen_plane_cells]Cell = [_]Cell{.{}} ** gen_plane_cells,
+    /// Window name table, row-major at `gen_window_width` entries per row.
+    gen_window: [gen_window_cells]Cell = [_]Cell{.{}} ** gen_window_cells,
+
     pub fn cell(self: *const FrameScene, col: usize, row: usize) Cell {
         return self.cells[row * max_columns + col];
     }
@@ -187,6 +283,12 @@ pub const FrameScene = extern struct {
     pub fn contentValid(self: *const FrameScene) bool {
         return self.flags & scene_flag_content_valid != 0;
     }
+
+    /// Horizontal scroll in effect on `line`, clamped to the captured range.
+    pub fn lineScrollX(self: *const FrameScene, line: usize) u16 {
+        if (line >= max_lines) return self.scroll_x;
+        return self.line_scroll_x[line];
+    }
 };
 
 test "scene buffer layout is stable for external readers" {
@@ -205,8 +307,18 @@ test "scene buffer layout is stable for external readers" {
     try testing.expectEqual(@as(usize, 172), @offsetOf(FrameScene, "cells"));
     try testing.expectEqual(@as(usize, 4268), @offsetOf(FrameScene, "sprites"));
     try testing.expectEqual(@as(usize, 5036), @offsetOf(FrameScene, "tile_dirty"));
-    try testing.expectEqual(@as(usize, 5100), @offsetOf(FrameScene, "tile_atlas"));
-    try testing.expectEqual(@as(usize, 37868), @sizeOf(FrameScene));
+    try testing.expectEqual(@as(usize, 5292), @offsetOf(FrameScene, "tile_atlas"));
+    try testing.expectEqual(@as(usize, 136364), @offsetOf(FrameScene, "line_scroll_x"));
+    try testing.expectEqual(@as(usize, 136844), @offsetOf(FrameScene, "gen_flags"));
+    try testing.expectEqual(@as(usize, 136860), @offsetOf(FrameScene, "gen_palette2"));
+    try testing.expectEqual(@as(usize, 136988), @offsetOf(FrameScene, "gen_a_line_hscroll"));
+    try testing.expectEqual(@as(usize, 137948), @offsetOf(FrameScene, "gen_a_col_vscroll"));
+    try testing.expectEqual(@as(usize, 138028), @offsetOf(FrameScene, "gen_sprites"));
+    try testing.expectEqual(@as(usize, 138988), @offsetOf(FrameScene, "gen_plane_a"));
+    try testing.expectEqual(@as(usize, 155372), @offsetOf(FrameScene, "gen_plane_b"));
+    try testing.expectEqual(@as(usize, 171756), @offsetOf(FrameScene, "gen_window"));
+    try testing.expectEqual(@as(usize, 12), @sizeOf(GenSprite));
+    try testing.expectEqual(@as(usize, 179948), @sizeOf(FrameScene));
 
     try testing.expectEqual(@as(usize, 4), @sizeOf(Cell));
     try testing.expectEqual(@as(usize, 12), @sizeOf(Sprite));
@@ -216,12 +328,12 @@ test "tile dirty bits round-trip" {
     const testing = std.testing;
     var s = FrameScene{};
     try testing.expect(!s.tileIsDirty(0));
-    try testing.expect(!s.tileIsDirty(511));
+    try testing.expect(!s.tileIsDirty(2047));
     s.markTileDirty(0);
-    s.markTileDirty(511);
+    s.markTileDirty(2047);
     s.markTileDirty(37);
     try testing.expect(s.tileIsDirty(0));
-    try testing.expect(s.tileIsDirty(511));
+    try testing.expect(s.tileIsDirty(2047));
     try testing.expect(s.tileIsDirty(37));
     try testing.expect(!s.tileIsDirty(36));
     try testing.expect(!s.tileIsDirty(38));

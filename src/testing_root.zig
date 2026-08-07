@@ -20,5 +20,6 @@ pub const YmDacSampleEvent = testing.YmDacSampleEvent;
 pub const ymWriteEvent = testing.ymWriteEvent;
 pub const SystemMachine = testing.SystemMachine;
 pub const Scene = testing.Scene;
+pub const SceneRecon = testing.SceneRecon;
 
 pub const platform = @import("platform.zig");

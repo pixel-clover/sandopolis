@@ -152,6 +152,10 @@ web-serve: web ## Build and serve the web emulator locally
 	@echo "Serving Sandopolis web emulator locally"
 	cd web && python3 -m http.server 8000
 
+web-test: web ## Smoke-test the browser frontend in headless Chromium (ROM=path to include the 3D checks)
+	@echo "Running web frontend smoke test"
+	node tools/web_smoke_test.mjs $(if $(ROM),--rom "$(ROM)")
+
 install-deps: ## Install system dependencies (for Debian-based systems)
 	@echo "Installing system dependencies..."
 	sudo apt-get update

@@ -24,6 +24,12 @@ pub const SmsVdp = struct {
 
     // Frame state
     scanline: u16 = 0,
+    /// Register 8 sampled at the start of each visible scanline. Games rewrite
+    /// it mid-frame to split the screen into bands that scroll at different
+    /// rates, so a single frame-level value cannot describe the picture.
+    /// Rebuilt every frame; it is only carried in save states because the VDP
+    /// is serialized as a raw struct.
+    line_hscroll: [max_framebuffer_height]u8 = [_]u8{0} ** max_framebuffer_height,
     // Reg 9 (vscroll) is latched once per frame; mid-frame writes take
     // effect on the next frame (SMSPower VDP documentation).
     latched_vscroll: u8 = 0,
@@ -288,6 +294,11 @@ pub const SmsVdp = struct {
         }
 
         if (self.scanline < visible_lines) {
+            // Sample the scroll register before rendering, so a mid-frame
+            // rewrite is attributed to the line it takes effect on.
+            if (self.scanline < max_framebuffer_height) {
+                self.line_hscroll[self.scanline] = self.regs[8];
+            }
             // Active display: render and decrement line counter
             if (self.isDisplayEnabled()) {
                 self.renderScanline(self.scanline);
