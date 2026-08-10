@@ -216,6 +216,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Automatic extrusion in the 3D renderer: instanced depth slices turn every tile and sprite into a shaded slab, at one draw call per layer, and
   remain pixel-identical to the rasterizer when viewed head-on
 - [x] Screen-locked HUD mode so scroll-locked status displays stay square-on while the camera orbits, with the in-scene placement kept for headsets
+- [x] Fullscreen cost controls for the 3D renderer: the internal drawing buffer is capped (default 1920x1200-equivalent; pixel art gains nothing
+  past ~6x scale while discard-heavy fragment cost scales linearly with buffer pixels), the hidden 2D canvas blit is skipped while 3D mode is
+  active, and the WebXR eye buffers render at 0.8 scale
 - [x] Incremental tile atlas upload driven by the scene's dirty-tile bits, repacking and re-uploading only the atlas rows that changed, plus renderer
   timing and draw-call counters surfaced in the performance overlay
 - [x] Per-game 3D profiles: a JSON height map from tile index to extrusion height, keyed by a ROM content hash, applied through a per-tile height
@@ -223,7 +226,10 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] `dump-scene --atlas` tile contact sheet and tilemap usage report, the authoring view for writing a profile
 - [x] `make web-test`: headless-Chromium smoke test of the browser frontend covering page load, ROM load, scene layout agreement, 3D activation,
   render coverage, brightness against the flat picture, and uncaught page exceptions
-- [ ] Profile editor (in-browser tile picker and height assignment) to replace hand-authored JSON
+- [x] `mine-profile` tool: mines a draft 3D profile from a ROM's attract mode by accumulating per-tile behavior statistics (HUD regions, animation,
+  material usage share via dominant-palette grouping, priority, sprite overlap) behind a gameplay gate, and clusters sprites into recurring
+  meta-sprites (the entity report finds the player object and enemy types automatically)
+- [ ] Profile editor (in-browser tile picker and height assignment) to polish machine-generated drafts
 - [ ] Sprite entity tracking bound to work RAM, for jitter-free per-object placement
 - [x] TMS9918 mode coverage in the frame scene description (SG-1000 modes 0 through 3): the color tables bind color to screen position, so each
   screen cell is rasterized into its own atlas slot with final TMS color indices, and 16x16 sprites split into two 8-wide scene sprites

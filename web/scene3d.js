@@ -1402,6 +1402,10 @@
             setExtrudeEnabled: (v) => { extrudeEnabled = !!v; },
             setHudMode: (m) => { hudMode = (m === "overlay") ? "overlay" : "scene"; },
             setSliceCount: (n) => { sliceCount = Math.max(1, Math.min(32, n | 0)); autoSlices = false; },
+            /// Depth bands of the most recent scene: the Genesis plane-B
+            /// bands when the last upload was a Genesis scene, else the SMS
+            /// background bands.
+            getActiveBands: () => (current && current.system === 3 ? genBands : bands),
             /// Force a full atlas re-upload on the next frame. Needed when a
             /// new ROM loads: its fresh scene buffer only marks tiles dirty
             /// against itself, so tiles that are empty in the new game but
@@ -1593,10 +1597,25 @@
             drawFrame();
         }
 
+        // Fullscreen guard: fragment cost scales with buffer size times the
+        // slice count, and the discards defeat early-Z, so an uncapped 4K
+        // buffer is hundreds of millions of fragments per frame. The source
+        // art is ~256x192; beyond roughly a 6x scale nothing is gained.
+        let maxRenderPixels = 1920 * 1200;
+
+        function setMaxRenderPixelsViewer(n) {
+            if (Number.isFinite(n) && n > 0) maxRenderPixels = n;
+        }
+
         function drawFrame() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
-            const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
-            const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+            let w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+            let h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+            if (w * h > maxRenderPixels) {
+                const scale = Math.sqrt(maxRenderPixels / (w * h));
+                w = Math.max(1, Math.round(w * scale));
+                h = Math.max(1, Math.round(h * scale));
+            }
             if (canvas.width !== w || canvas.height !== h) {
                 canvas.width = w;
                 canvas.height = h;
@@ -1643,6 +1662,10 @@
             setView: setView,
             setDepthScale: renderer.setDepthScale,
             getDepthScale: renderer.getDepthScale,
+            /// Cap on the internal drawing-buffer pixel count; the canvas CSS
+            /// size is unaffected (the browser scales the buffer up).
+            setMaxRenderPixels: setMaxRenderPixelsViewer,
+            getActiveBands: renderer.getActiveBands,
             setParallaxEnabled: renderer.setParallaxEnabled,
             setExtrudeEnabled: renderer.setExtrudeEnabled,
             setHudMode: renderer.setHudMode,

@@ -371,6 +371,27 @@ pub fn build(b: *std.Build) void {
     const dump_scene_step = b.step("dump-scene", "Dump the Master System frame scene description and rebuild the frame from it");
     dump_scene_step.dependOn(&dump_scene_run.step);
 
+    const mine_profile = b.addExecutable(.{
+        .name = "mine-profile",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/mine_profile.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sandopolis_testing", .module = testing_api },
+            },
+        }),
+    });
+    addExternalCpuCores(mine_profile, b, cpu_deps);
+    mine_profile.root_module.addIncludePath(b.path("external/libretro"));
+    mine_profile.root_module.link_libc = true;
+    const mine_profile_run = b.addRunArtifact(mine_profile);
+    if (b.args) |args| {
+        mine_profile_run.addArgs(args);
+    }
+    const mine_profile_step = b.step("mine-profile", "Mine a draft 3D profile from a ROM's attract-mode behavior statistics");
+    mine_profile_step.dependOn(&mine_profile_run.step);
+
     const trace_diff = b.addExecutable(.{
         .name = "trace-diff",
         .root_module = b.createModule(.{

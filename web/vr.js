@@ -106,7 +106,10 @@
                     }
                 }
 
-                baseLayer = new XRWebGLLayer(s, gl);
+                // Sub-native framebuffer: the source art is ~256x192, so a
+                // full-resolution eye buffer buys nothing, while fragment
+                // cost (slices x layers, discard-heavy) scales with it.
+                baseLayer = new XRWebGLLayer(s, gl, {framebufferScaleFactor: 0.8});
                 s.updateRenderState({baseLayer});
                 try {
                     refSpace = await s.requestReferenceSpace("local-floor");

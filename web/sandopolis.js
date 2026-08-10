@@ -1249,6 +1249,14 @@ function tickEmulator(now) {
         updateFps();
     }
 
+    // In 3D mode the flat canvas is hidden and the diorama renders straight
+    // from the scene, so the per-pixel framebuffer blit below is pure waste;
+    // leaving 3D re-runs it on the next tick.
+    if (scene3dActive) {
+        renderScene3D();
+        return;
+    }
+
     const width = e.sandopolis_screen_width(emu);
     const height = e.sandopolis_screen_height(emu);
     const fbPtr = e.sandopolis_framebuffer_ptr(emu);
@@ -1367,6 +1375,8 @@ window.sandopolisScene3D = {
     // Depth slices per slab. Fewer is cheaper: the fragment shader discards,
     // which defeats early-Z, so cost scales with the slice count.
     slices: (n) => scene3dViewer && scene3dViewer.setSliceCount(n),
+    // Internal render-buffer pixel cap (fullscreen cost lever).
+    maxPixels: (n) => scene3dViewer && scene3dViewer.setMaxRenderPixels(n),
     stats: () => (scene3dViewer ? scene3dViewer.getStats() : null),
     // Key to name a profile file after: profiles/<romKey>.json
     romKey: () => currentRomKey,

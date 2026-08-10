@@ -25,6 +25,8 @@ const Args = struct {
     show_tiles: bool = false,
     raw_path: ?[]const u8 = null,
     atlas_path: ?[]const u8 = null,
+    /// With --raw, also write this many consecutive frames (path.0, path.1, ...).
+    raw_seq: usize = 0,
 };
 
 fn writePpm(path: []const u8, pixels: []const u32, stride: usize, x0: usize, y0: usize, width: usize, height: usize, allocator: std.mem.Allocator) !void {
@@ -299,6 +301,20 @@ pub fn main(init: std.process.Init) !void {
         defer file.close();
         try file.writeAll(std.mem.asBytes(s));
         try stdout.print("wrote {s} ({d} bytes)\n", .{ path, @sizeOf(Scene.FrameScene) });
+
+        // Consecutive frames, for consumers that need inter-frame state
+        // (the renderer's scroll-velocity depth inference).
+        for (0..args.raw_seq) |i| {
+            machine.runFrame();
+            machine.discardPendingAudio();
+            if (!machine.extractScene(s)) break;
+            var seq_buf: [160]u8 = undefined;
+            const seq_path = try std.fmt.bufPrint(&seq_buf, "{s}.{d}", .{ path, i });
+            var seq_file = try platform.cwd().createFile(seq_path, .{});
+            defer seq_file.close();
+            try seq_file.writeAll(std.mem.asBytes(s));
+        }
+        if (args.raw_seq > 0) try stdout.print("wrote {d} consecutive frames ({s}.0 ..)\n", .{ args.raw_seq, path });
     }
 
     try stdout.print("wrote {s} and {s}\n", .{ scene_path, raster_path });
@@ -321,6 +337,8 @@ fn parseArgs(it: *std.process.Args.Iterator) !Args {
             a.out_prefix = it.next() orelse return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--raw")) {
             a.raw_path = it.next() orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--raw-seq")) {
+            a.raw_seq = std.fmt.parseInt(usize, it.next() orelse return error.InvalidArgs, 10) catch return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--atlas")) {
             a.atlas_path = it.next() orelse return error.InvalidArgs;
         } else {
