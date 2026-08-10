@@ -161,6 +161,7 @@ async function init() {
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
     document.getElementById("scale-mode").addEventListener("change", onScaleModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
+    document.getElementById("btn-3d").addEventListener("click", toggleScene3D);
     document.getElementById("btn-quick-save").addEventListener("click", quickSave);
     document.getElementById("btn-quick-load").addEventListener("click", quickLoad);
     document.getElementById("btn-save").addEventListener("click", persistentSave);
@@ -220,6 +221,9 @@ async function init() {
             },
             isRomLoaded: () => !!emu,
             getAspectMode: () => aspectMode,
+            // Non-null only while the 3D diorama is enabled, so the theater
+            // falls back to the flat screen otherwise.
+            getScene: () => (scene3dActive ? currentScene() : null),
             onSessionStart: () => {
                 // Click-to-unpause is disabled inside VR, so entering VR
                 // with the game paused would show a permanently frozen
@@ -782,6 +786,15 @@ function togglePerf() {
 
 function updatePerf() {
     const e = wasm ? wasm.instance.exports : null;
+
+    const scene3dEl = document.getElementById("perf-scene3d");
+    if (scene3dEl) {
+        const st = scene3dActive && scene3dViewer ? scene3dViewer.getStats() : null;
+        scene3dEl.textContent = st
+            ? `${st.uploadMs.toFixed(2)}+${st.drawMs.toFixed(2)} ms, ` +
+              `${st.drawCalls} calls x${st.slices}, ${st.bands} bands, ${st.dirtyTiles} tiles`
+            : "off";
+    }
     const fps = document.getElementById("fps-display").textContent || "--";
     document.getElementById("perf-fps").textContent = fps;
     const fpsNum = parseInt(fps);
@@ -1128,6 +1141,13 @@ async function loadRom(file) {
     const systemHint = name.endsWith(".sg") || name.endsWith(".sg.zip") ? 3
         : name.endsWith(".gg") || name.endsWith(".gg.zip") ? 2
             : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
+    currentRomKey = computeRomKey(romBytes);
+    // A new ROM means a fresh scene buffer: the renderer's cached atlas and
+    // any per-game profile belong to the previous game.
+    if (scene3dViewer) {
+        scene3dViewer.invalidate();
+        scene3dViewer.applyProfile(null);
+    }
     emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
     e.sandopolis_free(romPtr, romBytes.length);
     if (!emu) {
@@ -1150,6 +1170,10 @@ async function loadRom(file) {
     const sysLabel = sysType === 1 ? "SMS" : "Genesis";
     setStatus(`Playing now: ${file.name} (${sysLabel} ${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
+
+    // The 3D diorama needs a system with a frame scene description, which
+    // is decided by the ROM that just loaded.
+    refreshScene3DButton();
 
     running = true;
     // Use precise Genesis frame rates to avoid audio drift.
@@ -1225,6 +1249,14 @@ function tickEmulator(now) {
         updateFps();
     }
 
+    // In 3D mode the flat canvas is hidden and the diorama renders straight
+    // from the scene, so the per-pixel framebuffer blit below is pure waste;
+    // leaving 3D re-runs it on the next tick.
+    if (scene3dActive) {
+        renderScene3D();
+        return;
+    }
+
     const width = e.sandopolis_screen_width(emu);
     const height = e.sandopolis_screen_height(emu);
     const fbPtr = e.sandopolis_framebuffer_ptr(emu);
@@ -1256,6 +1288,166 @@ function tickEmulator(now) {
         }
     }
     ctx.putImageData(imageData, 0, 0);
+
+    renderScene3D();
+}
+
+// -- 3D diorama view --
+
+let scene3dViewer = null;
+let scene3dActive = false;
+let scene3dUnsupportedNoted = false;
+
+/// True when the loaded system has a frame scene description. Genesis does
+/// not yet, so the toggle stays disabled there.
+function scene3dAvailable() {
+    if (!wasm || !emu) return false;
+    const e = wasm.instance.exports;
+    if (typeof e.sandopolis_scene_extract !== "function") return false;
+    if (e.sandopolis_scene_layout_version() !== window.SandopolisScene3D.LAYOUT_VERSION) {
+        if (!scene3dUnsupportedNoted) {
+            console.warn("Scene layout version mismatch: core reports",
+                e.sandopolis_scene_layout_version(),
+                "but scene3d.js expects", window.SandopolisScene3D.LAYOUT_VERSION);
+            scene3dUnsupportedNoted = true;
+        }
+        return false;
+    }
+    return e.sandopolis_scene_extract(emu) === 1;
+}
+
+function refreshScene3DButton() {
+    const btn = document.getElementById("btn-3d");
+    if (!btn) return;
+    const ok = !!window.SandopolisScene3D && scene3dAvailable();
+    btn.disabled = !ok;
+    if (!ok && scene3dActive) setScene3D(false);
+    btn.textContent = scene3dActive ? "3D ON" : "3D";
+}
+
+function setScene3D(on) {
+    const container = document.getElementById("screen-container");
+    const canvas3d = document.getElementById("screen3d");
+    if (!container || !canvas3d || !window.SandopolisScene3D) return;
+
+    if (on && !scene3dViewer) {
+        scene3dViewer = window.SandopolisScene3D.createViewer(canvas3d, {
+            // The 3D canvas replaces the flat one, so it has to carry the
+            // click-to-pause affordance as well. Orbit drags are excluded.
+            onClick: () => {
+                if (window.SandopolisVR && window.SandopolisVR.active) return;
+                togglePause();
+            },
+        });
+        if (!scene3dViewer) {
+            showToast("3D view needs WebGL2");
+            return;
+        }
+    }
+    scene3dActive = on;
+    container.classList.toggle("mode-3d", on);
+    const btn = document.getElementById("btn-3d");
+    if (btn) btn.textContent = on ? "3D ON" : "3D";
+    if (on) {
+        loadScene3DProfile();
+        renderScene3D();
+    }
+}
+
+function toggleScene3D() {
+    setScene3D(!scene3dActive);
+}
+
+// Console handles for tuning the diorama while it runs. The depth constants
+// are judgement calls, so they are adjustable without a rebuild.
+window.sandopolisScene3D = {
+    // Depth bands the parallax inference currently derives from the game's
+    // own scroll rates.
+    bands: () => (scene3dViewer ? scene3dViewer.getBands() : null),
+    // 0 flattens the diorama back to the original picture, 1 is the default.
+    depthScale: (v) => scene3dViewer && scene3dViewer.setDepthScale(v),
+    // Turn off to compare against flat layers.
+    extrude: (on) => scene3dViewer && scene3dViewer.setExtrudeEnabled(on),
+    // Turn off to place every background band on one plane.
+    parallax: (on) => scene3dViewer && scene3dViewer.setParallaxEnabled(on),
+    // "overlay" pins the HUD to the screen, "scene" leaves it in the diorama.
+    hud: (mode) => scene3dViewer && scene3dViewer.setHudMode(mode),
+    // Depth slices per slab. Fewer is cheaper: the fragment shader discards,
+    // which defeats early-Z, so cost scales with the slice count.
+    slices: (n) => scene3dViewer && scene3dViewer.setSliceCount(n),
+    // Internal render-buffer pixel cap (fullscreen cost lever).
+    maxPixels: (n) => scene3dViewer && scene3dViewer.setMaxRenderPixels(n),
+    stats: () => (scene3dViewer ? scene3dViewer.getStats() : null),
+    // Key to name a profile file after: profiles/<romKey>.json
+    romKey: () => currentRomKey,
+    // Apply a per-game 3D profile object; null restores uniform extrusion.
+    profile: (p) => {
+        if (!scene3dViewer) return;
+        scene3dViewer.applyProfile(p);
+        scene3dViewer.redraw();
+    },
+    redraw: () => scene3dViewer && scene3dViewer.redraw(),
+    // Camera. faceOn() puts the eye at the design viewpoint, where the
+    // diorama reproduces the flat picture exactly.
+    faceOn: () => { if (scene3dViewer) { scene3dViewer.faceOn(); } },
+    view: (yaw, pitch, dist) => { if (scene3dViewer) { scene3dViewer.setView(yaw, pitch, dist); } },
+    depth: (v) => scene3dViewer && scene3dViewer.setExtrudeDepth(v),
+};
+
+/// Stable identifier for the loaded ROM. Master System and Game Gear
+/// cartridges carry no title in their header, so a content hash is the only
+/// dependable key; the filename is not, since the same game is distributed
+/// under many names.
+let currentRomKey = null;
+
+function computeRomKey(bytes) {
+    // FNV-1a, 32-bit.
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) {
+        h ^= bytes[i];
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0") + "-" + bytes.length.toString(16);
+}
+
+/// Per-game 3D profiles live in web/profiles/, named after the ROM key.
+/// A missing profile is the normal case and not an error: the game simply
+/// renders with uniform extrusion.
+async function loadScene3DProfile() {
+    if (!scene3dViewer || !currentRomKey) return;
+    try {
+        const res = await fetch(`profiles/${currentRomKey}.json`);
+        if (!res.ok) return;
+        const profile = await res.json();
+        scene3dViewer.applyProfile(profile);
+        scene3dViewer.redraw();
+        showToast(`3D profile: ${profile.name || currentRomKey}`);
+    } catch {
+        // No profile, or malformed. Uniform extrusion is a fine fallback.
+    }
+}
+
+/// Extract and parse the current frame scene, or null when the loaded system
+/// has no scene description or the core and this file disagree on the layout.
+function currentScene() {
+    if (!emu || !wasm || !window.SandopolisScene3D) return null;
+    const e = wasm.instance.exports;
+    if (typeof e.sandopolis_scene_extract !== "function") return null;
+    if (e.sandopolis_scene_layout_version() !== window.SandopolisScene3D.LAYOUT_VERSION) return null;
+    if (e.sandopolis_scene_extract(emu) !== 1) return null;
+    return window.SandopolisScene3D.parseScene(
+        e.memory.buffer,
+        e.sandopolis_scene_ptr(emu),
+        e.sandopolis_scene_len()
+    );
+}
+
+function renderScene3D() {
+    if (!scene3dActive || !scene3dViewer) return;
+    // The headset draws its own diorama; skip the hidden desktop canvas.
+    if (window.SandopolisVR && window.SandopolisVR.active) return;
+    const scene = currentScene();
+    if (scene) scene3dViewer.render(scene);
 }
 
 function resumeFrame() {

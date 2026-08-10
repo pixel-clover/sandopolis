@@ -1,5 +1,7 @@
 const std = @import("std");
 const internal_machine = @import("../machine.zig");
+const gen_scene = @import("../video/scene.zig");
+const Scene = @import("../scene.zig");
 const internal_timing = @import("../audio/timing.zig");
 const state_file = @import("../state_file.zig");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
@@ -60,6 +62,11 @@ pub const Emulator = struct {
     pub fn deinit(self: *Emulator, allocator: std.mem.Allocator) void {
         self.handle.machine.deinit(allocator);
         allocator.destroy(self.handle);
+    }
+
+    /// Extract the current frame scene (read-only observation of the VDP).
+    pub fn extractScene(self: *const Emulator, out: *Scene.FrameScene) bool {
+        return gen_scene.extract(&self.handle.machine.bus.vdp, out);
     }
 
     pub fn reset(self: *Emulator) void {

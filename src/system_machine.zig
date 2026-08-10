@@ -1,6 +1,9 @@
 const std = @import("std");
 const Machine = @import("machine.zig").Machine;
 const SmsMachine = @import("sms/machine.zig").SmsMachine;
+const Scene = @import("scene.zig");
+const sms_scene = @import("sms/scene.zig");
+const gen_scene = @import("video/scene.zig");
 const SmsInput = @import("sms/input.zig").SmsInput;
 const system_detect = @import("system.zig");
 const rom_loader = @import("rom_loader.zig");
@@ -190,6 +193,20 @@ pub const SystemMachine = union(enum) {
         return switch (self.*) {
             .genesis => Vdp.framebuffer_width,
             .sms => |*s| s.framebufferWidth(),
+        };
+    }
+
+    /// Describe the current frame as tiles, sprites, and palette entries
+    /// instead of pixels, for frontends that render the picture as 3D
+    /// geometry. Extraction observes VDP state without changing it.
+    ///
+    /// Returns true when `out` was filled with content. Passing the same
+    /// buffer on each frame keeps the changed-tile set in `tile_dirty`
+    /// accurate.
+    pub fn extractScene(self: *const SystemMachine, out: *Scene.FrameScene) bool {
+        return switch (self.*) {
+            .genesis => |*g| gen_scene.extract(&g.bus.vdp, out),
+            .sms => |*s| sms_scene.extract(&s.bus.vdp, out),
         };
     }
 

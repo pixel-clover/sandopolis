@@ -15,6 +15,73 @@ const cram_flicker_rom = "tests/testroms/cram flicker.bin";
 const memtest_68k_rom = "tests/testroms/memtest_68k.bin";
 const disable_reg_test_rom = "tests/testroms/DisableRegTestROM.bin";
 const shadow_highlight_rom = "tests/testroms/Shadow-Highlight Test Program #2 (PD).bin";
+const sprite_masking_rom = "tests/testroms/SpriteMaskingTestRom.bin";
+
+// -- Frame scene pipeline --
+//
+// The frame scene (src/scene.zig) is the data contract for 3D frontends.
+// Rebuilding the picture from the scene alone and comparing it against the
+// rasterizer proves the scene carries everything needed to draw the frame.
+// The community test ROMs each exercise a compositor feature the scene must
+// represent: shadow/highlight operators, the window plane, and the sprite
+// masking rules.
+
+fn expectSceneRebuildMatches(rom_path: []const u8, frames: usize, min_ratio: f64) !void {
+    const Scene = sandopolis.testing.Scene;
+    const recon_mod = sandopolis.testing.SceneRecon;
+
+    var emulator = try Emulator.init(testing.allocator, rom_path);
+    defer emulator.deinit(testing.allocator);
+    emulator.reset();
+    emulator.runFramesDiscardingAudio(frames);
+
+    const scene = try testing.allocator.create(Scene.FrameScene);
+    defer testing.allocator.destroy(scene);
+    scene.* = .{};
+    try testing.expect(emulator.extractScene(scene));
+    try testing.expect(scene.contentValid());
+
+    var recon = try recon_mod.Reconstruction.init(
+        testing.allocator,
+        scene.picture_width,
+        scene.picture_height,
+    );
+    defer recon.deinit(testing.allocator);
+    recon_mod.reconstruct(scene, &recon);
+
+    const result = recon_mod.compareToFramebuffer(scene, &recon, emulator.framebuffer(), 320);
+    try testing.expect(result.total > 0);
+    const ratio = @as(f64, @floatFromInt(result.matched)) / @as(f64, @floatFromInt(result.total));
+    if (ratio < min_ratio) {
+        std.debug.print("scene rebuild of {s}: {d}/{d} ({d:.3})\n", .{
+            rom_path, result.matched, result.total, ratio,
+        });
+        return error.SceneRebuildMismatch;
+    }
+}
+
+test "scene pipeline: shadow-highlight test ROM rebuild ratio" {
+    // This ROM animates its background with mid-frame scroll-table rewrites
+    // (a raster wave), which an end-of-frame scene cannot represent, so the
+    // rebuild can never reach 100%. The shadow/highlight rules themselves
+    // are pinned exactly by the unit tests in src/testing/scene_recon.zig;
+    // this guards the measured floor (0.605 at frame 60) against
+    // regressions in the S/H reconstruction.
+    try expectSceneRebuildMatches(shadow_highlight_rom, 60, 0.60);
+}
+
+test "scene pipeline: window plane rebuilds from the scene" {
+    try expectSceneRebuildMatches(window_test_rom, 90, 1.0);
+}
+
+test "scene pipeline: sprite masking rules rebuild from the scene" {
+    try expectSceneRebuildMatches(sprite_masking_rom, 60, 1.0);
+}
+
+test "scene pipeline: graphics sampler rebuilds from the scene" {
+    try expectSceneRebuildMatches(graphics_sampler_rom, 60, 1.0);
+}
+
 const test1536_rom = "tests/testroms/TEST1536.BIN";
 const multitap_io_rom = "tests/testroms/Multitap - IO Sample Program (U) (Nov 28 1992).gen";
 
