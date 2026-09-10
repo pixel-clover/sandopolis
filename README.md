@@ -14,7 +14,7 @@
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
 <br>
 [![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
-[![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro%7C%20VR-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
+[![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro%20%7C%20VR-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
 A portable multi-system Sega emulator for Genesis, Master System, Game Gear, and SG-1000
 
