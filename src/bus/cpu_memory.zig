@@ -9,6 +9,7 @@ const Vdp = @import("../video/vdp.zig").Vdp;
 const Io = @import("../input/io.zig").Io;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const cpu_runtime = @import("../cpu/runtime_state.zig");
+const ExpansionDevice = @import("expansion.zig").ExpansionDevice;
 
 pub const View = struct {
     cartridge: *Cartridge,
@@ -26,6 +27,8 @@ pub const View = struct {
     ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
     notify_bus_access_ctx: ?*anyopaque,
     notify_bus_access_fn: *const fn (?*anyopaque, u32, u32) void,
+    /// Expansion-slot device consulted before the built-in decode.
+    expansion: ?ExpansionDevice,
 
     pub fn init(
         cartridge: *Cartridge,
@@ -43,6 +46,7 @@ pub const View = struct {
         ensure_z80_host_window_fn: *const fn (?*anyopaque) void,
         notify_bus_access_ctx: ?*anyopaque,
         notify_bus_access_fn: *const fn (?*anyopaque, u32, u32) void,
+        expansion: ?ExpansionDevice,
     ) View {
         return .{
             .cartridge = cartridge,
@@ -60,6 +64,7 @@ pub const View = struct {
             .ensure_z80_host_window_fn = ensure_z80_host_window_fn,
             .notify_bus_access_ctx = notify_bus_access_ctx,
             .notify_bus_access_fn = notify_bus_access_fn,
+            .expansion = expansion,
         };
     }
 
@@ -215,6 +220,10 @@ pub const View = struct {
     pub fn read8(self: *View, address: u32) u8 {
         const addr = address & 0xFFFFFF;
 
+        if (self.expansion) |dev| {
+            if (dev.read8(addr)) |value| return value;
+        }
+
         if (self.cartridge.readByte(addr)) |value| {
             return value;
         }
@@ -253,6 +262,10 @@ pub const View = struct {
     pub fn peek8NoSideEffects(self: *View, address: u32) u8 {
         const addr = address & 0xFFFFFF;
 
+        if (self.expansion) |dev| {
+            if (dev.read8(addr)) |value| return value;
+        }
+
         if (self.cartridge.readByte(addr)) |value| {
             return value;
         }
@@ -265,6 +278,9 @@ pub const View = struct {
 
     pub fn read16(self: *View, address: u32) u16 {
         const addr = address & 0xFFFFFF;
+        if (self.expansion) |dev| {
+            if (dev.read16(addr)) |value| return self.latchOpenBus(value);
+        }
         if (self.cartridge.readWord(addr)) |value| {
             return self.latchOpenBus(value);
         }
@@ -304,6 +320,9 @@ pub const View = struct {
         // instruction should still see the prefetch, not the written value.
         // The open-bus latch is not updated on writes.
 
+        if (self.expansion) |dev| {
+            if (dev.write8(addr, value)) return;
+        }
         if (self.cartridge.writeRegisterByte(addr, value)) return;
         if (self.cartridge.writeByte(addr, value)) return;
 
@@ -373,6 +392,9 @@ pub const View = struct {
     pub fn write16(self: *View, address: u32, value: u16) void {
         const addr = address & 0xFFFFFF;
 
+        if (self.expansion) |dev| {
+            if (dev.write16(addr, value)) return;
+        }
         if (self.cartridge.writeRegisterWord(addr, value)) return;
         if (self.cartridge.writeWord(addr, value)) return;
 
@@ -513,6 +535,7 @@ const TestFixture = struct {
             TestHooks.ensureZ80HostWindow,
             null,
             TestHooks.notifyBusAccess,
+            null,
         );
     }
 };
@@ -1443,4 +1466,41 @@ test "cpu memory vdp hvc counter is readable at mirror ports 0x0A and 0x0E" {
     try testing.expectEqual(hvc_base, view.read16(0x00C0_000A));
     try testing.expectEqual(hvc_base, view.read16(0x00C0_000C));
     try testing.expectEqual(hvc_base, view.read16(0x00C0_000E));
+}
+
+test "expansion device claims addresses ahead of cartridge and open bus" {
+    const testing = std.testing;
+    const expansion = @import("expansion.zig");
+
+    var fixture = try TestFixture.init(testing.allocator);
+    defer fixture.deinit(testing.allocator);
+    fixture.initRuntime();
+
+    // Claim the 0x020000 page (Sega CD PRG-RAM window sits inside cartridge
+    // ROM space) and the 0xA12000 page (gate array, normally open bus).
+    var prg = expansion.ProbeDevice{ .base = 0x020000 };
+    var gate = expansion.ProbeDevice{ .base = 0xA10000 };
+    _ = &gate;
+
+    var view = fixture.view();
+    view.expansion = prg.device();
+
+    // Without a device the cartridge ROM (zero-filled) answers.
+    var plain = fixture.view();
+    plain.expansion = null;
+    try testing.expectEqual(@as(u8, 0), plain.read8(0x020004));
+
+    view.write16(0x020004, 0xCAFE);
+    try testing.expectEqual(@as(u16, 0xCAFE), view.read16(0x020004));
+    try testing.expectEqual(@as(u8, 0xFE), view.read8(0x020005));
+    try testing.expectEqual(@as(u8, 0xFE), view.peek8NoSideEffects(0x020005));
+    view.write8(0x020006, 0x42);
+    try testing.expectEqual(@as(u8, 0x42), view.read8(0x020006));
+    // A write through the device does not leak into the cartridge ROM.
+    try testing.expectEqual(@as(u8, 0), fixture.cartridge.readRomByte(0x020006));
+
+    // Unclaimed addresses fall through to the existing decode.
+    view.write8(0xFF0100, 0x77);
+    try testing.expectEqual(@as(u8, 0x77), view.read8(0xFF0100));
+    try testing.expectEqual(@as(u8, 0x77), fixture.ram[0x0100]);
 }

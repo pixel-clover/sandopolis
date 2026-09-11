@@ -5,6 +5,7 @@ const blip_buf = @import("blip_buf.zig");
 const eq_mod = @import("eq.zig");
 const Eq3Band = eq_mod.Eq3Band;
 const PendingAudioFrames = @import("timing.zig").PendingAudioFrames;
+const ExpansionAudio = @import("timing.zig").ExpansionAudio;
 const Z80 = @import("../cpu/z80.zig").Z80;
 const audio_events = @import("events.zig");
 const YmWriteEvent = audio_events.YmWriteEvent;
@@ -160,6 +161,9 @@ pub const AudioOutput = struct {
     };
 
     pub const output_rate: u32 = 48_000;
+    /// Expansion stream gains in 1/256 units relative to their 16-bit input.
+    pub const expansion_pcm_gain: i32 = 256;
+    pub const expansion_cdda_gain: i32 = 256;
     pub const channels: usize = 2;
     pub const min_queue_budget_ms: u16 = 40;
     pub const default_queue_budget_ms: u16 = 60;
@@ -188,6 +192,9 @@ pub const AudioOutput = struct {
     blip_fm_last_right: i32 = 0,
     blip_psg_last_left: i32 = 0,
     blip_psg_last_right: i32 = 0,
+    /// Expansion (Sega CD) streams, resampled from their fixed rates.
+    expansion_pcm: ExpansionStream = ExpansionStream.init(ExpansionStream.pcm_rate_x1000),
+    expansion_cdda: ExpansionStream = ExpansionStream.init(ExpansionStream.cdda_rate_x1000),
     render_mode: RenderMode = .normal,
     psg_volume_percent: u8 = 150,
     total_overflow_events: u64 = 0,
@@ -635,6 +642,91 @@ pub const AudioOutput = struct {
         }
     }
 
+    /// A fixed-rate sample stream from an expansion device. Samples arrive
+    /// in bursts (the CD drive delivers whole sectors) but are consumed at
+    /// the stream's nominal rate, so a small FIFO absorbs the jitter.
+    pub const ExpansionStream = struct {
+        pub const fifo_len: usize = 8192;
+        /// Rates in millihertz so PAL/NTSC master clocks divide exactly enough.
+        pub const cdda_rate_x1000: u64 = 44_100_000;
+        pub const pcm_rate_x1000: u64 = 32_552_083; // 12.5 MHz / 384
+
+        rate_x1000: u64,
+        fifo: [fifo_len][2]i16 = [_][2]i16{.{ 0, 0 }} ** fifo_len,
+        read_index: usize = 0,
+        write_index: usize = 0,
+        /// Accumulated (master_cycles * rate) not yet turned into a sample.
+        phase: u64 = 0,
+        last_left: i32 = 0,
+        last_right: i32 = 0,
+        dropped: u32 = 0,
+        underruns: u32 = 0,
+
+        pub fn init(rate_x1000: u64) ExpansionStream {
+            return .{ .rate_x1000 = rate_x1000 };
+        }
+
+        pub fn queued(self: *const ExpansionStream) usize {
+            return (self.write_index + fifo_len - self.read_index) % fifo_len;
+        }
+
+        pub fn push(self: *ExpansionStream, frames: []const [2]i16) void {
+            for (frames) |f| {
+                const next = (self.write_index + 1) % fifo_len;
+                if (next == self.read_index) {
+                    self.dropped += 1;
+                    continue;
+                }
+                self.fifo[self.write_index] = f;
+                self.write_index = next;
+            }
+        }
+
+        fn pop(self: *ExpansionStream) ?[2]i16 {
+            if (self.read_index == self.write_index) return null;
+            const f = self.fifo[self.read_index];
+            self.read_index = (self.read_index + 1) % fifo_len;
+            return f;
+        }
+
+        pub fn reset(self: *ExpansionStream) void {
+            const rate = self.rate_x1000;
+            self.* = ExpansionStream.init(rate);
+        }
+    };
+
+    /// Emit one stream's samples for the window as blip deltas at the
+    /// stream's nominal rate, holding the last value on underrun.
+    fn feedExpansionStreamToBlip(self: *AudioOutput, stream: *ExpansionStream, pending: PendingAudioFrames, gain: i32) void {
+        const master_hz_x1000: u64 = @as(u64, if (self.timing_is_pal) clock.master_clock_pal else clock.master_clock_ntsc) * 1000;
+        const window: u64 = pending.master_cycles;
+        // Sample k completes when phase + k*rate*... crosses master_hz.
+        var produced: u64 = 0;
+        while (true) {
+            // Time (master cycles from window start) of the next sample.
+            const needed = (produced + 1) * master_hz_x1000;
+            // A sample already due at window start (carry) lands at t = 0.
+            const numer = if (needed > stream.phase) needed - stream.phase else 0;
+            const t = (numer + stream.rate_x1000 - 1) / stream.rate_x1000;
+            if (t >= window) break;
+            const frame = stream.pop() orelse blk: {
+                stream.underruns += 1;
+                break :blk [2]i16{ @intCast(stream.last_left), @intCast(stream.last_right) };
+            };
+            const cur_l: i32 = @divTrunc(@as(i32, frame[0]) * gain, 256);
+            const cur_r: i32 = @divTrunc(@as(i32, frame[1]) * gain, 256);
+            const dl = cur_l - stream.last_left;
+            const dr = cur_r - stream.last_right;
+            if ((dl | dr) != 0) {
+                stream.last_left = cur_l;
+                stream.last_right = cur_r;
+                self.blip.addDelta(@intCast(t), dl, dr);
+            }
+            produced += 1;
+        }
+        stream.phase = stream.phase + window * stream.rate_x1000 - produced * master_hz_x1000;
+    }
+
     fn finishBlipFrame(self: *AudioOutput, sample_l: i16, sample_r: i16) [2]i16 {
         // Apply the Genesis mainboard analog low-pass filter after the
         // blip buffer.  The blip buffer handles band-limiting at the
@@ -671,6 +763,14 @@ pub const AudioOutput = struct {
             events.ym_reset_events,
         );
         self.feedPsgNativeSamplesToBlip(pending, events.psg_commands);
+
+        if (pending.expansion) |ext| {
+            const enabled = self.render_mode == .normal or self.render_mode == .unfiltered_mix;
+            self.expansion_pcm.push(ext.pcm);
+            self.expansion_cdda.push(ext.cdda);
+            self.feedExpansionStreamToBlip(&self.expansion_pcm, pending, if (enabled) expansion_pcm_gain else 0);
+            self.feedExpansionStreamToBlip(&self.expansion_cdda, pending, if (enabled) expansion_cdda_gain else 0);
+        }
 
         self.blip.endFrame(pending.master_cycles);
         return @intCast(self.blip.samplesAvail());
@@ -1107,4 +1207,43 @@ test "blip fm typical output stays within i16 range" {
         if (s == 32767 or s == -32768) clipped = true;
     }
     try std.testing.expect(!clipped);
+}
+
+test "expansion cd-da stream resamples a 44.1 kHz sine to 48 kHz at the right pitch" {
+    var output = AudioOutput.init();
+    const Sink = struct {
+        samples: [8192]i16 = undefined,
+        count: usize = 0,
+        fn consumeSamples(self: *@This(), s: []const i16) !void {
+            @memcpy(self.samples[self.count .. self.count + s.len], s);
+            self.count += s.len;
+        }
+    };
+    var sink = Sink{};
+
+    // 1 kHz sine at 44.1 kHz, one NTSC frame (735 frames) delivered in a burst.
+    var cdda: [735][2]i16 = undefined;
+    for (&cdda, 0..) |*f, i| {
+        const v: i16 = @intFromFloat(@sin(@as(f32, @floatFromInt(i)) * std.math.tau * 1000.0 / 44100.0) * 12000.0);
+        f.* = .{ v, v };
+    }
+    const ext = ExpansionAudio{ .cdda = &cdda };
+    var pending = pendingWindow(@as(u32, clock.ntsc_master_cycles_per_line) * 262);
+    pending.expansion = &ext;
+    var z80 = Z80.init();
+    defer z80.deinit();
+    try output.renderPending(pending, &z80, false, &sink);
+
+    // 48 kHz output for one frame is 800 frames; the sine survives resampling.
+    try std.testing.expect(sink.count / 2 >= 795 and sink.count / 2 <= 805);
+    var zero_crossings: usize = 0;
+    var i: usize = 2;
+    while (i < sink.count) : (i += 2) {
+        if ((sink.samples[i] >= 0) != (sink.samples[i - 2] >= 0)) zero_crossings += 1;
+    }
+    // 1 kHz over 1/60 s = 16.7 cycles = ~33 zero crossings.
+    try std.testing.expect(zero_crossings >= 30 and zero_crossings <= 36);
+    // The FIFO consumed the burst at the nominal rate: nothing dropped.
+    try std.testing.expectEqual(@as(u32, 0), output.expansion_cdda.dropped);
+    try std.testing.expect(output.expansion_cdda.queued() < 64);
 }

@@ -5,6 +5,7 @@ const state_file = @import("../state_file.zig");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
 const M68kInstructionTraceEntry = @import("../cpu/rocket68_cpu.zig").Cpu.M68kInstructionTraceEntry;
 const Bus = @import("../bus/bus.zig").Bus;
+const Disc = @import("../scd/cdrom/reader.zig").Disc;
 const M68kSoundWriteTraceEntry = Bus.M68kSoundWriteTraceEntry;
 const Z80AudioOpTraceEntry = @import("../cpu/z80.zig").Z80.AudioOpTraceEntry;
 const YmWriteEvent = @import("../audio/ym2612.zig").YmWriteEvent;
@@ -55,6 +56,92 @@ pub const Emulator = struct {
 
     pub fn initEmpty(allocator: std.mem.Allocator) !Emulator {
         return initFromRomBytes(allocator, &empty_rom);
+    }
+
+    /// Sega CD with an in-memory BIOS and optional single-track disc image
+    /// (2048-byte ISO or 2352-byte raw sectors, detected by signature).
+    pub fn initSegaCdFromMemory(allocator: std.mem.Allocator, bios: []const u8, disc_image: ?[]const u8) !Emulator {
+        const state = try allocator.create(State);
+        errdefer allocator.destroy(state);
+
+        var disc: ?Disc = null;
+        if (disc_image) |bytes| {
+            disc = try Disc.fromMemory(allocator, discSheetForImage(bytes), &.{bytes});
+        }
+        errdefer if (disc) |*d| d.deinit();
+
+        state.* = .{
+            .machine = try internal_machine.Machine.initSegaCd(allocator, bios, disc),
+        };
+        state.machine.reset();
+        return .{ .handle = state };
+    }
+
+    /// Sega CD from files: a BIOS image and an optional .cue/.iso path.
+    /// Errors from missing files propagate so callers can skip.
+    pub fn initSegaCdFromPaths(allocator: std.mem.Allocator, bios_path: []const u8, disc_path: ?[]const u8) !Emulator {
+        const platform = @import("../platform.zig");
+        const bios = try platform.cwd().readFileAlloc(allocator, bios_path, 1024 * 1024);
+        defer allocator.free(bios);
+
+        var disc: ?Disc = null;
+        if (disc_path) |path| {
+            const ext = std.fs.path.extension(path);
+            disc = if (std.ascii.eqlIgnoreCase(ext, ".cue"))
+                try Disc.openCuePath(allocator, path)
+            else
+                try Disc.openIsoPath(allocator, path);
+        }
+        errdefer if (disc) |*d| d.deinit();
+
+        const state = try allocator.create(State);
+        errdefer allocator.destroy(state);
+        state.* = .{
+            .machine = try internal_machine.Machine.initSegaCd(allocator, bios, disc),
+        };
+        state.machine.reset();
+        return .{ .handle = state };
+    }
+
+    pub fn scdDriveStatusNibble(self: *const Emulator) u8 {
+        return self.handle.machine.scd.?.gate.cdd_status[0];
+    }
+
+    pub fn scdSubInstructionCount(self: *const Emulator) u64 {
+        return self.handle.machine.scd.?.sub_instructions;
+    }
+
+    fn discSheetForImage(bytes: []const u8) ?[]const u8 {
+        // Raw 2352-byte sectors carry the signature after the 16-byte header.
+        if (bytes.len >= 30 and std.mem.eql(u8, bytes[16..30], "SEGADISCSYSTEM")) {
+            return "FILE \"image.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
+        }
+        return null;
+    }
+
+    pub fn isSegaCd(self: *const Emulator) bool {
+        return self.handle.machine.isSegaCd();
+    }
+
+    pub fn scdSubProgramCounter(self: *const Emulator) u32 {
+        return self.handle.machine.scd.?.subProgramCounter();
+    }
+
+    pub fn scdSubInstructions(self: *const Emulator) u64 {
+        return self.handle.machine.scd.?.sub_instructions;
+    }
+
+    pub fn scdReadPrgRam32(self: *const Emulator, address: u32) u32 {
+        const prg = &self.handle.machine.scd.?.prg_ram;
+        return std.mem.readInt(u32, prg[address..][0..4], .big);
+    }
+
+    pub fn scdStatusWord(self: *const Emulator, index: u3) u16 {
+        return self.handle.machine.scd.?.gate.status[index];
+    }
+
+    pub fn scdCommandWord(self: *const Emulator, index: u3) u16 {
+        return self.handle.machine.scd.?.gate.command[index];
     }
 
     pub fn deinit(self: *Emulator, allocator: std.mem.Allocator) void {

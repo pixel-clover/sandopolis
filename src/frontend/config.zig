@@ -190,6 +190,10 @@ pub const FrontendConfig = struct {
     eq_low: u8 = 100,
     eq_mid: u8 = 100,
     eq_high: u8 = 100,
+    /// Sega CD BIOS images per region. Empty when not configured.
+    segacd_bios_us: PathCopy = .{},
+    segacd_bios_eu: PathCopy = .{},
+    segacd_bios_jp: PathCopy = .{},
 
     pub fn parseContents(contents: []const u8) !FrontendConfig {
         var config = FrontendConfig{};
@@ -229,6 +233,12 @@ pub const FrontendConfig = struct {
                 config.eq_high = std.fmt.parseUnsigned(u8, rhs, 10) catch config.eq_high;
             } else if (std.ascii.eqlIgnoreCase(lhs, "recent_rom")) {
                 config.appendRecentRom(rhs);
+            } else if (std.ascii.eqlIgnoreCase(lhs, "segacd.bios_us")) {
+                config.segacd_bios_us.set(rhs);
+            } else if (std.ascii.eqlIgnoreCase(lhs, "segacd.bios_eu")) {
+                config.segacd_bios_eu.set(rhs);
+            } else if (std.ascii.eqlIgnoreCase(lhs, "segacd.bios_jp")) {
+                config.segacd_bios_jp.set(rhs);
             }
         }
 
@@ -264,6 +274,9 @@ pub const FrontendConfig = struct {
         for (self.recent_roms[0..self.recent_rom_count]) |path| {
             try writer.print("recent_rom = {s}\n", .{path.slice()});
         }
+        if (self.segacd_bios_us.len != 0) try writer.print("segacd.bios_us = {s}\n", .{self.segacd_bios_us.slice()});
+        if (self.segacd_bios_eu.len != 0) try writer.print("segacd.bios_eu = {s}\n", .{self.segacd_bios_eu.slice()});
+        if (self.segacd_bios_jp.len != 0) try writer.print("segacd.bios_jp = {s}\n", .{self.segacd_bios_jp.slice()});
     }
 
     pub fn saveToFile(self: *const FrontendConfig, path: []const u8) !void {
@@ -547,4 +560,30 @@ test "PathCopy set truncates long paths" {
     @memset(&long, 'x');
     pc.set(&long);
     try t.expectEqual(max, pc.slice().len);
+}
+
+test "sega cd bios paths parse and write round trip" {
+    const contents =
+        "segacd.bios_us = /bios/bios_CD_U.bin\n" ++
+        "SEGACD.BIOS_EU = /bios/bios_CD_E.bin\n" ++
+        "segacd.bios_jp=/bios/bios_CD_J.bin\n";
+    const config = try FrontendConfig.parseContents(contents);
+    try std.testing.expectEqualStrings("/bios/bios_CD_U.bin", config.segacd_bios_us.slice());
+    try std.testing.expectEqualStrings("/bios/bios_CD_E.bin", config.segacd_bios_eu.slice());
+    try std.testing.expectEqualStrings("/bios/bios_CD_J.bin", config.segacd_bios_jp.slice());
+
+    var buf: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try config.writeContents(&writer);
+    const written = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "segacd.bios_us = /bios/bios_CD_U.bin\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "segacd.bios_eu = /bios/bios_CD_E.bin\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "segacd.bios_jp = /bios/bios_CD_J.bin\n") != null);
+
+    // Unset BIOS paths are omitted so fresh configs stay minimal.
+    const empty = FrontendConfig{};
+    var buf2: [4096]u8 = undefined;
+    var writer2 = std.Io.Writer.fixed(&buf2);
+    try empty.writeContents(&writer2);
+    try std.testing.expect(std.mem.indexOf(u8, writer2.buffered(), "segacd.bios") == null);
 }

@@ -2,12 +2,24 @@ const std = @import("std");
 const testing = std.testing;
 const clock = @import("../clock.zig");
 
+/// Extra audio streams produced by an expansion device (Sega CD) during the
+/// window: fixed-rate sample runs the output stage resamples and mixes.
+pub const ExpansionAudio = struct {
+    /// RF5C164 output at 12.5 MHz / 384 Hz.
+    pcm: []const [2]i16 = &.{},
+    /// CD-DA at 44.1 kHz, already faded.
+    cdda: []const [2]i16 = &.{},
+};
+
 pub const PendingAudioFrames = struct {
     master_cycles: u32,
     fm_frames: u32,
     psg_frames: u32,
     fm_start_remainder: u16,
     psg_start_remainder: u16,
+    /// Present only when an expansion device is attached. Points into the
+    /// device's buffers, valid until the next window is taken.
+    expansion: ?*const ExpansionAudio = null,
 };
 
 pub const AudioTiming = struct {
