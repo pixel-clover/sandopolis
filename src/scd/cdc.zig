@@ -46,6 +46,17 @@ pub const Ctrl0 = struct {
     pub const decen: u8 = 0x80;
 };
 
+pub const Ctrl1 = struct {
+    pub const shdren: u8 = 0x01;
+    pub const sydren: u8 = 0x02;
+    pub const formrq: u8 = 0x04;
+    pub const modrq: u8 = 0x08;
+    pub const cowren: u8 = 0x10;
+    pub const dout_mskeN: u8 = 0x20;
+    pub const syien: u8 = 0x40;
+    pub const sysw: u8 = 0x80;
+};
+
 /// Device destination selected by the gate array CDC mode register (DD2-0).
 pub const Destination = enum(u3) {
     none0 = 0,
@@ -74,6 +85,9 @@ pub const Cdc = struct {
     dbc: u16 = 0,
     dac: u16 = 0,
     head: [4]u8 = .{ 0, 0, 0, 0 },
+    /// Mode 2 sub-header of the last decoded block; its FORM bit feeds STAT2
+    /// while CTRL0's AUTORQ is set.
+    subheader: [4]u8 = .{ 0, 0, 0, 0 },
     pt: u16 = 0,
     wa: u16 = 0,
     ctrl: [3]u8 = .{ 0, 0, 0 },
@@ -144,8 +158,16 @@ pub const Cdc = struct {
             },
             0x8 => self.wa = (self.wa & 0xFF00) | value,
             0x9 => self.wa = (self.wa & 0x00FF) | (@as(u16, value) << 8),
-            0xA => self.ctrl[0] = value,
-            0xB => self.ctrl[1] = value,
+            0xA => {
+                self.ctrl[0] = value;
+                // STAT0 mirrors the decoder-enable bit.
+                self.stat[0] = value & Ctrl0.decen;
+                self.updateStat2(value, self.ctrl[1]);
+            },
+            0xB => {
+                self.ctrl[1] = value;
+                self.updateStat2(self.ctrl[0], value);
+            },
             0xC => self.pt = (self.pt & 0xFF00) | value,
             0xD => self.pt = (self.pt & 0x00FF) | (@as(u16, value) << 8),
             0xE => self.ctrl[2] = value,
@@ -165,6 +187,16 @@ pub const Cdc = struct {
 
     /// Store a decoded block. Returns true when INT5 should be raised
     /// (decoder interrupt newly asserted).
+    /// STAT2 is recomputed from the control registers rather than latched:
+    /// its MODE bit always follows CTRL1's MODRQ, while the FORM bit comes
+    /// from CTRL1's FORMRQ, or from the last sub-header when AUTORQ is set.
+    fn updateStat2(self: *Cdc, ctrl0: u8, ctrl1: u8) void {
+        self.stat[2] = if ((ctrl0 & Ctrl0.autorq) != 0)
+            (ctrl1 & Ctrl1.modrq) | ((self.subheader[2] & 0x20) >> 3)
+        else
+            ctrl1 & (Ctrl1.modrq | Ctrl1.formrq);
+    }
+
     pub fn decodeSector(self: *Cdc, raw: *const [reader.raw_sector_bytes]u8) bool {
         if ((self.ctrl[0] & Ctrl0.decen) == 0) return false;
 
@@ -184,7 +216,9 @@ pub const Cdc = struct {
                 self.writeWrapped(offset, raw[16 .. 16 + 2048]);
             } else {
                 // Mode 2: subheader + data (2336 bytes).
+                @memcpy(&self.subheader, raw[16..20]);
                 self.writeWrapped(offset, raw[16 .. 16 + 2336]);
+                if ((self.ctrl[0] & Ctrl0.autorq) != 0) self.updateStat2(self.ctrl[0], self.ctrl[1]);
             }
         }
         return self.irq_asserted and !was_asserted;
@@ -290,6 +324,29 @@ fn makeRawSector(seed: u8) [reader.raw_sector_bytes]u8 {
     raw[14] = 0x16;
     raw[15] = 0x01;
     return raw;
+}
+
+test "control register writes derive the STAT2 mode and form bits" {
+    // STAT2 is not a latch of its own: every CTRL0 or CTRL1 write recomputes
+    // it. Without AUTORQ it mirrors CTRL1's MODRQ and FORMRQ; with AUTORQ the
+    // FORM bit comes from the last decoded sub-header instead. The BIOS polls
+    // STAT2 while it syncs onto the first sector of a disc.
+    var cdc = Cdc{};
+
+    cdc.writeRegister(0x0B, Ctrl1.modrq | Ctrl1.formrq | 0x80);
+    try testing.expectEqual(Ctrl1.modrq | Ctrl1.formrq, cdc.stat[2]);
+    cdc.writeRegister(0x0B, 0xF0);
+    try testing.expectEqual(@as(u8, 0), cdc.stat[2]);
+
+    // A CTRL0 write recomputes it from the stored CTRL1.
+    cdc.writeRegister(0x0B, Ctrl1.modrq);
+    cdc.writeRegister(0x0A, Ctrl0.decen);
+    try testing.expectEqual(Ctrl1.modrq, cdc.stat[2]);
+
+    // With AUTORQ the FORM bit tracks the sub-header instead of FORMRQ.
+    cdc.subheader = .{ 0, 0, 0x20, 0 };
+    cdc.writeRegister(0x0A, Ctrl0.decen | Ctrl0.autorq);
+    try testing.expectEqual(Ctrl1.modrq | Ctrl1.formrq, cdc.stat[2]);
 }
 
 test "register file reads back writes with the DBC high nibble mask" {

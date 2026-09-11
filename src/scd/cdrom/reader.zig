@@ -169,7 +169,7 @@ pub const Disc = struct {
             allocator.free(sources);
         }
         for (layout.files, 0..) |entry, i| {
-            const full = try std.fs.path.join(allocator, &.{ base_dir, entry.name });
+            const full = try resolveSheetFile(allocator, base_dir, entry.name);
             defer allocator.free(full);
             sources[i] = .{ .file = try platform.cwd().openFile(full, .{}) };
             opened += 1;
@@ -230,7 +230,7 @@ pub const Disc = struct {
         const offset = track.fileByteOffset(lba) orelse {
             // Virtual pregap: no backing bytes. Data tracks still carry a
             // valid header so the CDC decoder can keep tracking position.
-            if (track.kind.isData()) writeMode1Header(out, lba);
+            if (track.kind.isData()) writeMode1Header(out, @intCast(lba));
             return;
         };
         const file = self.layout.files[track.file_index];
@@ -238,7 +238,7 @@ pub const Disc = struct {
 
         switch (track.kind) {
             .mode1_2048 => {
-                writeMode1Header(out, lba);
+                writeMode1Header(out, @intCast(lba));
                 const n = try source.readAt(file.dataOffset() + offset, out[16 .. 16 + user_data_bytes]);
                 if (n != user_data_bytes) return error.ShortRead;
             },
@@ -264,10 +264,12 @@ pub const Disc = struct {
     }
 };
 
-/// Fill the 12-byte sync and 4-byte header (BCD MSF + mode 1) of a raw sector.
-pub fn writeMode1Header(out: *[raw_sector_bytes]u8, lba: u32) void {
+/// Fill the 12-byte sync and 4-byte header (BCD MSF + mode 1) of a raw
+/// sector. The address is signed because the drive also builds headers for
+/// lead-in sectors, which sit before LBA 0.
+pub fn writeMode1Header(out: *[raw_sector_bytes]u8, lba: i32) void {
     @memcpy(out[0..12], &sync_bytes);
-    const time = msf.lbaToMsf(lba);
+    const time = msf.lbaSignedToMsf(lba);
     out[12] = msf.toBcd(time.m);
     out[13] = msf.toBcd(time.s);
     out[14] = msf.toBcd(time.f);
@@ -300,13 +302,35 @@ const FixedSize = struct {
     }
 };
 
+/// Join a sheet's FILE name onto the sheet directory. Sheets written on
+/// case-insensitive systems often disagree in case with the files on disk
+/// (redump cues are uppercase), so fall back to a case-insensitive match.
+fn resolveSheetFile(allocator: std.mem.Allocator, base_dir: []const u8, name: []const u8) ![]u8 {
+    const exact = try std.fs.path.join(allocator, &.{ base_dir, name });
+    if (platform.cwd().access(exact, .{})) |_| {
+        return exact;
+    } else |_| {}
+    errdefer allocator.free(exact);
+
+    var dir = try std.Io.Dir.cwd().openDir(platform.io(), base_dir, .{ .iterate = true });
+    defer dir.close(platform.io());
+    var it = dir.iterate();
+    while (try it.next(platform.io())) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name, std.fs.path.basename(name))) {
+            allocator.free(exact);
+            return std.fs.path.join(allocator, &.{ base_dir, entry.name });
+        }
+    }
+    return exact;
+}
+
 const DirSizes = struct {
     allocator: std.mem.Allocator,
     base_dir: []const u8,
 
     fn lookup(ctx: ?*anyopaque, name: []const u8) ?u64 {
         const self: *const DirSizes = @ptrCast(@alignCast(ctx.?));
-        const full = std.fs.path.join(self.allocator, &.{ self.base_dir, name }) catch return null;
+        const full = resolveSheetFile(self.allocator, self.base_dir, name) catch return null;
         defer self.allocator.free(full);
         const file = platform.cwd().openFile(full, .{}) catch return null;
         defer file.close();
