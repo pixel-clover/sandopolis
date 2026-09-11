@@ -16,7 +16,7 @@
 [![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro%20%7C%20VR-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
-A portable multi-system Sega emulator for Genesis, Master System, Game Gear, and SG-1000
+A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, and SG-1000
 
 </div>
 
@@ -44,7 +44,7 @@ Footage of Sandopolis running a few games:
 
 ### Key Features
 
-- Accurate Sega Genesis/Mega Drive, Master System, Game Gear, and SG-1000 emulation
+- Accurate Sega Genesis/Mega Drive, Master System, Game Gear, and SG-1000 emulation, plus Sega CD (BIOS required)
 - Very portable; can be built and run on any platform that Zig supports
 - Very configurable, including gameplay input, frontend hotkeys, and rendering settings
 - Has a permissive license that allows commercial use
@@ -123,13 +123,13 @@ Run `sandopolis --help` to see the list of available command-line options.
 Example output:
 
 ```
-A portable multi-system Sega emulator for Genesis, Master System, Game Gear, and SG-1000
+A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, and SG-1000
 
 Usage:
   sandopolis [flags] [rom_file]
 
 Arguments:
-  rom_file  Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg, .sg) or a .zip archive containing one (optional)
+  rom_file  Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg, .sg), a .zip archive containing one, or a Sega CD disc image (.cue, .iso) (optional)
 
 Flags:
   -h, --help            Shows help information for this command [Bool] (default: false)
@@ -143,6 +143,21 @@ Flags:
 ```
 
 ---
+
+### Sega CD
+
+Sandopolis boots Sega CD / Mega CD games from `.cue` + `.bin` or `.iso` images. The CD BIOS is not included; place the
+128KB BIOS image(s) for your region where the frontend can find them:
+
+| Frontend | Where the BIOS comes from                                                                                                                   |
+|----------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| Desktop  | `segacd.bios_us`, `segacd.bios_eu`, `segacd.bios_jp` paths in `sandopolis.cfg`, or `bios/bios_CD_U.bin` (`_E`, `_J`) next to the config file |
+| Libretro | `bios_CD_U.bin`, `bios_CD_E.bin`, `bios_CD_J.bin` in the frontend's system directory                                                        |
+| Web      | Settings → "Sega CD BIOS" (kept in the browser); then drop the `.cue` and `.bin` together, or an `.iso`                                       |
+
+The BIOS region follows the disc's region code unless only one image is available. Internal backup RAM is saved as
+`backup.brm` in the disc's data directory (desktop) or exposed as save RAM (libretro). Save states use their own
+`SNDSCDST` container and reopen the disc from its original path.
 
 ### Contributing
 

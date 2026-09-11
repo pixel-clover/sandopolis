@@ -589,6 +589,23 @@ pub const Cpu = struct {
         self.syncIrqLine();
     }
 
+    /// Stop asserting `level` (the source was masked before service).
+    /// Returns true when the level was still pending, so the caller can
+    /// re-latch it and re-request once unmasked.
+    pub fn withdrawInterrupt(self: *Cpu, level: u3) bool {
+        if (level == 0) return false;
+        const bit = @as(u8, 1) << level;
+        const was_pending = (self.pending_irq_levels & bit) != 0;
+        self.pending_irq_levels &= ~bit;
+        self.syncIrqLine();
+        return was_pending;
+    }
+
+    pub fn isInterruptPending(self: *const Cpu, level: u3) bool {
+        if (level == 0) return false;
+        return (self.pending_irq_levels & (@as(u8, 1) << level)) != 0;
+    }
+
     pub fn setInstructionTraceEnabled(self: *Cpu, enabled: bool) void {
         self.instruction_trace.setEnabled(enabled);
     }
@@ -806,4 +823,22 @@ test "noteBusAccessWait calls notifyBusAccess for slow bus but not z80 control" 
 
         try testing.expectEqual(@as(u32, 0), probe.notify_count);
     }
+}
+
+test "withdrawInterrupt drops one pending level and reports whether it was pending" {
+    var cpu = Cpu.init();
+    cpu.requestInterrupt(4);
+    cpu.requestInterrupt(2);
+    try std.testing.expectEqual(@as(u8, 0b0001_0100), cpu.pending_irq_levels);
+    try std.testing.expectEqual(@as(c_int, 4), cpu.core.irq_level);
+
+    try std.testing.expect(cpu.withdrawInterrupt(4));
+    try std.testing.expectEqual(@as(u8, 0b0000_0100), cpu.pending_irq_levels);
+    // The IRQ line falls back to the next pending level.
+    try std.testing.expectEqual(@as(c_int, 2), cpu.core.irq_level);
+
+    try std.testing.expect(!cpu.withdrawInterrupt(4));
+    try std.testing.expect(cpu.withdrawInterrupt(2));
+    try std.testing.expectEqual(@as(u8, 0), cpu.pending_irq_levels);
+    try std.testing.expectEqual(@as(c_int, 0), cpu.core.irq_level);
 }

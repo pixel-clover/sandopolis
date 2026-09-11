@@ -52,21 +52,38 @@ const WasmAudioSink = struct {
     }
 };
 
-fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8, system_hint: u8) !WasmEmulator {
-    // Use the system hint from JS if provided (e.g. from file extension);
-    // fall back to content-based detection.
-    const hint: ?system_detect.SystemType = switch (system_hint) {
-        1 => .sms,
-        2 => .gg,
-        3 => .sg1000,
-        else => null,
-    };
-    var machine = try SystemMachine.initFromRomBytes(alloc, raw_bytes, hint);
-    // Genesis boots through an explicit reset; SMS power-on state is the
-    // init state and its runtime pointers bind lazily on the first frame.
-    if (machine.asGenesis()) |g| g.reset();
+/// Sega CD BIOS images uploaded from JS; owned copies.
+const WasmBiosStorage = struct {
+    images: [3]?[]u8 = .{ null, null, null },
+    set: SystemMachine.BiosSet = .{},
+
+    fn store(self: *WasmBiosStorage, region: usize, bytes: []const u8) !void {
+        if (self.images[region]) |old| allocator.free(old);
+        self.images[region] = try allocator.dupe(u8, bytes);
+        self.set = .{ .us = self.images[0], .eu = self.images[1], .jp = self.images[2] };
+    }
+};
+
+var wasm_bios: WasmBiosStorage = .{};
+
+/// Register a Sega CD BIOS image. `region`: 0=US, 1=EU, 2=JP. Returns false
+/// when the image is not a 128KB BIOS.
+export fn sandopolis_set_bios(region: u8, ptr: [*]const u8, len: usize) bool {
+    if (region > 2 or len != 128 * 1024) return false;
+    wasm_bios.store(region, ptr[0..len]) catch return false;
+    return true;
+}
+
+/// True when at least one Sega CD BIOS image has been registered.
+export fn sandopolis_has_bios() bool {
+    return !wasm_bios.set.isEmpty();
+}
+
+fn finishWasmEmulator(machine: SystemMachine) WasmEmulator {
+    var m = machine;
+    if (m.asGenesis()) |g| g.reset();
     return .{
-        .machine = machine,
+        .machine = m,
         .audio = AudioOutput.init(),
         .snapshot = null,
         .audio_buffer = [_]i16{0} ** 8192,
@@ -74,6 +91,36 @@ fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8, system_hint
         .last_save_buf = null,
         .last_save_len = 0,
     };
+}
+
+/// Create a Sega CD emulator from a CUE sheet and its single BIN image.
+export fn sandopolis_create_disc(cue_ptr: [*]const u8, cue_len: usize, bin_ptr: [*]const u8, bin_len: usize) ?*WasmEmulator {
+    const Disc = @import("scd/cdrom/reader.zig").Disc;
+    const disc = Disc.fromMemory(allocator, cue_ptr[0..cue_len], &.{bin_ptr[0..bin_len]}) catch return null;
+    const machine = SystemMachine.initSegaCdFromDisc(allocator, disc, .{ .bios = &wasm_bios.set }) catch return null;
+    const emu = allocator.create(WasmEmulator) catch {
+        var m = machine;
+        m.deinit(allocator);
+        return null;
+    };
+    emu.* = finishWasmEmulator(machine);
+    return emu;
+}
+
+fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8, system_hint: u8) !WasmEmulator {
+    // Use the system hint from JS if provided (e.g. from file extension);
+    // fall back to content-based detection.
+    const hint: ?system_detect.SystemType = switch (system_hint) {
+        1 => .sms,
+        2 => .gg,
+        3 => .sg1000,
+        4 => .segacd,
+        else => null,
+    };
+    const machine = try SystemMachine.initFromRomBytesWithOptions(alloc, raw_bytes, hint, .{ .bios = &wasm_bios.set });
+    // Genesis boots through an explicit reset; SMS power-on state is the
+    // init state and its runtime pointers bind lazily on the first frame.
+    return finishWasmEmulator(machine);
 }
 
 // Memory allocation for JS interop
@@ -89,7 +136,7 @@ export fn sandopolis_free(ptr: [*]u8, len: usize) void {
 
 // Lifecycle
 
-/// Create an emulator instance. `system_hint`: 0=auto-detect, 1=SMS, 2=GG, 3=SG-1000.
+/// Create an emulator instance. `system_hint`: 0=auto-detect, 1=SMS, 2=GG, 3=SG-1000, 4=Sega CD (.iso bytes).
 export fn sandopolis_create(rom_ptr: [*]const u8, rom_len: usize, system_hint: u8) ?*WasmEmulator {
     const emu = allocator.create(WasmEmulator) catch return null;
     emu.* = initWasmEmulator(allocator, rom_ptr[0..rom_len], system_hint) catch {
@@ -311,6 +358,7 @@ export fn sandopolis_system_type(emu: *const WasmEmulator) u32 {
         .sms => 1,
         .gg => 2,
         .sg1000 => 3,
+        .segacd => 4,
     };
 }
 

@@ -8,6 +8,8 @@ const Io = @import("input/io.zig").Io;
 const perf_profile = @import("performance_profile.zig");
 const scheduler = @import("scheduler/frame_scheduler.zig");
 const Vdp = @import("video/vdp.zig").Vdp;
+const ScdBoard = @import("scd/board.zig").ScdBoard;
+const Disc = @import("scd/cdrom/reader.zig").Disc;
 
 pub const Machine = struct {
     pub const CoreFrameCounters = perf_profile.CoreFrameCounters;
@@ -264,6 +266,10 @@ pub const Machine = struct {
     cpu: Cpu,
     m68k_sync: clock.M68kSync,
     pending_frame_phase: PendingFramePhase,
+    /// Sega CD sub-board when a disc system is attached (BIOS in the
+    /// cartridge slot). Heap-allocated so its address is stable while the
+    /// machine itself moves.
+    scd: ?*ScdBoard = null,
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Machine {
         return .{
@@ -272,6 +278,22 @@ pub const Machine = struct {
             .m68k_sync = .{},
             .pending_frame_phase = .none,
         };
+    }
+
+    /// Boot a Sega CD: the BIOS occupies the cartridge slot and the
+    /// sub-board hangs off the expansion hook. `disc` ownership transfers
+    /// to the board.
+    pub fn initSegaCd(allocator: std.mem.Allocator, bios: []const u8, disc: ?Disc) !Machine {
+        var machine = try initFromRomBytes(allocator, bios);
+        errdefer machine.deinit(allocator);
+        const board = try ScdBoard.create(allocator, machine.bus.cartridge.rom, disc, machine.bus.vdp.pal_mode);
+        machine.scd = board;
+        machine.rebindRuntimePointers();
+        return machine;
+    }
+
+    pub fn isSegaCd(self: *const Machine) bool {
+        return self.scd != null;
     }
 
     pub fn initFromRomBytes(allocator: std.mem.Allocator, rom_bytes: []const u8) !Machine {
@@ -284,16 +306,23 @@ pub const Machine = struct {
     }
 
     pub fn deinit(self: *Machine, allocator: std.mem.Allocator) void {
+        if (self.scd) |board| board.destroy();
+        self.scd = null;
         self.bus.deinit(allocator);
     }
 
     pub fn clone(self: *const Machine, allocator: std.mem.Allocator) !Machine {
-        return .{
-            .bus = try self.bus.clone(allocator),
+        var bus = try self.bus.clone(allocator);
+        errdefer bus.deinit(allocator);
+        var machine = Machine{
+            .bus = bus,
             .cpu = self.cpu.clone(),
             .m68k_sync = self.m68k_sync,
             .pending_frame_phase = self.pending_frame_phase,
         };
+        if (self.scd) |board| machine.scd = try board.clone();
+        machine.rebindRuntimePointers();
+        return machine;
     }
 
     pub fn reset(self: *Machine) void {
@@ -314,6 +343,7 @@ pub const Machine = struct {
 
     pub fn flushPersistentStorage(self: *Machine) !void {
         try self.bus.flushPersistentStorage();
+        if (self.scd) |board| try board.flushBackupRam();
     }
 
     pub fn captureSnapshot(self: *const Machine, allocator: std.mem.Allocator) !Snapshot {
@@ -333,6 +363,13 @@ pub const Machine = struct {
 
     pub fn rebindRuntimePointers(self: *Machine) void {
         self.bus.rebindRuntimePointers();
+        if (self.scd) |board| {
+            board.bind();
+            board.setBios(self.bus.cartridge.rom);
+            self.bus.expansion = board.device();
+        } else {
+            self.bus.expansion = null;
+        }
     }
 
     pub fn clearPendingAudioTransferState(self: *Machine) void {
@@ -546,6 +583,7 @@ pub const Machine = struct {
     }
 
     pub fn persistentSaveRam(self: *Machine) ?[]u8 {
+        if (self.scd) |board| return &board.backup_ram;
         return self.bus.cartridge.persistentSaveRam();
     }
 
@@ -624,6 +662,7 @@ pub const Machine = struct {
 
     pub fn setPalMode(self: *Machine, pal_mode: bool) void {
         self.bus.vdp.pal_mode = pal_mode;
+        if (self.scd) |board| board.setPalMode(pal_mode);
         if (self.pending_frame_phase == .hard_reset) {
             self.bus.vdp.applyPowerOnResetTiming();
         }
@@ -638,10 +677,16 @@ pub const Machine = struct {
     }
 
     pub fn takePendingAudio(self: *Machine) PendingAudioFrames {
-        const pending = self.bus.audio_timing.takePending();
+        var pending = self.bus.audio_timing.takePending();
         // Event timestamps are window-relative; retiring the window restarts
         // the Z80 bridge's audio timeline (and its YM timer watermark).
         self.bus.z80.resetAudioWindow(pending.master_cycles);
+        if (self.scd) |board| {
+            // Let the sub-board catch up to the window end so its streams
+            // cover the same span as the FM/PSG events.
+            board.flush();
+            pending.expansion = board.takeExpansionAudio();
+        }
         return pending;
     }
 

@@ -444,3 +444,119 @@ test "emulator facade exposes framebuffer and timing after init" {
     const width = emulator.framebufferWidth();
     try testing.expect(width == 320 or width == 256);
 }
+
+// ---------------------------------------------------------------------------
+// Sega CD: main/sub CPU communication through the gate array
+// ---------------------------------------------------------------------------
+
+fn be16(buf: []u8, offset: usize, value: u16) void {
+    std.mem.writeInt(u16, buf[offset..][0..2], value, .big);
+}
+
+fn be32(buf: []u8, offset: usize, value: u32) void {
+    std.mem.writeInt(u32, buf[offset..][0..4], value, .big);
+}
+
+/// A 128KB "BIOS" whose main program copies a sub program into PRG-RAM,
+/// releases the sub CPU, exchanges a command/status word pair, and finally
+/// raises INT2. The sub program echoes command 0 + 1 into status 0 and
+/// counts INT2s in PRG-RAM.
+fn makeSegaCdMiniBios(allocator: std.mem.Allocator) ![]u8 {
+    const bios = try allocator.alloc(u8, 128 * 1024);
+    @memset(bios, 0);
+    @memcpy(bios[0x100..0x104], "SEGA");
+    be32(bios, 0x0, 0x00FFFE00); // SSP
+    be32(bios, 0x4, 0x00000200); // PC
+
+    // -- Main program at 0x200 --
+    var p: usize = 0x200;
+    // move.b #0,$A12001        ; hold sub in reset
+    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0000); be32(bios, p + 4, 0x00A12001); p += 8;
+    // move.b #0,$A12003        ; PRG-RAM bank 0
+    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0000); be32(bios, p + 4, 0x00A12003); p += 8;
+    // lea $1000,a0 ; lea $20000,a1 ; move.w #255,d0
+    be16(bios, p, 0x41F9); be32(bios, p + 2, 0x00001000); p += 6;
+    be16(bios, p, 0x43F9); be32(bios, p + 2, 0x00020000); p += 6;
+    be16(bios, p, 0x303C); be16(bios, p + 2, 0x00FF); p += 4;
+    // copy: move.l (a0)+,(a1)+ ; dbra d0,copy
+    be16(bios, p, 0x22D8); p += 2;
+    be16(bios, p, 0x51C8); be16(bios, p + 2, 0xFFFC); p += 4;
+    // move.b #1,$A12001        ; release sub reset
+    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0001); be32(bios, p + 4, 0x00A12001); p += 8;
+    // move.w #$1234,$A12010    ; command 0
+    be16(bios, p, 0x33FC); be16(bios, p + 2, 0x1234); be32(bios, p + 4, 0x00A12010); p += 8;
+    // poll: move.w $A12020,d0 ; cmp.w #$1235,d0 ; bne.s poll
+    const poll = p;
+    be16(bios, p, 0x3039); be32(bios, p + 2, 0x00A12020); p += 6;
+    be16(bios, p, 0x0C40); be16(bios, p + 2, 0x1235); p += 4;
+    be16(bios, p, 0x6600 | @as(u16, @truncate(@as(u32, @bitCast(@as(i32, @intCast(poll)) - @as(i32, @intCast(p + 2)))) & 0xFF))); p += 2;
+    // move.b #1,$A12000        ; IFL2 -> sub INT2 (byte write: a word write
+    //                          ; would also clear SRES in the low byte)
+    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0001); be32(bios, p + 4, 0x00A12000); p += 8;
+    // move.w #1,$A12012        ; command 1 = "IFL2 sent" marker
+    be16(bios, p, 0x33FC); be16(bios, p + 2, 0x0001); be32(bios, p + 4, 0x00A12012); p += 8;
+    // bra.s *
+    be16(bios, p, 0x60FE);
+
+    // -- Sub program image at 0x1000 (copied to PRG-RAM 0) --
+    const s: usize = 0x1000;
+    be32(bios, s + 0x0, 0x00080000); // SSP: top of PRG-RAM
+    be32(bios, s + 0x4, 0x00000200); // PC
+    be32(bios, s + 0x68, 0x00000300); // level 2 autovector
+    var q: usize = s + 0x200;
+    // move.b #4,$FF8033        ; enable INT2
+    be16(bios, q, 0x13FC); be16(bios, q + 2, 0x0004); be32(bios, q + 4, 0x00FF8033); q += 8;
+    // move.w #$2000,sr         ; allow interrupts
+    be16(bios, q, 0x46FC); be16(bios, q + 2, 0x2000); q += 4;
+    // loop: move.w $FF8010,d0 ; addq.w #1,d0 ; move.w d0,$FF8020 ; bra.s loop
+    const loop = q;
+    be16(bios, q, 0x3039); be32(bios, q + 2, 0x00FF8010); q += 6;
+    be16(bios, q, 0x5240); q += 2;
+    be16(bios, q, 0x33C0); be32(bios, q + 2, 0x00FF8020); q += 6;
+    be16(bios, q, 0x6000 | @as(u16, @truncate(@as(u32, @bitCast(@as(i32, @intCast(loop)) - @as(i32, @intCast(q + 2)))) & 0xFF)));
+    // INT2 handler at 0x300: addq.l #1,$400 ; rte
+    be16(bios, s + 0x300, 0x52B9); be32(bios, s + 0x302, 0x00000400);
+    be16(bios, s + 0x306, 0x4E73);
+    return bios;
+}
+
+test "sega cd mini bios boots the sub cpu and exchanges words through the gate array" {
+    const bios = try makeSegaCdMiniBios(testing.allocator);
+    defer testing.allocator.free(bios);
+
+    var emu = try Emulator.initSegaCdFromMemory(testing.allocator, bios, null);
+    defer emu.deinit(testing.allocator);
+    try testing.expect(emu.isSegaCd());
+
+    emu.runFramesDiscardingAudio(4);
+
+    // Sub echoed command 0 + 1 into status 0 and the main CPU saw it.
+    try testing.expectEqual(@as(u16, 0x1234), emu.scdCommandWord(0));
+    try testing.expectEqual(@as(u16, 0x1235), emu.scdStatusWord(0));
+    try testing.expectEqual(@as(u16, 0x0001), emu.scdCommandWord(1));
+    // INT2 handler ran exactly once (IFL2 is a pulse).
+    try testing.expectEqual(@as(u32, 1), emu.scdReadPrgRam32(0x400));
+    // Sub CPU is spinning in its main loop inside PRG-RAM.
+    const sub_pc = emu.scdSubProgramCounter();
+    try testing.expect(sub_pc >= 0x200 and sub_pc < 0x400);
+    try testing.expect(emu.scdSubInstructions() > 1000);
+    // Main CPU parked on its final branch.
+    const main_pc = emu.cpuState().program_counter;
+    try testing.expect(main_pc >= 0x200 and main_pc < 0x300);
+}
+
+test "sega cd machine resets cleanly and reboots the handshake" {
+    const bios = try makeSegaCdMiniBios(testing.allocator);
+    defer testing.allocator.free(bios);
+    var emu = try Emulator.initSegaCdFromMemory(testing.allocator, bios, null);
+    defer emu.deinit(testing.allocator);
+
+    emu.runFramesDiscardingAudio(3);
+    try testing.expectEqual(@as(u16, 0x1235), emu.scdStatusWord(0));
+    emu.reset();
+    try testing.expectEqual(@as(u16, 0), emu.scdStatusWord(0));
+    try testing.expectEqual(@as(u32, 0), emu.scdReadPrgRam32(0x400));
+    emu.runFramesDiscardingAudio(3);
+    try testing.expectEqual(@as(u16, 0x1235), emu.scdStatusWord(0));
+    try testing.expectEqual(@as(u32, 1), emu.scdReadPrgRam32(0x400));
+}

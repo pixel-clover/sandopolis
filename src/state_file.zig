@@ -8,7 +8,8 @@ const Machine = @import("machine.zig").Machine;
 const Cpu = @import("cpu/cpu.zig").Cpu;
 const Z80 = @import("cpu/z80.zig").Z80;
 
-const save_state_magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
+pub const magic = [8]u8{ 'S', 'N', 'D', 'S', 'T', 'A', 'T', 'E' };
+const save_state_magic = magic;
 // v3: added cartridge mapper state (SSF banks, EEPROM protocol) to the bus
 // state and an eeprom_len byte stream after cartridge RAM.
 // v4: Jgz80State gained ym_timer_watermark (YM timer shadow no longer
@@ -54,7 +55,7 @@ fn skipSaveStateField(comptime Parent: type, comptime field_name: []const u8) bo
     return false;
 }
 
-fn writeValue(writer: anytype, value: anytype) !void {
+pub fn writeValue(writer: anytype, value: anytype) !void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
         .bool => {
@@ -98,13 +99,13 @@ fn writeValue(writer: anytype, value: anytype) !void {
     }
 }
 
-fn readValue(reader: anytype, comptime T: type) !T {
+pub fn readValue(reader: anytype, comptime T: type) !T {
     var value: T = undefined;
     try readInto(reader, &value);
     return value;
 }
 
-fn readInto(reader: anytype, out: anytype) !void {
+pub fn readInto(reader: anytype, out: anytype) !void {
     const T = @typeInfo(@TypeOf(out)).pointer.child;
     switch (@typeInfo(T)) {
         .bool => {
@@ -346,7 +347,7 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
     return readStateData(allocator, &reader);
 }
 
-const SliceReader = struct {
+pub const SliceReader = struct {
     buffer: []const u8,
     pos: usize = 0,
 

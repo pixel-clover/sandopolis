@@ -5,6 +5,7 @@ const Io = @import("input/io.zig").Io;
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const SystemMachine = @import("system_machine.zig").SystemMachine;
 const system_detect = @import("system.zig");
+const platform = @import("platform.zig");
 
 // Libretro API constants.
 const RETRO_API_VERSION: c_uint = 1;
@@ -86,6 +87,37 @@ const CoreState = struct {
     audio: AudioOutput,
     audio_buffer: [8192]i16,
     audio_sample_count: usize,
+    /// Sega CD BIOS images read from the frontend's system directory.
+    bios_images: [3]?[]u8 = .{ null, null, null },
+    bios_set: SystemMachine.BiosSet = .{},
+
+    fn loadBios(self: *CoreState) void {
+        const env = environment_cb orelse return;
+        var dir_ptr: ?[*:0]const u8 = null;
+        // RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY
+        if (!env(9, @ptrCast(&dir_ptr))) return;
+        const dir = std.mem.span(dir_ptr orelse return);
+        const regions = [_]SystemMachine.BiosRegion{ .us, .eu, .jp };
+        for (regions, 0..) |region, i| {
+            const path = std.fs.path.join(allocator, &.{ dir, region.defaultFileName() }) catch continue;
+            defer allocator.free(path);
+            const bytes = platform.cwd().readFileAlloc(allocator, path, 2 * 1024 * 1024) catch continue;
+            if (bytes.len != 128 * 1024) {
+                allocator.free(bytes);
+                continue;
+            }
+            self.bios_images[i] = bytes;
+        }
+        self.bios_set = .{ .us = self.bios_images[0], .eu = self.bios_images[1], .jp = self.bios_images[2] };
+    }
+
+    fn freeBios(self: *CoreState) void {
+        for (&self.bios_images) |*img| {
+            if (img.*) |bytes| allocator.free(bytes);
+            img.* = null;
+        }
+        self.bios_set = .{};
+    }
 };
 
 var core: ?*CoreState = null;
@@ -134,7 +166,7 @@ export fn retro_get_system_info(info: *RetroSystemInfo) callconv(.c) void {
     info.* = .{
         .library_name = "Sandopolis",
         .library_version = std.fmt.comptimePrint("{s}", .{build_options.version}),
-        .valid_extensions = "bin|md|smd|gen|sms|gg|sg",
+        .valid_extensions = "bin|md|smd|gen|sms|gg|sg|cue|iso",
         .need_fullpath = false,
         .block_extract = false,
     };
@@ -289,8 +321,6 @@ export fn retro_cheat_set(_: c_uint, _: bool, _: ?[*:0]const u8) callconv(.c) vo
 
 export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
     const info = game orelse return false;
-    const rom_data = info.data orelse return false;
-    if (info.size == 0) return false;
 
     // The framebuffer is XRGB8888 (u32); without this the frontend assumes
     // the libretro default 0RGB1555 and renders garbage.
@@ -311,14 +341,38 @@ export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
 
     const c_state = allocator.create(CoreState) catch return false;
     c_state.* = .{
-        .machine = SystemMachine.initFromRomBytes(allocator, rom_data[0..info.size], hint) catch {
-            allocator.destroy(c_state);
-            return false;
-        },
+        .machine = undefined,
         .audio = AudioOutput.init(),
         .audio_buffer = [_]i16{0} ** 8192,
         .audio_sample_count = 0,
     };
+    // Sega CD discs load by path (a .cue references sibling files) with the
+    // BIOS from the frontend's system directory; cartridges load from bytes.
+    if (hint == .segacd) {
+        const path = std.mem.span(info.path orelse {
+            allocator.destroy(c_state);
+            return false;
+        });
+        c_state.loadBios();
+        c_state.machine = SystemMachine.initWithOptions(allocator, path, .{ .bios = &c_state.bios_set }) catch {
+            c_state.freeBios();
+            allocator.destroy(c_state);
+            return false;
+        };
+    } else {
+        const rom_data = info.data orelse {
+            allocator.destroy(c_state);
+            return false;
+        };
+        if (info.size == 0) {
+            allocator.destroy(c_state);
+            return false;
+        }
+        c_state.machine = SystemMachine.initFromRomBytes(allocator, rom_data[0..info.size], hint) catch {
+            allocator.destroy(c_state);
+            return false;
+        };
+    }
     c_state.machine.reset();
     core = c_state;
     return true;
@@ -330,7 +384,9 @@ export fn retro_load_game_special(_: c_uint, _: ?*const RetroGameInfo, _: usize)
 
 export fn retro_unload_game() callconv(.c) void {
     if (core) |c| {
+        c.machine.flushPersistentStorage() catch {};
         c.machine.deinit(allocator);
+        c.freeBios();
         allocator.destroy(c);
         core = null;
     }
