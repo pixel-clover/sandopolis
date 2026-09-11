@@ -45,6 +45,14 @@ pub const MainWriteEffects = struct {
     sub_reset_asserted: bool = false,
 };
 
+/// Side effects the board must act on after a sub-side write.
+pub const SubWriteEffects = struct {
+    /// The sub CPU cleared RES0 (0xFF8001 bit 0): reset the CD peripherals.
+    peripheral_reset: bool = false,
+    /// A complete CDD command (checksum nibble written).
+    cdd_command: bool = false,
+};
+
 pub const GateArray = struct {
     // -- Reset / bus request (0x00) --
     /// SRES bit: false = sub CPU held in reset (power-on state).
@@ -88,7 +96,8 @@ pub const GateArray = struct {
     /// Sources latched while masked; re-requested when unmasked.
     irq_latched: u8 = 0,
     cd_fader: u16 = 0,
-    cdd_control: u16 = 0,
+    /// Bit 8 = no audio track playing (D/M), bit 2 = HOCK (sub-writable).
+    cdd_control: u16 = 0x0100,
     cdd_status: [10]u8 = [_]u8{0} ** 10,
     cdd_command: [10]u8 = [_]u8{0} ** 10,
 
@@ -357,18 +366,48 @@ pub const GateArray = struct {
         return if ((offset & 1) == 0) @truncate(word >> 8) else @truncate(word);
     }
 
+    /// Reset the sub-side peripheral registers (timer, mask, fader, CDD/CDC
+    /// ports) the way clearing RES0 does; communication registers survive.
+    pub fn resetPeripherals(self: *GateArray, cpu: *Cpu) void {
+        self.setIrqMask(0, cpu);
+        self.irq_latched = 0;
+        self.cdc_device_destination = 0;
+        self.cdc_data_set_ready = false;
+        self.cdc_end_of_transfer = false;
+        self.cdc_register_address = 0;
+        self.cdc_dma_address = 0;
+        self.stopwatch = 0;
+        self.timer_reload = 0;
+        self.timer_count = 0;
+        self.cd_fader = 0;
+        self.cdd_control = 0x0100;
+        self.cdd_status = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xF };
+        self.cdd_command = [_]u8{0xF} ** 10;
+        self.font_color = 0;
+        self.font_bits = 0;
+    }
+
     /// Returns true when the write completed a CDD command (all ten nibbles
     /// including the checksum at 0x4B), so the board can hand it to the CDD.
     pub fn subWrite(self: *GateArray, offset: u16, value: u16, lanes: u2, p: Peripherals) bool {
+        return self.subWriteWithEffects(offset, value, lanes, p).cdd_command;
+    }
+
+    pub fn subWriteWithEffects(self: *GateArray, offset: u16, value: u16, lanes: u2, p: Peripherals) SubWriteEffects {
+        var effects = SubWriteEffects{};
         const off = offset & 0x1FE;
         const hi = (lanes & 2) != 0;
         const lo = (lanes & 1) != 0;
         if (off >= 0x100) {
-            return false; // Subcode buffer is read-only.
+            return effects; // Subcode buffer is read-only.
         }
         switch (off) {
             0x00 => {
                 if (hi) self.leds = @truncate((value >> 8) & 3);
+                if (lo and (value & 0x0001) == 0) {
+                    self.resetPeripherals(p.cpu);
+                    effects.peripheral_reset = true;
+                }
             },
             0x02 => {
                 if (lo) {
@@ -423,7 +462,8 @@ pub const GateArray = struct {
                 const i = off - 0x42;
                 if (hi) self.cdd_command[i] = @truncate((value >> 8) & 0x0F);
                 if (lo) self.cdd_command[i + 1] = @truncate(value & 0x0F);
-                return off == 0x4A and lo;
+                effects.cdd_command = off == 0x4A and lo;
+                return effects;
             },
             0x4C => {
                 if (lo) self.font_color = @truncate(value);
@@ -446,7 +486,7 @@ pub const GateArray = struct {
             },
             else => {},
         }
-        return false;
+        return effects;
     }
 };
 

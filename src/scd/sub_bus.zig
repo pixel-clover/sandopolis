@@ -44,6 +44,9 @@ pub const SubBus = struct {
     cdc_irq_request: bool = false,
     /// Set when the sub CPU completes a CDD command; the board consumes it.
     cdd_command_ready: bool = false,
+    /// Set when the sub CPU cleared RES0; the board resets the CD hardware.
+    peripheral_reset_request: bool = false,
+
     /// Accesses to Word RAM while the other CPU owned it (2M mode).
     non_owner_word_ram_accesses: u32 = 0,
     /// Backup RAM changed since it was last written to disk.
@@ -105,7 +108,10 @@ pub const SubBus = struct {
         const self: *SubBus = @ptrCast(@alignCast(ctx));
         switch (destination) {
             .prg_ram => {
-                for (data, 0..) |b, i| self.prg_ram[(address + @as(u32, @intCast(i))) & (prg_ram_bytes - 1)] = b;
+                for (data, 0..) |b, i| {
+                    const a = (address + @as(u32, @intCast(i))) & (prg_ram_bytes - 1);
+                    self.prg_ram[a] = b;
+                }
             },
             .word_ram => {
                 switch (self.word_ram.mode) {
@@ -252,7 +258,9 @@ pub const SubBus = struct {
             if (off == 0x06) return;
             const lanes: u2 = if ((off & 1) == 0) 0b10 else 0b01;
             const word: u16 = if ((off & 1) == 0) @as(u16, value) << 8 else value;
-            if (self.gate.subWrite(off, word, lanes, self.peripherals())) self.cdd_command_ready = true;
+            const effects = self.gate.subWriteWithEffects(off, word, lanes, self.peripherals());
+            if (effects.cdd_command) self.cdd_command_ready = true;
+            if (effects.peripheral_reset) self.peripheral_reset_request = true;
             if (off == 0x04 or off == 0x05) self.runPendingDma();
         }
     }
@@ -280,9 +288,9 @@ pub const SubBus = struct {
         if (addr >= 0xFF8000 and addr < 0xFF8200) {
             const off: u16 = @intCast(addr - 0xFF8000);
             if (off == 0x06) return self.cdcRegisterWrite(@truncate(value));
-            if (self.gate.subWrite(off, value, 0b11, self.peripherals())) {
-                self.cdd_command_ready = true;
-            }
+            const effects = self.gate.subWriteWithEffects(off, value, 0b11, self.peripherals());
+            if (effects.cdd_command) self.cdd_command_ready = true;
+            if (effects.peripheral_reset) self.peripheral_reset_request = true;
             if (off == 0x04) self.runPendingDma();
             return;
         }

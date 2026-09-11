@@ -145,7 +145,7 @@ test "sega cd state round-trips the sub-board and keeps a memory disc out of the
     try testing.expectEqual(@as(u8, 0x77), rb.backup_ram[10]);
     try testing.expectEqual(@as(u8, 0x99), rb.pcm.ram[5]);
     try testing.expectEqual(@as(u8, 0x42), rb.cdc.ram[100]);
-    try testing.expectEqual(@as(u32, 1), rb.cdd.lba);
+    try testing.expectEqual(@as(i32, 1), rb.cdd.lba);
     // A memory disc cannot be reopened by path: the drive reports no disc.
     try testing.expect(rb.disc == null);
     try testing.expect(!rb.cdd.disc_present);

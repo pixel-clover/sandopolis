@@ -11,7 +11,7 @@ const c = @cImport({
 // the video output can be compared visually.  Region is forced identical on
 // both cores (like trace-diff).
 //
-// Usage: dump-frames <rom> <frame> [--pal] [--out PREFIX]
+// Usage: dump-frames <rom> <frame> [--pal] [--out PREFIX] [--ref-only]
 
 const default_core_path = "external/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
 
@@ -20,6 +20,8 @@ const Args = struct {
     frame: usize = 600,
     pal: bool = false,
     out_prefix: []const u8 = "frame",
+    /// Only run the reference core (e.g. for content Sandopolis cannot load yet).
+    ref_only: bool = false,
 };
 
 const ReferenceApi = struct {
@@ -82,9 +84,25 @@ fn coreVar(front: *const Frontend, key: []const u8) ?[*:0]const u8 {
     return null;
 }
 
+extern "c" fn vsnprintf(buf: [*]u8, size: usize, fmt: [*c]const u8, args: *std.builtin.VaList) c_int;
+
+fn retroLogCb(level: c_uint, fmt: [*c]const u8, ...) callconv(.c) void {
+    _ = level;
+    var ap = @cVaStart();
+    defer @cVaEnd(&ap);
+    var buf: [1024]u8 = undefined;
+    const n = vsnprintf(&buf, buf.len, fmt orelse return, &ap);
+    if (n > 0) std.debug.print("[gpgx] {s}", .{buf[0..@min(@as(usize, @intCast(n)), buf.len - 1)]});
+}
+
 fn envCb(cmd: c_uint, data: ?*anyopaque) callconv(.c) bool {
     const front = active orelse return false;
     switch (cmd) {
+        c.RETRO_ENVIRONMENT_GET_LOG_INTERFACE => {
+            const cb: *c.struct_retro_log_callback = @ptrCast(@alignCast(data.?));
+            cb.log = retroLogCb;
+            return true;
+        },
         c.RETRO_ENVIRONMENT_SET_PIXEL_FORMAT => {
             const fmt: *const c_uint = @ptrCast(@alignCast(data.?));
             front.pixel_format = fmt.*;
@@ -215,6 +233,16 @@ pub fn main(init: std.process.Init) !void {
     if (!api.load_game(&game)) return error.RetroLoadGameFailed;
     defer api.unload_game();
 
+    if (args.ref_only) {
+        var rf: usize = 0;
+        while (rf <= args.frame) : (rf += 1) api.run();
+        const ref_only_path = try std.fmt.allocPrint(allocator, "{s}_gpgx.ppm", .{args.out_prefix});
+        defer allocator.free(ref_only_path);
+        try writePpm(ref_only_path, front.cap.rgb.items, front.cap.width, front.cap.height);
+        std.debug.print("frame {d}: gpgx {d}x{d} -> {s}\n", .{ args.frame, front.cap.width, front.cap.height, ref_only_path });
+        return;
+    }
+
     var emu = try testing.Emulator.init(allocator, args.rom_path);
     defer emu.deinit(allocator);
     if (args.pal) {
@@ -262,7 +290,7 @@ pub fn main(init: std.process.Init) !void {
 fn parseArgs(it: *std.process.Args.Iterator) !Args {
     _ = it.next();
     const rom = it.next() orelse {
-        std.debug.print("Usage: dump-frames <rom> <frame> [--pal] [--out PREFIX]\n", .{});
+        std.debug.print("Usage: dump-frames <rom> <frame> [--pal] [--out PREFIX] [--ref-only]\n", .{});
         return error.InvalidArgs;
     };
     var a = Args{ .rom_path = rom };
@@ -272,6 +300,8 @@ fn parseArgs(it: *std.process.Args.Iterator) !Args {
             a.pal = true;
         } else if (std.mem.eql(u8, arg, "--out")) {
             a.out_prefix = it.next() orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--ref-only")) {
+            a.ref_only = true;
         } else {
             switch (positional) {
                 0 => a.frame = try std.fmt.parseInt(usize, arg, 10),

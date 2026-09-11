@@ -106,7 +106,6 @@ fn cpuDisasmRead32(core: ?*c.M68kCpu, address: c.u32) callconv(.c) c.u32 {
 pub const Cpu = struct {
     pub const M68kInstructionTraceEntry = m68k_instruction_trace.Entry;
 
-    const default_stack_pointer: u32 = 0x00FF_FE00;
     const default_program_counter: u32 = 0x0000_0200;
 
     pub const State = struct {
@@ -351,12 +350,10 @@ pub const Cpu = struct {
         defer self.endExecution();
         c.m68k_reset(&self.core);
 
-        // A zero reset SSP is valid on the Genesis: stack accesses wrap onto the
-        // 24-bit bus and land at the top of work RAM. Some ROMs rely on that.
-        if (self.core.a_regs[7].l > 0x0100_0000) {
-            c.m68k_set_ar(&self.core, 7, default_stack_pointer);
-            self.core.ssp = default_stack_pointer;
-        }
+        // The reset SSP is used as-is: the 68000 drives a 24-bit bus, so a
+        // zero SSP wraps onto the top of work RAM and 0xFFFFxxxx (the Mega CD
+        // BIOS header's 0xFFFFFD00) is just 0xFFxxxx. Substituting a
+        // "sane" default would move the stack onto program variables.
         if (self.core.pc == 0 or self.core.pc > 0x0040_0000) {
             c.m68k_set_pc(&self.core, default_program_counter);
         }
@@ -736,6 +733,62 @@ test "rocket68 cpu instruction trace records stepped instructions when enabled" 
     try testing.expectEqual(@as(u32, 2), entries[0].pc_after);
     try testing.expectEqual(@as(u32, 2), entries[1].ppc);
     try testing.expectEqual(@as(u32, 4), entries[1].pc_after);
+}
+
+test "reset keeps a 0xFFFFxxxx supervisor stack pointer from the vector table" {
+    // The Mega CD BIOS header sets SSP = 0xFFFFFD00. On the 68000's 24-bit
+    // bus that is simply 0xFFFD00; forcing a "default" stack instead moves
+    // the stack onto the BIOS's own variables (its main<->sub mailbox).
+    const testing = std.testing;
+
+    const Probe = struct {
+        mem: [8]u8 = [_]u8{ 0xFF, 0xFF, 0xFD, 0x00, 0x00, 0x00, 0x04, 0x26 },
+
+        pub fn read8(self: *@This(), address: u32) u8 {
+            return if (address < self.mem.len) self.mem[@intCast(address)] else 0;
+        }
+
+        pub fn read16(self: *@This(), address: u32) u16 {
+            return (@as(u16, self.read8(address)) << 8) | self.read8(address + 1);
+        }
+
+        pub fn read32(self: *@This(), address: u32) u32 {
+            return (@as(u32, self.read16(address)) << 16) | self.read16(address + 2);
+        }
+
+        pub fn write8(_: *@This(), _: u32, _: u8) void {}
+        pub fn write16(_: *@This(), _: u32, _: u16) void {}
+        pub fn write32(_: *@This(), _: u32, _: u32) void {}
+        pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 {
+            return 0;
+        }
+        pub fn shouldHaltCpu(_: *const @This()) bool {
+            return false;
+        }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 {
+            return 0;
+        }
+        pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn reserveDataPortWriteWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn controlPortWriteWaitMasterCycles(_: *@This()) u32 {
+            return 0;
+        }
+        pub fn setCpuRuntimeState(_: *@This(), _: runtime_state.RuntimeState) void {}
+        pub fn clearCpuRuntimeState(_: *@This()) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
+    };
+
+    var probe = Probe{};
+    var memory = MemoryInterface.bind(Probe, &probe);
+    var cpu = Cpu.init();
+    cpu.reset(&memory);
+
+    try testing.expectEqual(@as(u32, 0xFFFF_FD00), cpu.core.a_regs[7].l);
+    try testing.expectEqual(@as(u32, 0x0000_0426), cpu.core.pc);
 }
 
 test "noteBusAccessWait calls notifyBusAccess for slow bus but not z80 control" {

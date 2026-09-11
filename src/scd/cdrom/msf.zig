@@ -34,11 +34,17 @@ pub fn lbaToMsf(lba: u32) Msf {
     return Msf.fromSectors(lba + pregap_sectors);
 }
 
-/// Logical block address for an absolute disc time. Times inside the
-/// lead-in pregap clamp to LBA 0.
-pub fn msfToLba(msf: Msf) u32 {
-    const total = msf.toSectors();
-    return if (total < pregap_sectors) 0 else total - pregap_sectors;
+/// Logical block address for an absolute disc time. Lead-in times (anything
+/// before 00:02:00) are negative: the drive can park its head there, and the
+/// Sega CD BIOS does exactly that while checking a disc.
+pub fn msfToLba(msf: Msf) i32 {
+    return @as(i32, @intCast(msf.toSectors())) - @as(i32, @intCast(pregap_sectors));
+}
+
+/// Absolute disc time for a head position that may sit in the lead-in.
+pub fn lbaSignedToMsf(lba: i32) Msf {
+    const total = lba + @as(i32, @intCast(pregap_sectors));
+    return Msf.fromSectors(@intCast(@max(total, 0)));
 }
 
 pub fn toBcd(value: u8) u8 {
@@ -51,6 +57,14 @@ pub fn fromBcd(value: u8) u8 {
 
 const testing = std.testing;
 
+test "lead-in times map to negative block addresses" {
+    try testing.expectEqual(@as(i32, 0), msfToLba(.{ .m = 0, .s = 2, .f = 0 }));
+    try testing.expectEqual(@as(i32, -5), msfToLba(.{ .m = 0, .s = 1, .f = 70 }));
+    try testing.expectEqual(@as(i32, -150), msfToLba(.{ .m = 0, .s = 0, .f = 0 }));
+    try testing.expectEqual(Msf{ .m = 0, .s = 1, .f = 70 }, lbaSignedToMsf(-5));
+    try testing.expectEqual(Msf{ .m = 0, .s = 2, .f = 0 }, lbaSignedToMsf(0));
+}
+
 test "lba to msf includes the two second pregap" {
     try testing.expectEqual(Msf{ .m = 0, .s = 2, .f = 0 }, lbaToMsf(0));
     try testing.expectEqual(Msf{ .m = 0, .s = 2, .f = 74 }, lbaToMsf(74));
@@ -59,14 +73,14 @@ test "lba to msf includes the two second pregap" {
     try testing.expectEqual(Msf{ .m = 74, .s = 0, .f = 0 }, lbaToMsf(74 * 4500 - 150));
 }
 
-test "msf to lba round trips and clamps the pregap" {
+test "msf to lba round trips across the whole disc" {
     var lba: u32 = 0;
     while (lba < 400_000) : (lba += 7919) {
-        try testing.expectEqual(lba, msfToLba(lbaToMsf(lba)));
+        try testing.expectEqual(@as(i32, @intCast(lba)), msfToLba(lbaToMsf(lba)));
     }
-    try testing.expectEqual(@as(u32, 0), msfToLba(.{ .m = 0, .s = 0, .f = 0 }));
-    try testing.expectEqual(@as(u32, 0), msfToLba(.{ .m = 0, .s = 1, .f = 74 }));
-    try testing.expectEqual(@as(u32, 1), msfToLba(.{ .m = 0, .s = 2, .f = 1 }));
+    try testing.expectEqual(@as(i32, -150), msfToLba(.{ .m = 0, .s = 0, .f = 0 }));
+    try testing.expectEqual(@as(i32, -1), msfToLba(.{ .m = 0, .s = 1, .f = 74 }));
+    try testing.expectEqual(@as(i32, 1), msfToLba(.{ .m = 0, .s = 2, .f = 1 }));
 }
 
 test "bcd conversion" {

@@ -36,7 +36,7 @@ fn makeGenesisRom(allocator: std.mem.Allocator, stack_pointer: u32, program_coun
     return rom;
 }
 
-test "machine reset applies fallback vectors when ROM vectors are invalid" {
+test "machine reset keeps the ROM stack pointer and falls back only for the pc" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -51,8 +51,13 @@ test "machine reset applies fallback vectors when ROM vectors are invalid" {
     defer machine.deinit(testing.allocator);
     machine.reset();
 
+    // The 68000 drives a 24-bit bus, so a stack pointer above 0x00FFFFFF is
+    // not invalid: it simply wraps. Substituting a "sane" default instead
+    // moves the stack onto whatever the program keeps at that address, which
+    // is how the Mega CD BIOS (SSP 0xFFFFFD00) used to lose its mailbox. Only
+    // an unusable reset pc is replaced.
     const cpu = machine.cpuState();
-    try testing.expectEqual(@as(u32, 0x00FF_FE00), cpu.stack_pointer);
+    try testing.expectEqual(@as(u32, 0x0100_0001), cpu.stack_pointer);
     try testing.expectEqual(@as(u32, 0x0000_0200), cpu.program_counter);
 }
 

@@ -41,6 +41,9 @@ pub const max_cdda_frames: u32 = 2048;
 /// Enough PCM for two host frames at 32.55 kHz (a NTSC frame is 543).
 pub const max_pcm_frames: u32 = 2048;
 
+/// The empty block the decoder latches while the drive is seeking.
+const blank_sector = [_]u8{0} ** reader.raw_sector_bytes;
+
 pub const ScdBoard = struct {
     allocator: std.mem.Allocator,
     sub_cpu: Cpu,
@@ -173,10 +176,18 @@ pub const ScdBoard = struct {
     }
 
     fn driveTick(self: *ScdBoard) void {
+        // The status registers are only rewritten when a command is
+        // processed (the reply), never from the drive clock: the sub BIOS
+        // reads the reset pattern at its first INT4 before sending anything.
         const event = self.cdd.tick(self.discPtr());
-        self.publishCddStatus();
         switch (event) {
             .none => {},
+            .blank => {
+                // The decoder free-runs while the drive seeks: it latches an
+                // empty block and still raises DECI, which is how the BIOS
+                // keeps its sector sync alive across a seek.
+                if (self.cdc.decodeSector(&blank_sector)) self.gate.raise(.cdc, &self.sub_cpu);
+            },
             .data => |d| {
                 if (self.cdc.decodeSector(d.raw)) self.gate.raise(.cdc, &self.sub_cpu);
             },
@@ -215,6 +226,14 @@ pub const ScdBoard = struct {
     }
 
     fn serviceSubSideRequests(self: *ScdBoard) void {
+        if (self.sub_bus.peripheral_reset_request) {
+            self.sub_bus.peripheral_reset_request = false;
+            self.cdd = Cdd.init(self.disc != null);
+            self.cdc.reset();
+            self.sub_bus.cdd_command_ready = false;
+            self.sub_bus.cdc_irq_request = false;
+            self.publishCddStatus();
+        }
         if (self.sub_bus.cdd_command_ready) {
             self.sub_bus.cdd_command_ready = false;
             self.processCddCommand();
@@ -384,7 +403,6 @@ pub const ScdBoard = struct {
         b.bind();
     }
 
-
     pub fn device(self: *ScdBoard) ExpansionDevice {
         return ExpansionDevice.bind(ScdBoard, self);
     }
@@ -446,6 +464,7 @@ pub const ScdBoard = struct {
         self.pcm_frame_count = 0;
         self.sub_bus.cdd_command_ready = false;
         self.sub_bus.cdc_irq_request = false;
+        self.sub_bus.peripheral_reset_request = false;
         self.sub_bus.non_owner_word_ram_accesses = 0;
         self.main_non_owner_word_ram_accesses = 0;
         self.publishCddStatus();
@@ -799,6 +818,40 @@ test "gate array access from main flushes pending sub credit first" {
     try testing.expectEqual(@as(u64, 0), board.sync.credit);
 }
 
+test "cdd status registers keep the reset pattern until a command is processed" {
+    // The sub BIOS reads RS0-RS9 at its first INT4 before sending anything
+    // and requires the gate array reset value (zeros, checksum F); the drive
+    // spinning up must not leak into the registers on its own. Genesis Plus
+    // GX likewise only rewrites them from the command path.
+    var bios = [_]u8{0} ** 0x200;
+    var image: [4 * 2048]u8 = undefined;
+    @memset(&image, 0);
+    @memcpy(image[0..14], "SEGADISCSYSTEM");
+    const disc = try Disc.fromMemory(testing.allocator, null, &.{&image});
+    const board = try ScdBoard.create(testing.allocator, &bios, disc, false);
+    defer board.destroy();
+
+    const reset_pattern = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xF };
+    try testing.expectEqualSlices(u8, &reset_pattern, &board.gate.cdd_status);
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        board.stepMaster(716_000);
+        board.flush();
+    }
+    try testing.expectEqual(cdd_mod.DriveStatus.reading_toc, board.cdd.drive);
+    try testing.expectEqualSlices(u8, &reset_pattern, &board.gate.cdd_status);
+
+    // A STATUS command reveals the spun-up drive.
+    var bus = &board.sub_bus;
+    var cmd = [_]u8{0} ** 10;
+    cmd[9] = cdd_mod.checksum(&cmd);
+    var j: usize = 0;
+    while (j < 10) : (j += 2) bus.write16(0xFF8042 + @as(u32, @intCast(j)), (@as(u16, cmd[j]) << 8) | cmd[j + 1]);
+    board.flush();
+    try testing.expectEqual(@as(u8, 0x9), board.gate.cdd_status[0]);
+    try testing.expectEqual(cdd_mod.checksum(&board.gate.cdd_status), board.gate.cdd_status[9]);
+}
+
 test "drive ticks at 75 Hz, raises INT4 under HOCK, and decodes data sectors into the CDC" {
     var bios = [_]u8{0} ** 0x200;
     var image: [4 * 2048]u8 = undefined;
@@ -828,11 +881,30 @@ test "drive ticks at 75 Hz, raises INT4 under HOCK, and decodes data sectors int
     try testing.expectEqual(@as(u8, 0x2), board.gate.cdd_status[0]); // seeking
 
     // One sector period = 12.5M/75 = 166,666.67 sub cycles, about 715,909
-    // master cycles; step a little past it so the tick lands.
-    board.stepMaster(716_000);
-    board.flush();
+    // master cycles; step a little past it so each tick lands. The drive
+    // spends its latency window seeking before it starts playing.
+    var period: u32 = 0;
+    while (period < cdd_mod.seek_latency_ticks) : (period += 1) {
+        board.stepMaster(716_000);
+        board.flush();
+    }
     try testing.expect(board.sub_cpu.isInterruptPending(4));
+    try testing.expectEqual(cdd_mod.DriveStatus.playing, board.cdd.drive);
+    // The registers only change when the sub CPU polls.
+    try testing.expectEqual(@as(u8, 0x2), board.gate.cdd_status[0]);
+    var poll = [_]u8{0} ** 10;
+    poll[9] = cdd_mod.checksum(&poll);
+    i = 0;
+    while (i < 10) : (i += 2) bus.write16(0xFF8042 + @as(u32, @intCast(i)), (@as(u16, poll[i]) << 8) | poll[i + 1]);
+    board.flush();
     try testing.expectEqual(@as(u8, 0x1), board.gate.cdd_status[0]); // playing
+    board.sub_cpu.clearInterrupt();
+
+    // The decoder free-ran through the seek, so it is holding an empty block
+    // and a pending DECI. Acknowledge it (STAT3 read) to see the next one.
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &board.cdc.head);
+    bus.write8(0xFF8005, 0x0F);
+    _ = bus.read8(0xFF8007);
     board.sub_cpu.clearInterrupt();
 
     // Next tick delivers LBA 1 to the CDC: header 00:02:01, data at PT+4.
@@ -841,7 +913,9 @@ test "drive ticks at 75 Hz, raises INT4 under HOCK, and decodes data sectors int
     try testing.expect(board.sub_cpu.isInterruptPending(5));
     try testing.expectEqualSlices(u8, &.{ 0x00, 0x02, 0x01, 0x01 }, &board.cdc.head);
     const pt: u32 = board.cdc.pt;
-    try testing.expectEqualSlices(u8, image[2048 .. 2048 + 16], board.cdc.ram[pt + 4 .. pt + 4 + 16]);
+    // The block pointer is free-running; the buffer wraps at 16 KB.
+    const block: u32 = (pt + 4) & (cdc_mod.buffer_bytes - 1);
+    try testing.expectEqualSlices(u8, image[2048 .. 2048 + 16], board.cdc.ram[block .. block + 16]);
 
     // Main reads the block through the host port when DD = main.
     bus.write8(0xFF8005, 0x01);
@@ -919,8 +993,8 @@ test "playing an audio track streams faded cd-da frames to the audio stage" {
     var i: usize = 0;
     while (i < 10) : (i += 2) board.sub_bus.write16(0xFF8042 + @as(u32, @intCast(i)), (@as(u16, cmd[i]) << 8) | cmd[i + 1]);
 
-    // Seek tick + two playing ticks.
-    board.stepMaster(3 * 716_000);
+    // Seek latency, then two playing ticks.
+    board.stepMaster((cdd_mod.seek_latency_ticks + 2) * 716_000);
     board.flush();
     const ext = board.takeExpansionAudio();
     try testing.expectEqual(@as(usize, 2 * 588), ext.cdda.len);
