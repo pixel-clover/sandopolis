@@ -6,6 +6,7 @@ const AudioOutput = @import("audio/output.zig").AudioOutput;
 const state_file = @import("state_file.zig");
 const system_detect = @import("system.zig");
 const SystemMachine = @import("system_machine.zig").SystemMachine;
+const Scene = @import("scene.zig");
 
 const allocator: std.mem.Allocator = if (builtin.target.cpu.arch == .wasm32)
     std.heap.wasm_allocator
@@ -38,6 +39,9 @@ const WasmEmulator = struct {
     last_save_buf: ?[]u8,
     last_save_len: usize,
     frame_count: u64 = 0,
+    /// Allocated on first use. Kept across frames so the dirty-tile set in
+    /// the scene stays meaningful.
+    scene: ?*Scene.FrameScene = null,
 };
 
 const WasmAudioSink = struct {
@@ -100,6 +104,7 @@ export fn sandopolis_create(rom_ptr: [*]const u8, rom_len: usize, system_hint: u
 }
 
 export fn sandopolis_destroy(emu: *WasmEmulator) void {
+    if (emu.scene) |s| allocator.destroy(s);
     if (emu.last_save_buf) |buf| allocator.free(buf);
     if (emu.snapshot) |*snap| snap.deinit(allocator);
     emu.machine.deinit(allocator);
@@ -121,6 +126,38 @@ export fn sandopolis_framebuffer_ptr(emu: *const WasmEmulator) [*]const u32 {
 
 export fn sandopolis_framebuffer_len(emu: *const WasmEmulator) usize {
     return emu.machine.framebuffer().len;
+}
+
+// Frame scene description, for the 3D frontend. The scene is a read-only
+// view of VDP state; extracting it does not affect emulation.
+
+/// Extract the current frame into the emulator's scene buffer. Returns 1
+/// when the buffer holds content, and 0 when the current system or graphics
+/// mode is not described yet.
+export fn sandopolis_scene_extract(emu: *WasmEmulator) u32 {
+    const s = emu.scene orelse blk: {
+        const created = allocator.create(Scene.FrameScene) catch return 0;
+        created.* = .{};
+        emu.scene = created;
+        break :blk created;
+    };
+    return if (emu.machine.extractScene(s)) 1 else 0;
+}
+
+/// Pointer to the scene buffer, or null before the first extraction.
+export fn sandopolis_scene_ptr(emu: *const WasmEmulator) ?[*]const u8 {
+    const s = emu.scene orelse return null;
+    return @ptrCast(s);
+}
+
+export fn sandopolis_scene_len() usize {
+    return @sizeOf(Scene.FrameScene);
+}
+
+/// Binary layout version of the scene buffer. JS must refuse to parse a
+/// buffer whose version it does not know.
+export fn sandopolis_scene_layout_version() u32 {
+    return Scene.layout_version;
 }
 
 export fn sandopolis_screen_width(emu: *const WasmEmulator) u32 {

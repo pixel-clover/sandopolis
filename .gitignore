@@ -115,3 +115,9 @@ web/fonts/
 zig-pkg/
 .agents/
 *.so
+*.ppm
+
+# Machine-generated 3D profiles: drafts produced by `zig build mine-profile`,
+# reproducible from the ROM and not worth versioning. Hand-tuned profiles are
+# deliberate content and are committed explicitly with `git add -f`.
+web/profiles/*.json

@@ -24,6 +24,12 @@ pub const SmsVdp = struct {
 
     // Frame state
     scanline: u16 = 0,
+    /// Register 8 sampled at the start of each visible scanline. Games rewrite
+    /// it mid-frame to split the screen into bands that scroll at different
+    /// rates, so a single frame-level value cannot describe the picture.
+    /// Rebuilt every frame; it is only carried in save states because the VDP
+    /// is serialized as a raw struct.
+    line_hscroll: [max_framebuffer_height]u8 = [_]u8{0} ** max_framebuffer_height,
     // Reg 9 (vscroll) is latched once per frame; mid-frame writes take
     // effect on the next frame (SMSPower VDP documentation).
     latched_vscroll: u8 = 0,
@@ -288,6 +294,11 @@ pub const SmsVdp = struct {
         }
 
         if (self.scanline < visible_lines) {
+            // Sample the scroll register before rendering, so a mid-frame
+            // rewrite is attributed to the line it takes effect on.
+            if (self.scanline < max_framebuffer_height) {
+                self.line_hscroll[self.scanline] = self.regs[8];
+            }
             // Active display: render and decrement line counter
             if (self.isDisplayEnabled()) {
                 self.renderScanline(self.scanline);
@@ -338,19 +349,19 @@ pub const SmsVdp = struct {
         return (self.regs[1] & 0x40) != 0;
     }
 
-    fn isLeftColumnBlanked(self: *const SmsVdp) bool {
+    pub fn isLeftColumnBlanked(self: *const SmsVdp) bool {
         return (self.regs[0] & 0x20) != 0;
     }
 
-    fn isSpriteDouble(self: *const SmsVdp) bool {
+    pub fn isSpriteDouble(self: *const SmsVdp) bool {
         return (self.regs[1] & 0x01) != 0;
     }
 
-    fn isTall(self: *const SmsVdp) bool {
+    pub fn isTall(self: *const SmsVdp) bool {
         return (self.regs[1] & 0x02) != 0;
     }
 
-    fn spriteHeight(self: *const SmsVdp) u8 {
+    pub fn spriteHeight(self: *const SmsVdp) u8 {
         const base: u8 = if (self.isTall()) 16 else 8;
         return if (self.isSpriteDouble()) base * 2 else base;
     }
@@ -364,16 +375,16 @@ pub const SmsVdp = struct {
         };
     }
 
-    fn spriteAttributeTableBase(self: *const SmsVdp) u16 {
+    pub fn spriteAttributeTableBase(self: *const SmsVdp) u16 {
         return @as(u16, self.regs[5] & 0x7E) << 7;
     }
 
-    fn spritePatternBase(self: *const SmsVdp) u16 {
+    pub fn spritePatternBase(self: *const SmsVdp) u16 {
         // In Mode 4, bit 2 of register 6 selects pattern base: 0 = 0x0000, 1 = 0x2000
         return if ((self.regs[6] & 0x04) != 0) @as(u16, 0x2000) else 0;
     }
 
-    fn backdropColor(self: *const SmsVdp) u32 {
+    pub fn backdropColor(self: *const SmsVdp) u32 {
         const index = (self.regs[7] & 0x0F) | 0x10; // Always palette 1
         return self.paletteColor(index);
     }
@@ -397,7 +408,7 @@ pub const SmsVdp = struct {
         return (0xFF << 24) | (r << 16) | (g << 8) | b;
     }
 
-    fn paletteColor(self: *const SmsVdp, index: u8) u32 {
+    pub fn paletteColor(self: *const SmsVdp, index: u8) u32 {
         if (self.is_game_gear) {
             const byte_offset = @as(usize, index) * 2;
             return ggCramToRgba(self.cram[byte_offset], self.cram[byte_offset + 1]);
@@ -423,11 +434,11 @@ pub const SmsVdp = struct {
     }
 
     // GG viewport: 160x144 centered in 256x192
-    const gg_left: usize = 48;
+    pub const gg_left: usize = 48;
     const gg_right: usize = 208; // 48 + 160
     /// GG LCD window top line: 24 in 192-line mode, 40 in 224-line mode
     /// (jgenesis: viewport top shifts down 16 lines for the 224 mode).
-    fn ggViewportTop(self: *const SmsVdp) u16 {
+    pub fn ggViewportTop(self: *const SmsVdp) u16 {
         return if (self.displayMode() == .mode_224) 40 else 24;
     }
     pub const gg_visible_width: usize = 160;

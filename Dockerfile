@@ -50,6 +50,9 @@ FROM nginx:1.27-alpine
 
 RUN mkdir -p /usr/share/nginx/html/fonts
 COPY web/*.html web/*.js web/CREDITS.txt /usr/share/nginx/html/
+# Per-game 3D profiles. The web build serves these by ROM content hash; the
+# GitHub Pages workflow already ships them via its recursive copy of web/.
+COPY web/profiles/ /usr/share/nginx/html/profiles/
 COPY src/frontend/fonts/ttf/JetBrainsMono-*.ttf /usr/share/nginx/html/fonts/
 COPY docs/assets/overlays/crt/ /tmp/overlays/crt/
 COPY docs/assets/overlays/genesis/ /tmp/overlays/genesis/
