@@ -7,7 +7,21 @@ pub const SystemType = enum {
     sms,
     gg,
     sg1000,
+    /// Mega-CD / Sega CD disc image (CUE/BIN or ISO) run through the CD BIOS.
+    segacd,
 };
+
+/// Signature at the start of a Sega CD data track's first sector
+/// (offset 0 in a 2048-byte user-data image, offset 16 in a 2352-byte raw
+/// sector after the 12-byte sync and 4-byte header).
+pub const sega_cd_disc_signature = "SEGADISCSYSTEM";
+
+pub fn isSegaCdDiscImage(bytes: []const u8) bool {
+    const sig = sega_cd_disc_signature;
+    if (bytes.len >= sig.len and std.mem.eql(u8, bytes[0..sig.len], sig)) return true;
+    if (bytes.len >= 16 + sig.len and std.mem.eql(u8, bytes[16 .. 16 + sig.len], sig)) return true;
+    return false;
+}
 
 /// Detect whether a ROM belongs to a Genesis or SMS system.
 /// Checks for SMS "TMR SEGA" header first, then Genesis "SEGA" header.
@@ -21,6 +35,7 @@ pub fn detectSystem(rom: []const u8) SystemType {
             else => .sms,
         };
     }
+    if (isSegaCdDiscImage(rom)) return .segacd;
     // Genesis ROMs have "SEGA" at offset 0x100
     if (rom.len >= 0x104 and std.mem.eql(u8, rom[0x100..0x104], "SEGA")) return .genesis;
     // Default to Genesis for unknown ROMs
@@ -35,6 +50,8 @@ pub fn detectSystemFromExtension(path: []const u8) ?SystemType {
     if (std.ascii.eqlIgnoreCase(ext, ".sg")) return .sg1000;
     if (std.ascii.eqlIgnoreCase(ext, ".gg")) return .gg;
     if (std.ascii.eqlIgnoreCase(ext, ".sms")) return .sms;
+    if (std.ascii.eqlIgnoreCase(ext, ".cue")) return .segacd;
+    if (std.ascii.eqlIgnoreCase(ext, ".iso")) return .segacd;
     return null;
 }
 
@@ -80,5 +97,29 @@ test "detect system game gear" {
 
 test "detect system unknown defaults to genesis" {
     const rom = [_]u8{0} ** 0x100;
+    try testing.expectEqual(SystemType.genesis, detectSystem(&rom));
+}
+
+test "detect sega cd from disc image extension" {
+    try testing.expectEqual(SystemType.segacd, detectSystemFromExtension("game.cue").?);
+    try testing.expectEqual(SystemType.segacd, detectSystemFromExtension("Sonic CD (USA).CUE").?);
+    try testing.expectEqual(SystemType.segacd, detectSystemFromExtension("game.iso").?);
+}
+
+test "detect sega cd from disc header in raw sector bytes" {
+    // 2048-byte user-data image: header at offset 0.
+    var iso = [_]u8{0} ** 0x200;
+    @memcpy(iso[0..15], "SEGADISCSYSTEM ");
+    try testing.expectEqual(SystemType.segacd, detectSystem(&iso));
+
+    // 2352-byte raw sector: 12-byte sync + 4-byte header precede user data.
+    var raw = [_]u8{0} ** 0x200;
+    @memcpy(raw[16..31], "SEGADISCSYSTEM ");
+    try testing.expectEqual(SystemType.segacd, detectSystem(&raw));
+}
+
+test "genesis rom with SEGA header is not misdetected as sega cd" {
+    var rom = [_]u8{0} ** 0x200;
+    @memcpy(rom[0x100..0x104], "SEGA");
     try testing.expectEqual(SystemType.genesis, detectSystem(&rom));
 }

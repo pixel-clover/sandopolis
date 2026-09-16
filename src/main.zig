@@ -708,9 +708,49 @@ const SdlDialogFileFilter = extern struct {
 };
 
 const rom_dialog_filters = [_]SdlDialogFileFilter{
-    .{ .name = "ROM files", .pattern = "bin;md;smd;gen;sms;gg;sg;zip" },
+    .{ .name = "ROM and disc files", .pattern = "bin;md;smd;gen;sms;gg;sg;zip;cue;iso" },
     .{ .name = "All files", .pattern = "*" },
 };
+
+/// Sega CD BIOS images loaded from the config paths (or the `bios/`
+/// directory next to the config file). Owned for the process lifetime.
+const SegaCdBiosStorage = struct {
+    images: [3]?[]u8 = .{ null, null, null },
+    set: SystemMachine.BiosSet = .{},
+
+    fn load(self: *SegaCdBiosStorage, allocator: std.mem.Allocator, frontend_config: *const FrontendConfig, config_file_path: []const u8) void {
+        const regions = [_]SystemMachine.BiosRegion{ .us, .eu, .jp };
+        const configured = [_][]const u8{ frontend_config.segacd_bios_us.slice(), frontend_config.segacd_bios_eu.slice(), frontend_config.segacd_bios_jp.slice() };
+        for (regions, configured, 0..) |region, configured_path, i| {
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const path: []const u8 = if (configured_path.len != 0)
+                configured_path
+            else blk: {
+                const dir = std.fs.path.dirname(config_file_path) orelse ".";
+                break :blk std.fmt.bufPrint(&path_buf, "{s}{c}bios{c}{s}", .{ dir, std.fs.path.sep, std.fs.path.sep, region.defaultFileName() }) catch continue;
+            };
+            const bytes = platform.cwd().readFileAlloc(allocator, path, 2 * 1024 * 1024) catch continue;
+            if (bytes.len != 128 * 1024) {
+                std.debug.print("Ignoring Sega CD BIOS {s}: unexpected size {d}\n", .{ path, bytes.len });
+                allocator.free(bytes);
+                continue;
+            }
+            self.images[i] = bytes;
+            std.debug.print("Sega CD BIOS ({s}): {s}\n", .{ region.name(), path });
+        }
+        self.set = .{ .us = self.images[0], .eu = self.images[1], .jp = self.images[2] };
+    }
+
+    fn deinit(self: *SegaCdBiosStorage, allocator: std.mem.Allocator) void {
+        for (&self.images) |*img| {
+            if (img.*) |bytes| allocator.free(bytes);
+            img.* = null;
+        }
+        self.set = .{};
+    }
+};
+
+var sega_cd_bios: SegaCdBiosStorage = .{};
 
 // Re-export CLI types from cli.zig
 const CliConfig = cli_module.Config;
@@ -1599,7 +1639,12 @@ fn loadRomIntoMachine(
     rom_path: []const u8,
     notifications: FrontendNotifications,
 ) !void {
-    var next_machine = try SystemMachine.init(allocator, rom_path);
+    var next_machine = SystemMachine.initWithOptions(allocator, rom_path, .{ .bios = &sega_cd_bios.set }) catch |err| {
+        if (err == error.BiosMissing) {
+            notifyFrontend(notifications, .failure, "SEGA CD BIOS MISSING: SET segacd.bios_us IN CONFIG", .{});
+        }
+        return err;
+    };
     errdefer next_machine.deinit(allocator);
 
     logLoadedRomMetadata(&next_machine, rom_path);
@@ -2907,6 +2952,8 @@ pub fn main(init: std.process.Init) !void {
     var input_bindings = loaded_config.bindings;
     var frontend_config = loaded_config.frontend;
     std.debug.print("Config: {s}\n", .{config_file_path});
+    sega_cd_bios.load(allocator, &frontend_config, config_file_path);
+    defer sega_cd_bios.deinit(allocator);
 
     // Write default config on first run if file doesn't exist
     platform.cwd().access(config_file_path, .{}) catch |err| switch (err) {

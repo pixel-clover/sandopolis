@@ -16,6 +16,7 @@ const Z80 = @import("../cpu/z80.zig").Z80;
 const MemoryInterface = @import("../cpu/memory_interface.zig").MemoryInterface;
 const cpu_runtime = @import("../cpu/runtime_state.zig");
 const SchedulerBus = @import("../scheduler/runtime.zig").SchedulerBus;
+const ExpansionDevice = @import("expansion.zig").ExpansionDevice;
 
 pub const Bus = struct {
     pub const M68kSoundWriteTraceEntry = m68k_sound_write_trace.Entry;
@@ -37,6 +38,9 @@ pub const Bus = struct {
     cpu_runtime_state: cpu_runtime.RuntimeState,
     m68k_sound_write_trace: m68k_sound_write_trace.Trace,
     active_execution_counters: ?*CoreFrameCounters,
+    /// Optional expansion-slot device (Sega CD sub-board and 32X adapter). Not
+    /// owned by the bus; the owning machine installs and rebinds it.
+    expansion: ?ExpansionDevice = null,
 
     const Z80ControlLines = struct {
         bus_req_asserted: bool,
@@ -163,6 +167,7 @@ pub const Bus = struct {
             ensureZ80HostWindowCallback,
             self,
             notifySubInstructionBusAccess,
+            self.expansion,
         );
     }
 
@@ -325,6 +330,7 @@ pub const Bus = struct {
         self.cpu_runtime_state = .{};
         self.m68k_sound_write_trace.clear();
         self.ensureZ80HostWindow();
+        if (self.expansion) |dev| dev.reset();
     }
 
     pub fn softReset(self: *Bus) void {
@@ -568,11 +574,13 @@ pub const Bus = struct {
     pub fn stepMaster(self: *Bus, master_cycles: u32) void {
         var timing = self.z80TimingView();
         timing.stepMaster(master_cycles);
+        if (self.expansion) |dev| dev.stepMaster(master_cycles);
     }
 
     pub fn flushDeferredZ80(self: *Bus) void {
         var timing = self.z80TimingView();
         timing.flushDeferredZ80();
+        if (self.expansion) |dev| dev.flush();
     }
 
     /// stepMaster + flushDeferredZ80 in one call.  Used by tests that
@@ -975,4 +983,32 @@ test "vdp memory-to-vram dma is progressed by vdp with fifo latency" {
     try testing.expectEqual(@as(u8, 0xCD), bus.vdp.vram[1]);
     try testing.expect(!bus.vdp.dma_active);
     try testing.expect(!bus.vdp.shouldHaltCpu());
+}
+
+test "bus forwards master credit, flush, and reset to the expansion device" {
+    const expansion = @import("expansion.zig");
+    var bus = try Bus.init(testing.allocator, null);
+    defer bus.deinit(testing.allocator);
+
+    var probe = expansion.ProbeDevice{ .base = 0x200000 };
+    bus.expansion = probe.device();
+
+    bus.stepMaster(70);
+    bus.stepMaster(14);
+    try testing.expectEqual(@as(u64, 84), probe.master_credit);
+    try testing.expectEqual(@as(u32, 0), probe.flush_count);
+
+    bus.flushDeferredZ80();
+    try testing.expectEqual(@as(u32, 1), probe.flush_count);
+
+    bus.reset();
+    try testing.expectEqual(@as(u32, 1), probe.reset_count);
+
+    // The device is reachable through the bus's 68K memory path.
+    bus.write16(0x200000, 0x1234);
+    try testing.expectEqual(@as(u16, 0x1234), bus.read16(0x200000));
+    try testing.expectEqual(@as(u32, 0x12345678), blk: {
+        bus.write32(0x200010, 0x12345678);
+        break :blk bus.read32(0x200010);
+    });
 }
