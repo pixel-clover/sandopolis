@@ -149,11 +149,10 @@ Flags:
 > Note that the Sega CD needs BIOS files (`segacd.bios_us`, `segacd.bios_eu`, or `segacd.bios_jp`, or place `bios_CD_U.bin`, `bios_CD_E.bin`, and
 `bios_CD_J.bin`) that are not included.
 > So, the files must be placed where Sandopolis can find them.
-> Here
-
-- Desktop build: put the files in the `bios/` directory beside the config file (`sandopolis.cfg`).
-- Libretro build: place the file in the frontend's system directory.
-- Web build: upload the bios file through `Settings` menu. The bios files are kept in the browser you're using.
+> 
+> - Desktop build: put the files in the `bios/` directory beside the config file (`sandopolis.cfg`).
+> - Libretro build: place the file in the frontend's system directory.
+> - Web build: upload the bios file through `Settings` menu. The bios files are kept in the browser you're using.
 
 ---
 
