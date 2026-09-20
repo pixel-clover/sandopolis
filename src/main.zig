@@ -306,6 +306,20 @@ const settingsActionHint = menu_module.settingsActionHint;
 const frontendGamepadCommandFromHome = menu_module.gamepadCommandFromHome;
 const activateHomeMenuSelection = menu_module.activateHomeMenuSelection;
 
+const InputReleaseLatch = struct {
+    paused: bool = false,
+
+    fn update(self: *InputReleaseLatch, paused: bool) bool {
+        const entered_pause = paused and !self.paused;
+        self.paused = paused;
+        return entered_pause;
+    }
+};
+
+fn shouldTriggerHotkey(pressed: bool, repeated: bool) bool {
+    return pressed and !repeated;
+}
+
 // Re-export save state types and constants from frontend/saves.zig
 const save_state_preview_width = saves_module.preview_width;
 const save_state_preview_height = saves_module.preview_height;
@@ -1779,65 +1793,6 @@ fn logLoadedRomMetadata(machine: anytype, rom_path: []const u8) void {
     });
 }
 
-const SmsInput = @import("sms/input.zig").SmsInput;
-
-fn applySmsKeyboardInput(machine: *SystemMachine, input: InputBindings.KeyboardInput, pressed: bool) void {
-    // Default SMS keyboard layout:
-    // Arrows = D-Pad, A/S = Button1/Button2, Enter = Pause (NMI)
-    const mapping = smsKeyboardMapping(input);
-    if (mapping.button) |btn| {
-        machine.setSmsButton(mapping.port, btn, pressed);
-    } else if (mapping.pause) {
-        // Forward releases too: Game Gear START is level-sensitive, so
-        // never sending `false` latched the button down forever.  (SMS
-        // pause is edge-triggered on press and ignores the release.)
-        machine.setSmsStartOrPause(pressed);
-    }
-}
-
-const SmsKeyMapping = struct {
-    port: u1 = 0,
-    button: ?SmsInput.Button = null,
-    pause: bool = false,
-};
-
-fn applySmsGamepadInput(machine: *SystemMachine, port: u1, input: InputBindings.GamepadInput, pressed: bool) void {
-    const btn: ?SmsInput.Button = switch (input) {
-        .dpad_up => .up,
-        .dpad_down => .down,
-        .dpad_left => .left,
-        .dpad_right => .right,
-        .south, .west => .button1,
-        .east, .north => .button2,
-        .start => {
-            machine.setSmsStartOrPause(pressed);
-            return;
-        },
-        else => null,
-    };
-    if (btn) |b| machine.setSmsButton(port, b, pressed);
-}
-
-fn smsKeyboardMapping(input: InputBindings.KeyboardInput) SmsKeyMapping {
-    return switch (input) {
-        .up => .{ .button = .up },
-        .down => .{ .button = .down },
-        .left => .{ .button = .left },
-        .right => .{ .button = .right },
-        .a, .s => .{ .button = .button1 },
-        .d => .{ .button = .button2 },
-        .@"return" => .{ .pause = true },
-        // Player 2: I/J/K/L = D-Pad, N/M = buttons
-        .i => .{ .port = 1, .button = .up },
-        .k => .{ .port = 1, .button = .down },
-        .j => .{ .port = 1, .button = .left },
-        .l => .{ .port = 1, .button = .right },
-        .n => .{ .port = 1, .button = .button1 },
-        .m => .{ .port = 1, .button = .button2 },
-        else => .{},
-    };
-}
-
 fn handleBindingEditorKey(
     ui: *FrontendUi,
     editor: *BindingEditorState,
@@ -1855,7 +1810,7 @@ fn handleBindingEditorKey(
         if (bindings.hotkeyForBinding(binding) != .open_keyboard_editor) return false;
         ui.overlay = .keyboard_editor;
         editor.open();
-        if (machine.asGenesis()) |gen| gen.releaseKeyboardBindings(bindings);
+        machine.releaseKeyboardBindings(bindings);
         return true;
     }
 
@@ -3041,6 +2996,7 @@ pub fn main(init: std.process.Init) !void {
     var core_profile_frames_remaining: u32 = 0;
     var file_dialog_state = FileDialogState{};
     var binding_editor = BindingEditorState{};
+    var input_release_latch = InputReleaseLatch{ .paused = frontend_ui.emulationPaused() };
 
     if (rom_path) |path| {
         rememberLoadedRom(&frontend_config, &input_bindings, frontend_config_path, .{ .toast = &frontend_toast, .frame_number = frontend_frame_counter }, path);
@@ -3054,30 +3010,20 @@ pub fn main(init: std.process.Init) !void {
         while (zsdl3.pollEvent(&event)) {
             switch (event.type) {
                 zsdl3.EventType.quit => break :mainLoop,
+                zsdl3.EventType.window_focus_lost => {
+                    machine.releaseAllInputs();
+                    gamepad_sticks = [_]DirectionState{.{}} ** InputBindings.player_count;
+                    gamepad_triggers = [_]TriggerState{.{}} ** InputBindings.player_count;
+                    joystick_axes = [_]DirectionState{.{}} ** InputBindings.player_count;
+                    joystick_hats = [_]DirectionState{.{}} ** InputBindings.player_count;
+                },
                 zsdl3.EventType.gamepad_added => assignGamepadSlot(&gamepads, &joysticks, &gamepad_sticks, &gamepad_triggers, event.gdevice.which),
                 zsdl3.EventType.gamepad_removed => {
-                    if (machine.asGenesis()) |gen| {
-                        removeGamepadSlot(&gamepads, &gamepad_sticks, &gamepad_triggers, gen, &input_bindings, event.gdevice.which);
-                    } else {
-                        // SMS: just close the gamepad slot without machine interaction
-                        for (&gamepads, 0..) |*slot, port| {
-                            if (slot.*) |assigned| {
-                                if (assigned.id == event.gdevice.which) {
-                                    gamepad_sticks[port] = .{};
-                                    gamepad_triggers[port] = .{};
-                                    assigned.handle.close();
-                                    slot.* = null;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    removeGamepadSlot(&gamepads, &gamepad_sticks, &gamepad_triggers, &machine, &input_bindings, event.gdevice.which);
                 },
                 zsdl3.EventType.joystick_added => assignJoystickSlot(&gamepads, &joysticks, &joystick_axes, &joystick_hats, event.jdevice.which),
                 zsdl3.EventType.joystick_removed => {
-                    if (machine.asGenesis()) |gen| {
-                        removeJoystickSlot(&joysticks, &joystick_axes, &joystick_hats, gen, &input_bindings, event.jdevice.which);
-                    }
+                    removeJoystickSlot(&joysticks, &joystick_axes, &joystick_hats, &machine, &input_bindings, event.jdevice.which);
                 },
                 zsdl3.EventType.gamepad_button_down, zsdl3.EventType.gamepad_button_up => {
                     const pressed = (event.type == zsdl3.EventType.gamepad_button_down);
@@ -3174,11 +3120,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (frontend_ui.emulationPaused() and pressed) continue;
                     if (gamepadInputFromButton(button)) |mapped_button| {
-                        if (machine.asGenesis()) |gen| {
-                            _ = gen.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
-                        } else {
-                            applySmsGamepadInput(&machine, @intCast(@min(port, 1)), mapped_button, pressed);
-                        }
+                        _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
                 },
                 zsdl3.EventType.gamepad_axis_motion => {
@@ -3248,18 +3190,10 @@ pub fn main(init: std.process.Init) !void {
                         .unhandled => {},
                     }
                     if (frontend_ui.emulationPaused()) {
-                        if (machine.asGenesis()) |gen| applyReleaseTransitionsOnly(&input_bindings, gen, port, transitions);
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
                         continue;
                     }
-                    if (machine.asGenesis()) |gen| {
-                        applyInputTransitions(&input_bindings, gen, port, transitions);
-                    } else {
-                        for (transitions) |maybe_transition| {
-                            if (maybe_transition) |transition| {
-                                applySmsGamepadInput(&machine, @intCast(@min(port, 1)), transition.input, transition.pressed);
-                            }
-                        }
-                    }
+                    applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_button_down, zsdl3.EventType.joystick_button_up => {
                     const pressed = (event.type == zsdl3.EventType.joystick_button_down);
@@ -3324,11 +3258,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (frontend_ui.emulationPaused() and pressed) continue;
                     if (joystickInputFromButton(event.jbutton.button)) |mapped_button| {
-                        if (machine.asGenesis()) |gen| {
-                            _ = gen.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
-                        } else {
-                            applySmsGamepadInput(&machine, @intCast(@min(port, 1)), mapped_button, pressed);
-                        }
+                        _ = machine.applyGamepadBindings(&input_bindings, port, mapped_button, pressed);
                     }
                 },
                 zsdl3.EventType.joystick_axis_motion => {
@@ -3395,18 +3325,10 @@ pub fn main(init: std.process.Init) !void {
                         .unhandled => {},
                     }
                     if (frontend_ui.emulationPaused()) {
-                        if (machine.asGenesis()) |gen| applyReleaseTransitionsOnly(&input_bindings, gen, port, transitions);
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
                         continue;
                     }
-                    if (machine.asGenesis()) |gen| {
-                        applyInputTransitions(&input_bindings, gen, port, transitions);
-                    } else {
-                        for (transitions) |maybe_transition| {
-                            if (maybe_transition) |transition| {
-                                applySmsGamepadInput(&machine, @intCast(@min(port, 1)), transition.input, transition.pressed);
-                            }
-                        }
-                    }
+                    applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.joystick_hat_motion => {
                     if (event.jhat.hat != 0) continue;
@@ -3468,18 +3390,10 @@ pub fn main(init: std.process.Init) !void {
                         .unhandled => {},
                     }
                     if (frontend_ui.emulationPaused()) {
-                        if (machine.asGenesis()) |gen| applyReleaseTransitionsOnly(&input_bindings, gen, port, transitions);
+                        applyReleaseTransitionsOnly(&input_bindings, &machine, port, transitions);
                         continue;
                     }
-                    if (machine.asGenesis()) |gen| {
-                        applyInputTransitions(&input_bindings, gen, port, transitions);
-                    } else {
-                        for (transitions) |maybe_transition| {
-                            if (maybe_transition) |transition| {
-                                applySmsGamepadInput(&machine, @intCast(@min(port, 1)), transition.input, transition.pressed);
-                            }
-                        }
-                    }
+                    applyInputTransitions(&input_bindings, &machine, port, transitions);
                 },
                 zsdl3.EventType.key_down, zsdl3.EventType.key_up => {
                     const pressed = (event.type == zsdl3.EventType.key_down);
@@ -3487,6 +3401,7 @@ pub fn main(init: std.process.Init) !void {
                     const keyboard_state = zsdl3.getKeyboardState();
                     const hotkey_binding = hotkeyBindingFromScancode(scancode, keyboard_state);
                     const hotkey_action = if (hotkey_binding) |binding| input_bindings.hotkeyForBinding(binding) else null;
+                    if (pressed and (hotkey_action != null or scancode == .f10) and !shouldTriggerHotkey(pressed, event.key.repeat)) continue;
                     const explicit_state_path = if (current_rom_path.len != 0) current_rom_path.slice() else null;
                     if (handleSettingsKey(
                         &frontend_ui,
@@ -3833,16 +3748,16 @@ pub fn main(init: std.process.Init) !void {
                     if (!frontend_ui.emulationPaused() or !pressed) {
                         if (hotkey_binding) |binding| {
                             const mapped_key = binding.input orelse continue;
-                            if (machine.asGenesis()) |gen| {
-                                _ = gen.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
-                            } else {
-                                applySmsKeyboardInput(&machine, mapped_key, pressed);
-                            }
+                            _ = machine.applyKeyboardBindings(&input_bindings, mapped_key, pressed);
                         }
                     }
                 },
                 else => {},
             }
+        }
+
+        if (input_release_latch.update(frontend_ui.emulationPaused())) {
+            machine.releaseAllInputs();
         }
 
         switch (file_dialog_state.take()) {
@@ -5295,6 +5210,21 @@ test "frontend ui treats save manager as a paused overlay" {
 test "frontend ui treats settings as a paused overlay" {
     var ui = FrontendUi{ .overlay = .settings };
     try std.testing.expect(ui.emulationPaused());
+}
+
+test "input release latch fires once when a pausing overlay opens" {
+    var latch = InputReleaseLatch{};
+    try std.testing.expect(!latch.update(false));
+    try std.testing.expect(latch.update(true));
+    try std.testing.expect(!latch.update(true));
+    try std.testing.expect(!latch.update(false));
+    try std.testing.expect(latch.update(true));
+}
+
+test "repeated key downs do not trigger one-shot hotkeys" {
+    try std.testing.expect(shouldTriggerHotkey(true, false));
+    try std.testing.expect(!shouldTriggerHotkey(true, true));
+    try std.testing.expect(!shouldTriggerHotkey(false, false));
 }
 
 test "settings menu wraps and audio render mode cycles" {

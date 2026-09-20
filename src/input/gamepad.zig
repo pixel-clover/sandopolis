@@ -1,7 +1,7 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const InputBindings = @import("mapping.zig");
-const Machine = @import("../machine.zig").Machine;
+const SystemMachine = @import("../system_machine.zig").SystemMachine;
 
 // Slot types for tracking connected controllers
 pub const GamepadSlot = struct {
@@ -210,7 +210,7 @@ pub fn updateHatState(state: *DirectionState, value: u8) [max_transitions]?Trans
 // Apply input transitions to machine
 pub fn applyTransitions(
     bindings: *const InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     port: usize,
     transitions: anytype,
 ) void {
@@ -225,7 +225,7 @@ pub fn applyTransitions(
 // is paused while an axis/hat direction is held.
 pub fn applyReleaseTransitionsOnly(
     bindings: *const InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     port: usize,
     transitions: anytype,
 ) void {
@@ -291,7 +291,7 @@ pub fn removeGamepadSlot(
     gamepads: *[InputBindings.player_count]?GamepadSlot,
     stick_states: *[InputBindings.player_count]DirectionState,
     trigger_states: *[InputBindings.player_count]TriggerState,
-    machine: *Machine,
+    machine: *SystemMachine,
     bindings: *const InputBindings.Bindings,
     id: zsdl3.Joystick.Id,
 ) void {
@@ -337,7 +337,7 @@ pub fn removeJoystickSlot(
     joysticks: *[InputBindings.player_count]?JoystickSlot,
     axis_states: *[InputBindings.player_count]DirectionState,
     hat_states: *[InputBindings.player_count]DirectionState,
-    machine: *Machine,
+    machine: *SystemMachine,
     bindings: *const InputBindings.Bindings,
     id: zsdl3.Joystick.Id,
 ) void {

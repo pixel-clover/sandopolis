@@ -131,7 +131,8 @@ async function init() {
     });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
-    window.addEventListener("gamepaddisconnected", releaseAllGamepadButtons);
+    window.addEventListener("gamepaddisconnected", releaseAllInputs);
+    window.addEventListener("blur", releaseAllInputs);
     // Click-to-pause is a 2D-only affordance. While a VR session is active
     // the canvas is not visible to the user and Quest browser sometimes fires
     // synthetic clicks on the focused canvas when a BT controller button is
@@ -724,6 +725,7 @@ let pausedByVisibility = false;
 
 function onVisibilityChange() {
     if (document.hidden) {
+        releaseAllInputs();
         if (running) {
             pausedByVisibility = true;
             running = false;
@@ -1413,6 +1415,7 @@ function resumeFrame() {
 function onKeyDown(ev) {
     if (HOTKEYS[ev.key]) {
         ev.preventDefault();
+        if (ev.repeat) return;
         ({
             quickSave,
             quickLoad,
@@ -1466,10 +1469,9 @@ const GAMEPAD_FACE_MAP = [
 
 const AXIS_THRESHOLD = 0.5;
 
-function releaseAllGamepadButtons() {
-    // A disconnected pad (unplug, battery sleep) never sends releases for
-    // buttons it held, and stdPlayer compaction can hand its stale edge
-    // state to another pad. Release everything and start clean.
+function releaseAllInputs() {
+    // Focus loss and disconnected pads can omit releases. Clearing controller
+    // edge state also prevents a compacted pad slot inheriting stale input.
     prevGamepadStates[0] = {};
     prevGamepadStates[1] = {};
     if (!emu || !wasm) return;

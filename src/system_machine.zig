@@ -430,10 +430,18 @@ pub const SystemMachine = union(enum) {
         input: InputBindings.KeyboardInput,
         pressed: bool,
     ) bool {
-        return switch (self.*) {
-            .genesis => |*g| g.applyKeyboardBindings(bindings, input, pressed),
-            .sms => false,
-        };
+        if (self.* == .genesis) return self.genesis.applyKeyboardBindings(bindings, input, pressed);
+
+        var handled = false;
+        for (0..InputBindings.player_count) |port| {
+            for (InputBindings.all_actions) |action| {
+                if (bindings.keyboardBinding(port, action) == input) {
+                    self.setButton(@intCast(port), InputBindings.actionButtonMask(action), pressed);
+                    handled = true;
+                }
+            }
+        }
+        return handled;
     }
 
     pub fn applyGamepadBindings(
@@ -443,16 +451,43 @@ pub const SystemMachine = union(enum) {
         input: InputBindings.GamepadInput,
         pressed: bool,
     ) bool {
-        return switch (self.*) {
-            .genesis => |*g| g.applyGamepadBindings(bindings, port, input, pressed),
-            .sms => false,
-        };
+        if (self.* == .genesis) return self.genesis.applyGamepadBindings(bindings, port, input, pressed);
+
+        var handled = false;
+        for (InputBindings.all_actions) |action| {
+            if (bindings.gamepad[port][InputBindings.actionIndex(action)] == input) {
+                self.setButton(@intCast(port), InputBindings.actionButtonMask(action), pressed);
+                handled = true;
+            }
+        }
+        return handled;
     }
 
     pub fn releaseKeyboardBindings(self: *SystemMachine, bindings: *const InputBindings.Bindings) void {
-        switch (self.*) {
-            .genesis => |*g| g.releaseKeyboardBindings(bindings),
-            .sms => {},
+        if (self.* == .genesis) return self.genesis.releaseKeyboardBindings(bindings);
+        for (0..InputBindings.player_count) |port| {
+            for (InputBindings.all_actions) |action| {
+                if (bindings.keyboardBinding(port, action) != null) {
+                    self.setButton(@intCast(port), InputBindings.actionButtonMask(action), false);
+                }
+            }
+        }
+    }
+
+    pub fn releaseGamepadBindings(self: *SystemMachine, bindings: *const InputBindings.Bindings, port: usize) void {
+        if (self.* == .genesis) return self.genesis.releaseGamepadBindings(bindings, port);
+        for (InputBindings.all_actions) |action| {
+            if (bindings.gamepad[port][InputBindings.actionIndex(action)] != null) {
+                self.setButton(@intCast(port), InputBindings.actionButtonMask(action), false);
+            }
+        }
+    }
+
+    pub fn releaseAllInputs(self: *SystemMachine) void {
+        for (0..InputBindings.player_count) |port| {
+            for (InputBindings.all_actions) |action| {
+                self.setButton(@intCast(port), InputBindings.actionButtonMask(action), false);
+            }
         }
     }
 
@@ -912,6 +947,33 @@ test "unified setButton maps genesis masks to sms buttons" {
     try t.expect(input.port1.button1);
     try t.expect(input.port2.button2);
     try t.expect(input.pause_pressed);
+}
+
+test "configured bindings apply to sms and release cleanly" {
+    const t = @import("std").testing;
+    var rom = [_]u8{0xC7} ** 1024;
+    var machine = try SystemMachine.initFromRomBytes(testing_alloc, &rom, .sms);
+    defer machine.deinit(testing_alloc);
+
+    var bindings = InputBindings.Bindings.defaults();
+    bindings.setKeyboard(.up, .q);
+    bindings.setGamepad(.c, .north);
+
+    try t.expect(machine.applyKeyboardBindings(&bindings, .q, true));
+    try t.expect(machine.sms.bus.input.port1.up);
+    machine.releaseKeyboardBindings(&bindings);
+    try t.expect(!machine.sms.bus.input.port1.up);
+
+    try t.expect(machine.applyGamepadBindings(&bindings, 0, .north, true));
+    try t.expect(machine.sms.bus.input.port1.button2);
+    machine.releaseGamepadBindings(&bindings, 0);
+    try t.expect(!machine.sms.bus.input.port1.button2);
+
+    _ = machine.applyKeyboardBindings(&bindings, .q, true);
+    _ = machine.applyGamepadBindings(&bindings, 0, .north, true);
+    machine.releaseAllInputs();
+    try t.expect(!machine.sms.bus.input.port1.up);
+    try t.expect(!machine.sms.bus.input.port1.button2);
 }
 
 test "zabu demo boots and renders gameplay" {
