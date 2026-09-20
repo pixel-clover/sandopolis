@@ -146,14 +146,13 @@ Flags:
 
 ### Sega CD
 
-Sandopolis boots Sega CD / Mega CD games from `.cue` + `.bin` or `.iso` images. The CD BIOS is not included; place the
-128KB BIOS image(s) for your region where the frontend can find them:
+Sandopolis boots Sega CD / Mega CD games from `.cue` + `.bin` or `.iso` images.
+The CD BIOS is not included; place the 128KB BIOS image(s) for your region where the frontend can find them:
 
-| Frontend | Where the BIOS comes from                                                                                                                   |
-|----------|---------------------------------------------------------------------------------------------------------------------------------------------|
-| Desktop  | `segacd.bios_us`, `segacd.bios_eu`, `segacd.bios_jp` paths in `sandopolis.cfg`, or `bios/bios_CD_U.bin` (`_E`, `_J`) next to the config file |
-| Libretro | `bios_CD_U.bin`, `bios_CD_E.bin`, `bios_CD_J.bin` in the frontend's system directory                                                        |
-| Web      | Settings → "Sega CD BIOS" (kept in the browser); then drop the `.cue` and `.bin` together, or an `.iso`                                       |
+- Desktop: configure `segacd.bios_us`, `segacd.bios_eu`, or `segacd.bios_jp`, or place `bios_CD_U.bin`,
+  `bios_CD_E.bin`, and `bios_CD_J.bin` in the `bios/` directory beside the config file.
+- Libretro: place them in the frontend's system directory.
+- Web: upload them once through Settings; they are retained in IndexedDB.
 
 The BIOS region follows the disc's region code unless only one image is available. Internal backup RAM and the 512KB
 backup RAM cartridge are saved as `backup.brm` in the disc's data directory (desktop), or exposed as one save RAM buffer

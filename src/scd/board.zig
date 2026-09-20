@@ -144,6 +144,7 @@ pub const ScdBoard = struct {
         var image = [_]u8{0} ** persistent_ram_bytes;
         const internal = backup_ram_mod.initialImage();
         @memcpy(image[0..backup_ram_bytes], &internal);
+        backup_ram_mod.formatBytes(image[backup_ram_bytes..]);
         return image;
     }
 
@@ -318,7 +319,11 @@ pub const ScdBoard = struct {
         const n = try file.readAll(&self.persistent_ram);
         if (n == backup_ram_bytes or n == persistent_ram_bytes) {
             self.sub_bus.backup_ram_dirty = false;
-            self.backup_cart_dirty = false;
+            self.backup_cart_dirty = n == backup_ram_bytes;
+            if (!backup_ram_mod.isFormattedBytes(self.backupCartRam())) {
+                backup_ram_mod.formatBytes(self.backupCartRam());
+                self.backup_cart_dirty = true;
+            }
         } else {
             self.persistent_ram = initialPersistentRam();
             self.sub_bus.backup_ram_dirty = true;

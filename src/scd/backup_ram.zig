@@ -35,13 +35,23 @@ pub fn formatBlock(total_bytes: usize) [format_block_bytes]u8 {
 }
 
 pub fn format(ram: *[size]u8) void {
-    @memset(ram[0..format_block_offset], 0);
-    ram[format_block_offset..].* = formatBlock(size);
+    formatBytes(ram);
 }
 
 /// True when the trailing signature block matches the BIOS format.
 pub fn isFormatted(ram: *const [size]u8) bool {
-    return std.mem.eql(u8, ram[format_block_offset + 0x20 ..], signature);
+    return isFormattedBytes(ram);
+}
+
+pub fn formatBytes(ram: []u8) void {
+    std.debug.assert(ram.len >= format_block_bytes);
+    @memset(ram[0 .. ram.len - format_block_bytes], 0);
+    const block = formatBlock(ram.len);
+    @memcpy(ram[ram.len - format_block_bytes ..], &block);
+}
+
+pub fn isFormattedBytes(ram: []const u8) bool {
+    return ram.len >= format_block_bytes and std.mem.eql(u8, ram[ram.len - format_block_bytes + 0x20 ..], signature);
 }
 
 /// Fresh, formatted image.
@@ -75,4 +85,13 @@ test "a blank or corrupted image is not formatted" {
     try testing.expect(isFormatted(&ram));
     ram[size - 1] = 'X';
     try testing.expect(!isFormatted(&ram));
+}
+
+test "format supports a 512KB backup RAM cartridge" {
+    const ram = try testing.allocator.alloc(u8, 512 * 1024);
+    defer testing.allocator.free(ram);
+    @memset(ram, 0xFF);
+    formatBytes(ram);
+    try testing.expect(isFormattedBytes(ram));
+    try testing.expectEqual(@as(u16, 8189), std.mem.readInt(u16, ram[ram.len - 0x30 ..][0..2], .big));
 }
