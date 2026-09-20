@@ -13,7 +13,7 @@
 [![Play Online](https://img.shields.io/badge/play%20online-browser-007ec6?style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-007ec6?style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
 <br>
-[![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
+[![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000%20%7C%20Sega%20CD-002776?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro%20%7C%20VR-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
 A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, SG-1000, and Sega CD
@@ -145,14 +145,14 @@ Flags:
 ---
 
 > [!IMPORTANT]
-> Sandopolis boots Sega CD games from `.cue`/`.bin` or `.iso` images.
-> Note that the Sega CD needs BIOS files (`segacd.bios_us`, `segacd.bios_eu`, or `segacd.bios_jp`, or place `bios_CD_U.bin`, `bios_CD_E.bin`, and
-`bios_CD_J.bin`) that are not included.
-> So, the files must be placed where Sandopolis can find them.
+> Sandopolis boots Sega CD games from either `.cue` and `.bin` files, or a `.iso` file.
+> Note that Sega CD needs a few BIOS files (normally `segacd.bios_us`/`segacd.bios_eu`/`segacd.bios_jp`, or `bios_CD_U.bin`/`bios_CD_E.bin`/
+`bios_CD_J.bin` files) that are not included in this project.
+> Place the BIOS files per build in the locations mentioned below:
 > 
-> - Desktop build: put the files in the `bios/` directory beside the config file (`sandopolis.cfg`).
-> - Libretro build: place the file in the frontend's system directory.
-> - Web build: upload the bios file through `Settings` menu. The bios files are kept in the browser you're using.
+> - For the Desktop build, put the files in the `bios/` directory beside the config file (`sandopolis.cfg`).
+> - For the Libretro build, place the files in the frontend's system directory.
+> - For Sandopolis Web, upload the bios files through `Settings` menu. You need to do it only one time normally, and the files will be kept in the browser you're using.
 
 ---
 
