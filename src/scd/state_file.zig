@@ -9,11 +9,13 @@
 const std = @import("std");
 const genesis_state_file = @import("../state_file.zig");
 const Machine = @import("../machine.zig").Machine;
-const ScdBoard = @import("board.zig").ScdBoard;
+const scd_board = @import("board.zig");
+const ScdBoard = scd_board.ScdBoard;
 const Disc = @import("cdrom/reader.zig").Disc;
 
 pub const magic = [8]u8{ 'S', 'N', 'D', 'S', 'C', 'D', 'S', 'T' };
-pub const version: u16 = 1;
+/// v2 adds the graphics ASIC and 512KB backup RAM cartridge state.
+pub const version: u16 = ScdBoard.state_version;
 
 const Header = struct {
     magic: [8]u8,
@@ -127,10 +129,15 @@ test "sega cd state round-trips the sub-board and keeps a memory disc out of the
     board.prg_ram[0x1234] = 0xAB;
     board.word_ram.write16Linear(0x100, 0xBEEF);
     board.gate.command[3] = 0x4321;
-    board.backup_ram[10] = 0x77;
+    board.internalBackupRam()[10] = 0x77;
+    board.persistent_ram[scd_board.backup_ram_bytes + 11] = 0x66;
+    board.backup_cart_write_control = 0;
     board.pcm.ram[5] = 0x99;
     board.cdc.ram[100] = 0x42;
     board.cdd.lba = 1;
+    board.gate.gfx_regs[6] = 2;
+    board.gate.gfx_regs[7] = 0x1234;
+    board.gfx.start(&board.gate.gfx_regs);
 
     const buf = try saveToBuffer(testing.allocator, &machine);
     defer testing.allocator.free(buf);
@@ -142,7 +149,11 @@ test "sega cd state round-trips the sub-board and keeps a memory disc out of the
     try testing.expectEqual(@as(u8, 0xAB), rb.prg_ram[0x1234]);
     try testing.expectEqual(@as(u16, 0xBEEF), rb.word_ram.read16Linear(0x100));
     try testing.expectEqual(@as(u16, 0x4321), rb.gate.command[3]);
-    try testing.expectEqual(@as(u8, 0x77), rb.backup_ram[10]);
+    try testing.expectEqual(@as(u8, 0x77), rb.internalBackupRam()[10]);
+    try testing.expectEqual(@as(u8, 0x66), rb.persistent_ram[scd_board.backup_ram_bytes + 11]);
+    try testing.expectEqual(@as(u8, 0), rb.backup_cart_write_control);
+    try testing.expect(rb.gfx.active);
+    try testing.expectEqual(@as(u32, 0x48D0), rb.gfx.trace_address);
     try testing.expectEqual(@as(u8, 0x99), rb.pcm.ram[5]);
     try testing.expectEqual(@as(u8, 0x42), rb.cdc.ram[100]);
     try testing.expectEqual(@as(i32, 1), rb.cdd.lba);

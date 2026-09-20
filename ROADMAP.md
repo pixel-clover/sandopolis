@@ -141,8 +141,9 @@ This document outlines the features implemented in Sandopolis emulator and the f
 - [x] Sega CD subsystem support: expansion-device bus hook, CUE/BIN + ISO disc layer, gate array, 2M/1M Word RAM, 12.5 MHz sub-CPU
   (rocket68), CDD drive, LC8951 CDC, RF5C164 PCM, CD-DA mixing, formatted backup RAM with persistence, `SNDSCDST` save states,
   and BIOS plumbing in all three frontends
-- [ ] Sega CD graphics ASIC (stamp rotation/scaling engine) and RAM cartridge
-- [ ] Sega CD validation against real BIOS/disc images (regression tests exist and skip until `roms/bios/` and `roms/cd/` are present)
+- [x] Sega CD graphics ASIC (stamp rotation/scaling engine)
+- [x] Sega CD RAM cartridge
+- [x] Sega CD validation against real BIOS/disc images (regression tests skip until `roms/bios/` and `roms/cd/` are present)
 - [ ] 32X subsystem support
 - [ ] Sega Pico subsystem support
 - [ ] Cheat code support (Game Genie and Action Replay)

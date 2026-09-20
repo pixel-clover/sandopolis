@@ -155,9 +155,10 @@ Sandopolis boots Sega CD / Mega CD games from `.cue` + `.bin` or `.iso` images. 
 | Libretro | `bios_CD_U.bin`, `bios_CD_E.bin`, `bios_CD_J.bin` in the frontend's system directory                                                        |
 | Web      | Settings → "Sega CD BIOS" (kept in the browser); then drop the `.cue` and `.bin` together, or an `.iso`                                       |
 
-The BIOS region follows the disc's region code unless only one image is available. Internal backup RAM is saved as
-`backup.brm` in the disc's data directory (desktop) or exposed as save RAM (libretro). Save states use their own
-`SNDSCDST` container and reopen the disc from its original path.
+The BIOS region follows the disc's region code unless only one image is available. Internal backup RAM and the 512KB
+backup RAM cartridge are saved as `backup.brm` in the disc's data directory (desktop), or exposed as one save RAM buffer
+with the 8KB internal RAM first (libretro). Save states use their own `SNDSCDST` container and reopen the disc from its
+original path.
 
 ### Contributing
 

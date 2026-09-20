@@ -46,6 +46,8 @@ pub const SubBus = struct {
     cdd_command_ready: bool = false,
     /// Set when the sub CPU cleared RES0; the board resets the CD hardware.
     peripheral_reset_request: bool = false,
+    /// Set when the trace-vector register starts a graphics operation.
+    gfx_start_request: bool = false,
 
     /// Accesses to Word RAM while the other CPU owned it (2M mode).
     non_owner_word_ram_accesses: u32 = 0,
@@ -261,6 +263,7 @@ pub const SubBus = struct {
             const effects = self.gate.subWriteWithEffects(off, word, lanes, self.peripherals());
             if (effects.cdd_command) self.cdd_command_ready = true;
             if (effects.peripheral_reset) self.peripheral_reset_request = true;
+            if (effects.gfx_start) self.gfx_start_request = true;
             if (off == 0x04 or off == 0x05) self.runPendingDma();
         }
     }
@@ -291,6 +294,7 @@ pub const SubBus = struct {
             const effects = self.gate.subWriteWithEffects(off, value, 0b11, self.peripherals());
             if (effects.cdd_command) self.cdd_command_ready = true;
             if (effects.peripheral_reset) self.peripheral_reset_request = true;
+            if (effects.gfx_start) self.gfx_start_request = true;
             if (off == 0x04) self.runPendingDma();
             return;
         }

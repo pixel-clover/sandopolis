@@ -11,6 +11,7 @@ const sms_state_file = @import("sms/state_file.zig");
 const scd_state_file = @import("scd/state_file.zig");
 const scd_bios = @import("scd/bios.zig");
 const Disc = @import("scd/cdrom/reader.zig").Disc;
+const scd_board = @import("scd/board.zig");
 const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
@@ -1044,6 +1045,7 @@ test "facade boots a sega cd from bios bytes and an in-memory iso" {
     machine.runFrame();
     machine.discardPendingAudio();
     try t.expectEqual(@as(u32, 0x200), machine.programCounter());
+    try t.expectEqual(@as(usize, scd_board.persistent_ram_bytes), machine.persistentSaveRam().?.len);
 
     // A forced region that is not present is an error.
     try t.expectError(error.BiosMissing, SystemMachine.initFromRomBytesWithOptions(testing_alloc, &iso, null, .{ .bios = &set, .preferred_bios_region = .jp }));

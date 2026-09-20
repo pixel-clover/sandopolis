@@ -42,6 +42,7 @@ const scd_cdrom_reader = @import("scd/cdrom/reader.zig");
 const scd_clock = @import("scd/clock.zig");
 const scd_word_ram = @import("scd/word_ram.zig");
 const scd_gate_array = @import("scd/gate_array.zig");
+const scd_gfx = @import("scd/gfx.zig");
 const scd_sub_bus = @import("scd/sub_bus.zig");
 const scd_board = @import("scd/board.zig");
 const scd_cdd = @import("scd/cdd.zig");

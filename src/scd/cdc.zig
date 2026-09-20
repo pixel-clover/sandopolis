@@ -84,7 +84,7 @@ pub const Cdc = struct {
     ifctrl: u8 = 0,
     dbc: u16 = 0,
     dac: u16 = 0,
-    head: [4]u8 = .{ 0, 0, 0, 0 },
+    head: [4]u8 = .{ 0, 0, 0, 1 },
     /// Mode 2 sub-header of the last decoded block; its FORM bit feeds STAT2
     /// while CTRL0's AUTORQ is set.
     subheader: [4]u8 = .{ 0, 0, 0, 0 },
@@ -134,7 +134,9 @@ pub const Cdc = struct {
                 // Reading STAT3 acknowledges the decoder interrupt.
                 self.ifstat |= Ifstat.deci;
                 self.updateIrq();
-                break :blk self.stat[3];
+                const value = self.stat[3];
+                self.stat[3] = 0x80;
+                break :blk value;
             },
         };
     }
@@ -301,6 +303,7 @@ pub const Cdc = struct {
     fn finishTransfer(self: *Cdc) bool {
         self.host_transfer_active = false;
         self.end_of_transfer = true;
+        self.dbc = 0xFFFF;
         self.ifstat |= Ifstat.dten | Ifstat.dtbsy;
         const was_asserted = self.irq_asserted;
         self.ifstat &= ~Ifstat.dtei;
@@ -351,6 +354,7 @@ test "control register writes derive the STAT2 mode and form bits" {
 
 test "register file reads back writes with the DBC high nibble mask" {
     var cdc = Cdc{};
+    try testing.expectEqual(@as(u8, 1), cdc.head[3]);
     cdc.writeRegister(0x2, 0x34);
     cdc.writeRegister(0x3, 0xF2); // only low nibble kept
     try testing.expectEqual(@as(u16, 0x0234), cdc.dbc);
@@ -389,7 +393,8 @@ test "decoder stores header and data at the advanced block pointer and raises DE
     // A second block while DECI is still pending does not re-raise.
     try testing.expect(!cdc.decodeSector(&raw));
     // Reading STAT3 acknowledges.
-    _ = cdc.readRegister(0xF);
+    try testing.expectEqual(@as(u8, 0), cdc.readRegister(0xF));
+    try testing.expectEqual(@as(u8, 0x80), cdc.stat[3]);
     try testing.expect(!cdc.irq_asserted);
     try testing.expect(cdc.decodeSector(&raw));
 
@@ -465,5 +470,5 @@ test "dma transfer delivers DBC+1 bytes to the sink and wraps the buffer" {
     try testing.expectEqualSlices(u8, cdc.ram[0x3FFC..0x4000], sink.bytes[0..4]);
     try testing.expectEqualSlices(u8, cdc.ram[0..4], sink.bytes[4..8]);
     try testing.expect(cdc.end_of_transfer);
-    try testing.expectEqual(@as(u16, 0), cdc.dbc);
+    try testing.expectEqual(@as(u16, 0xFFFF), cdc.dbc);
 }

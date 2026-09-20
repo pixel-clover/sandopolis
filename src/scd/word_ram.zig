@@ -158,9 +158,10 @@ pub const WordRam = struct {
         const pixel: u8 = value & 0x0F;
         const old_pixel: u8 = if ((dot_offset & 1) != 0) prev & 0x0F else prev >> 4;
         const new_pixel = switch (self.priority) {
-            .off, .prohibited => pixel,
+            .off => pixel,
             .underwrite => if (old_pixel == 0) pixel else old_pixel,
             .overwrite => if (pixel != 0) pixel else old_pixel,
+            .prohibited => old_pixel,
         };
         self.banks[bank][idx] = if ((dot_offset & 1) != 0)
             (prev & 0xF0) | new_pixel
@@ -294,6 +295,10 @@ test "dot image addresses one nibble per byte with priority modes" {
     wr.priority = .overwrite;
     wr.writeDot(0, 0, 0x0); // transparent source: kept
     wr.writeDot(0, 0, 0x6); // opaque source: written
+    try testing.expectEqual(@as(u8, 0x6), wr.readDot(0, 0));
+
+    wr.priority = .prohibited;
+    wr.writeDot(0, 0, 0xD);
     try testing.expectEqual(@as(u8, 0x6), wr.readDot(0, 0));
 
     // Dot image spans 256KB of addresses over a 128KB bank.

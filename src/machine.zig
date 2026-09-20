@@ -583,7 +583,7 @@ pub const Machine = struct {
     }
 
     pub fn persistentSaveRam(self: *Machine) ?[]u8 {
-        if (self.scd) |board| return &board.backup_ram;
+        if (self.scd) |board| return &board.persistent_ram;
         return self.bus.cartridge.persistentSaveRam();
     }
 

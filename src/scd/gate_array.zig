@@ -51,6 +51,8 @@ pub const SubWriteEffects = struct {
     peripheral_reset: bool = false,
     /// A complete CDD command (checksum nibble written).
     cdd_command: bool = false,
+    /// A write to the trace-vector register starts the graphics ASIC.
+    gfx_start: bool = false,
 };
 
 pub const GateArray = struct {
@@ -105,7 +107,7 @@ pub const GateArray = struct {
     font_color: u8 = 0,
     font_bits: u16 = 0,
 
-    // -- Graphics ASIC (0x58..0x66), stored raw until implemented --
+    // -- Graphics ASIC (0x58..0x66) --
     gfx_regs: [8]u16 = [_]u16{0} ** 8,
 
     // -- Subcode (0x68, 0x100..0x17F) --
@@ -480,6 +482,7 @@ pub const GateArray = struct {
                 if (hi) v = (v & 0x00FF) | (value & 0xFF00);
                 if (lo) v = (v & 0xFF00) | (value & 0x00FF);
                 self.gfx_regs[i] = v;
+                effects.gfx_start = off == 0x66;
             },
             0x68 => {
                 if (lo) self.subcode_address = value & 0x007E;
@@ -656,6 +659,13 @@ test "font renderer expands 1bpp source bits into two-color nibbles" {
     try testing.expectEqual(@as(u16, 0x3F3F), f.ga.subRead16(0x52, &f.wr)); // 0101
     try testing.expectEqual(@as(u16, 0x3333), f.ga.subRead16(0x54, &f.wr)); // 0000
     try testing.expectEqual(@as(u16, 0xFFFF), f.ga.subRead16(0x56, &f.wr)); // 1111
+}
+
+test "trace-vector write requests a graphics operation" {
+    var f = Fixture.init();
+    const effects = f.ga.subWriteWithEffects(0x66, 0x1234, 0b11, f.p());
+    try testing.expect(effects.gfx_start);
+    try testing.expectEqual(@as(u16, 0x1234), f.ga.gfx_regs[7]);
 }
 
 test "cdd command completes on the checksum nibble write" {

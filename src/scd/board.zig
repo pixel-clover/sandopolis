@@ -26,10 +26,13 @@ const Cdc = @import("cdc.zig").Cdc;
 const cdc_mod = @import("cdc.zig");
 const backup_ram_mod = @import("backup_ram.zig");
 const Pcm = @import("pcm.zig").Pcm;
+const Gfx = @import("gfx.zig").Gfx;
 const ExpansionAudio = @import("../audio/timing.zig").ExpansionAudio;
 
 pub const prg_ram_bytes = sub_bus_mod.prg_ram_bytes;
 pub const backup_ram_bytes = sub_bus_mod.backup_ram_bytes;
+pub const backup_cart_bytes: u32 = 512 * 1024;
+pub const persistent_ram_bytes: u32 = backup_ram_bytes + backup_cart_bytes;
 pub const prg_bank_bytes: u32 = 128 * 1024;
 
 /// Cycle cost charged when the core reports zero (e.g. STOP state) so the
@@ -52,12 +55,15 @@ pub const ScdBoard = struct {
     gate: GateArray,
     word_ram: WordRam,
     prg_ram: [prg_ram_bytes]u8,
-    backup_ram: [backup_ram_bytes]u8,
+    persistent_ram: [persistent_ram_bytes]u8,
+    backup_cart_write_control: u8 = 1,
+    backup_cart_dirty: bool = false,
     sync: scd_clock.SubSync,
     disc: ?Disc,
     cdd: Cdd,
     cdc: Cdc,
     pcm: Pcm,
+    gfx: Gfx,
     /// PCM samples produced this host frame (one per 384-cycle tick).
     pcm_frames: [max_pcm_frames][2]i16 = [_][2]i16{.{ 0, 0 }} ** max_pcm_frames,
     pcm_frame_count: u32 = 0,
@@ -73,7 +79,7 @@ pub const ScdBoard = struct {
     /// BIOS image, borrowed from the Genesis cartridge slot (served as the
     /// mirror at 0x040000+ inside every 0x40000 block below 0x400000).
     bios: []const u8,
-    /// Where the internal backup RAM persists, when attached to a disc file.
+    /// Where the internal and cartridge backup RAM persist.
     backup_ram_path: ?[]u8 = null,
     /// Diagnostics.
     main_non_owner_word_ram_accesses: u32 = 0,
@@ -89,12 +95,13 @@ pub const ScdBoard = struct {
             .gate = .{},
             .word_ram = .{},
             .prg_ram = [_]u8{0} ** prg_ram_bytes,
-            .backup_ram = backup_ram_mod.initialImage(),
+            .persistent_ram = initialPersistentRam(),
             .sync = scd_clock.SubSync.init(pal_mode),
             .disc = disc,
             .cdd = Cdd.init(disc != null),
             .cdc = .{},
             .pcm = .{},
+            .gfx = .{},
             .bios = bios,
         };
         board.bind();
@@ -115,7 +122,7 @@ pub const ScdBoard = struct {
             .gate = &self.gate,
             .word_ram = &self.word_ram,
             .prg_ram = &self.prg_ram,
-            .backup_ram = &self.backup_ram,
+            .backup_ram = self.internalBackupRam(),
             .cdc = &self.cdc,
             .pcm = .{ .ctx = &self.pcm, .read8Fn = pcmRead8, .write8Fn = pcmWrite8 },
         };
@@ -131,6 +138,21 @@ pub const ScdBoard = struct {
     fn pcmWrite8(ctx: *anyopaque, offset: u32, value: u8) void {
         const pcm: *Pcm = @ptrCast(@alignCast(ctx));
         pcm.write8(offset, value);
+    }
+
+    fn initialPersistentRam() [persistent_ram_bytes]u8 {
+        var image = [_]u8{0} ** persistent_ram_bytes;
+        const internal = backup_ram_mod.initialImage();
+        @memcpy(image[0..backup_ram_bytes], &internal);
+        return image;
+    }
+
+    pub fn internalBackupRam(self: *ScdBoard) *[backup_ram_bytes]u8 {
+        return @ptrCast(self.persistent_ram[0..backup_ram_bytes].ptr);
+    }
+
+    fn backupCartRam(self: *ScdBoard) []u8 {
+        return self.persistent_ram[backup_ram_bytes..];
     }
 
     /// Run the PCM chip for `ticks` sample periods.
@@ -191,7 +213,10 @@ pub const ScdBoard = struct {
             .data => |d| {
                 if (self.cdc.decodeSector(d.raw)) self.gate.raise(.cdc, &self.sub_cpu);
             },
-            .audio => |a| self.pushCdda(a.frames),
+            .audio => |a| {
+                if (self.cdc.decodeSector(&blank_sector)) self.gate.raise(.cdc, &self.sub_cpu);
+                self.pushCdda(a.frames);
+            },
         }
         // HOCK: host clock enabled -> INT4 every sector period.
         if ((self.gate.cdd_control & 0x0004) != 0) self.gate.raise(.cdd, &self.sub_cpu);
@@ -232,6 +257,8 @@ pub const ScdBoard = struct {
             self.cdc.reset();
             self.sub_bus.cdd_command_ready = false;
             self.sub_bus.cdc_irq_request = false;
+            self.gfx.reset();
+            self.sub_bus.gfx_start_request = false;
             self.publishCddStatus();
         }
         if (self.sub_bus.cdd_command_ready) {
@@ -241,6 +268,10 @@ pub const ScdBoard = struct {
         if (self.sub_bus.cdc_irq_request) {
             self.sub_bus.cdc_irq_request = false;
             self.gate.raise(.cdc, &self.sub_cpu);
+        }
+        if (self.sub_bus.gfx_start_request) {
+            self.sub_bus.gfx_start_request = false;
+            self.gfx.start(&self.gate.gfx_regs);
         }
         // Fader writes take effect immediately.
         self.cdd.setFaderRegister(self.gate.cd_fader);
@@ -273,7 +304,8 @@ pub const ScdBoard = struct {
     // Backup RAM persistence
     // -----------------------------------------------------------------------
 
-    /// Attach a file for the internal backup RAM and load it if present.
+    /// Attach a file for persistent RAM. Legacy 8KB internal-only images are
+    /// accepted; current images also contain the 512KB cartridge.
     pub fn setBackupRamPath(self: *ScdBoard, path: []const u8) !void {
         if (self.backup_ram_path) |old| self.allocator.free(old);
         self.backup_ram_path = try self.allocator.dupe(u8, path);
@@ -283,22 +315,26 @@ pub const ScdBoard = struct {
             else => return err,
         };
         defer file.close();
-        var image: [backup_ram_bytes]u8 = undefined;
-        const n = try file.readAll(&image);
-        if (n == backup_ram_bytes) {
-            self.backup_ram = image;
+        const n = try file.readAll(&self.persistent_ram);
+        if (n == backup_ram_bytes or n == persistent_ram_bytes) {
             self.sub_bus.backup_ram_dirty = false;
+            self.backup_cart_dirty = false;
+        } else {
+            self.persistent_ram = initialPersistentRam();
+            self.sub_bus.backup_ram_dirty = true;
+            self.backup_cart_dirty = true;
         }
     }
 
     pub fn flushBackupRam(self: *ScdBoard) !void {
-        if (!self.sub_bus.backup_ram_dirty) return;
+        if (!self.sub_bus.backup_ram_dirty and !self.backup_cart_dirty) return;
         const path = self.backup_ram_path orelse return;
         const platform = @import("../platform.zig");
         var file = try platform.cwd().createFile(path, .{ .truncate = true });
         defer file.close();
-        try file.writeAll(&self.backup_ram);
+        try file.writeAll(&self.persistent_ram);
         self.sub_bus.backup_ram_dirty = false;
+        self.backup_cart_dirty = false;
     }
 
     // -----------------------------------------------------------------------
@@ -306,7 +342,7 @@ pub const ScdBoard = struct {
     // because the main thread's stack is only 8MB)
     // -----------------------------------------------------------------------
 
-    pub const state_version: u16 = 1;
+    pub const state_version: u16 = 2;
 
     pub fn writeState(self: *const ScdBoard, writer: anytype, comptime writeValue: anytype) !void {
         try writeValue(writer, self.sub_cpu.captureState());
@@ -318,7 +354,8 @@ pub const ScdBoard = struct {
         try writer.writeAll(&self.word_ram.banks[0]);
         try writer.writeAll(&self.word_ram.banks[1]);
         try writer.writeAll(&self.prg_ram);
-        try writer.writeAll(&self.backup_ram);
+        try writer.writeAll(&self.persistent_ram);
+        try writeValue(writer, self.backup_cart_write_control);
         try writeValue(writer, self.sync);
         try writeValue(writer, self.cdd);
         try writeValue(writer, self.cdc.ifstat);
@@ -341,6 +378,7 @@ pub const ScdBoard = struct {
         try writeValue(writer, self.pcm.selected_channel);
         try writeValue(writer, self.pcm.bank);
         try writer.writeAll(&self.pcm.ram);
+        try writeValue(writer, self.gfx);
         try writeValue(writer, self.sector_accumulator);
         try writeValue(writer, self.sub_instructions);
     }
@@ -357,7 +395,8 @@ pub const ScdBoard = struct {
         try stream.readSliceAll(&self.word_ram.banks[0]);
         try stream.readSliceAll(&self.word_ram.banks[1]);
         try stream.readSliceAll(&self.prg_ram);
-        try stream.readSliceAll(&self.backup_ram);
+        try stream.readSliceAll(&self.persistent_ram);
+        try readInto(stream, &self.backup_cart_write_control);
         try readInto(stream, &self.sync);
         try readInto(stream, &self.cdd);
         try readInto(stream, &self.cdc.ifstat);
@@ -380,6 +419,7 @@ pub const ScdBoard = struct {
         try readInto(stream, &self.pcm.selected_channel);
         try readInto(stream, &self.pcm.bank);
         try stream.readSliceAll(&self.pcm.ram);
+        try readInto(stream, &self.gfx);
         try readInto(stream, &self.sector_accumulator);
         try readInto(stream, &self.sub_instructions);
 
@@ -388,7 +428,9 @@ pub const ScdBoard = struct {
         self.cdda_frame_count = 0;
         self.sub_bus.cdd_command_ready = false;
         self.sub_bus.cdc_irq_request = false;
+        self.sub_bus.gfx_start_request = false;
         self.sub_bus.backup_ram_dirty = true;
+        self.backup_cart_dirty = true;
         self.publishCddStatus();
     }
 
@@ -423,7 +465,7 @@ pub const ScdBoard = struct {
                 // Held in reset or bus-requested: time passes, nothing runs,
                 // but the drive keeps spinning.
                 const cycles: u32 = @intCast(@min(self.sync.credit, std.math.maxInt(u32)));
-                self.clockPcm(self.gate.advanceSubCycles(cycles, &self.sub_cpu));
+                self.advanceSubDevices(cycles);
                 self.advanceDrive(cycles);
                 self.sync.drain();
                 break;
@@ -432,7 +474,7 @@ pub const ScdBoard = struct {
                 // STOP: advance to the next tick so timers/drive can wake the CPU.
                 const to_tick = scd_clock.timer_divider - self.gate.tick_accumulator;
                 const cycles: u32 = @intCast(@min(self.sync.credit, to_tick));
-                self.clockPcm(self.gate.advanceSubCycles(cycles, &self.sub_cpu));
+                self.advanceSubDevices(cycles);
                 self.advanceDrive(cycles);
                 self.sync.consume(cycles);
                 if (self.sub_cpu.pending_irq_levels == 0) continue;
@@ -441,12 +483,18 @@ pub const ScdBoard = struct {
             self.sub_instructions += 1;
             var cycles = step.m68k_cycles + step.wait.m68k_cycles;
             if (cycles == 0) cycles = min_step_sub_cycles;
-            self.clockPcm(self.gate.advanceSubCycles(cycles, &self.sub_cpu));
+            self.advanceSubDevices(cycles);
             self.advanceDrive(cycles);
             self.gate.observeInterruptService(&self.sub_cpu);
             self.sync.consume(cycles);
             self.serviceSubSideRequests();
         }
+    }
+
+    fn advanceSubDevices(self: *ScdBoard, cycles: u32) void {
+        self.clockPcm(self.gate.advanceSubCycles(cycles, &self.sub_cpu));
+        if (self.word_ram.mode == .two_m and !self.word_ram.subOwns2M()) return;
+        if (self.gfx.advance(cycles, &self.gate.gfx_regs, &self.word_ram)) self.gate.raise(.graphics, &self.sub_cpu);
     }
 
     pub fn reset(self: *ScdBoard) void {
@@ -459,12 +507,15 @@ pub const ScdBoard = struct {
         self.cdd = Cdd.init(self.disc != null);
         self.cdc = .{};
         self.pcm.reset();
+        self.gfx.reset();
+        self.backup_cart_write_control = 1;
         self.sector_accumulator = 0;
         self.cdda_frame_count = 0;
         self.pcm_frame_count = 0;
         self.sub_bus.cdd_command_ready = false;
         self.sub_bus.cdc_irq_request = false;
         self.sub_bus.peripheral_reset_request = false;
+        self.sub_bus.gfx_start_request = false;
         self.sub_bus.non_owner_word_ram_accesses = 0;
         self.main_non_owner_word_ram_accesses = 0;
         self.publishCddStatus();
@@ -485,6 +536,9 @@ pub const ScdBoard = struct {
         word_ram_2m: u32,
         word_ram_1m_bank: u32,
         word_ram_1m_cell: u32,
+        backup_cart_id,
+        backup_cart_ram: u32,
+        backup_cart_control,
         gate: u8,
     };
 
@@ -505,6 +559,9 @@ pub const ScdBoard = struct {
             if (addr >= 0x40000) return .{ .bios_mirror = page };
             return null; // BIOS proper: served by the cartridge slot.
         }
+        if (addr < 0x600000) return .backup_cart_id;
+        if (addr < 0x700000) return .{ .backup_cart_ram = (addr >> 1) & (backup_cart_bytes - 1) };
+        if (addr < 0x800000) return .backup_cart_control;
         if (addr >= 0xA12000 and addr < 0xA12040) return .{ .gate = @intCast(addr - 0xA12000) };
         return null;
     }
@@ -541,6 +598,9 @@ pub const ScdBoard = struct {
                 self.flush();
                 return self.word_ram.readCell8(self.word_ram.mainBank1M(), o);
             },
+            .backup_cart_id => return if ((address & 1) == 0) 0xFF else 6,
+            .backup_cart_ram => |o| return if ((address & 1) == 0) 0xFF else self.backupCartRam()[o],
+            .backup_cart_control => return if ((address & 1) == 0) 0xFF else self.backup_cart_write_control,
             .gate => |o| {
                 self.flush();
                 if (o == 0x08 or o == 0x09) {
@@ -590,6 +650,9 @@ pub const ScdBoard = struct {
                 self.flush();
                 return self.word_ram.readCell16(self.word_ram.mainBank1M(), o);
             },
+            .backup_cart_id => return 0xFF06,
+            .backup_cart_ram => |o| return 0xFF00 | @as(u16, self.backupCartRam()[o]),
+            .backup_cart_control => return 0xFF00 | @as(u16, self.backup_cart_write_control),
             .gate => |o| {
                 self.flush();
                 if (o == 0x08) return self.mainHostRead();
@@ -607,7 +670,7 @@ pub const ScdBoard = struct {
         const addr = address & 0xFFFFFF;
         const region = self.classify(addr) orelse return false;
         switch (region) {
-            .hint_vector, .bios_mirror => return true, // ROM: ignored
+            .hint_vector, .bios_mirror, .backup_cart_id => return true, // ROM: ignored
             .prg_window => |o| {
                 self.flush();
                 if (o >= @as(u32, self.gate.write_protect) * sub_bus_mod.write_protect_unit) self.prg_ram[o] = value;
@@ -628,6 +691,15 @@ pub const ScdBoard = struct {
                 self.flush();
                 self.word_ram.writeCell8(self.word_ram.mainBank1M(), o, value);
             },
+            .backup_cart_ram => |o| {
+                if ((addr & 1) != 0 and (self.backup_cart_write_control & 1) != 0) {
+                    self.backupCartRam()[o] = value;
+                    self.backup_cart_dirty = true;
+                }
+            },
+            .backup_cart_control => {
+                if ((addr & 1) != 0) self.backup_cart_write_control = value;
+            },
             .gate => |o| {
                 self.flush();
                 const lanes: u2 = if ((o & 1) == 0) 0b10 else 0b01;
@@ -643,7 +715,7 @@ pub const ScdBoard = struct {
         const addr = address & 0xFFFFFE;
         const region = self.classify(addr) orelse return false;
         switch (region) {
-            .hint_vector, .bios_mirror => return true,
+            .hint_vector, .bios_mirror, .backup_cart_id => return true,
             .prg_window => |o| {
                 self.flush();
                 if (o >= @as(u32, self.gate.write_protect) * sub_bus_mod.write_protect_unit) {
@@ -667,6 +739,13 @@ pub const ScdBoard = struct {
                 self.flush();
                 self.word_ram.writeCell16(self.word_ram.mainBank1M(), o, value);
             },
+            .backup_cart_ram => |o| {
+                if ((self.backup_cart_write_control & 1) != 0) {
+                    self.backupCartRam()[o] = @truncate(value);
+                    self.backup_cart_dirty = true;
+                }
+            },
+            .backup_cart_control => self.backup_cart_write_control = @truncate(value),
             .gate => |o| {
                 self.flush();
                 const effects = self.gate.mainWrite(o, value, 0b11, .{ .cpu = &self.sub_cpu, .word_ram = &self.word_ram });
@@ -740,6 +819,24 @@ test "main window addresses classify to prg ram, bios mirror, word ram, and gate
     try testing.expect(board.read16(0xA10000) == null);
     try testing.expect(!board.write16(0xC00000, 0));
     try testing.expect(!board.write8(0xA130F1, 1));
+}
+
+test "backup RAM cartridge exposes ID, protected RAM, and write control" {
+    var bios = [_]u8{0} ** 0x20000;
+    const board = try ScdBoard.create(testing.allocator, &bios, null, false);
+    defer board.destroy();
+
+    try testing.expectEqual(@as(?u16, 0xFF06), board.read16(0x400000));
+    try testing.expectEqual(@as(?u8, 0xFF), board.read8(0x400000));
+    try testing.expectEqual(@as(?u8, 0x06), board.read8(0x400001));
+    try testing.expect(board.write16(0x600000, 0xFF5A));
+    try testing.expectEqual(@as(?u16, 0xFF5A), board.read16(0x600000));
+    try testing.expect(board.write8(0x700001, 0));
+    try testing.expect(board.write8(0x600001, 0xA5));
+    try testing.expectEqual(@as(?u8, 0x5A), board.read8(0x600001));
+    try testing.expect(board.write16(0x700000, 1));
+    try testing.expect(board.write8(0x600001, 0xA5));
+    try testing.expectEqual(@as(?u8, 0xA5), board.read8(0x600001));
 }
 
 test "1M mode routes main accesses to the owned bank and its cell image" {
@@ -860,7 +957,7 @@ test "drive ticks at 75 Hz, raises INT4 under HOCK, and decodes data sectors int
     const disc = try Disc.fromMemory(testing.allocator, null, &.{&image});
     const board = try ScdBoard.create(testing.allocator, &bios, disc, false);
     defer board.destroy();
-    try testing.expect(backup_ram_mod.isFormatted(&board.backup_ram));
+    try testing.expect(backup_ram_mod.isFormatted(board.internalBackupRam()));
     try testing.expectEqual(@as(u8, 0x0), board.gate.cdd_status[0]); // stopped, disc present
 
     // Sub side (driven directly; the CPU stays in reset so requested

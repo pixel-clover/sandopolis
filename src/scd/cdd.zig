@@ -279,7 +279,10 @@ pub const Cdd = struct {
         }
         // The status registers are deliberately left alone: the drive only
         // rewrites them when it processes a command (see replyPoll).
-        return event;
+        return switch (event) {
+            .none => .blank,
+            else => event,
+        };
     }
 
     fn deliver(self: *Cdd, d: *Disc) SectorEvent {
@@ -595,9 +598,10 @@ test "play seeks then delivers one sector per tick and stops at lead-out" {
     _ = cdd.command(&makeCommand(0x0, &.{}), &disc);
     try testing.expectEqualSlices(u8, &.{ 0x1, 0x0, 0, 0, 0, 2, 0, 6, 0x4 }, cdd.status[0..9]);
 
-    // Pause holds position; resume continues.
+    // Pause holds position, but the CDC decoder still receives an empty
+    // block every sector period.
     _ = cdd.command(&makeCommand(0x6, &.{}), &disc);
-    try testing.expectEqual(SectorEvent.none, cdd.tick(&disc));
+    try testing.expectEqual(SectorEvent.blank, cdd.tick(&disc));
     try testing.expectEqual(@as(i32, 6), cdd.lba);
     _ = cdd.command(&makeCommand(0x7, &.{}), &disc);
     try testing.expectEqual(@as(i32, 6), cdd.tick(&disc).data.lba);
