@@ -150,9 +150,9 @@ Flags:
 `bios_CD_J.bin` files) that are not included in this project.
 > Place the BIOS files per build in the locations mentioned below:
 > 
-> - For the Desktop build, put the files in the `bios/` directory beside the config file (`sandopolis.cfg`).
+> - For the desktop build, put the files in the `bios/` directory beside the config file (`sandopolis.cfg`).
 > - For the Libretro build, place the files in the frontend's system directory.
-> - For Sandopolis Web, upload the bios files through `Settings` menu. You need to do it only one time normally, and the files will be kept in the browser you're using.
+> - For Sandopolis web, upload the bios files through `Settings` menu. You need to do it only one time normally, and the files will be kept in the browser you're using.
 
 ---
 

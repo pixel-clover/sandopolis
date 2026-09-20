@@ -102,8 +102,11 @@ pub const SubBus = struct {
             .pcm_ram, .prg_ram, .word_ram => {},
             else => return,
         }
-        const address = @as(u32, self.gate.cdc_dma_address) << 3;
+        const address_shift: u5 = if (dest == .pcm_ram) 2 else 3;
+        const address = @as(u32, self.gate.cdc_dma_address) << address_shift;
+        const length = @as(u32, self.cdc.dbc) + 1;
         if (self.cdc.runDma(dest, address, .{ .ctx = self, .writeFn = dmaWrite })) self.cdc_irq_request = true;
+        self.gate.cdc_dma_address +%= @intCast(length >> address_shift);
     }
 
     fn dmaWrite(ctx: *anyopaque, destination: cdc_mod.Destination, address: u32, data: []const u8) void {
@@ -525,4 +528,46 @@ test "cdc register port auto-increments and host/dma transfers route by destinat
     bus.write8(0xFF8007, 0x00);
     try testing.expectEqual(@as(u8, f.cdc.ram[0x204]), f.word_ram.read8Linear(0x10000));
     try testing.expectEqual(@as(u8, f.cdc.ram[0x205]), f.word_ram.read8Linear(0x10001));
+}
+
+test "cdc DMA uses destination address units and advances the register" {
+    const PcmSink = struct {
+        bytes: [0x1000]u8 = [_]u8{0} ** 0x1000,
+
+        fn read(ctx: *anyopaque, address: u32) u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.bytes[(address - 0x2001) >> 1];
+        }
+
+        fn write(ctx: *anyopaque, address: u32, value: u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.bytes[(address - 0x2001) >> 1] = value;
+        }
+    };
+
+    const f = try Fixture.init(testing.allocator);
+    defer testing.allocator.destroy(f);
+    var bus = f.bus();
+    for (&f.cdc.ram, 0..) |*b, i| b.* = @truncate(i);
+    f.cdc.ifctrl = cdc_mod.Ifctrl.douten;
+
+    f.gate.cdc_device_destination = @intFromEnum(cdc_mod.Destination.prg_ram);
+    f.gate.cdc_dma_address = 0x1000;
+    f.cdc.dac = 0x0200;
+    f.cdc.dbc = 15;
+    f.cdc.writeRegister(0x6, 0);
+    bus.runPendingDma();
+    try testing.expectEqualSlices(u8, f.cdc.ram[0x200..0x210], f.prg_ram[0x8000..0x8010]);
+    try testing.expectEqual(@as(u16, 0x1002), f.gate.cdc_dma_address);
+
+    var pcm = PcmSink{};
+    bus.pcm = .{ .ctx = &pcm, .read8Fn = PcmSink.read, .write8Fn = PcmSink.write };
+    f.gate.cdc_device_destination = @intFromEnum(cdc_mod.Destination.pcm_ram);
+    f.gate.cdc_dma_address = 0x0100;
+    f.cdc.dac = 0x0300;
+    f.cdc.dbc = 15;
+    f.cdc.writeRegister(0x6, 0);
+    bus.runPendingDma();
+    try testing.expectEqualSlices(u8, f.cdc.ram[0x300..0x310], pcm.bytes[0x400..0x410]);
+    try testing.expectEqual(@as(u16, 0x0104), f.gate.cdc_dma_address);
 }
