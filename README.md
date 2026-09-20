@@ -16,7 +16,7 @@
 [![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro%20%7C%20VR-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
-A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, and SG-1000
+A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, SG-1000, and Sega CD
 
 </div>
 
@@ -44,7 +44,7 @@ Footage of Sandopolis running a few games:
 
 ### Key Features
 
-- Accurate Sega Genesis/Mega Drive, Master System, Game Gear, and SG-1000 emulation, plus Sega CD (BIOS required)
+- Accurate Sega Genesis/Mega Drive, Master System, Game Gear, SG-1000, and Sega CD emulation
 - Very portable; can be built and run on any platform that Zig supports
 - Very configurable, including gameplay input, frontend hotkeys, and rendering settings
 - Has a permissive license that allows commercial use
@@ -144,20 +144,18 @@ Flags:
 
 ---
 
-### Sega CD
+> [!IMPORTANT]
+> Sandopolis boots Sega CD games from `.cue`/`.bin` or `.iso` images.
+> Note that the Sega CD needs BIOS files (`segacd.bios_us`, `segacd.bios_eu`, or `segacd.bios_jp`, or place `bios_CD_U.bin`, `bios_CD_E.bin`, and
+`bios_CD_J.bin`) that are not included.
+> So, the files must be placed where Sandopolis can find them.
+> Here
 
-Sandopolis boots Sega CD / Mega CD games from `.cue` + `.bin` or `.iso` images.
-The CD BIOS is not included; place the 128KB BIOS image(s) for your region where the frontend can find them:
+- Desktop build: put the files in the `bios/` directory beside the config file (`sandopolis.cfg`).
+- Libretro build: place the file in the frontend's system directory.
+- Web build: upload the bios file through `Settings` menu. The bios files are kept in the browser you're using.
 
-- Desktop: configure `segacd.bios_us`, `segacd.bios_eu`, or `segacd.bios_jp`, or place `bios_CD_U.bin`,
-  `bios_CD_E.bin`, and `bios_CD_J.bin` in the `bios/` directory beside the config file.
-- Libretro: place them in the frontend's system directory.
-- Web: upload them once through Settings; they are retained in IndexedDB.
-
-The BIOS region follows the disc's region code unless only one image is available. Internal backup RAM and the 512KB
-backup RAM cartridge are saved as `backup.brm` in the disc's data directory (desktop), or exposed as one save RAM buffer
-with the 8KB internal RAM first (libretro). Save states use their own `SNDSCDST` container and reopen the disc from its
-original path.
+---
 
 ### Contributing
 
