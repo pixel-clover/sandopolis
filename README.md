@@ -16,7 +16,7 @@
 [![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000%20%7C%20Sega%20CD-002776?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro%20%7C%20VR-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
-A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, SG-1000, and Sega CD
+A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, and SG-1000
 
 </div>
 
@@ -44,7 +44,7 @@ Footage of Sandopolis running a few games:
 
 ### Key Features
 
-- Accurate Sega Genesis/Mega Drive, Master System, Game Gear, SG-1000, and Sega CD emulation
+- Accurate Sega Genesis/Mega Drive, Sega CD, Master System, Game Gear, and SG-1000 emulation
 - Very portable; can be built and run on any platform that Zig supports
 - Very configurable, including gameplay input, frontend hotkeys, and rendering settings
 - Has a permissive license that allows commercial use
