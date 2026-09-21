@@ -16,7 +16,7 @@
 [![Systems](https://img.shields.io/badge/systems-Genesis%20%7C%20Master%20System%20%7C%20Game%20Gear%20%7C%20SG--1000%20%7C%20Sega%20CD-002776?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 [![Platforms](https://img.shields.io/badge/platforms-Desktop%20%7C%20Web%20%7C%20Libretro%20%7C%20VR-44cc11?style=flat&labelColor=282c34)](https://github.com/pixel-clover/sandopolis)
 
-A portable multi-system Sega emulator for Genesis, Sega CD, Master System, Game Gear, and SG-1000
+A portable multi-system Sega emulator
 
 </div>
 

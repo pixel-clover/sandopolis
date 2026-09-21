@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const Io = @import("input/io.zig").Io;
 const AudioOutput = @import("audio/output.zig").AudioOutput;
 const state_file = @import("state_file.zig");
+const scd_bios = @import("scd/bios.zig");
 const system_detect = @import("system.zig");
 const SystemMachine = @import("system_machine.zig").SystemMachine;
 
@@ -58,8 +59,10 @@ const WasmBiosStorage = struct {
     set: SystemMachine.BiosSet = .{},
 
     fn store(self: *WasmBiosStorage, region: usize, bytes: []const u8) !void {
+        try scd_bios.validate(bytes);
+        const image = try allocator.dupe(u8, bytes);
         if (self.images[region]) |old| allocator.free(old);
-        self.images[region] = try allocator.dupe(u8, bytes);
+        self.images[region] = image;
         self.set = .{ .us = self.images[0], .eu = self.images[1], .jp = self.images[2] };
     }
 };
@@ -67,7 +70,7 @@ const WasmBiosStorage = struct {
 var wasm_bios: WasmBiosStorage = .{};
 
 /// Register a Sega CD BIOS image. `region`: 0=US, 1=EU, 2=JP. Returns false
-/// when the image is not a 128KB BIOS.
+/// when the image is not a valid 128KB Sega BIOS.
 export fn sandopolis_set_bios(region: u8, ptr: [*]const u8, len: usize) bool {
     if (region > 2 or len != 128 * 1024) return false;
     wasm_bios.store(region, ptr[0..len]) catch return false;
@@ -507,6 +510,24 @@ test "wasm emulator creation resets the machine before the first frame" {
     const pc_before = genesis.programCounter();
     emu.machine.runFrame();
     try std.testing.expect(genesis.programCounter() != pc_before);
+}
+
+test "wasm accepts a Sega BIOS and preserves it after an invalid replacement" {
+    const bytes = try std.testing.allocator.alloc(u8, 128 * 1024);
+    defer std.testing.allocator.free(bytes);
+    @memset(bytes, 0);
+    defer {
+        if (wasm_bios.images[0]) |image| allocator.free(image);
+        wasm_bios = .{};
+    }
+
+    try std.testing.expect(!sandopolis_set_bios(0, bytes.ptr, bytes.len));
+
+    @memcpy(bytes[0x100..0x104], "SEGA");
+    try std.testing.expect(sandopolis_set_bios(0, bytes.ptr, bytes.len));
+    @memset(bytes[0x100..0x104], 0);
+    try std.testing.expect(!sandopolis_set_bios(0, bytes.ptr, bytes.len));
+    try std.testing.expectEqualStrings("SEGA", wasm_bios.set.us.?[0x100..0x104]);
 }
 
 test "wasm framebuffer stride export reports the row stride independent of screen width" {

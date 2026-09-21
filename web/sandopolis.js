@@ -296,9 +296,10 @@ async function saveRecentRom(name, bytes) {
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
-    if (allEntries.length <= MAX_RECENT_ROMS) return;
-    allEntries.sort((a, b) => b.timestamp - a.timestamp);
-    const toDelete = allEntries.slice(MAX_RECENT_ROMS);
+    const romEntries = allEntries.filter((entry) => !String(entry.name).startsWith(BIOS_KEY_PREFIX));
+    if (romEntries.length <= MAX_RECENT_ROMS) return;
+    romEntries.sort((a, b) => b.timestamp - a.timestamp);
+    const toDelete = romEntries.slice(MAX_RECENT_ROMS);
     await new Promise((resolve, reject) => {
         const tx = db.transaction("roms", "readwrite");
         const store = tx.objectStore("roms");
@@ -1147,6 +1148,7 @@ async function onBiosSelected(ev) {
                 tx.onerror = () => reject(tx.error);
             });
         } catch (_) {
+            setStatus(`BIOS loaded for this session, but could not be saved: ${file.name}`);
         }
     }
     await refreshBiosStatus();
@@ -1172,7 +1174,7 @@ async function restoreStoredBios() {
 async function refreshBiosStatus() {
     const loaded = await restoreStoredBios();
     const status = document.getElementById("bios-status");
-    if (status) status.textContent = loaded.length ? loaded.join(", ").toUpperCase() : "none";
+    if (status) status.textContent = loaded.length ? loaded.join(", ").toUpperCase() : (wasm.instance.exports.sandopolis_has_bios() ? "session only" : "none");
 }
 
 async function loadDisc(cueFile, binFile) {
