@@ -1761,7 +1761,6 @@ fn logAvailableRenderDrivers() void {
     std.debug.print("\n", .{});
 }
 
-// Re-export ROM metadata functions from rom_metadata.zig
 const inferPalModeFromCountryCodes = rom_metadata.inferPalModeFromCountryCodes;
 const inferConsoleIsOverseasFromCountryCodes = rom_metadata.inferConsoleIsOverseasFromCountryCodes;
 const resolveTimingMode = rom_metadata.resolveTimingMode;
@@ -2068,7 +2067,6 @@ fn loadStateFile(allocator: std.mem.Allocator, machine: *SystemMachine, path: []
     try machine.loadStateFromBuffer(allocator, file_data);
 }
 
-// Re-export gamepad input functions from input/gamepad.zig
 const gamepadInputFromButton = gamepad.inputFromGamepadButton;
 const joystickInputFromButton = gamepad.inputFromJoystickButton;
 const updateAxisPair = gamepad.updateAxisPair;
@@ -2146,7 +2144,6 @@ fn handleFrontendGamepadTransitions(
     return .ignored;
 }
 
-// Re-export gamepad slot functions from input/gamepad.zig
 const findGamepadPort = gamepad.findGamepadPort;
 const findJoystickPort = gamepad.findJoystickPort;
 const portOccupied = gamepad.portOccupied;
@@ -2191,20 +2188,17 @@ fn tryInitAudio(userdata: *u8) ?AudioInit {
     return null;
 }
 
-// Re-export UI rendering functions from frontend/ui.zig
 const overlayScale = ui_render.overlayScale;
 const overlayTextWidth = ui_render.textWidth;
 const drawOverlayText = ui_render.drawText;
 const renderOverlayPanel = ui_render.renderPanel;
 
-// Re-export performance formatting functions from frontend/performance.zig
 const formatDurationMsTenths = perf_monitor.formatDurationMsTenths;
 const formatRateHzTenths = perf_monitor.formatRateHzTenths;
 const formatPercentTenths = perf_monitor.formatPercentTenths;
 const formatPerformanceSpikeLine = perf_monitor.formatSpikeLine;
 const formatPerformanceSpikeWindowLine = perf_monitor.formatSpikeWindowLine;
 
-// Re-export pause/help overlay rendering from frontend/ui.zig
 const renderPauseOverlay = ui_render.renderPauseOverlay;
 const renderHelpOverlay = ui_render.renderHelpOverlay;
 const renderDialogOverlay = ui_render.renderDialogOverlay;
@@ -2466,7 +2460,6 @@ fn renderSaveManagerOverlay(
     }
 }
 
-// Re-export performance HUD rendering from frontend/performance.zig
 const renderPerformanceHud = perf_monitor.renderHud;
 
 fn renderGameInfoOverlay(
@@ -6003,7 +5996,6 @@ test "pause overlay key opens game info with i" {
 
 extern fn SDL_GetGamepads(count: *c_int) ?[*]zsdl3.Joystick.Id;
 extern fn SDL_GetJoysticks(count: *c_int) ?[*]zsdl3.Joystick.Id;
-// SDL_IsGamepad, SDL_OpenJoystick, SDL_CloseJoystick are re-exported from input/gamepad.zig
 extern fn SDL_OpenAudioDeviceStream(
     device: zsdl3.AudioDeviceId,
     spec: *const SdlAudioSpecRaw,

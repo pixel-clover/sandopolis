@@ -3,11 +3,9 @@ const platform = @import("../platform.zig");
 const config = @import("config.zig");
 const toast = @import("toast.zig");
 
-// Re-export path types for convenience
 pub const PathCopy = config.PathCopy;
 pub const MessageCopy = toast.MessageCopy;
 
-// File dialog outcome
 pub const Outcome = union(enum) {
     none,
     selected: PathCopy,
@@ -15,7 +13,6 @@ pub const Outcome = union(enum) {
     failed: MessageCopy,
 };
 
-// Thread-safe file dialog state
 pub const State = struct {
     mutex: platform.Mutex = .{},
     in_flight: bool = false,

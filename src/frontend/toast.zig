@@ -1,10 +1,8 @@
 const std = @import("std");
 
-// Toast notification constants
 pub const max_message_bytes: usize = 256;
 pub const duration_frames: u64 = 300;
 
-// Fixed-size message storage for toast notifications
 pub const MessageCopy = struct {
     len: usize = 0,
     bytes: [max_message_bytes]u8 = [_]u8{0} ** max_message_bytes,
@@ -21,14 +19,12 @@ pub const MessageCopy = struct {
     }
 };
 
-// Toast notification styles
 pub const Style = enum {
     info,
     success,
     failure,
 };
 
-// Single queued toast entry
 const Entry = struct {
     style: Style = .info,
     message: MessageCopy = .{},
@@ -96,13 +92,11 @@ pub const Toast = struct {
     }
 };
 
-// Notification context for frontend operations
 pub const Notifications = struct {
     toast: ?*Toast = null,
     frame_number: u64 = 0,
 };
 
-// Send a formatted notification to the frontend
 pub fn notify(notifications: Notifications, comptime_style: Style, comptime fmt: []const u8, args: anytype) void {
     if (notifications.toast) |toast| {
         var buffer: [max_message_bytes]u8 = undefined;
