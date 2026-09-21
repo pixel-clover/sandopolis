@@ -55,7 +55,7 @@ build: ## Build project (default Mode=$(BUILD_TYPE); override with e.g. `BUILD_T
 
 rebuild: clean build  ## clean and build
 
-run: build  ## Run the main application
+run:  ## Run the main application
 	@echo "Running $(BINARY_NAME)..."
 	$(ZIG) build run $(BUILD_OPTS) -- $(ARGS)
 

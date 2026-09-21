@@ -1164,7 +1164,7 @@ fn renderSpritesToBuffer(
                 }
             }
 
-            if (pixel_budget_used >= max_pixels) {
+            if (pixel_budget_used > max_pixels) {
                 // Exceeding the per-line dot budget sets the overflow status
                 // flag (bit 6) on hardware, same as the sprite-count limit.
                 self.sprite_overflow = true;
@@ -1377,6 +1377,37 @@ test "sprite pixel budget overflow sets the sprite overflow status flag" {
     try std.testing.expect(vdp.sprite_overflow);
 }
 
+test "exact H40 sprite pixel budget does not overflow" {
+    var vdp = Vdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x02;
+    vdp.regs[12] = 0x01;
+
+    const sprite_base: u16 = 0x0400;
+    for (0..10) |i| {
+        const link: u8 = if (i == 9) 0 else @intCast(i + 1);
+        writeTestSpriteEntryFull(
+            &vdp,
+            sprite_base + @as(u16, @intCast(i * 8)),
+            128,
+            0x0C,
+            link,
+            0,
+            128 + @as(u16, @intCast(i * 32)),
+        );
+    }
+
+    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
+    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+
+    renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
+
+    try std.testing.expect(!vdp.sprite_dot_overflow);
+    try std.testing.expect(!vdp.sprite_overflow);
+}
+
 test "sprite Y is masked to 9 bits outside interlace mode 2" {
     var vdp = Vdp.init();
     vdp.regs[1] = 0x40;
@@ -1480,9 +1511,9 @@ test "off-screen sprite widths still trigger next-line sprite masking" {
     seedAscendingSpritePattern(&vdp, 0);
 
     const sprite_base: u16 = 0x0400;
-    for (0..10) |i| {
+    for (0..11) |i| {
         const entry_base = sprite_base + @as(u16, @intCast(i * 8));
-        const next_link: u8 = if (i == 9) 0 else @intCast(i + 1);
+        const next_link: u8 = if (i == 10) 0 else @intCast(i + 1);
         writeTestSpriteEntryFull(&vdp, entry_base, 128, 0x0C, next_link, 0x0000, 96);
     }
 
