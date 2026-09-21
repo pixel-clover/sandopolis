@@ -443,6 +443,14 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
     // Strategy: undo all CRAM events to get the start-of-line palette, sort
     // events by pixel position, then re-render pixel spans between events.
     if (cram_dot_count > 0) {
+        const end_regs = self.regs;
+        defer self.regs = end_regs;
+        var reg_undo: usize = reg_change_count;
+        while (reg_undo > 0) {
+            reg_undo -= 1;
+            self.regs[reg_change_events[reg_undo].reg] = reg_change_events[reg_undo].old_value;
+        }
+
         // Sort events by pixel_x using insertion sort (small N).
         var sorted: [Vdp.max_cram_dot_events]Vdp.CramDotEvent = undefined;
         @memcpy(sorted[0..cram_dot_count], cram_dot_events[0..cram_dot_count]);
@@ -467,14 +475,20 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
         // all pixels that were rendered by the output pass (accounts for
         // mid-scanline H32/H40 mode switches).
         const cram_render_w: usize = @as(usize, max_rendered_x);
-        const backdrop_idx = self.regs[7] & 0x3F;
         const first_px: usize = @min(@as(usize, sorted[0].pixel_x), cram_render_w);
         var ev_idx: usize = 0;
+        var reg_event_cursor: usize = 0;
 
         // Re-render from pixel 0 if any CRAM change happened (even in HBlank).
         const render_start: usize = if (first_px >= cram_render_w) 0 else first_px;
 
         for (render_start..cram_render_w) |x| {
+            while (reg_event_cursor < reg_change_count and reg_change_events[reg_event_cursor].pixel_x <= x) {
+                const evt = reg_change_events[reg_event_cursor];
+                self.regs[evt.reg] = evt.new_value;
+                reg_event_cursor += 1;
+            }
+
             // Apply all CRAM events BEFORE this pixel (strictly less than).
             // Events at earlier positions must update the palette before we
             // render this pixel.
@@ -495,8 +509,11 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
             }
 
             // Render the pixel with the current palette (pre-event for dots).
+            const backdrop_idx = self.regs[7] & 0x3F;
             const pal_idx = if (pixel_buf[x] == 0) backdrop_idx else pixel_buf[x];
-            if (sh_mode) {
+            if (!self.isDisplayEnabled() or x >= self.screenWidth() or (x < 8 and (self.regs[0] & 0x20) != 0)) {
+                self.framebuffer[line_start + x] = getPaletteColor(self, backdrop_idx);
+            } else if (self.isShadowHighlightEnabled()) {
                 self.framebuffer[line_start + x] = switch (sh_buf[x]) {
                     SH_SHADOW => getPaletteColorShadow(self, pal_idx),
                     SH_HIGHLIGHT => getPaletteColorHighlight(self, pal_idx),
@@ -879,6 +896,67 @@ test "reg 0 left-column blanking forces the first 8 pixels to backdrop" {
         try std.testing.expectEqual(@as(u32, 0xFF000000), vdp.framebuffer[x]);
     }
     try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[8]);
+}
+
+test "cram event replay preserves left-column blanking" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x24;
+    vdp.regs[1] = 0x40;
+    vdp.regs[4] = 0x01;
+
+    vdp.cram[2] = 0x00;
+    vdp.cram[3] = 0x0E;
+    for (0..4) |row| {
+        const row_offset: u16 = @intCast(row * 4);
+        for (0..4) |byte| vdp.vramWriteByte(0x0020 + row_offset + @as(u16, @intCast(byte)), 0x11);
+    }
+    vdp.vramWriteWord(0x2000, 0x0001);
+    vdp.vramWriteWord(0x2002, 0x0001);
+
+    // An HBlank write forces CRAM replay from pixel zero.
+    vdp.cram_dot_events[0] = .{
+        .pixel_x = 400,
+        .cram_addr = 4,
+        .old_hi = 0,
+        .old_lo = 0,
+        .written_word = 0x0E00,
+    };
+    vdp.cram_dot_event_count = 1;
+    vdp.cram[4] = 0x0E;
+
+    vdp.renderScanline(0);
+
+    for (0..8) |x| try std.testing.expectEqual(@as(u32, 0xFF000000), vdp.framebuffer[x]);
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[8]);
+}
+
+test "cram event replay follows mid-line shadow highlight changes" {
+    var vdp = Vdp.init();
+    vdp.regs[0] = 0x04;
+    vdp.regs[1] = 0x40;
+    vdp.regs[12] = 0x01;
+    vdp.cram[1] = 0x0E;
+
+    vdp.reg_change_events[0] = .{
+        .pixel_x = 160,
+        .reg = 12,
+        .old_value = 0x09,
+        .new_value = 0x01,
+    };
+    vdp.reg_change_event_count = 1;
+    vdp.cram_dot_events[0] = .{
+        .pixel_x = 100,
+        .cram_addr = 2,
+        .old_hi = 0,
+        .old_lo = 0,
+        .written_word = 0x0E00,
+    };
+    vdp.cram_dot_event_count = 1;
+    vdp.cram[2] = 0x0E;
+
+    vdp.renderScanline(0);
+
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), vdp.framebuffer[200]);
 }
 
 test "plane A window split honors the shifted left-edge gap" {
