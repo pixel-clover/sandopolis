@@ -73,8 +73,6 @@ pub const SystemMachine = union(enum) {
         }
     };
 
-    // -- Lifecycle --
-
     /// Initialize from a ROM file path. Detects system type automatically.
     /// Strip a trailing ".zip" extension so that state/SRAM paths resolve
     /// identically whether the ROM was loaded from a ZIP or directly.
@@ -105,9 +103,6 @@ pub const SystemMachine = union(enum) {
             // Use effective_path (.zip stripped) so ".sg.zip" resolves to ".sg".
             const sys = system_detect.detectSystemFromExtension(effective_path) orelse
                 system_detect.detectSystem(rom_data);
-            // Sega CD needs a BIOS and a disc reader; the facade arm lands
-            // with the sub-board. Until then, refuse clearly instead of
-            // booting a disc image as a cartridge.
             if (sys == .segacd) {
                 // Content-detected raw disc image handed over as a file.
                 const disc = try Disc.fromMemory(allocator, discSheetForImage(rom_data), &.{rom_data});
@@ -237,8 +232,6 @@ pub const SystemMachine = union(enum) {
         };
     }
 
-    // -- Frame execution --
-
     pub fn runFrame(self: *SystemMachine) void {
         switch (self.*) {
             .genesis => |*g| g.runFrame(),
@@ -252,8 +245,6 @@ pub const SystemMachine = union(enum) {
             .sms => |*s| s.runFrame(),
         }
     }
-
-    // -- Video --
 
     pub fn framebuffer(self: *const SystemMachine) []const u32 {
         return switch (self.*) {
@@ -303,8 +294,6 @@ pub const SystemMachine = union(enum) {
         };
     }
 
-    // -- Audio --
-
     pub fn takePendingAudio(self: *SystemMachine) PendingAudioFrames {
         return switch (self.*) {
             .genesis => |*g| g.takePendingAudio(),
@@ -340,8 +329,6 @@ pub const SystemMachine = union(enum) {
             .sms => |*s| s.audioBuffer(),
         };
     }
-
-    // -- Timing & region --
 
     pub fn palMode(self: *const SystemMachine) bool {
         return switch (self.*) {
@@ -399,8 +386,6 @@ pub const SystemMachine = union(enum) {
         };
     }
 
-    // -- Reset --
-
     pub fn reset(self: *SystemMachine) void {
         switch (self.*) {
             .genesis => |*g| g.reset(),
@@ -414,8 +399,6 @@ pub const SystemMachine = union(enum) {
             .sms => |*s| s.softReset(),
         }
     }
-
-    // -- Input --
 
     pub fn applyControllerTypes(self: *SystemMachine, bindings: *const InputBindings.Bindings) void {
         switch (self.*) {
@@ -538,8 +521,6 @@ pub const SystemMachine = union(enum) {
         }
     }
 
-    // -- ROM metadata --
-
     pub fn romMetadata(self: *const SystemMachine) RomMetadata {
         return switch (self.*) {
             .genesis => |*g| g.romMetadata(),
@@ -556,8 +537,6 @@ pub const SystemMachine = union(enum) {
             },
         };
     }
-
-    // -- Memory regions --
 
     pub fn romSize(self: *const SystemMachine) usize {
         return switch (self.*) {
@@ -583,8 +562,6 @@ pub const SystemMachine = union(enum) {
             .sms => null,
         };
     }
-
-    // -- Save state --
 
     /// Serialize the machine into a self-describing state buffer. Each
     /// system's format carries its own magic, so loadStateFromBuffer can
@@ -721,8 +698,6 @@ pub const SystemMachine = union(enum) {
         }
     }
 
-    // -- Persistence --
-
     pub fn flushPersistentStorage(self: *SystemMachine) !void {
         switch (self.*) {
             .genesis => |*g| try g.flushPersistentStorage(),
@@ -736,8 +711,6 @@ pub const SystemMachine = union(enum) {
             .sms => |*s| s.bindPointers(),
         }
     }
-
-    // -- Debug --
 
     pub fn programCounter(self: *const SystemMachine) u32 {
         return switch (self.*) {
@@ -759,8 +732,6 @@ pub const SystemMachine = union(enum) {
             .sms => {},
         }
     }
-
-    // -- Genesis-only accessors (for code that needs them) --
 
     /// Access the Genesis machine directly. Returns null for SMS.
     pub fn asGenesis(self: *SystemMachine) ?*Machine {

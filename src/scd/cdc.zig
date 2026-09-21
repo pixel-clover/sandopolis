@@ -109,10 +109,6 @@ pub const Cdc = struct {
         self.ram = ram;
     }
 
-    // -----------------------------------------------------------------------
-    // Register access through the gate array ports
-    // -----------------------------------------------------------------------
-
     pub fn readRegister(self: *Cdc, rs: u4) u8 {
         return switch (rs) {
             0x0 => self.comin,
@@ -183,10 +179,6 @@ pub const Cdc = struct {
         self.irq_asserted = deci_active or dtei_active;
     }
 
-    // -----------------------------------------------------------------------
-    // Decoder (one raw sector per 75 Hz tick)
-    // -----------------------------------------------------------------------
-
     /// Store a decoded block. Returns true when INT5 should be raised
     /// (decoder interrupt newly asserted).
     /// STAT2 is recomputed from the control registers rather than latched:
@@ -233,10 +225,6 @@ pub const Cdc = struct {
             offset = (offset + 1) & (buffer_bytes - 1);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Data transfer
-    // -----------------------------------------------------------------------
 
     /// DTTRG: begin moving DBC+1 bytes from DAC. Host destinations expose
     /// the data through `hostRead`; DMA destinations complete when the board
@@ -312,10 +300,6 @@ pub const Cdc = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 const testing = std.testing;
 
 fn makeRawSector(seed: u8) [reader.raw_sector_bytes]u8 {
@@ -377,7 +361,6 @@ test "decoder stores header and data at the advanced block pointer and raises DE
     var cdc = Cdc{};
     cdc.writeRegister(0xA, Ctrl0.decen | Ctrl0.wrrq);
     cdc.writeRegister(0x1, Ifctrl.decien);
-    // Start with PT = WA = 0x3FF0 so the first block wraps to 0x0930.
     cdc.pt = 0x0000;
     cdc.wa = 0x0000;
 

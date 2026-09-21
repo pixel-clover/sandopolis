@@ -280,8 +280,6 @@ export fn sandopolis_get_eq_high(emu: *const WasmEmulator) f64 {
     return emu.audio.eq_left.hg;
 }
 
-// About metadata
-
 export fn sandopolis_version_ptr() [*:0]const u8 {
     return version_cstr.ptr;
 }
@@ -319,15 +317,12 @@ export fn sandopolis_audio_sample_rate() u32 {
 }
 
 export fn sandopolis_video_width() u32 {
-    // Maximum framebuffer width across all supported systems
     return SystemMachine.maxFramebufferWidth();
 }
 
 export fn sandopolis_save_state_version() u32 {
     return state_file.save_state_version;
 }
-
-// Statistics
 
 export fn sandopolis_frame_count(emu: *const WasmEmulator) u32 {
     return @intCast(@min(emu.frame_count, std.math.maxInt(u32)));
@@ -365,8 +360,6 @@ export fn sandopolis_system_type(emu: *const WasmEmulator) u32 {
     };
 }
 
-// Settings
-
 export fn sandopolis_set_controller_type(emu: *WasmEmulator, port: u32, ct: u8) void {
     // SMS has fixed 2-button controllers; controller types are Genesis-only.
     const genesis = emu.machine.asGenesis() orelse return;
@@ -389,8 +382,6 @@ export fn sandopolis_get_controller_type(emu: *const WasmEmulator, port: u32) u8
     };
 }
 
-// Quick save/load (in-memory snapshots)
-
 export fn sandopolis_quick_save(emu: *WasmEmulator) bool {
     if (emu.snapshot) |*old| old.deinit(allocator);
     emu.snapshot = emu.machine.captureSnapshot(allocator) catch {
@@ -409,8 +400,6 @@ export fn sandopolis_quick_load(emu: *WasmEmulator) bool {
     }
     return true;
 }
-
-// Persistent save/load (serialized bytes for IndexedDB)
 
 export fn sandopolis_save_state(emu: *WasmEmulator) ?[*]u8 {
     if (emu.last_save_buf) |buf| allocator.free(buf);
@@ -443,8 +432,6 @@ export fn sandopolis_load_state(emu: *WasmEmulator, ptr: [*]const u8, len: usize
     }
     return true;
 }
-
-// Button constants
 
 export fn sandopolis_button_up() u16 {
     return Io.Button.Up;
@@ -557,10 +544,8 @@ test "wasm sms audio sample count returns interleaved i16 count not stereo pairs
     var emu = try initWasmEmulator(std.testing.allocator, &rom, 1); // hint=1 (SMS)
     defer emu.machine.deinit(std.testing.allocator);
 
-    // Run a frame to generate audio
     emu.machine.runFrame();
 
-    // Render audio
     const sample_count = sandopolis_audio_render(&emu);
 
     // SMS audio buffer is interleaved stereo (L, R, L, R, ...) so the
@@ -568,7 +553,6 @@ test "wasm sms audio sample count returns interleaved i16 count not stereo pairs
     try std.testing.expect(sample_count > 0);
     try std.testing.expect(sample_count % 2 == 0);
 
-    // Verify count matches the SMS machine's audio buffer length
     const buf = emu.machine.smsAudioBuffer().?;
     try std.testing.expectEqual(buf.len, sample_count);
 }

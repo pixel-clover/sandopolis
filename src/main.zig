@@ -230,7 +230,6 @@ const SdlAudioSpecRaw = extern struct {
     freq: c_int,
 };
 
-// Re-export gamepad types from input/gamepad.zig
 const GamepadSlot = gamepad.GamepadSlot;
 const SdlJoystick = gamepad.SdlJoystick;
 const JoystickSlot = gamepad.JoystickSlot;
@@ -243,7 +242,6 @@ const joystick_hat_right = gamepad.hat_right;
 const joystick_hat_down = gamepad.hat_down;
 const joystick_hat_left = gamepad.hat_left;
 
-// Re-export SDL joystick externs from gamepad module
 const SDL_IsGamepad = gamepad.SDL_IsGamepad;
 const SDL_OpenJoystick = gamepad.SDL_OpenJoystick;
 const SDL_CloseJoystick = gamepad.SDL_CloseJoystick;
@@ -265,7 +263,6 @@ fn uncappedBootFrames(audio_enabled: bool) u32 {
     return if (audio_enabled) 0 else 240;
 }
 
-// Re-export config types and constants from frontend/config.zig
 const frontend_config_name = config_module.config_file_name;
 const frontend_recent_rom_limit = config_module.recent_rom_limit;
 const DialogPathCopy = config_module.PathCopy;
@@ -275,7 +272,6 @@ const FrontendConfig = config_module.FrontendConfig;
 const defaultFrontendConfigPath = config_module.defaultConfigPath;
 const computeVideoDestinationRect = config_module.computeVideoDestinationRect;
 
-// Re-export toast notification types from frontend/toast.zig
 const max_dialog_message_bytes = toast_module.max_message_bytes;
 const frontend_toast_duration_frames = toast_module.duration_frames;
 const DialogMessageCopy = toast_module.MessageCopy;
@@ -284,11 +280,9 @@ const FrontendToast = toast_module.Toast;
 const FrontendNotifications = toast_module.Notifications;
 const notifyFrontend = toast_module.notify;
 
-// Re-export file dialog types from frontend/dialog.zig
 const FileDialogOutcome = dialog_module.Outcome;
 const FileDialogState = dialog_module.State;
 
-// Re-export menu types from frontend/menu.zig
 const HomeMenuAction = menu_module.HomeMenuAction;
 const HomeMenuState = menu_module.HomeMenuState;
 const SettingsMenuAction = menu_module.SettingsMenuAction;
@@ -320,7 +314,6 @@ fn shouldTriggerHotkey(pressed: bool, repeated: bool) bool {
     return pressed and !repeated;
 }
 
-// Re-export save state types and constants from frontend/saves.zig
 const save_state_preview_width = saves_module.preview_width;
 const save_state_preview_height = saves_module.preview_height;
 const save_state_preview_pixel_count = saves_module.preview_pixel_count;
@@ -337,7 +330,6 @@ const formatTimestampRelative = saves_module.formatTimestampRelative;
 const formatSaveManagerSlotLine = saves_module.formatSlotLine;
 const formatSaveManagerPathLine = saves_module.formatPathLine;
 
-// Re-export performance monitoring types from frontend/performance.zig
 const performance_spike_log_threshold_ns = perf_monitor.spike_log_threshold_ns;
 const performance_core_sample_period = perf_monitor.core_sample_period;
 const performance_core_burst_frames = perf_monitor.core_burst_frames;
@@ -352,7 +344,6 @@ const shouldSampleCoreCounters = perf_monitor.shouldSampleCoreCounters;
 const nextCoreBurstFramesRemaining = perf_monitor.nextCoreBurstFramesRemaining;
 const isThresholdSlowFrame = perf_monitor.isThresholdSlowFrame;
 
-// Re-export UI types from frontend/ui.zig
 const UiColors = ui_render.Colors;
 const UiSpacing = ui_render.Spacing;
 const UiAnimation = ui_render.Animation;
@@ -770,16 +761,13 @@ fn desktopMachineInitOptions() SystemMachine.InitOptions {
     return .{ .bios = &sega_cd_bios.set };
 }
 
-// Re-export CLI types from cli.zig
 const CliConfig = cli_module.Config;
 const createCliCommand = cli_module.createCommand;
 
-// Re-export ROM metadata types from rom_metadata.zig
 const TimingModeOption = cli_module.TimingModeOption;
 const ResolvedTimingMode = rom_metadata.ResolvedTimingMode;
 const ResolvedConsoleRegion = rom_metadata.ResolvedConsoleRegion;
 
-// Re-export keyboard/hotkey functions from input/keyboard.zig
 const keyboardStatePressed = keyboard.keyboardStatePressed;
 const hotkeyModifiersFromKeyboardState = keyboard.hotkeyModifiersFromKeyboardState;
 const isHotkeyModifierScancode = keyboard.isHotkeyModifierScancode;
@@ -787,7 +775,6 @@ const hotkeyBindingFromScancode = keyboard.hotkeyBindingFromScancode;
 const hotkeyActionDescription = keyboard.hotkeyActionDescription;
 const keyboardInputFromScancode = keyboard.keyboardInputFromScancode;
 
-// Re-export binding editor types from input/binding_editor.zig
 const BindingEditorTarget = binding_editor_module.Target;
 const BindingEditorStatus = binding_editor_module.Status;
 const BindingEditorState = binding_editor_module.State;
