@@ -89,6 +89,12 @@ pub const SmsVdp = struct {
         return tms_palette[index];
     }
 
+    fn tmsPatternColor(self: *const SmsVdp, index: u4) u32 {
+        if (index != 0) return tmsPaletteColor(index);
+        const backdrop: u4 = @truncate(self.regs[7]);
+        return if (backdrop == 0) 0xFF000000 else tmsPaletteColor(backdrop);
+    }
+
     pub fn init() SmsVdp {
         return .{};
     }
@@ -525,8 +531,8 @@ pub const SmsVdp = struct {
             const color_byte = self.vram[ct_addr & 0x3FFF];
             const fg_idx: u4 = @truncate(color_byte >> 4);
             const bg_idx: u4 = @truncate(color_byte & 0x0F);
-            const fg = if (fg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(fg_idx);
-            const bg_col = if (bg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(bg_idx);
+            const fg = self.tmsPatternColor(fg_idx);
+            const bg_col = self.tmsPatternColor(bg_idx);
 
             const x_base = col * 8;
             inline for (0..8) |bit| {
@@ -556,8 +562,8 @@ pub const SmsVdp = struct {
             const color_byte = self.vram[ct_addr & 0x3FFF];
             const fg_idx: u4 = @truncate(color_byte >> 4);
             const bg_idx: u4 = @truncate(color_byte & 0x0F);
-            const fg = if (fg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(fg_idx);
-            const bg_col = if (bg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(bg_idx);
+            const fg = self.tmsPatternColor(fg_idx);
+            const bg_col = self.tmsPatternColor(bg_idx);
 
             const x_base = col * 8;
             inline for (0..8) |bit| {
@@ -575,8 +581,8 @@ pub const SmsVdp = struct {
         const pg_base: u16 = (@as(u16, self.regs[4]) & 0x07) << 11;
         const fg_idx: u4 = @truncate(self.regs[7] >> 4);
         const bg_idx: u4 = @truncate(self.regs[7] & 0x0F);
-        const fg = if (fg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(fg_idx);
-        const bg_col = if (bg_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(bg_idx);
+        const fg = self.tmsPatternColor(fg_idx);
+        const bg_col = self.tmsPatternColor(bg_idx);
 
         // 40 columns of 6-pixel-wide chars; total = 240 pixels, centered with 8px border each side
         for (0..40) |col_idx| {
@@ -612,8 +618,8 @@ pub const SmsVdp = struct {
             const color_byte = self.vram[pg_addr & 0x3FFF];
             const left_idx: u4 = @truncate(color_byte >> 4);
             const right_idx: u4 = @truncate(color_byte & 0x0F);
-            const left = if (left_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(left_idx);
-            const right = if (right_idx == 0) @as(u32, 0xFF000000) else tmsPaletteColor(right_idx);
+            const left = self.tmsPatternColor(left_idx);
+            const right = self.tmsPatternColor(right_idx);
 
             const x_base = col * 8;
             line_buf[x_base + 0] = left;
@@ -645,7 +651,7 @@ pub const SmsVdp = struct {
             const sat_entry = sat_base + @as(u16, @intCast(sprite_idx)) * 4;
             const y_raw = self.vram[sat_entry & 0x3FFF];
             if (y_raw == 0xD0) break;
-            const sprite_y: i16 = @as(i16, y_raw) + 1;
+            const sprite_y: i16 = @as(i16, y_raw) + 1 - if (y_raw >= 0xE0) @as(i16, 256) else 0;
             if (sprite_y > @as(i16, @intCast(line)) or sprite_y + @as(i16, @intCast(display_height)) <= @as(i16, @intCast(line)))
                 continue;
 
@@ -665,10 +671,8 @@ pub const SmsVdp = struct {
             if (color_idx == 0) continue;
             const color = tmsPaletteColor(color_idx);
 
-            const row_in_sprite: u16 = if (is_magnified)
-                (@as(u16, @intCast(line)) -| @as(u16, @intCast(@max(sprite_y, 0)))) / 2
-            else
-                @as(u16, @intCast(line)) -| @as(u16, @intCast(@max(sprite_y, 0)));
+            const row_from_top: u16 = @intCast(@as(i16, @intCast(line)) - sprite_y);
+            const row_in_sprite = if (is_magnified) row_from_top / 2 else row_from_top;
 
             const effective_pattern: u16 = if (is_16x16) @as(u16, pattern) & 0xFC else pattern;
             const cols: usize = if (is_16x16) 2 else 1;
@@ -1404,4 +1408,40 @@ test "sg1000 tms mode 2 renders non-black pixels with pattern data" {
     const white = SmsVdp.tmsPaletteColor(15);
     try testing.expectEqual(white, vdp.framebuffer[0]);
     try testing.expectEqual(white, vdp.framebuffer[7]);
+}
+
+test "sg1000 transparent pattern color reveals the backdrop" {
+    var vdp = SmsVdp.init();
+    vdp.is_sg1000 = true;
+    vdp.regs[0] = 0;
+    vdp.regs[1] = 0x40;
+    vdp.regs[2] = 0;
+    vdp.regs[3] = 0;
+    vdp.regs[4] = 0;
+    vdp.regs[7] = 0x02;
+
+    vdp.renderScanline(0);
+
+    try testing.expectEqual(SmsVdp.tmsPaletteColor(2), vdp.framebuffer[0]);
+}
+
+test "sg1000 sprite Y 255 wraps onto the top scanline" {
+    var vdp = SmsVdp.init();
+    vdp.is_sg1000 = true;
+    vdp.regs[0] = 0;
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x36;
+    vdp.regs[6] = 0x01;
+
+    const sat_base: u16 = (@as(u16, vdp.regs[5]) & 0x7F) << 7;
+    vdp.vram[sat_base] = 0xFF;
+    vdp.vram[sat_base + 1] = 10;
+    vdp.vram[sat_base + 2] = 0;
+    vdp.vram[sat_base + 3] = 2;
+    vdp.vram[sat_base + 4] = 0xD0;
+    vdp.vram[0x0800] = 0x80;
+
+    vdp.renderScanline(0);
+
+    try testing.expectEqual(SmsVdp.tmsPaletteColor(2), vdp.framebuffer[10]);
 }

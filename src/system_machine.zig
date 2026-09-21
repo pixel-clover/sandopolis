@@ -8,6 +8,10 @@ const clock = @import("clock.zig");
 const sms_clock = @import("sms/clock.zig");
 const genesis_state_file = @import("state_file.zig");
 const sms_state_file = @import("sms/state_file.zig");
+const scd_state_file = @import("scd/state_file.zig");
+const scd_bios = @import("scd/bios.zig");
+const Disc = @import("scd/cdrom/reader.zig").Disc;
+const scd_board = @import("scd/board.zig");
 const PendingAudioFrames = @import("audio/timing.zig").PendingAudioFrames;
 const CoreFrameCounters = @import("performance_profile.zig").CoreFrameCounters;
 const Vdp = @import("video/vdp.zig").Vdp;
@@ -15,12 +19,43 @@ const Z80 = @import("cpu/z80.zig").Z80;
 const Io = @import("input/io.zig").Io;
 const InputBindings = @import("input/mapping.zig");
 
+/// System family a save-state buffer belongs to, derived from its magic.
+pub const StateSystem = enum { genesis, sms, segacd };
+
+const StateFormat = struct { magic: [8]u8, system: StateSystem };
+const state_formats = [_]StateFormat{
+    .{ .magic = sms_state_file.magic, .system = .sms },
+    .{ .magic = scd_state_file.magic, .system = .segacd },
+    .{ .magic = genesis_state_file.magic, .system = .genesis },
+};
+
+/// Classify a state buffer by its leading magic. Null for unknown or short
+/// buffers; callers decide whether that is an error.
+pub fn classifyStateBuffer(data: []const u8) ?StateSystem {
+    if (data.len < 8) return null;
+    for (state_formats) |format| {
+        if (std.mem.eql(u8, data[0..8], &format.magic)) return format.system;
+    }
+    return null;
+}
+
 /// System-agnostic machine wrapper that dispatches to Genesis or SMS.
 pub const SystemMachine = union(enum) {
     genesis: Machine,
     sms: SmsMachine,
 
     pub const SystemType = system_detect.SystemType;
+    pub const BiosSet = scd_bios.BiosSet;
+    pub const BiosRegion = scd_bios.BiosRegion;
+
+    /// Options that only matter for systems needing firmware (Sega CD).
+    /// Cartridge systems ignore them.
+    pub const InitOptions = struct {
+        /// BIOS images by region; borrowed for the machine's lifetime.
+        bios: ?*const BiosSet = null,
+        /// Force a BIOS region instead of following the disc header.
+        preferred_bios_region: ?BiosRegion = null,
+    };
 
     pub const RomMetadata = Machine.RomMetadata;
 
@@ -38,8 +73,6 @@ pub const SystemMachine = union(enum) {
         }
     };
 
-    // -- Lifecycle --
-
     /// Initialize from a ROM file path. Detects system type automatically.
     /// Strip a trailing ".zip" extension so that state/SRAM paths resolve
     /// identically whether the ROM was loaded from a ZIP or directly.
@@ -51,7 +84,15 @@ pub const SystemMachine = union(enum) {
     }
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !SystemMachine {
+        return initWithOptions(allocator, rom_path, .{});
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, rom_path: ?[]const u8, options: InitOptions) !SystemMachine {
         if (rom_path) |path| {
+            // Disc images are opened lazily by the disc layer; never slurp them.
+            if (system_detect.detectSystemFromExtension(path) == .segacd) {
+                return initSegaCdFromPath(allocator, path, options);
+            }
             // Read the file (with ZIP extraction support) and detect system type.
             const rom_data = try rom_loader.readRomFile(allocator, path, 8 * 1024 * 1024);
             // Both machine inits copy the bytes, so the file data can always
@@ -62,6 +103,11 @@ pub const SystemMachine = union(enum) {
             // Use effective_path (.zip stripped) so ".sg.zip" resolves to ".sg".
             const sys = system_detect.detectSystemFromExtension(effective_path) orelse
                 system_detect.detectSystem(rom_data);
+            if (sys == .segacd) {
+                // Content-detected raw disc image handed over as a file.
+                const disc = try Disc.fromMemory(allocator, discSheetForImage(rom_data), &.{rom_data});
+                return initSegaCdFromDisc(allocator, disc, options);
+            }
             if (sys == .sms or sys == .gg or sys == .sg1000) {
                 var sms = try SmsMachine.initFromRomBytes(allocator, rom_data);
                 errdefer sms.deinit(allocator);
@@ -99,6 +145,15 @@ pub const SystemMachine = union(enum) {
         raw_bytes: []const u8,
         system_hint: ?SystemType,
     ) !SystemMachine {
+        return initFromRomBytesWithOptions(allocator, raw_bytes, system_hint, .{});
+    }
+
+    pub fn initFromRomBytesWithOptions(
+        allocator: std.mem.Allocator,
+        raw_bytes: []const u8,
+        system_hint: ?SystemType,
+        options: InitOptions,
+    ) !SystemMachine {
         const rom_bytes = try rom_loader.extractRomBytes(allocator, raw_bytes);
         defer allocator.free(rom_bytes);
         const sys = system_hint orelse system_detect.detectSystem(rom_bytes);
@@ -110,7 +165,57 @@ pub const SystemMachine = union(enum) {
                 return .{ .sms = sms };
             },
             .genesis => return .{ .genesis = try Machine.initFromRomBytes(allocator, rom_bytes) },
+            .segacd => {
+                const disc = try Disc.fromMemory(allocator, discSheetForImage(rom_bytes), &.{rom_bytes});
+                return initSegaCdFromDisc(allocator, disc, options);
+            },
         }
+    }
+
+    fn initSegaCdFromPath(allocator: std.mem.Allocator, path: []const u8, options: InitOptions) !SystemMachine {
+        const ext = std.fs.path.extension(path);
+        const disc = if (std.ascii.eqlIgnoreCase(ext, ".cue"))
+            try Disc.openCuePath(allocator, path)
+        else
+            try Disc.openIsoPath(allocator, path);
+        var machine = try initSegaCdFromDisc(allocator, disc, options);
+        errdefer machine.deinit(allocator);
+        const source_copy = try allocator.dupe(u8, path);
+        machine.genesis.bus.replaceStoragePaths(allocator, null, source_copy);
+        // Internal backup RAM persists next to the disc's other data files.
+        const rom_paths = @import("rom_paths.zig");
+        if (rom_paths.romDataPath(allocator, path, "backup.brm")) |bram_path| {
+            defer allocator.free(bram_path);
+            machine.genesis.scd.?.setBackupRamPath(bram_path) catch {};
+        } else |_| {}
+        return machine;
+    }
+
+    /// Select a BIOS for the disc and build the machine. Takes ownership of
+    /// `disc` on success (and frees it on failure).
+    pub fn initSegaCdFromDisc(allocator: std.mem.Allocator, disc: Disc, options: InitOptions) !SystemMachine {
+        var mutable_disc = disc;
+        errdefer mutable_disc.deinit();
+        const bios_set = options.bios orelse return error.BiosMissing;
+        var sector0: [2352]u8 = undefined;
+        const disc_region: ?BiosRegion = if (mutable_disc.readSector(0, &sector0)) |_|
+            scd_bios.discRegion(sector0[16..])
+        else |_|
+            null;
+        const region = try bios_set.selectForDisc(disc_region, options.preferred_bios_region);
+        const bios = bios_set.get(region).?;
+        try scd_bios.validate(bios);
+        const genesis = try Machine.initSegaCd(allocator, bios, mutable_disc);
+        return .{ .genesis = genesis };
+    }
+
+    /// Raw disc bytes: 2352-byte sectors carry the signature after the
+    /// 16-byte sync/header; otherwise treat as a 2048-byte ISO.
+    fn discSheetForImage(bytes: []const u8) ?[]const u8 {
+        if (bytes.len >= 30 and std.mem.eql(u8, bytes[16..30], system_detect.sega_cd_disc_signature)) {
+            return "FILE \"image.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
+        }
+        return null;
     }
 
     pub fn deinit(self: *SystemMachine, allocator: std.mem.Allocator) void {
@@ -122,12 +227,10 @@ pub const SystemMachine = union(enum) {
 
     pub fn systemType(self: *const SystemMachine) SystemType {
         return switch (self.*) {
-            .genesis => .genesis,
+            .genesis => |*g| if (g.isSegaCd()) .segacd else .genesis,
             .sms => |*s| if (s.is_game_gear) .gg else if (s.is_sg1000) .sg1000 else .sms,
         };
     }
-
-    // -- Frame execution --
 
     pub fn runFrame(self: *SystemMachine) void {
         switch (self.*) {
@@ -142,8 +245,6 @@ pub const SystemMachine = union(enum) {
             .sms => |*s| s.runFrame(),
         }
     }
-
-    // -- Video --
 
     pub fn framebuffer(self: *const SystemMachine) []const u32 {
         return switch (self.*) {
@@ -193,8 +294,6 @@ pub const SystemMachine = union(enum) {
         };
     }
 
-    // -- Audio --
-
     pub fn takePendingAudio(self: *SystemMachine) PendingAudioFrames {
         return switch (self.*) {
             .genesis => |*g| g.takePendingAudio(),
@@ -230,8 +329,6 @@ pub const SystemMachine = union(enum) {
             .sms => |*s| s.audioBuffer(),
         };
     }
-
-    // -- Timing & region --
 
     pub fn palMode(self: *const SystemMachine) bool {
         return switch (self.*) {
@@ -289,8 +386,6 @@ pub const SystemMachine = union(enum) {
         };
     }
 
-    // -- Reset --
-
     pub fn reset(self: *SystemMachine) void {
         switch (self.*) {
             .genesis => |*g| g.reset(),
@@ -305,8 +400,6 @@ pub const SystemMachine = union(enum) {
         }
     }
 
-    // -- Input --
-
     pub fn applyControllerTypes(self: *SystemMachine, bindings: *const InputBindings.Bindings) void {
         switch (self.*) {
             .genesis => |*g| g.applyControllerTypes(bindings),
@@ -320,10 +413,18 @@ pub const SystemMachine = union(enum) {
         input: InputBindings.KeyboardInput,
         pressed: bool,
     ) bool {
-        return switch (self.*) {
-            .genesis => |*g| g.applyKeyboardBindings(bindings, input, pressed),
-            .sms => false,
-        };
+        if (self.* == .genesis) return self.genesis.applyKeyboardBindings(bindings, input, pressed);
+
+        var handled = false;
+        for (0..InputBindings.player_count) |port| {
+            for (InputBindings.all_actions) |action| {
+                if (bindings.keyboardBinding(port, action) == input) {
+                    self.setButton(@intCast(port), InputBindings.actionButtonMask(action), pressed);
+                    handled = true;
+                }
+            }
+        }
+        return handled;
     }
 
     pub fn applyGamepadBindings(
@@ -333,16 +434,43 @@ pub const SystemMachine = union(enum) {
         input: InputBindings.GamepadInput,
         pressed: bool,
     ) bool {
-        return switch (self.*) {
-            .genesis => |*g| g.applyGamepadBindings(bindings, port, input, pressed),
-            .sms => false,
-        };
+        if (self.* == .genesis) return self.genesis.applyGamepadBindings(bindings, port, input, pressed);
+
+        var handled = false;
+        for (InputBindings.all_actions) |action| {
+            if (bindings.gamepad[port][InputBindings.actionIndex(action)] == input) {
+                self.setButton(@intCast(port), InputBindings.actionButtonMask(action), pressed);
+                handled = true;
+            }
+        }
+        return handled;
     }
 
     pub fn releaseKeyboardBindings(self: *SystemMachine, bindings: *const InputBindings.Bindings) void {
-        switch (self.*) {
-            .genesis => |*g| g.releaseKeyboardBindings(bindings),
-            .sms => {},
+        if (self.* == .genesis) return self.genesis.releaseKeyboardBindings(bindings);
+        for (0..InputBindings.player_count) |port| {
+            for (InputBindings.all_actions) |action| {
+                if (bindings.keyboardBinding(port, action) != null) {
+                    self.setButton(@intCast(port), InputBindings.actionButtonMask(action), false);
+                }
+            }
+        }
+    }
+
+    pub fn releaseGamepadBindings(self: *SystemMachine, bindings: *const InputBindings.Bindings, port: usize) void {
+        if (self.* == .genesis) return self.genesis.releaseGamepadBindings(bindings, port);
+        for (InputBindings.all_actions) |action| {
+            if (bindings.gamepad[port][InputBindings.actionIndex(action)] != null) {
+                self.setButton(@intCast(port), InputBindings.actionButtonMask(action), false);
+            }
+        }
+    }
+
+    pub fn releaseAllInputs(self: *SystemMachine) void {
+        for (0..InputBindings.player_count) |port| {
+            for (InputBindings.all_actions) |action| {
+                self.setButton(@intCast(port), InputBindings.actionButtonMask(action), false);
+            }
         }
     }
 
@@ -393,8 +521,6 @@ pub const SystemMachine = union(enum) {
         }
     }
 
-    // -- ROM metadata --
-
     pub fn romMetadata(self: *const SystemMachine) RomMetadata {
         return switch (self.*) {
             .genesis => |*g| g.romMetadata(),
@@ -411,8 +537,6 @@ pub const SystemMachine = union(enum) {
             },
         };
     }
-
-    // -- Memory regions --
 
     pub fn romSize(self: *const SystemMachine) usize {
         return switch (self.*) {
@@ -439,14 +563,14 @@ pub const SystemMachine = union(enum) {
         };
     }
 
-    // -- Save state --
-
     /// Serialize the machine into a self-describing state buffer. Each
     /// system's format carries its own magic, so loadStateFromBuffer can
     /// dispatch without the caller tracking the variant.
     pub fn saveStateToBuffer(self: *const SystemMachine, allocator: std.mem.Allocator) ![]u8 {
         return switch (self.*) {
-            .genesis => |*g| genesis_state_file.saveToBuffer(allocator, g),
+            // The Sega CD container format lands with the sub-board state;
+            // a plain Genesis state would silently drop the disc system.
+            .genesis => |*g| if (g.isSegaCd()) scd_state_file.saveToBuffer(allocator, g) else genesis_state_file.saveToBuffer(allocator, g),
             .sms => |*s| sms_state_file.saveToBuffer(allocator, s),
         };
     }
@@ -457,9 +581,21 @@ pub const SystemMachine = union(enum) {
     /// pointers are rebound; on error self is untouched. Frontend concerns
     /// (audio output resync, recordings) stay with the caller.
     pub fn loadStateFromBuffer(self: *SystemMachine, allocator: std.mem.Allocator, data: []const u8) !void {
-        if (data.len >= sms_state_file.magic.len and
-            std.mem.eql(u8, data[0..sms_state_file.magic.len], &sms_state_file.magic))
-        {
+        const target = classifyStateBuffer(data) orelse return error.InvalidSaveState;
+        if (target == .segacd) {
+            // Box the incoming machine (stack budget, see scd/state_file.zig)
+            // and replace self in place instead of copying the old machine out.
+            const next = try allocator.create(Machine);
+            defer allocator.destroy(next);
+            next.* = try scd_state_file.loadFromBuffer(allocator, data);
+            errdefer next.deinit(allocator);
+            if (self.* == .genesis and self.genesis.isSegaCd()) adoptStableScdBoard(&self.genesis, next);
+            self.deinit(allocator);
+            self.* = .{ .genesis = next.* };
+            self.rebindRuntimePointers();
+            return;
+        }
+        if (target == .sms) {
             var next = try sms_state_file.loadFromBuffer(allocator, data);
             errdefer next.deinit(allocator);
             // The SMS format carries no paths; keep the current source path
@@ -510,17 +646,31 @@ pub const SystemMachine = union(enum) {
         }
     }
 
+    /// Keep the sub-board allocation (and so the RETRO_MEMORY_SAVE_RAM
+    /// pointer into its backup RAM) stable across a CD-to-CD state load by
+    /// moving the loaded board's contents into the old allocation.
+    fn adoptStableScdBoard(old_machine: *Machine, next_machine: *Machine) void {
+        const old_board = old_machine.scd orelse return;
+        const new_board = next_machine.scd orelse return;
+        // Swap the whole structs: the new machine now owns the old
+        // allocation (with the new contents), the old machine frees the
+        // other one on deinit. If the temporary cannot be allocated the
+        // pointer simply changes, which is still a correct load.
+        old_board.swapContents(new_board) catch return;
+        next_machine.scd = old_board;
+        old_machine.scd = new_board;
+    }
+
     /// True when a state buffer targets the same system family as the
     /// running machine. loadStateFromBuffer can switch the variant, but
     /// libretro requires serialize size, geometry, and region to stay
     /// stable within a session, so retro_unserialize must reject
     /// cross-family buffers instead of switching.
     pub fn stateBufferMatchesSystem(self: *const SystemMachine, data: []const u8) bool {
-        const buffer_is_sms = data.len >= sms_state_file.magic.len and
-            std.mem.eql(u8, data[0..sms_state_file.magic.len], &sms_state_file.magic);
+        const target = classifyStateBuffer(data) orelse return false;
         return switch (self.*) {
-            .sms => buffer_is_sms,
-            .genesis => !buffer_is_sms,
+            .sms => target == .sms,
+            .genesis => |*g| if (g.isSegaCd()) target == .segacd else target == .genesis,
         };
     }
 
@@ -548,8 +698,6 @@ pub const SystemMachine = union(enum) {
         }
     }
 
-    // -- Persistence --
-
     pub fn flushPersistentStorage(self: *SystemMachine) !void {
         switch (self.*) {
             .genesis => |*g| try g.flushPersistentStorage(),
@@ -563,8 +711,6 @@ pub const SystemMachine = union(enum) {
             .sms => |*s| s.bindPointers(),
         }
     }
-
-    // -- Debug --
 
     pub fn programCounter(self: *const SystemMachine) u32 {
         return switch (self.*) {
@@ -586,8 +732,6 @@ pub const SystemMachine = union(enum) {
             .sms => {},
         }
     }
-
-    // -- Genesis-only accessors (for code that needs them) --
 
     /// Access the Genesis machine directly. Returns null for SMS.
     pub fn asGenesis(self: *SystemMachine) ?*Machine {
@@ -722,8 +866,9 @@ test "stateBufferMatchesSystem distinguishes system families by magic" {
     try t.expect(gen_machine.stateBufferMatchesSystem(gen_buf));
     try t.expect(!sms_machine.stateBufferMatchesSystem(gen_buf));
     try t.expect(!gen_machine.stateBufferMatchesSystem(sms_buf));
-    // Short/garbage buffers classify as non-SMS and only match Genesis.
+    // Short/garbage buffers carry no known magic and match nothing.
     try t.expect(!sms_machine.stateBufferMatchesSystem("junk"));
+    try t.expect(!gen_machine.stateBufferMatchesSystem("junk"));
 }
 
 test "loadStateFromBuffer keeps the persistent save RAM allocation stable" {
@@ -773,6 +918,33 @@ test "unified setButton maps genesis masks to sms buttons" {
     try t.expect(input.port1.button1);
     try t.expect(input.port2.button2);
     try t.expect(input.pause_pressed);
+}
+
+test "configured bindings apply to sms and release cleanly" {
+    const t = @import("std").testing;
+    var rom = [_]u8{0xC7} ** 1024;
+    var machine = try SystemMachine.initFromRomBytes(testing_alloc, &rom, .sms);
+    defer machine.deinit(testing_alloc);
+
+    var bindings = InputBindings.Bindings.defaults();
+    bindings.setKeyboard(.up, .q);
+    bindings.setGamepad(.c, .north);
+
+    try t.expect(machine.applyKeyboardBindings(&bindings, .q, true));
+    try t.expect(machine.sms.bus.input.port1.up);
+    machine.releaseKeyboardBindings(&bindings);
+    try t.expect(!machine.sms.bus.input.port1.up);
+
+    try t.expect(machine.applyGamepadBindings(&bindings, 0, .north, true));
+    try t.expect(machine.sms.bus.input.port1.button2);
+    machine.releaseGamepadBindings(&bindings, 0);
+    try t.expect(!machine.sms.bus.input.port1.button2);
+
+    _ = machine.applyKeyboardBindings(&bindings, .q, true);
+    _ = machine.applyGamepadBindings(&bindings, 0, .north, true);
+    machine.releaseAllInputs();
+    try t.expect(!machine.sms.bus.input.port1.up);
+    try t.expect(!machine.sms.bus.input.port1.button2);
 }
 
 test "zabu demo boots and renders gameplay" {
@@ -838,4 +1010,97 @@ test "golden axe shadow highlight high priority tiles are not darkened" {
     // brightness, not shadowed. With correct S/H priority handling,
     // a significant portion of the screen should have bright pixels.
     try @import("std").testing.expect(bright > 1000);
+}
+
+test "classifyStateBuffer maps every known magic and rejects junk" {
+    const t = @import("std").testing;
+
+    var sms_hdr = [_]u8{0} ** 16;
+    @memcpy(sms_hdr[0..8], &sms_state_file.magic);
+    try t.expectEqual(StateSystem.sms, classifyStateBuffer(&sms_hdr).?);
+
+    var gen_hdr = [_]u8{0} ** 16;
+    @memcpy(gen_hdr[0..8], &genesis_state_file.magic);
+    try t.expectEqual(StateSystem.genesis, classifyStateBuffer(&gen_hdr).?);
+
+    var scd_hdr = [_]u8{0} ** 16;
+    @memcpy(scd_hdr[0..8], &scd_state_file.magic);
+    try t.expectEqual(StateSystem.segacd, classifyStateBuffer(&scd_hdr).?);
+
+    try t.expect(classifyStateBuffer("junk") == null);
+    try t.expect(classifyStateBuffer("SNDSXXXX........") == null);
+
+    // A Genesis machine must not accept a Sega CD buffer as same-family.
+    var gen_rom = [_]u8{0} ** 0x400;
+    @memcpy(gen_rom[0x100..0x104], "SEGA");
+    var gen_machine = try SystemMachine.initFromRomBytes(testing_alloc, &gen_rom, null);
+    defer gen_machine.deinit(testing_alloc);
+    try t.expect(!gen_machine.stateBufferMatchesSystem(&scd_hdr));
+    try t.expect(!gen_machine.stateBufferMatchesSystem("junk"));
+}
+
+test "initWithOptions refuses a disc image without a BIOS and delegates otherwise" {
+    const t = @import("std").testing;
+    // No BIOS configured: a Sega CD disc cannot boot.
+    var iso = [_]u8{0} ** 0x800;
+    @memcpy(iso[0..14], "SEGADISCSYSTEM");
+    try t.expectError(error.BiosMissing, SystemMachine.initFromRomBytesWithOptions(testing_alloc, &iso, null, .{}));
+
+    // Cartridge systems ignore the BIOS options entirely.
+    var gen_rom = [_]u8{0} ** 0x400;
+    @memcpy(gen_rom[0x100..0x104], "SEGA");
+    var machine = try SystemMachine.initFromRomBytesWithOptions(testing_alloc, &gen_rom, null, .{ .preferred_bios_region = .jp });
+    defer machine.deinit(testing_alloc);
+    try t.expectEqual(SystemMachine.SystemType.genesis, machine.systemType());
+}
+
+test "facade boots a sega cd from bios bytes and an in-memory iso" {
+    const t = @import("std").testing;
+    const bios = try testing_alloc.alloc(u8, 128 * 1024);
+    defer testing_alloc.free(bios);
+    @memset(bios, 0);
+    @memcpy(bios[0x100..0x104], "SEGA");
+    std.mem.writeInt(u32, bios[0..4], 0x00FFFE00, .big);
+    std.mem.writeInt(u32, bios[4..8], 0x00000200, .big);
+    bios[0x200] = 0x60; // bra.s *
+    bios[0x201] = 0xFE;
+
+    var iso = [_]u8{0} ** (2 * 2048);
+    @memcpy(iso[0..14], "SEGADISCSYSTEM");
+    iso[0x1F0] = 'U';
+
+    // No US BIOS available: selection falls back to the only image.
+    const set = SystemMachine.BiosSet{ .eu = bios };
+    var machine = try SystemMachine.initFromRomBytesWithOptions(testing_alloc, &iso, null, .{ .bios = &set });
+    defer machine.deinit(testing_alloc);
+    try t.expectEqual(SystemMachine.SystemType.segacd, machine.systemType());
+    machine.reset();
+    machine.runFrame();
+    machine.discardPendingAudio();
+    try t.expectEqual(@as(u32, 0x200), machine.programCounter());
+    try t.expectEqual(@as(usize, scd_board.persistent_ram_bytes), machine.persistentSaveRam().?.len);
+
+    // A forced region that is not present is an error.
+    try t.expectError(error.BiosMissing, SystemMachine.initFromRomBytesWithOptions(testing_alloc, &iso, null, .{ .bios = &set, .preferred_bios_region = .jp }));
+    // A wrong-sized BIOS is rejected.
+    const short = SystemMachine.BiosSet{ .us = bios[0..0x1000] };
+    try t.expectError(error.BiosWrongSize, SystemMachine.initFromRomBytesWithOptions(testing_alloc, &iso, null, .{ .bios = &short }));
+    // Snapshots clone the sub-board and keep the (memory) disc.
+    var snap = try machine.captureSnapshot(testing_alloc);
+    defer snap.deinit(testing_alloc);
+    try machine.restoreSnapshot(testing_alloc, &snap);
+    try t.expect(machine.genesis.scd.?.disc != null);
+
+    // State saving uses the Sega CD container and only matches CD machines.
+    const state = try machine.saveStateToBuffer(testing_alloc);
+    defer testing_alloc.free(state);
+    try t.expectEqual(StateSystem.segacd, classifyStateBuffer(state).?);
+    try t.expect(machine.stateBufferMatchesSystem(state));
+    const board_before = machine.genesis.scd.?;
+    try machine.loadStateFromBuffer(testing_alloc, state);
+    try t.expectEqual(SystemMachine.SystemType.segacd, machine.systemType());
+    // The board allocation (libretro save-RAM pointer) survived the load.
+    try t.expectEqual(board_before, machine.genesis.scd.?);
+    // A memory-backed disc has no path to reopen from: the drive is empty.
+    try t.expect(machine.genesis.scd.?.disc == null);
 }

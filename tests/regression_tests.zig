@@ -1373,7 +1373,9 @@ test "warsong ym synthesis matches golden hash (900 frames)" {
     // Re-baselined 2026-07 for the VDP timing calibration that fixed PAL
     // Titan Overdrive + timestamp-aware replay (see the sonic and knuckles
     // test); real-audio RMS verified unchanged (3154 -> 3139).
-    try testing.expectEqual(@as(u32, 2797099301), hash);
+    // Re-baselined 2026-09 after VRAM copy DMA was corrected to consume one
+    // read and one write access slot per byte.
+    try testing.expectEqual(@as(u32, 2693464747), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {
@@ -1612,4 +1614,50 @@ test "sg1000 hustle chumy boots and produces visible output" {
     }
     // Some SG-1000 games may render fewer visible pixels on title screens
     try testing.expect(non_black_pixels > 10);
+}
+
+
+// ---------------------------------------------------------------------------
+// Sega CD (skipped when the BIOS / disc files are not present)
+// ---------------------------------------------------------------------------
+
+const sega_cd_bios_us = "roms/bios/bios_CD_U.bin";
+const sega_cd_test_disc = "roms/cd/test.cue";
+
+fn openSegaCdOrSkip(disc_path: ?[]const u8) !?Emulator {
+    return Emulator.initSegaCdFromPaths(testing.allocator, sega_cd_bios_us, disc_path) catch |err| switch (err) {
+        error.FileNotFound, error.BadPathName, error.NotDir => null,
+        else => err,
+    };
+}
+
+test "sega cd bios boots to its menu without a disc" {
+    var emulator = (try openSegaCdOrSkip(null)) orelse return;
+    defer emulator.deinit(testing.allocator);
+
+    emulator.runFramesDiscardingAudio(300);
+
+    // The BIOS drew something (logo / menu) and both CPUs left their
+    // startup code: main PC past the reset vector, sub PC inside PRG-RAM.
+    try testing.expect(countUniqueFramebufferColors(emulator.framebuffer(), 8) > 1);
+    try testing.expect(emulator.cpuState().program_counter != 0x200);
+    try testing.expect(emulator.scdSubProgramCounter() < 0x80000);
+    try testing.expect(emulator.scdSubInstructionCount() > 100_000);
+    // Drive reports "no disc" (0xB) or an open tray (0x5).
+    const drive = emulator.scdDriveStatusNibble();
+    try testing.expect(drive == 0xB or drive == 0x5);
+}
+
+test "sega cd bios reads the toc of a disc and starts its initial program" {
+    var emulator = (try openSegaCdOrSkip(sega_cd_test_disc)) orelse return;
+    defer emulator.deinit(testing.allocator);
+
+    emulator.runFramesDiscardingAudio(600);
+
+    try testing.expect(countUniqueFramebufferColors(emulator.framebuffer(), 8) > 1);
+    // The drive left "stopped": it read the TOC and is playing or paused.
+    const drive = emulator.scdDriveStatusNibble();
+    try testing.expect(drive == 0x1 or drive == 0x4);
+    // The game's initial program runs from work RAM on the main CPU.
+    try testing.expect(emulator.cpuState().program_counter >= 0xFF0000);
 }

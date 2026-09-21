@@ -347,7 +347,7 @@ pub const Bindings = struct {
         for (0..player_count) |port| {
             for (actions) |action| {
                 if (self.keyboard[port][actionIndex(action)] == input) {
-                    io.setButton(port, actionToIoButton(action), pressed);
+                    io.setButton(port, actionButtonMask(action), pressed);
                     handled = true;
                 }
             }
@@ -359,7 +359,7 @@ pub const Bindings = struct {
         for (0..player_count) |port| {
             for (actions) |action| {
                 if (self.keyboard[port][actionIndex(action)] != null) {
-                    io.setButton(port, actionToIoButton(action), false);
+                    io.setButton(port, actionButtonMask(action), false);
                 }
             }
         }
@@ -369,7 +369,7 @@ pub const Bindings = struct {
         var handled = false;
         for (actions) |action| {
             if (self.gamepad[port][actionIndex(action)] == input) {
-                io.setButton(port, actionToIoButton(action), pressed);
+                io.setButton(port, actionButtonMask(action), pressed);
                 handled = true;
             }
         }
@@ -379,7 +379,7 @@ pub const Bindings = struct {
     pub fn releaseGamepad(self: *const Bindings, io: *Io, port: usize) void {
         for (actions) |action| {
             if (self.gamepad[port][actionIndex(action)] != null) {
-                io.setButton(port, actionToIoButton(action), false);
+                io.setButton(port, actionButtonMask(action), false);
             }
         }
     }
@@ -620,7 +620,7 @@ fn hotkeyBindingEql(a: HotkeyBinding, b: HotkeyBinding) bool {
     return @as(u4, @bitCast(a.modifiers)) == @as(u4, @bitCast(b.modifiers));
 }
 
-fn actionToIoButton(action: Action) u16 {
+pub fn actionButtonMask(action: Action) u16 {
     return switch (action) {
         .up => Io.Button.Up,
         .down => Io.Button.Down,

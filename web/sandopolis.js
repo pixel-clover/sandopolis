@@ -131,7 +131,8 @@ async function init() {
     });
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
-    window.addEventListener("gamepaddisconnected", releaseAllGamepadButtons);
+    window.addEventListener("gamepaddisconnected", releaseAllInputs);
+    window.addEventListener("blur", releaseAllInputs);
     // Click-to-pause is a 2D-only affordance. While a VR session is active
     // the canvas is not visible to the user and Quest browser sometimes fires
     // synthetic clicks on the focused canvas when a BT controller button is
@@ -151,13 +152,14 @@ async function init() {
     dropZone.addEventListener("drop", (ev) => {
         ev.preventDefault();
         dropZone.classList.remove("drag-over");
-        if (ev.dataTransfer.files.length > 0) loadRom(ev.dataTransfer.files[0]);
+        if (ev.dataTransfer.files.length > 0) loadFiles(ev.dataTransfer.files);
     });
 
     // Settings UI
     document.getElementById("audio-toggle").addEventListener("click", toggleAudio);
     document.getElementById("master-volume").addEventListener("input", onMasterVolumeChange);
     document.getElementById("controller-type").addEventListener("change", onControllerTypeChange);
+    document.getElementById("bios-input").addEventListener("change", onBiosSelected);
     document.getElementById("aspect-mode").addEventListener("change", onAspectModeChange);
     document.getElementById("scale-mode").addEventListener("change", onScaleModeChange);
     document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
@@ -209,6 +211,7 @@ async function init() {
     initRemapUI();
     db = await openDB();
     await populateRecentRoms();
+    await refreshBiosStatus();
 
     if (window.SandopolisVR) {
         window.SandopolisVR.init({
@@ -293,9 +296,10 @@ async function saveRecentRom(name, bytes) {
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
-    if (allEntries.length <= MAX_RECENT_ROMS) return;
-    allEntries.sort((a, b) => b.timestamp - a.timestamp);
-    const toDelete = allEntries.slice(MAX_RECENT_ROMS);
+    const romEntries = allEntries.filter((entry) => !String(entry.name).startsWith(BIOS_KEY_PREFIX));
+    if (romEntries.length <= MAX_RECENT_ROMS) return;
+    romEntries.sort((a, b) => b.timestamp - a.timestamp);
+    const toDelete = romEntries.slice(MAX_RECENT_ROMS);
     await new Promise((resolve, reject) => {
         const tx = db.transaction("roms", "readwrite");
         const store = tx.objectStore("roms");
@@ -315,7 +319,8 @@ async function getRecentRoms() {
             req.onerror = () => reject(req.error);
         });
         entries.sort((a, b) => b.timestamp - a.timestamp);
-        return entries;
+        // BIOS images share the store but are not games.
+        return entries.filter((entry) => !String(entry.name).startsWith(BIOS_KEY_PREFIX));
     } catch (_) {
         return [];
     }
@@ -721,6 +726,7 @@ let pausedByVisibility = false;
 
 function onVisibilityChange() {
     if (document.hidden) {
+        releaseAllInputs();
         if (running) {
             pausedByVisibility = true;
             running = false;
@@ -795,7 +801,7 @@ function updatePerf() {
         document.getElementById("perf-resolution").textContent = w + "x" + h;
 
         const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
-        const sysName = sysType === 3 ? "SG-1000" : sysType === 2 ? "Game Gear" : sysType === 1 ? "SMS" : "Genesis";
+        const sysName = SYSTEM_LABELS[sysType] || "Genesis";
         const mode = e.sandopolis_display_mode(emu);
         const parts = [sysName];
         if (sysType === 0) parts.push((mode & 1) ? "H40" : "H32");
@@ -1079,10 +1085,138 @@ function showToast(msg) {
 // ROM loading
 
 function onFileSelected(ev) {
-    if (ev.target.files.length > 0) loadRom(ev.target.files[0]);
+    if (ev.target.files.length > 0) loadFiles(ev.target.files);
     // Clear the input so picking the same file again re-fires "change"
     // (used to restart a game by re-selecting its ROM).
     ev.target.value = "";
+}
+
+// A Sega CD CUE sheet arrives together with its BIN image; anything else is
+// a single ROM or ISO.
+function loadFiles(fileList) {
+    const files = Array.from(fileList);
+    const cue = files.find((f) => f.name.toLowerCase().endsWith(".cue"));
+    if (cue) {
+        const bin = files.find((f) => /\.(bin|img|iso)$/i.test(f.name) && f !== cue);
+        if (!bin) {
+            setStatus("Select the .cue together with its .bin image.");
+            return;
+        }
+        loadDisc(cue, bin);
+        return;
+    }
+    loadRom(files[0]);
+}
+
+// ---- Sega CD BIOS (kept in IndexedDB alongside recent ROMs) ----
+
+const BIOS_KEY_PREFIX = "__segacd_bios_";
+const BIOS_REGIONS = ["us", "eu", "jp"];
+
+function biosRegionForName(name) {
+    const n = name.toLowerCase();
+    if (n.includes("_e") || n.includes("eur") || n.includes("europe")) return 1;
+    if (n.includes("_j") || n.includes("jap") || n.includes("japan")) return 2;
+    return 0;
+}
+
+async function registerBios(region, bytes) {
+    const e = wasm.instance.exports;
+    const ptr = e.sandopolis_alloc(bytes.length);
+    if (!ptr) return false;
+    new Uint8Array(e.memory.buffer).set(bytes, ptr);
+    const ok = e.sandopolis_set_bios(region, ptr, bytes.length);
+    e.sandopolis_free(ptr, bytes.length);
+    return ok;
+}
+
+async function onBiosSelected(ev) {
+    const files = Array.from(ev.target.files);
+    ev.target.value = "";
+    for (const file of files) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const region = biosRegionForName(file.name);
+        if (!(await registerBios(region, bytes))) {
+            setStatus(`Not a Sega CD BIOS: ${file.name}`);
+            continue;
+        }
+        try {
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction("roms", "readwrite");
+                tx.objectStore("roms").put({name: BIOS_KEY_PREFIX + BIOS_REGIONS[region], bytes, timestamp: 0}, BIOS_KEY_PREFIX + BIOS_REGIONS[region]);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        } catch (_) {
+            setStatus(`BIOS loaded for this session, but could not be saved: ${file.name}`);
+        }
+    }
+    await refreshBiosStatus();
+}
+
+async function restoreStoredBios() {
+    const loaded = [];
+    for (let region = 0; region < BIOS_REGIONS.length; region++) {
+        try {
+            const entry = await new Promise((resolve, reject) => {
+                const tx = db.transaction("roms", "readonly");
+                const req = tx.objectStore("roms").get(BIOS_KEY_PREFIX + BIOS_REGIONS[region]);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            if (entry && await registerBios(region, entry.bytes)) loaded.push(BIOS_REGIONS[region]);
+        } catch (_) {
+        }
+    }
+    return loaded;
+}
+
+async function refreshBiosStatus() {
+    const loaded = await restoreStoredBios();
+    const status = document.getElementById("bios-status");
+    if (status) status.textContent = loaded.length ? loaded.join(", ").toUpperCase() : (wasm.instance.exports.sandopolis_has_bios() ? "session only" : "none");
+}
+
+async function loadDisc(cueFile, binFile) {
+    const e = wasm.instance.exports;
+    if (!e.sandopolis_has_bios()) {
+        setStatus("Load a Sega CD BIOS in Settings first.");
+        return;
+    }
+    if (helpOpen) toggleHelp();
+    if (aboutOpen) toggleAbout();
+    if (emu) {
+        running = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        e.sandopolis_destroy(emu);
+        emu = null;
+    }
+    rateTrim = 1.0;
+    audioBufferLevel = 0;
+    audioBufferCapacity = 1;
+    renderAudioFrameCount = 0;
+    flushWorkletAudio();
+    await initAudio();
+
+    const cue = new Uint8Array(await cueFile.arrayBuffer());
+    const bin = new Uint8Array(await binFile.arrayBuffer());
+    const cuePtr = e.sandopolis_alloc(cue.length);
+    const binPtr = e.sandopolis_alloc(bin.length);
+    if (!cuePtr || !binPtr) {
+        setStatus("Failed to allocate memory.");
+        return;
+    }
+    new Uint8Array(e.memory.buffer).set(cue, cuePtr);
+    new Uint8Array(e.memory.buffer).set(bin, binPtr);
+    emu = e.sandopolis_create_disc(cuePtr, cue.length, binPtr, bin.length);
+    e.sandopolis_free(cuePtr, cue.length);
+    e.sandopolis_free(binPtr, bin.length);
+    if (!emu) {
+        setStatus("Failed to start the Sega CD (BIOS region mismatch or bad image?).");
+        return;
+    }
+    currentRomName = cueFile.name;
+    startAfterLoad();
 }
 
 async function loadRom(file) {
@@ -1123,11 +1257,17 @@ async function loadRom(file) {
         return;
     }
     new Uint8Array(e.memory.buffer).set(romBytes, romPtr);
-    // Detect system from file extension: 0=auto, 1=SMS, 2=GG, 3=SG-1000
+    // Detect system from file extension: 0=auto, 1=SMS, 2=GG, 3=SG-1000, 4=Sega CD
     const name = (file.name || "").toLowerCase();
     const systemHint = name.endsWith(".sg") || name.endsWith(".sg.zip") ? 3
         : name.endsWith(".gg") || name.endsWith(".gg.zip") ? 2
-            : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1 : 0;
+            : name.endsWith(".sms") || name.endsWith(".sms.zip") ? 1
+                : name.endsWith(".iso") ? 4 : 0;
+    if (systemHint === 4 && !e.sandopolis_has_bios()) {
+        e.sandopolis_free(romPtr, romBytes.length);
+        setStatus("Load a Sega CD BIOS in Settings first.");
+        return;
+    }
     emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
     e.sandopolis_free(romPtr, romBytes.length);
     if (!emu) {
@@ -1138,6 +1278,15 @@ async function loadRom(file) {
     currentRomName = file.name;
     saveRecentRom(file.name, romBytes).then(populateRecentRoms).catch(() => {
     });
+    startAfterLoad();
+}
+
+const SYSTEM_LABELS = ["Genesis", "SMS", "Game Gear", "SG-1000", "Sega CD"];
+
+// Shared tail of loadRom/loadDisc: apply settings, resume audio, announce
+// the system, and start the frame loop.
+function startAfterLoad() {
+    const e = wasm.instance.exports;
     applySettings();
 
     // Resume AudioContext on user gesture (required by browsers)
@@ -1147,8 +1296,8 @@ async function loadRom(file) {
 
     const isPal = e.sandopolis_is_pal(emu);
     const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
-    const sysLabel = sysType === 1 ? "SMS" : "Genesis";
-    setStatus(`Playing now: ${file.name} (${sysLabel} ${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
+    const sysLabel = SYSTEM_LABELS[sysType] || "Genesis";
+    setStatus(`Playing now: ${currentRomName} (${sysLabel} ${isPal ? "PAL 50Hz" : "NTSC 60Hz"})`);
     if (aboutOpen) updateAboutInfo();
 
     running = true;
@@ -1268,6 +1417,7 @@ function resumeFrame() {
 function onKeyDown(ev) {
     if (HOTKEYS[ev.key]) {
         ev.preventDefault();
+        if (ev.repeat) return;
         ({
             quickSave,
             quickLoad,
@@ -1321,10 +1471,9 @@ const GAMEPAD_FACE_MAP = [
 
 const AXIS_THRESHOLD = 0.5;
 
-function releaseAllGamepadButtons() {
-    // A disconnected pad (unplug, battery sleep) never sends releases for
-    // buttons it held, and stdPlayer compaction can hand its stale edge
-    // state to another pad. Release everything and start clean.
+function releaseAllInputs() {
+    // Focus loss and disconnected pads can omit releases. Clearing controller
+    // edge state also prevents a compacted pad slot inheriting stale input.
     prevGamepadStates[0] = {};
     prevGamepadStates[1] = {};
     if (!emu || !wasm) return;

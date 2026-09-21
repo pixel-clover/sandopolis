@@ -85,16 +85,9 @@ pub const Status = enum {
     failed,
 };
 
-// Layout: section headers + entries
 const actions_per_player = InputBindings.all_actions.len;
 const hotkey_count = InputBindings.all_hotkey_actions.len;
 
-// Sections:
-// "KEYBOARD P1" header + 12 entries
-// "KEYBOARD P2" header + 12 entries
-// "GAMEPAD P1" header + 12 entries
-// "GAMEPAD P2" header + 12 entries
-// "HOTKEYS" header + N entries
 const section_count = 5;
 const total_entry_count = section_count + InputBindings.player_count * actions_per_player * 2 + hotkey_count;
 
@@ -116,7 +109,6 @@ pub const State = struct {
     pub fn move(self: *State, delta: isize) void {
         const count: isize = @intCast(selectionCount());
         var next: isize = @intCast(self.selected_index);
-        // Skip section headers when navigating
         var attempts: usize = 0;
         while (attempts < selectionCount()) : (attempts += 1) {
             next += delta;
@@ -203,7 +195,6 @@ pub const State = struct {
     pub fn open(self: *State) void {
         self.capture_mode = false;
         self.capture_gamepad = false;
-        // Start on first editable row (skip header)
         if (targetForIndex(self.selected_index).isHeader()) {
             self.selected_index = 1;
         }
@@ -223,7 +214,6 @@ pub fn targetForIndex(index: usize) Target {
     var i: usize = 0;
     var cursor: usize = 0;
 
-    // "KEYBOARD P1" section
     if (index == cursor) return .{ .section_header = "KEYBOARD P1" };
     cursor += 1;
     for (0..actions_per_player) |a| {
@@ -231,7 +221,6 @@ pub fn targetForIndex(index: usize) Target {
         cursor += 1;
     }
 
-    // "KEYBOARD P2" section
     if (index == cursor) return .{ .section_header = "KEYBOARD P2" };
     cursor += 1;
     for (0..actions_per_player) |a| {
@@ -239,7 +228,6 @@ pub fn targetForIndex(index: usize) Target {
         cursor += 1;
     }
 
-    // "GAMEPAD P1" section
     if (index == cursor) return .{ .section_header = "GAMEPAD P1" };
     cursor += 1;
     for (0..actions_per_player) |a| {
@@ -247,7 +235,6 @@ pub fn targetForIndex(index: usize) Target {
         cursor += 1;
     }
 
-    // "GAMEPAD P2" section
     if (index == cursor) return .{ .section_header = "GAMEPAD P2" };
     cursor += 1;
     for (0..actions_per_player) |a| {
@@ -255,7 +242,6 @@ pub fn targetForIndex(index: usize) Target {
         cursor += 1;
     }
 
-    // "HOTKEYS" section
     if (index == cursor) return .{ .section_header = "HOTKEYS" };
     cursor += 1;
     i = index - cursor;

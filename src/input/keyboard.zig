@@ -2,13 +2,11 @@ const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const InputBindings = @import("mapping.zig");
 
-// Check if a keyboard key is pressed
 pub fn keyboardStatePressed(state: []const bool, scancode: zsdl3.Scancode) bool {
     const index: usize = @intFromEnum(scancode);
     return index < state.len and state[index];
 }
 
-// Extract hotkey modifiers from keyboard state
 pub fn hotkeyModifiersFromKeyboardState(state: []const bool) InputBindings.HotkeyModifiers {
     return .{
         .shift = keyboardStatePressed(state, .lshift) or keyboardStatePressed(state, .rshift),
@@ -18,7 +16,6 @@ pub fn hotkeyModifiersFromKeyboardState(state: []const bool) InputBindings.Hotke
     };
 }
 
-// Check if a scancode is a modifier key
 pub fn isHotkeyModifierScancode(scancode: zsdl3.Scancode) bool {
     return switch (scancode) {
         .lshift, .rshift, .lctrl, .rctrl, .lalt, .ralt, .lgui, .rgui => true,
@@ -26,7 +23,6 @@ pub fn isHotkeyModifierScancode(scancode: zsdl3.Scancode) bool {
     };
 }
 
-// Create a hotkey binding from a scancode and keyboard state
 pub fn hotkeyBindingFromScancode(scancode: zsdl3.Scancode, keyboard_state: []const bool) ?InputBindings.HotkeyBinding {
     const input = keyboardInputFromScancode(scancode) orelse return null;
     return .{
@@ -35,7 +31,6 @@ pub fn hotkeyBindingFromScancode(scancode: zsdl3.Scancode, keyboard_state: []con
     };
 }
 
-// Get human-readable description for a hotkey action
 pub fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
     return switch (action) {
         .toggle_help => "HELP",
@@ -59,7 +54,6 @@ pub fn hotkeyActionDescription(action: InputBindings.HotkeyAction) []const u8 {
     };
 }
 
-// Map SDL scancode to keyboard input binding
 pub fn keyboardInputFromScancode(scancode: zsdl3.Scancode) ?InputBindings.KeyboardInput {
     return switch (scancode) {
         .up => .up,
@@ -160,9 +154,7 @@ test "hotkeyActionDescription returns non-empty strings for all actions" {
 test "keyboardStatePressed handles bounds correctly" {
     var state = [_]bool{false} ** 16;
     state[5] = true;
-    // In-bounds access
     try testing.expect(keyboardStatePressed(&state, @enumFromInt(5)));
     try testing.expect(!keyboardStatePressed(&state, @enumFromInt(0)));
-    // Out-of-bounds returns false
     try testing.expect(!keyboardStatePressed(&state, @enumFromInt(100)));
 }

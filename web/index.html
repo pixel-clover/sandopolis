@@ -1104,7 +1104,7 @@
 
 <div id="drop-zone">
     <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
-    <input accept=".bin,.md,.smd,.gen,.sms,.gg,.sg,.zip" id="rom-input" type="file">
+    <input accept=".bin,.md,.smd,.gen,.sms,.gg,.sg,.zip,.cue,.iso" id="rom-input" multiple type="file">
     <select id="recent-roms" style="display:none">
         <option value="">Recent ROMs...</option>
     </select>
@@ -1181,6 +1181,11 @@
             <option title="Genesis 6-button controller with X, Y, Z, and Mode" value="1">6-Button</option>
             <option title="Original Genesis 3-button controller" value="0">3-Button</option>
         </select>
+        <label>Sega CD BIOS</label>
+        <span>
+            <input accept=".bin" id="bios-input" multiple title="Load Sega CD BIOS images (bios_CD_U.bin, bios_CD_E.bin, bios_CD_J.bin); kept in this browser" type="file">
+            <span id="bios-status" title="Loaded Sega CD BIOS regions">none</span>
+        </span>
     </div>
     <div class="remap-section">
         <h4>KEYBOARD</h4>

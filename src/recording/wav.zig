@@ -34,7 +34,6 @@ pub const WavRecorder = struct {
             .channels = channels,
         };
 
-        // Write WAV header with placeholder sizes (will be updated in finish())
         try self.writeWavHeader(0);
 
         return self;
@@ -47,12 +46,10 @@ pub const WavRecorder = struct {
         const frame_count = samples.len / self.channels;
         if (frame_count == 0) return;
 
-        // Write samples to buffer, flushing as needed
         for (samples) |sample| {
             if (self.out_len + 2 > out_buf_size) {
                 try self.flushBuf();
             }
-            // Write as little-endian
             self.out_buf[self.out_len] = @truncate(@as(u16, @bitCast(sample)));
             self.out_buf[self.out_len + 1] = @truncate(@as(u16, @bitCast(sample)) >> 8);
             self.out_len += 2;
@@ -64,10 +61,8 @@ pub const WavRecorder = struct {
     /// Finish the recording and close the file.
     /// This updates the WAV header with the correct data size.
     pub fn finish(self: *WavRecorder) void {
-        // Flush any remaining buffered data
         self.flushBuf() catch {};
 
-        // Update the header with the correct sizes
         self.file.seekTo(0) catch {};
         self.writeWavHeader(self.sample_count) catch {};
         self.flushBuf() catch {};
@@ -90,22 +85,19 @@ pub const WavRecorder = struct {
 
         self.out_len = 0;
 
-        // RIFF header
         self.bufWrite("RIFF");
         self.bufWriteU32(file_size);
         self.bufWrite("WAVE");
 
-        // Format chunk
         self.bufWrite("fmt ");
-        self.bufWriteU32(16); // Chunk size
-        self.bufWriteU16(1); // Audio format (1 = PCM)
+        self.bufWriteU32(16);
+        self.bufWriteU16(1);
         self.bufWriteU16(self.channels);
         self.bufWriteU32(self.sample_rate);
         self.bufWriteU32(byte_rate);
         self.bufWriteU16(block_align);
         self.bufWriteU16(bits_per_sample);
 
-        // Data chunk
         self.bufWrite("data");
         self.bufWriteU32(data_size);
 
@@ -159,32 +151,28 @@ test "WAV recorder creates valid stereo WAV file" {
 
     var recorder = try WavRecorder.start(tmp_path, 48000, 2);
 
-    // Generate a simple sine wave for testing
-    var samples: [960]i16 = undefined; // 10ms at 48kHz stereo
+    var samples: [960]i16 = undefined;
     for (0..480) |i| {
         const t = @as(f32, @floatFromInt(i)) / 48000.0;
         const value: i16 = @intFromFloat(@sin(t * 440.0 * std.math.tau) * 16000.0);
-        samples[i * 2] = value; // Left
-        samples[i * 2 + 1] = value; // Right
+        samples[i * 2] = value;
+        samples[i * 2 + 1] = value;
     }
 
     try recorder.addSamples(&samples);
     recorder.finish();
 
-    // Verify the file was created and has valid header
     const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_stereo.wav", .{});
     defer file.close();
 
     var header: [44]u8 = undefined;
     _ = try file.readAll(&header);
 
-    // Check RIFF header
     try testing.expectEqualStrings("RIFF", header[0..4]);
     try testing.expectEqualStrings("WAVE", header[8..12]);
     try testing.expectEqualStrings("fmt ", header[12..16]);
     try testing.expectEqualStrings("data", header[36..40]);
 
-    // Check format
     const channels = std.mem.readInt(u16, header[22..24], .little);
     const sample_rate = std.mem.readInt(u32, header[24..28], .little);
     const bits = std.mem.readInt(u16, header[34..36], .little);
@@ -193,7 +181,6 @@ test "WAV recorder creates valid stereo WAV file" {
     try testing.expectEqual(@as(u32, 48000), sample_rate);
     try testing.expectEqual(@as(u16, 16), bits);
 
-    // Verify file size
     const stat = try file.stat();
     try testing.expectEqual(@as(u64, 44 + 960 * 2), stat.size);
 }
@@ -238,19 +225,16 @@ test "WAV recorder handles multiple addSamples calls" {
     var samples: [100]i16 = undefined;
     @memset(&samples, 1000);
 
-    // Add samples in multiple calls
     for (0..10) |_| {
         try recorder.addSamples(&samples);
     }
     recorder.finish();
 
-    // 100 samples per call / 2 channels = 50 frames per call, * 10 calls = 500 frames
     try testing.expectEqual(@as(u32, 500), recorder.sample_count);
 
     const file = try (platform.Dir{ .d = tmp.dir }).openFile("test_multi.wav", .{});
     defer file.close();
     const stat = try file.stat();
-    // 100 samples * 2 bytes * 10 calls + 44 byte header = 2044 bytes
     try testing.expectEqual(@as(u64, 44 + 100 * 2 * 10), stat.size);
 }
 
@@ -263,8 +247,7 @@ test "WAV recorder duration calculation is correct" {
 
     var recorder = try WavRecorder.start(tmp_path, 48000, 2);
 
-    // Add 1 second of audio (48000 frames * 2 channels)
-    var samples: [9600]i16 = [_]i16{0} ** 9600; // 100ms chunks
+    var samples: [9600]i16 = [_]i16{0} ** 9600;
     for (0..10) |_| {
         try recorder.addSamples(&samples);
     }
@@ -281,13 +264,8 @@ test "WAV recorder rejects invalid parameters" {
     const tmp_path = try tempWavPath(testing.allocator, &tmp, "test_invalid.wav");
     defer testing.allocator.free(tmp_path);
 
-    // Zero sample rate should fail
     try testing.expectError(error.InvalidAudioFormat, WavRecorder.start(tmp_path, 0, 2));
-
-    // Zero channels should fail
     try testing.expectError(error.InvalidAudioFormat, WavRecorder.start(tmp_path, 48000, 0));
-
-    // More than 2 channels should fail
     try testing.expectError(error.InvalidAudioFormat, WavRecorder.start(tmp_path, 48000, 3));
 }
 
@@ -300,7 +278,6 @@ test "WAV recorder handles large recordings" {
 
     var recorder = try WavRecorder.start(tmp_path, 48000, 2);
 
-    // Write enough data to trigger multiple buffer flushes
     var samples: [8192]i16 = [_]i16{0} ** 8192;
     for (0..samples.len) |i| {
         samples[i] = @intCast(@as(i32, @intCast(i % 32768)) - 16384);
@@ -316,6 +293,5 @@ test "WAV recorder handles large recordings" {
     defer file.close();
     const stat = try file.stat();
 
-    // 8192 samples * 2 bytes * 20 iterations + 44 byte header
     try testing.expectEqual(@as(u64, 44 + 8192 * 2 * 20), stat.size);
 }

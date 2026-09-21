@@ -590,6 +590,11 @@ fn projectedServiceAccessSlot(projected: *ProjectedDmaTransferState, blocks_sing
     }
 
     if (projected.dma_active and projected.dma_copy) {
+        if (projected.dma_start_delay_slots == 0) {
+            projected.dma_start_delay_slots = 1;
+            return;
+        }
+        projected.dma_start_delay_slots = 0;
         projectedProgressVramCopyDma(projected);
         return;
     }
@@ -1435,6 +1440,11 @@ fn serviceAccessSlot(self: *Vdp, blocks_single_service: bool) void {
     }
 
     if (self.dma_active and self.dma_copy) {
+        if (self.dma_start_delay_slots == 0) {
+            self.dma_start_delay_slots = 1;
+            return;
+        }
+        self.dma_start_delay_slots = 0;
         progressVramCopyDma(self, 1);
         return;
     }
@@ -1628,6 +1638,15 @@ pub fn refreshSlotDurationMasterCycles(self: *const Vdp) u32 {
 pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
     if (self.dma_active and !self.dma_fill and !self.dma_copy) return 0;
     return self.pending_port_write_delay_master_cycles;
+}
+
+/// Sega CD Word RAM presents source data one word late: the first destination
+/// is skipped, and the final requested source word is not transferred.
+pub fn applyExternalDmaBusDelay(self: *Vdp) void {
+    if (!self.dma_active or self.dma_fill or self.dma_copy or self.dma_remaining == 0) return;
+    self.addr +%= self.regs[15];
+    self.dma_length -%= 1;
+    self.dma_remaining -= 1;
 }
 
 pub fn writeControl(self: *Vdp, value: u16) void {
@@ -1970,6 +1989,26 @@ test "VRAM copy DMA uses adjacent byte addressing" {
 
     try testing.expectEqual(@as(u8, 0x34), vdp.vramReadByte(0x0040));
     try testing.expectEqual(@as(u8, 0x00), vdp.vramReadByte(0x0041));
+}
+
+test "VRAM copy DMA consumes separate read and write access slots" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 1;
+    vdp.addr = 0x0041;
+    vdp.dma_active = true;
+    vdp.dma_copy = true;
+    vdp.dma_remaining = 1;
+    vdp.dma_length = 1;
+    vdp.dma_source_addr = 0x0020;
+    vdp.vramWriteByte(0x0021, 0x34);
+
+    serviceAccessSlot(&vdp, false);
+    try testing.expectEqual(@as(u32, 1), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 0), vdp.vramReadByte(0x0040));
+
+    serviceAccessSlot(&vdp, false);
+    try testing.expectEqual(@as(u32, 0), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 0x34), vdp.vramReadByte(0x0040));
 }
 
 test "CRAM fifo entries still drain in a single service slot" {
@@ -2415,4 +2454,19 @@ test "transfer slot access classification matches h32 and h40 schedules" {
     try testing.expect(!transferSlotIsRefresh(&vdp, 6));
     try testing.expect(!transferSlotIsAccess(&vdp, 0, false));
     try testing.expect(transferSlotIsAccess(&vdp, 0, true));
+}
+
+test "external DMA bus delay skips the first destination and source word" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.addr = 0x1000;
+    vdp.dma_active = true;
+    vdp.dma_length = 3;
+    vdp.dma_remaining = 3;
+
+    vdp.applyExternalDmaBusDelay();
+
+    try testing.expectEqual(@as(u16, 0x1002), vdp.addr);
+    try testing.expectEqual(@as(u16, 2), vdp.dma_length);
+    try testing.expectEqual(@as(u32, 2), vdp.dma_remaining);
 }

@@ -167,6 +167,9 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(exe, b, cpu_deps);
     linkSdl3(exe, sdl3_lib);
+    // Match the test targets: SystemMachine values exceed the platform's
+    // default main-thread stack during Sega CD construction.
+    exe.stack_size = 64 * 1024 * 1024;
 
     addStbTruetype(exe, b);
 

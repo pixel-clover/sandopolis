@@ -1,9 +1,8 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 const InputBindings = @import("mapping.zig");
-const Machine = @import("../machine.zig").Machine;
+const SystemMachine = @import("../system_machine.zig").SystemMachine;
 
-// Slot types for tracking connected controllers
 pub const GamepadSlot = struct {
     id: zsdl3.Joystick.Id,
     handle: *zsdl3.Gamepad,
@@ -16,7 +15,6 @@ pub const JoystickSlot = struct {
     handle: *SdlJoystick,
 };
 
-// State tracking for analog inputs
 pub const DirectionState = struct {
     left: bool = false,
     right: bool = false,
@@ -29,7 +27,6 @@ pub const TriggerState = struct {
     right: bool = false,
 };
 
-// Input transition for event handling
 pub const Transition = struct {
     input: InputBindings.GamepadInput,
     pressed: bool,
@@ -37,18 +34,15 @@ pub const Transition = struct {
 
 pub const max_transitions: usize = 4;
 
-// Hat direction bitmasks
 pub const hat_up: u8 = 0x01;
 pub const hat_right: u8 = 0x02;
 pub const hat_down: u8 = 0x04;
 pub const hat_left: u8 = 0x08;
 
-// SDL extern declarations for joystick handling
 pub extern fn SDL_IsGamepad(id: zsdl3.Joystick.Id) bool;
 pub extern fn SDL_OpenJoystick(id: zsdl3.Joystick.Id) ?*SdlJoystick;
 pub extern fn SDL_CloseJoystick(joystick: *SdlJoystick) void;
 
-// Button mapping functions
 pub fn inputFromGamepadButton(button: u8) ?InputBindings.GamepadInput {
     if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_up)) return .dpad_up;
     if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_down)) return .dpad_down;
@@ -83,7 +77,6 @@ pub fn inputFromJoystickButton(button: u8) ?InputBindings.GamepadInput {
     };
 }
 
-// Axis state update functions
 pub fn updateAxisPair(
     negative: *bool,
     positive: *bool,
@@ -207,10 +200,9 @@ pub fn updateHatState(state: *DirectionState, value: u8) [max_transitions]?Trans
     return transitions;
 }
 
-// Apply input transitions to machine
 pub fn applyTransitions(
     bindings: *const InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     port: usize,
     transitions: anytype,
 ) void {
@@ -225,7 +217,7 @@ pub fn applyTransitions(
 // is paused while an axis/hat direction is held.
 pub fn applyReleaseTransitionsOnly(
     bindings: *const InputBindings.Bindings,
-    machine: *Machine,
+    machine: *SystemMachine,
     port: usize,
     transitions: anytype,
 ) void {
@@ -238,7 +230,6 @@ pub fn applyReleaseTransitionsOnly(
     }
 }
 
-// Port management functions
 pub fn findGamepadPort(gamepads: *const [InputBindings.player_count]?GamepadSlot, id: zsdl3.Joystick.Id) ?usize {
     for (gamepads, 0..) |slot, port| {
         if (slot) |assigned| {
@@ -265,7 +256,6 @@ pub fn portOccupied(
     return gamepads[port] != null or joysticks[port] != null;
 }
 
-// Slot assignment functions
 pub fn assignGamepadSlot(
     gamepads: *[InputBindings.player_count]?GamepadSlot,
     joysticks: *const [InputBindings.player_count]?JoystickSlot,
@@ -291,7 +281,7 @@ pub fn removeGamepadSlot(
     gamepads: *[InputBindings.player_count]?GamepadSlot,
     stick_states: *[InputBindings.player_count]DirectionState,
     trigger_states: *[InputBindings.player_count]TriggerState,
-    machine: *Machine,
+    machine: *SystemMachine,
     bindings: *const InputBindings.Bindings,
     id: zsdl3.Joystick.Id,
 ) void {
@@ -337,7 +327,7 @@ pub fn removeJoystickSlot(
     joysticks: *[InputBindings.player_count]?JoystickSlot,
     axis_states: *[InputBindings.player_count]DirectionState,
     hat_states: *[InputBindings.player_count]DirectionState,
-    machine: *Machine,
+    machine: *SystemMachine,
     bindings: *const InputBindings.Bindings,
     id: zsdl3.Joystick.Id,
 ) void {
@@ -371,28 +361,23 @@ test "inputFromJoystickButton maps standard buttons" {
 test "updateAxisPair generates transitions on threshold crossing" {
     var neg = false;
     var pos = false;
-    // Push axis right (positive)
     const t1 = updateAxisPair(&neg, &pos, 20000, 8000, .dpad_left, .dpad_right);
     try testing.expectEqual(InputBindings.GamepadInput.dpad_right, t1[0].?.input);
     try testing.expect(t1[0].?.pressed);
     try testing.expect(pos);
-    // Release
     const t2 = updateAxisPair(&neg, &pos, 0, 8000, .dpad_left, .dpad_right);
     try testing.expectEqual(InputBindings.GamepadInput.dpad_right, t2[0].?.input);
     try testing.expect(!t2[0].?.pressed);
-    // No change when staying in neutral
     const t3 = updateAxisPair(&neg, &pos, 100, 8000, .dpad_left, .dpad_right);
     try testing.expect(t3[0] == null);
 }
 
 test "updateHatState generates transitions for hat directions" {
     var state = DirectionState{};
-    // Press up
     const t1 = updateHatState(&state, hat_up);
     try testing.expectEqual(InputBindings.GamepadInput.dpad_up, t1[0].?.input);
     try testing.expect(t1[0].?.pressed);
     try testing.expect(t1[1] == null);
-    // Release up, press down+right
     const t2 = updateHatState(&state, hat_down | hat_right);
     var found_up_release = false;
     var found_down_press = false;
