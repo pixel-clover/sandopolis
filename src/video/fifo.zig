@@ -1630,6 +1630,15 @@ pub fn controlPortWriteWaitMasterCycles(self: *const Vdp) u32 {
     return self.pending_port_write_delay_master_cycles;
 }
 
+/// Sega CD Word RAM presents source data one word late: the first destination
+/// is skipped, and the final requested source word is not transferred.
+pub fn applyExternalDmaBusDelay(self: *Vdp) void {
+    if (!self.dma_active or self.dma_fill or self.dma_copy or self.dma_remaining == 0) return;
+    self.addr +%= self.regs[15];
+    self.dma_length -%= 1;
+    self.dma_remaining -= 1;
+}
+
 pub fn writeControl(self: *Vdp, value: u16) void {
     // VDP register writes (8xxx pattern) are always processed immediately,
     // even during active DMA.  Only the second word of a 2-word command
@@ -2415,4 +2424,19 @@ test "transfer slot access classification matches h32 and h40 schedules" {
     try testing.expect(!transferSlotIsRefresh(&vdp, 6));
     try testing.expect(!transferSlotIsAccess(&vdp, 0, false));
     try testing.expect(transferSlotIsAccess(&vdp, 0, true));
+}
+
+test "external DMA bus delay skips the first destination and source word" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.addr = 0x1000;
+    vdp.dma_active = true;
+    vdp.dma_length = 3;
+    vdp.dma_remaining = 3;
+
+    vdp.applyExternalDmaBusDelay();
+
+    try testing.expectEqual(@as(u16, 0x1002), vdp.addr);
+    try testing.expectEqual(@as(u16, 2), vdp.dma_length);
+    try testing.expectEqual(@as(u32, 2), vdp.dma_remaining);
 }

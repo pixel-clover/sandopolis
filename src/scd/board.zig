@@ -454,6 +454,10 @@ pub const ScdBoard = struct {
         return ExpansionDevice.bind(ScdBoard, self);
     }
 
+    pub fn hasVdpDmaBusDelay(_: *const ScdBoard, address: u32) bool {
+        return address >= 0x200000 and address < 0x240000;
+    }
+
     // -----------------------------------------------------------------------
     // ExpansionDevice: scheduling
     // -----------------------------------------------------------------------

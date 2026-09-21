@@ -20,6 +20,7 @@ pub const ExpansionDevice = struct {
     /// Run the device's processors up to the accumulated credit.
     flushFn: *const fn (*anyopaque) void,
     resetFn: *const fn (*anyopaque) void,
+    vdpDmaBusDelayFn: *const fn (*anyopaque, u32) bool,
 
     /// Bind a context type that provides `read8/read16/write8/write16/
     /// stepMaster/flush/reset` methods with the signatures above.
@@ -49,6 +50,10 @@ pub const ExpansionDevice = struct {
             fn reset(raw: *anyopaque) void {
                 cast(raw).reset();
             }
+            fn vdpDmaBusDelay(raw: *anyopaque, address: u32) bool {
+                if (!@hasDecl(Context, "hasVdpDmaBusDelay")) return false;
+                return cast(raw).hasVdpDmaBusDelay(address);
+            }
         };
         return .{
             .ctx = ctx,
@@ -59,6 +64,7 @@ pub const ExpansionDevice = struct {
             .stepMasterFn = Impl.stepMaster,
             .flushFn = Impl.flush,
             .resetFn = Impl.reset,
+            .vdpDmaBusDelayFn = Impl.vdpDmaBusDelay,
         };
     }
 
@@ -82,6 +88,9 @@ pub const ExpansionDevice = struct {
     }
     pub inline fn reset(self: ExpansionDevice) void {
         self.resetFn(self.ctx);
+    }
+    pub inline fn hasVdpDmaBusDelay(self: ExpansionDevice, address: u32) bool {
+        return self.vdpDmaBusDelayFn(self.ctx, address);
     }
 };
 

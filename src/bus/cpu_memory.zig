@@ -72,6 +72,12 @@ pub const View = struct {
         self.ensure_z80_host_window_fn(self.ensure_z80_host_window_ctx);
     }
 
+    fn applyExpansionDmaBusDelay(self: *View, was_dma_active: bool) void {
+        if (was_dma_active or !self.vdp.dma_active or self.vdp.dma_fill or self.vdp.dma_copy) return;
+        const expansion = self.expansion orelse return;
+        if (expansion.hasVdpDmaBusDelay(self.vdp.dma_source_addr)) self.vdp.applyExternalDmaBusDelay();
+    }
+
     pub fn notifyBusAccess(self: *View, delta_master_cycles: u32, elapsed_instruction_master: u32) void {
         self.notify_bus_access_fn(self.notify_bus_access_ctx, delta_master_cycles, elapsed_instruction_master);
     }
@@ -383,7 +389,9 @@ pub const View = struct {
                 self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeByte(0x7F11, value);
             } else {
+                const was_dma_active = self.vdp.dma_active;
                 vdp_ports.writeByte(self.vdp, addr, value);
+                self.applyExpansionDmaBusDelay(was_dma_active);
             }
             return;
         }
@@ -411,7 +419,9 @@ pub const View = struct {
                 self.z80.setAudioMasterOffset(self.currentCpuAccessAudioMasterOffset());
                 self.z80.writeByte(0x7F11, @intCast(value & 0xFF));
             } else {
+                const was_dma_active = self.vdp.dma_active;
                 vdp_ports.writeWord(self.vdp, addr, value);
+                self.applyExpansionDmaBusDelay(was_dma_active);
             }
             return;
         }

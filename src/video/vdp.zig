@@ -546,6 +546,7 @@ pub const Vdp = struct {
     pub const projectedMasterCyclesToNextRefreshSlot = fifo_mod.projectedMasterCyclesToNextRefreshSlot;
     pub const refreshSlotDurationMasterCycles = fifo_mod.refreshSlotDurationMasterCycles;
     pub const controlPortWriteWaitMasterCycles = fifo_mod.controlPortWriteWaitMasterCycles;
+    pub const applyExternalDmaBusDelay = fifo_mod.applyExternalDmaBusDelay;
 
     pub const readControl = timing_mod.readControl;
     pub const readControlAdjusted = timing_mod.readControlAdjusted;
