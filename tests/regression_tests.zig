@@ -1373,7 +1373,9 @@ test "warsong ym synthesis matches golden hash (900 frames)" {
     // Re-baselined 2026-07 for the VDP timing calibration that fixed PAL
     // Titan Overdrive + timestamp-aware replay (see the sonic and knuckles
     // test); real-audio RMS verified unchanged (3154 -> 3139).
-    try testing.expectEqual(@as(u32, 2797099301), hash);
+    // Re-baselined 2026-09 after VRAM copy DMA was corrected to consume one
+    // read and one write access slot per byte.
+    try testing.expectEqual(@as(u32, 2693464747), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {

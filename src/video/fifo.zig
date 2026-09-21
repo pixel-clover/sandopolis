@@ -590,6 +590,11 @@ fn projectedServiceAccessSlot(projected: *ProjectedDmaTransferState, blocks_sing
     }
 
     if (projected.dma_active and projected.dma_copy) {
+        if (projected.dma_start_delay_slots == 0) {
+            projected.dma_start_delay_slots = 1;
+            return;
+        }
+        projected.dma_start_delay_slots = 0;
         projectedProgressVramCopyDma(projected);
         return;
     }
@@ -1435,6 +1440,11 @@ fn serviceAccessSlot(self: *Vdp, blocks_single_service: bool) void {
     }
 
     if (self.dma_active and self.dma_copy) {
+        if (self.dma_start_delay_slots == 0) {
+            self.dma_start_delay_slots = 1;
+            return;
+        }
+        self.dma_start_delay_slots = 0;
         progressVramCopyDma(self, 1);
         return;
     }
@@ -1979,6 +1989,26 @@ test "VRAM copy DMA uses adjacent byte addressing" {
 
     try testing.expectEqual(@as(u8, 0x34), vdp.vramReadByte(0x0040));
     try testing.expectEqual(@as(u8, 0x00), vdp.vramReadByte(0x0041));
+}
+
+test "VRAM copy DMA consumes separate read and write access slots" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 1;
+    vdp.addr = 0x0041;
+    vdp.dma_active = true;
+    vdp.dma_copy = true;
+    vdp.dma_remaining = 1;
+    vdp.dma_length = 1;
+    vdp.dma_source_addr = 0x0020;
+    vdp.vramWriteByte(0x0021, 0x34);
+
+    serviceAccessSlot(&vdp, false);
+    try testing.expectEqual(@as(u32, 1), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 0), vdp.vramReadByte(0x0040));
+
+    serviceAccessSlot(&vdp, false);
+    try testing.expectEqual(@as(u32, 0), vdp.dma_remaining);
+    try testing.expectEqual(@as(u8, 0x34), vdp.vramReadByte(0x0040));
 }
 
 test "CRAM fifo entries still drain in a single service slot" {
