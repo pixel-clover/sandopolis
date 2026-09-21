@@ -6,7 +6,6 @@ const rom_paths = @import("../rom_paths.zig");
 const Machine = @import("../machine.zig").Machine;
 const config = @import("config.zig");
 
-// Save state preview constants
 pub const preview_width: usize = 80;
 pub const preview_height: usize = 56;
 pub const preview_pixel_count: usize = preview_width * preview_height;
