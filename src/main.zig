@@ -766,6 +766,10 @@ const SegaCdBiosStorage = struct {
 
 var sega_cd_bios: SegaCdBiosStorage = .{};
 
+fn desktopMachineInitOptions() SystemMachine.InitOptions {
+    return .{ .bios = &sega_cd_bios.set };
+}
+
 // Re-export CLI types from cli.zig
 const CliConfig = cli_module.Config;
 const createCliCommand = cli_module.createCommand;
@@ -2951,7 +2955,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Audio queue budget: {d} ms\n", .{current_audio_queue_ms});
     }
 
-    var machine = try SystemMachine.init(allocator, rom_path);
+    var machine = try SystemMachine.initWithOptions(allocator, rom_path, desktopMachineInitOptions());
     defer {
         machine.flushPersistentStorage() catch |err| {
             std.debug.print("Failed to flush persistent SRAM: {s}\n", .{@errorName(err)});
@@ -5652,6 +5656,10 @@ fn runCliTest(args: []const []const u8) !CliTestResult {
     var failed_cmd: ?*const chilli.Command = null;
     try cmd.execute(args, @ptrCast(&config), &failed_cmd);
     return .{ .config = config };
+}
+
+test "desktop startup supplies the loaded Sega CD BIOS set" {
+    try std.testing.expectEqual(&sega_cd_bios.set, desktopMachineInitOptions().bios.?);
 }
 
 test "cli parser accepts audio mode before rom path" {
