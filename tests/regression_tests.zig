@@ -925,6 +925,17 @@ test "overdrive 2 rom framebuffer matches golden hash after 100 frames" {
     try testing.expectEqual(@as(u32, 1646546174), hash);
 }
 
+test "overdrive 2 PAL boot passes the plane stability check" {
+    var emulator = try Emulator.init(testing.allocator, overdrive2_rom);
+    defer emulator.deinit(testing.allocator);
+    emulator.setPalMode(true);
+    emulator.reset();
+
+    emulator.runFramesDiscardingAudio(100);
+
+    try testing.expectEqualSlices(u8, &([_]u8{0} ** 12), emulator.workRamSlice()[0x179A..0x17A6]);
+}
+
 fn framebufferCrc32(framebuffer: []const u32) u32 {
     const bytes = std.mem.sliceAsBytes(framebuffer);
     return std.hash.Crc32.hash(bytes);
@@ -975,7 +986,9 @@ test "vctest rom framebuffer matches golden hash after 60 frames" {
     // 2026-07: rebaselined again after gating the ODD status bit (bit 4)
     // on interlace mode; jgenesis only toggles interlaced_odd during
     // interlaced frames, so the bit reads 0 in the modes vctest displays.
-    try testing.expectEqual(@as(u32, 1988477211), hash);
+    // 2026-09: rebaselined after read commands began prefetching the first
+    // word; the frame was verified against Genesis Plus GX.
+    try testing.expectEqual(@as(u32, 3278692368), hash);
 }
 
 test "vctest rom runs stably in both ntsc and pal modes" {
