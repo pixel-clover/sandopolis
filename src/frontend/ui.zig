@@ -41,6 +41,7 @@ pub const Colors = struct {
     pub const text_secondary: zsdl3.Color = .{ .r = 0x8B, .g = 0x94, .b = 0x9E, .a = 0xFF };
     pub const text_selected: zsdl3.Color = .{ .r = 0xFF, .g = 0xE0, .b = 0x99, .a = 0xFF };
     pub const text_muted: zsdl3.Color = .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF };
+    pub const selection_fill: zsdl3.Color = .{ .r = 0x2C, .g = 0x1A, .b = 0x08, .a = 0xE8 };
 
     pub const shadow: zsdl3.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x99 };
 
@@ -836,6 +837,18 @@ pub fn renderHomeOverlay(
 
     for (menu_lines[0..item_count], 0..) |line, index| {
         const is_selected = index == home_menu.selected_index;
+        if (is_selected) {
+            const row_rect = zsdl3.FRect{
+                .x = text_x - 3.0 * scale,
+                .y = y - 1.0 * scale,
+                .w = panel.w - padding * 2.0 + 6.0 * scale,
+                .h = line_height,
+            };
+            try zsdl3.setRenderDrawColor(renderer, Animation.pulseAlpha(Colors.selection_fill, frame_number, 0xD0, 0xE8));
+            try zsdl3.renderFillRect(renderer, row_rect);
+            try zsdl3.setRenderDrawColor(renderer, Animation.pulseColor(Colors.orange, frame_number, 0.8, 1.0));
+            try zsdl3.renderRect(renderer, row_rect);
+        }
         const action = homeMenuActionForIndex(index, cfg);
         const is_rom = switch (action) {
             .recent_rom => true,
@@ -935,7 +948,7 @@ pub fn renderKeyboardEditorOverlay(
             .h = line_height,
         };
         if (selected and !bindingEditorTargetForIndex(index).isHeader()) {
-            const pulse_alpha = Animation.pulseAlpha(.{ .r = 0x2C, .g = 0x1A, .b = 0x08, .a = 0xF2 }, frame_number, 0xE0, 0xF2);
+            const pulse_alpha = Animation.pulseAlpha(Colors.selection_fill, frame_number, 0xD0, 0xE8);
             try zsdl3.setRenderDrawColor(renderer, pulse_alpha);
             try zsdl3.renderFillRect(renderer, row_rect);
             try zsdl3.setRenderDrawColor(renderer, Animation.pulseColor(Colors.orange, frame_number, 0.8, 1.0));
