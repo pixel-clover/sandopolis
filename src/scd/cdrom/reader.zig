@@ -144,6 +144,24 @@ pub const Disc = struct {
         return .{ .allocator = allocator, .layout = layout, .sources = sources };
     }
 
+    /// In-memory disc that takes ownership of `files` only on success.
+    pub fn fromOwnedMemory(allocator: std.mem.Allocator, cue_text: ?[]const u8, files: []const []u8) !Disc {
+        if (files.len == 0) return error.NoTracks;
+        var sizes = try allocator.alloc([]const u8, files.len);
+        defer allocator.free(sizes);
+        for (files, 0..) |bytes, i| sizes[i] = bytes;
+
+        var ctx = MemorySizes{ .files = sizes };
+        var layout = try cue.parse(allocator, cue_text orelse single_iso_sheet, &ctx, MemorySizes.lookup);
+        errdefer layout.deinit();
+        if (layout.files.len != files.len) return error.FileCountMismatch;
+
+        const sources = try allocator.alloc(SectorSource, files.len);
+        errdefer allocator.free(sources);
+        for (sources, files) |*source, bytes| source.* = .{ .memory = bytes };
+        return .{ .allocator = allocator, .layout = layout, .sources = sources };
+    }
+
     /// Open a CUE sheet from disk; FILE names resolve relative to the sheet.
     pub fn openCuePath(allocator: std.mem.Allocator, path: []const u8) !Disc {
         const text = try platform.cwd().readFileAlloc(allocator, path, 1024 * 1024);
@@ -398,6 +416,19 @@ test "raw 2352 data and audio tracks from a cue sheet in memory" {
     try testing.expectEqual(@as(i16, -2), frames[0][1]);
     try testing.expectEqual(@as(i16, -32768), frames[1][0]);
     try testing.expectError(error.NotAudioTrack, disc.readAudioSector(0, &frames));
+}
+
+test "owned memory disc keeps the caller allocation" {
+    const image = try testing.allocator.alloc(u8, 2 * user_data_bytes);
+    var transferred = false;
+    defer if (!transferred) testing.allocator.free(image);
+    @memset(image, 0);
+
+    var disc = try Disc.fromOwnedMemory(testing.allocator, null, &.{image});
+    transferred = true;
+    defer disc.deinit();
+
+    try testing.expectEqual(image.ptr, disc.sources[0].memory.ptr);
 }
 
 test "virtual pregap reads as silence or a bare data header" {

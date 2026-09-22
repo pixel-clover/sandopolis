@@ -1201,8 +1201,13 @@ async function loadDisc(cueFile, binFile) {
     const cue = new Uint8Array(await cueFile.arrayBuffer());
     const bin = new Uint8Array(await binFile.arrayBuffer());
     const cuePtr = e.sandopolis_alloc(cue.length);
+    if (!cuePtr) {
+        setStatus("Failed to allocate memory.");
+        return;
+    }
     const binPtr = e.sandopolis_alloc(bin.length);
-    if (!cuePtr || !binPtr) {
+    if (!binPtr) {
+        e.sandopolis_free(cuePtr, cue.length);
         setStatus("Failed to allocate memory.");
         return;
     }
@@ -1210,7 +1215,6 @@ async function loadDisc(cueFile, binFile) {
     new Uint8Array(e.memory.buffer).set(bin, binPtr);
     emu = e.sandopolis_create_disc(cuePtr, cue.length, binPtr, bin.length);
     e.sandopolis_free(cuePtr, cue.length);
-    e.sandopolis_free(binPtr, bin.length);
     if (!emu) {
         setStatus("Failed to start the Sega CD (BIOS region mismatch or bad image?).");
         return;
@@ -1268,8 +1272,12 @@ async function loadRom(file) {
         setStatus("Load a Sega CD BIOS in Settings first.");
         return;
     }
-    emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
-    e.sandopolis_free(romPtr, romBytes.length);
+    if (systemHint === 4) {
+        emu = e.sandopolis_create_disc(romPtr, 0, romPtr, romBytes.length);
+    } else {
+        emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
+        e.sandopolis_free(romPtr, romBytes.length);
+    }
     if (!emu) {
         setStatus("Failed to initialize emulator.");
         return;

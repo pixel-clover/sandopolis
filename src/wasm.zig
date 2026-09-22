@@ -96,9 +96,15 @@ fn finishWasmEmulator(machine: SystemMachine) WasmEmulator {
 }
 
 /// Create a Sega CD emulator from a CUE sheet and its single BIN image.
-export fn sandopolis_create_disc(cue_ptr: [*]const u8, cue_len: usize, bin_ptr: [*]const u8, bin_len: usize) ?*WasmEmulator {
+/// The BIN allocation is consumed whether creation succeeds or fails.
+export fn sandopolis_create_disc(cue_ptr: [*]const u8, cue_len: usize, bin_ptr: [*]u8, bin_len: usize) ?*WasmEmulator {
     const Disc = @import("scd/cdrom/reader.zig").Disc;
-    const disc = Disc.fromMemory(allocator, cue_ptr[0..cue_len], &.{bin_ptr[0..bin_len]}) catch return null;
+    const bin = bin_ptr[0..bin_len];
+    var transferred = false;
+    defer if (!transferred) allocator.free(bin);
+    const cue: ?[]const u8 = if (cue_len == 0) null else cue_ptr[0..cue_len];
+    const disc = Disc.fromOwnedMemory(allocator, cue, &.{bin}) catch return null;
+    transferred = true;
     const machine = SystemMachine.initSegaCdFromDisc(allocator, disc, .{ .bios = &wasm_bios.set }) catch return null;
     const emu = allocator.create(WasmEmulator) catch {
         var m = machine;
