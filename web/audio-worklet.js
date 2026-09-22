@@ -17,6 +17,8 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
         this.count = 0;
         this.fadeGain = 1.0;
         this.underrunFrames = 0;
+        this.startThreshold = 4096;
+        this.primed = false;
 
         const opts = (options && options.processorOptions) || {};
         const srcRate = opts.srcRate && opts.srcRate > 0 ? opts.srcRate : sampleRate;
@@ -36,6 +38,7 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
                 this.writePos = 0;
                 this.count = 0;
                 this.fadeGain = 0.0;
+                this.primed = false;
                 this.port.postMessage({type: "level", count: 0, capacity: this.bufferSize});
                 return;
             }
@@ -58,6 +61,16 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
         const frames = outL.length;
         const bufFrames = this.bufferSize / 2;
         const step = this.step;
+
+        if (!this.primed) {
+            if (this.count < this.startThreshold) {
+                outL.fill(0);
+                if (outR) outR.fill(0);
+                return true;
+            }
+            this.primed = true;
+            this.fadeGain = 0.0;
+        }
 
         for (let i = 0; i < frames; i++) {
             // Need two source frames (4 interleaved samples) ahead for linear interp.
@@ -88,6 +101,7 @@ class SandopolisAudioProcessor extends AudioWorkletProcessor {
                 if (consumed > 0) this.count -= consumed;
                 if (this.readPos >= bufFrames) this.readPos -= bufFrames;
             } else {
+                this.primed = false;
                 if (this.fadeGain > 0.0) {
                     this.fadeGain = Math.max(0.0, this.fadeGain - 1.0 / 32.0);
                 }
