@@ -163,8 +163,6 @@ pub const SmsMachine = struct {
         }
     }
 
-    // -- Public interface matching Genesis Machine --
-
     pub fn framebuffer(self: *const SmsMachine) []const u32 {
         const w: usize = self.bus.vdp.screenWidth();
         const h: usize = self.bus.vdp.displayHeight();
@@ -206,8 +204,6 @@ pub const SmsMachine = struct {
     pub fn workRam(self: *SmsMachine) []u8 {
         return &self.bus.ram;
     }
-
-    // -- Save state --
 
     pub const Snapshot = struct {
         machine: SmsMachine,

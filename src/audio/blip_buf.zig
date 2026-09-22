@@ -286,10 +286,6 @@ pub fn BlipBuf(comptime capacity: usize) type {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-
 test "blip buffer starts empty" {
     var buf = BlipBuf(4800){};
     buf.setRates(53693175.0, 48000.0);
@@ -302,7 +298,7 @@ test "blip buffer end frame produces expected sample count" {
     // One NTSC frame: 896040 master clocks
     buf.endFrame(896040);
     const avail = buf.samplesAvail();
-    // 896040 / 53693175 * 48000 ≈ 800.7 → expect ~800 samples
+    // 896040 / 53693175 * 48000 ~ 800.7 -> expect ~800 samples
     try testing.expect(avail >= 799 and avail <= 802);
 }
 

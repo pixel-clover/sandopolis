@@ -56,7 +56,7 @@ pub const SubWriteEffects = struct {
 };
 
 pub const GateArray = struct {
-    // -- Reset / bus request (0x00) --
+    // Reset / bus request (0x00)
     /// SRES bit: false = sub CPU held in reset (power-on state).
     sub_running: bool = false,
     /// SBRQ bit: main CPU has requested the sub bus (sub halted).
@@ -65,11 +65,11 @@ pub const GateArray = struct {
     ifl2: bool = false,
     leds: u2 = 0,
 
-    // -- Memory mode (0x02) --
+    // Memory mode (0x02)
     write_protect: u8 = 0,
     prg_bank: u2 = 0,
 
-    // -- CDC mode (0x04) --
+    // CDC mode (0x04)
     cdc_device_destination: u3 = 0,
     cdc_data_set_ready: bool = false,
     cdc_end_of_transfer: bool = false,
@@ -78,19 +78,19 @@ pub const GateArray = struct {
     /// 0x0A: DMA destination address in units of 8 bytes.
     cdc_dma_address: u16 = 0,
 
-    // -- 0x06 --
+    // Hint vector (0x06)
     hint_vector: u16 = 0xFFFF,
 
-    // -- 0x0C --
+    // Stopwatch (0x0C)
     stopwatch: u12 = 0,
 
-    // -- 0x0E..0x2E --
+    // Communication registers (0x0E..0x2E)
     comm_flag_main: u8 = 0,
     comm_flag_sub: u8 = 0,
     command: [8]u16 = [_]u16{0} ** 8,
     status: [8]u16 = [_]u16{0} ** 8,
 
-    // -- 0x30..0x36 --
+    // Timers, interrupts, CD fader, CDD (0x30..0x36)
     timer_reload: u8 = 0,
     timer_count: u8 = 0,
     /// Bits 1-6 enable INT1-INT6.
@@ -103,14 +103,14 @@ pub const GateArray = struct {
     cdd_status: [10]u8 = [_]u8{0} ** 10,
     cdd_command: [10]u8 = [_]u8{0} ** 10,
 
-    // -- Font (0x4C..0x56) --
+    // Font (0x4C..0x56)
     font_color: u8 = 0,
     font_bits: u16 = 0,
 
-    // -- Graphics ASIC (0x58..0x66) --
+    // Graphics ASIC (0x58..0x66)
     gfx_regs: [8]u16 = [_]u16{0} ** 8,
 
-    // -- Subcode (0x68, 0x100..0x17F) --
+    // Subcode (0x68, 0x100..0x17F)
     subcode_address: u16 = 0,
     subcode_buffer: [64]u16 = [_]u16{0} ** 64,
 
@@ -120,10 +120,6 @@ pub const GateArray = struct {
     pub fn reset(self: *GateArray) void {
         self.* = .{};
     }
-
-    // -----------------------------------------------------------------------
-    // Interrupts
-    // -----------------------------------------------------------------------
 
     pub fn irqEnabled(self: *const GateArray, source: IrqSource) bool {
         return (self.irq_mask & source.bit()) != 0;
@@ -168,9 +164,7 @@ pub const GateArray = struct {
         if (self.ifl2 and self.irqEnabled(.main) and !cpu.isInterruptPending(2)) self.ifl2 = false;
     }
 
-    // -----------------------------------------------------------------------
     // Timer / stopwatch (384 sub-cycle tick)
-    // -----------------------------------------------------------------------
 
     /// Advance the 384-cycle tick domain by `sub_cycles`. Returns the
     /// number of ticks elapsed so PCM can be driven from the same clock.
@@ -196,9 +190,7 @@ pub const GateArray = struct {
         return ticks;
     }
 
-    // -----------------------------------------------------------------------
     // Font renderer (0x4C..0x56)
-    // -----------------------------------------------------------------------
 
     /// Font data word `index` (0-3) covers source bits 15-12, 11-8, 7-4, 3-0
     /// respectively; each set bit becomes the high color nibble, each clear
@@ -218,9 +210,7 @@ pub const GateArray = struct {
         return out;
     }
 
-    // -----------------------------------------------------------------------
     // Shared register image (word offsets are the same on both sides)
-    // -----------------------------------------------------------------------
 
     fn memoryModeWord(self: *const GateArray, wr: *const WordRam, sub_side: bool) u16 {
         var v: u16 = @as(u16, self.write_protect) << 8;
@@ -239,9 +229,7 @@ pub const GateArray = struct {
         return v | self.cdc_register_address;
     }
 
-    // -----------------------------------------------------------------------
     // Main CPU side (offset within 0xA12000-0xA1203F)
-    // -----------------------------------------------------------------------
 
     pub fn mainRead16(self: *const GateArray, offset: u8, wr: *const WordRam) u16 {
         return switch (offset & 0x3E) {
@@ -324,9 +312,7 @@ pub const GateArray = struct {
         return effects;
     }
 
-    // -----------------------------------------------------------------------
     // Sub CPU side (offset within 0xFF8000-0xFF81FF)
-    // -----------------------------------------------------------------------
 
     pub fn subRead16(self: *const GateArray, offset: u16, wr: *const WordRam) u16 {
         const off = offset & 0x1FE;
@@ -492,10 +478,6 @@ pub const GateArray = struct {
         return effects;
     }
 };
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

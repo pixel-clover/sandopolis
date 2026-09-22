@@ -1194,28 +1194,22 @@ test "machine facade methods expose VDP and I/O state without direct bus access"
     defer machine.deinit(std.testing.allocator);
     machine.reset();
 
-    // screenHeight returns active visible lines (default NTSC = 224)
     try std.testing.expectEqual(@as(u16, 224), machine.screenHeight());
 
-    // framebufferWidth returns H40 or H32 width
     const width = machine.framebufferWidth();
     try std.testing.expect(width == 320 or width == 256);
 
-    // romSize returns ROM byte length
     try std.testing.expect(machine.romSize() > 0);
 
-    // displayModeFlags encodes VDP mode bits
     const flags = machine.displayModeFlags();
     // Bit 0 = H40, bit 1 = interlace, bit 2 = shadow/highlight
     try std.testing.expect(flags < 8);
 
-    // setButton and controllerType round-trip
     machine.setControllerType(0, .six_button);
     try std.testing.expectEqual(Io.ControllerType.six_button, machine.controllerType(0));
     machine.setControllerType(0, .three_button);
     try std.testing.expectEqual(Io.ControllerType.three_button, machine.controllerType(0));
 
-    // setButton sets active-low bits
     machine.setButton(0, Io.Button.A, true);
     try std.testing.expectEqual(@as(u16, 0), machine.controllerPadState(0) & Io.Button.A);
     machine.setButton(0, Io.Button.A, false);

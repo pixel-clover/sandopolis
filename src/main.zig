@@ -634,7 +634,6 @@ fn handleSaveManagerKey(
         },
         .@"return" => {
             if (ui.delete_confirm_pending) {
-                // Confirm delete
                 ui.cancelDeleteConfirm();
                 _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
                 refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
@@ -663,12 +662,10 @@ fn handleSaveManagerKey(
         },
         .delete, .backspace => {
             if (ui.delete_confirm_pending) {
-                // Second press confirms delete
                 ui.cancelDeleteConfirm();
                 _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
                 refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
             } else {
-                // First press asks for confirmation
                 const metadata = save_manager.slotMetadata(persistent_state_slot.*);
                 if (metadata.exists) {
                     ui.delete_confirm_pending = true;
@@ -1264,7 +1261,6 @@ fn handleSaveManagerGamepadInput(
         .south, .start => blk: {
             if (pressed) {
                 if (ui.delete_confirm_pending) {
-                    // Confirm delete with A button
                     ui.cancelDeleteConfirm();
                     _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
                     refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
@@ -1308,12 +1304,10 @@ fn handleSaveManagerGamepadInput(
         .north => blk: {
             if (pressed) {
                 if (ui.delete_confirm_pending) {
-                    // Second Y press confirms delete
                     ui.cancelDeleteConfirm();
                     _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
                     refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
                 } else {
-                    // First Y press asks for confirmation
                     const metadata = save_manager.slotMetadata(persistent_state_slot.*);
                     if (metadata.exists) {
                         ui.delete_confirm_pending = true;
@@ -1812,10 +1806,8 @@ fn handleBindingEditorKey(
             .delete => editor.clearSelected(bindings),
             else => {
                 if (editor.capture_gamepad) {
-                    // In gamepad capture mode, keyboard events cancel or clear
                     editor.setStatus(.neutral, "PRESS A GAMEPAD BUTTON");
                 } else if (editor.currentTarget().isHeader()) {
-                    // Skip
                 } else if (switch (editor.currentTarget()) {
                     .hotkey => true,
                     else => false,
@@ -2042,11 +2034,9 @@ fn resolveStatePathForSystem(
     if (explicit_state_path) |path| {
         return rom_paths.statePath(allocator, path, normalized) catch null;
     }
-    // Use source path from either system
     if (machine.sourcePath()) |source_path| {
         return rom_paths.statePath(allocator, source_path, normalized) catch null;
     }
-    // Genesis fallback: use Machine-specific path derivation
     if (machine.asGenesisConst()) |gen| {
         return StateFile.pathForMachineSlot(allocator, gen, normalized) catch null;
     }
@@ -2291,7 +2281,6 @@ fn renderSaveManagerOverlay(
     const path_height = 8.0 * scale;
     const row_gap = 4.0 * scale;
     const preview_gap = 12.0 * scale;
-    // Enlarged preview (1.5x) for better visibility
     const preview_scale = 1.5;
     const preview_width = @as(f32, @floatFromInt(save_state_preview_width)) * scale * preview_scale;
     const preview_height = @as(f32, @floatFromInt(save_state_preview_height)) * scale * preview_scale;
@@ -2335,7 +2324,6 @@ fn renderSaveManagerOverlay(
     const svw: f32 = @floatFromInt(viewport.w);
     const svh: f32 = @floatFromInt(viewport.h);
 
-    // Hide preview column if viewport is too narrow for two-column layout
     const two_col_width = list_width + preview_gap + preview_width_required + padding * 2.0;
     const show_preview = two_col_width <= svw;
 
@@ -2594,7 +2582,6 @@ fn renderSettingsOverlay(
     const timing_line = if (machine.palMode()) "TIMING PAL 50HZ" else "TIMING NTSC 60HZ";
     const region_line = if (machine.consoleIsOverseas()) "REGION OVERSEAS" else "REGION DOMESTIC";
 
-    // Truncate long config paths to prevent panel overflow
     var path_display_buf: [64]u8 = undefined;
     const config_display = if (config_path.len > 56) blk: {
         const tail = config_path[config_path.len - 53 ..];
@@ -2610,7 +2597,6 @@ fn renderSettingsOverlay(
     }
     max_width = @max(max_width, overlayTextWidth(settingsActionHint(settings.currentAction()), scale));
 
-    // Body line count: 2 control lines + 27 content lines (sections, items, gaps, hint)
     const body_lines: f32 = 29.0;
     const stw: f32 = @floatFromInt(viewport.w);
     const sth: f32 = @floatFromInt(viewport.h);
@@ -2654,8 +2640,6 @@ fn renderSettingsOverlay(
     const selected_color = UiColors.text_selected;
     const normal_color = UiColors.text_primary;
 
-    // Render settings entries grouped by section
-    // action_lines[]: 0=aspect, 1=scale, 2=fullscreen, 3=audio_mode, 4=psg_vol, 5=ctrl_p1, 6=ctrl_p2, 7=perf, 8=font_face, 9=close
     const actionColor = struct {
         fn f(cur: SettingsMenuAction, target: SettingsMenuAction, sel: zsdl3.Color, norm: zsdl3.Color) zsdl3.Color {
             return if (cur == target) sel else norm;
@@ -2709,7 +2693,6 @@ fn renderSettingsOverlay(
     try drawOverlayText(renderer, text_x, y, scale, actionColor(cur, .close, selected_color, normal_color), action_lines[9]);
     y += line_height * 2.0;
 
-    // Hint line for the currently selected action
     const hint = settingsActionHint(cur);
     try drawOverlayText(renderer, text_x, y, scale, info_color, hint);
 }
@@ -2761,7 +2744,6 @@ fn renderFrontendOverlay(
         .home => try renderHomeOverlay(renderer, viewport, home_menu, frontend_config, frontend_frame_number),
         .pause => try renderPauseOverlay(renderer, viewport, bindings, persistent_state_slot),
     }
-    // Toast renders last so it appears on top of all overlays
     if (show_toast) {
         try renderToastOverlay(renderer, viewport, toast, frontend_frame_number);
     }
@@ -2822,7 +2804,6 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Renderer backend: {s}\n", .{name});
     }
 
-    // Initialize TTF font for UI overlays
     var ui_font = ui_render.Font.init(ui_render.font_jbm_regular);
     defer ui_font.deinit();
     ui_render.initFont(&ui_font);
@@ -2873,7 +2854,6 @@ pub fn main(init: std.process.Init) !void {
         @intCast(Vdp.max_framebuffer_height),
     );
     defer vdp_texture.destroy();
-    // Nearest-neighbor filtering for pixel-perfect rendering at any scale
     _ = SDL_SetTextureScaleMode(vdp_texture, 0); // SDL_SCALEMODE_NEAREST = 0
 
     if (rom_path == null) {
@@ -2881,7 +2861,6 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Loading dummy backend ROM for the idle frontend shell.\n", .{});
     }
 
-    // Load unified config (frontend settings + input bindings in one file)
     const config_file_path = if (cli.config_path) |custom_path|
         try allocator.dupe(u8, custom_path)
     else
@@ -2894,7 +2873,6 @@ pub fn main(init: std.process.Init) !void {
     sega_cd_bios.load(allocator, &frontend_config, config_file_path);
     defer sega_cd_bios.deinit(allocator);
 
-    // Write default config on first run if file doesn't exist
     platform.cwd().access(config_file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             unified_config.save(&frontend_config, &input_bindings, config_file_path) catch |save_err| {
@@ -2904,10 +2882,8 @@ pub fn main(init: std.process.Init) !void {
         else => {},
     };
 
-    // Unified config path is used for all saves
     const frontend_config_path = config_file_path;
 
-    // Apply configured font face
     if (frontend_config.font_face != .jbm_regular) {
         ui_font.deinit();
         ui_font = ui_render.Font.init(fontDataForFace(frontend_config.font_face));
@@ -3014,7 +2990,6 @@ pub fn main(init: std.process.Init) !void {
                     const button = event.gbutton.button;
                     const port = findGamepadPort(&gamepads, event.gbutton.which) orelse continue;
 
-                    // Binding editor gamepad capture
                     if (frontend_ui.overlay == .keyboard_editor and binding_editor.capture_mode and binding_editor.capture_gamepad) {
                         const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
                         if (pressed_gp) {
@@ -3024,7 +2999,6 @@ pub fn main(init: std.process.Init) !void {
                         }
                         continue;
                     }
-                    // Binding editor navigation via gamepad (when open but not capturing)
                     if (frontend_ui.overlay == .keyboard_editor and !binding_editor.capture_mode) {
                         const pressed_gp = (event.type == zsdl3.EventType.gamepad_button_down);
                         if (pressed_gp) {
@@ -3480,7 +3454,6 @@ pub fn main(init: std.process.Init) !void {
                         .handled => continue,
                         .unhandled => {},
                     }
-                    // Debugger controls (F10 toggle, Space step, Tab switch tabs)
                     if (pressed and scancode == .f10) {
                         if (frontend_ui.overlay == .debugger) {
                             debugger_state.active = false;
@@ -3747,7 +3720,7 @@ pub fn main(init: std.process.Init) !void {
         switch (file_dialog_state.take()) {
             .none => {},
             .canceled => {
-                // Restore whatever overlay the dialog was opened from —
+                // Restore whatever overlay the dialog was opened from:
                 // including `.none` (opened in-game via hotkey); mapping
                 // that case to `.home` stranded a running game behind a
                 // screen with no resume action.
@@ -3798,7 +3771,6 @@ pub fn main(init: std.process.Init) !void {
                     path.slice(),
                 );
                 home_menu.clamp(&frontend_config);
-                // ROM loaded successfully: dismiss any overlay and start emulating
                 frontend_ui.overlay = .none;
             },
         }
@@ -3842,7 +3814,6 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
         } else if (debugger_state.active and debugger_state.shouldStep()) {
-            // Single-step: run one M68K instruction
             if (machine.testing()) |tv| {
                 var testing_view = tv;
                 _ = testing_view.runCpuCycles(1);
@@ -3870,7 +3841,6 @@ pub fn main(init: std.process.Init) !void {
         if (audio) |*a| {
             const audio_start = platform.Instant.now() catch frame_timer;
             if (machine.audioZ80()) |z80| {
-                // Genesis: render audio from pending YM+PSG events
                 const pending = machine.takePendingAudio();
                 const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
                 try a.handlePending(pending, z80, machine.palMode(), wav_rec_ptr);
@@ -3878,7 +3848,6 @@ pub fn main(init: std.process.Init) !void {
                 const wav_rec_ptr = if (wav_recorder) |*rec| rec else null;
                 if (!emulation_paused) {
                     if (machine.smsAudioBuffer()) |sms_samples| {
-                        // SMS: audio already rendered in runFrame; queue to SDL
                         try a.queueRawSamples(sms_samples, wav_rec_ptr);
                     }
                 } else {
@@ -5161,7 +5130,6 @@ test "home screen gamepad navigation loads recent rom entries" {
         else => try std.testing.expect(false),
     }
 
-    // Reset to home for next sub-test
     ui.overlay = .home;
     switch (handleHomeScreenGamepadInput(&ui, &menu, &settings, &config, .west, true)) {
         .consumed => {},
@@ -5252,12 +5220,10 @@ test "video destination rect honors aspect and integer scaling" {
 test "settings actions persist frontend video settings" {
     var config = FrontendConfig{};
 
-    // Test cycling video aspect mode
     try std.testing.expectEqual(VideoAspectMode.stretch, config.video_aspect_mode);
     config.video_aspect_mode = config.video_aspect_mode.cycle(1);
     try std.testing.expectEqual(VideoAspectMode.four_three, config.video_aspect_mode);
 
-    // Test cycling video scale mode
     try std.testing.expectEqual(VideoScaleMode.fit, config.video_scale_mode);
     config.video_scale_mode = config.video_scale_mode.cycle(1);
     try std.testing.expectEqual(VideoScaleMode.whole_pixels, config.video_scale_mode);
@@ -5322,7 +5288,6 @@ test "guide button toggles pause and resumes overlays" {
     }
     try std.testing.expectEqual(Overlay.pause, ui.overlay);
 
-    // Open help from pause, then press guide to resume
     ui.openHelp();
     switch (handleFrontendGamepadInput(
         &ui,
@@ -5466,7 +5431,6 @@ test "save manager gamepad controls save load delete and close" {
     }
     try std.testing.expectEqual(@as(u8, 1), persistent_state_slot);
 
-    // First press initiates delete confirmation
     switch (handleSaveManagerGamepadInput(
         &ui,
         &save_manager,
@@ -5486,9 +5450,8 @@ test "save manager gamepad controls save load delete and close" {
         else => try std.testing.expect(false),
     }
     try std.testing.expect(ui.delete_confirm_pending);
-    try std.testing.expect(save_manager.slotMetadata(1).exists); // Not deleted yet
+    try std.testing.expect(save_manager.slotMetadata(1).exists);
 
-    // Second press confirms delete
     switch (handleSaveManagerGamepadInput(
         &ui,
         &save_manager,
@@ -5885,31 +5848,24 @@ fn screenshotOutputPath(current_rom: []const u8) ?[256]u8 {
 }
 
 test "gif output path returns optional type" {
-    // Verify the function returns an optional - this tests the fix for the
-    // bug where returning non-null on exhausted slots would overwrite files
     const ResultType = @TypeOf(gifOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
 
 test "wav output path returns optional type" {
-    // Verify the function returns an optional - this tests the fix for the
-    // bug where returning non-null on exhausted slots would overwrite files
     const ResultType = @TypeOf(wavOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
 
 test "screenshot output path returns optional type" {
-    // Verify the function returns an optional - this tests the fix for the
-    // bug where returning non-null on exhausted slots would overwrite files
     const ResultType = @TypeOf(screenshotOutputPath(""));
     const info = @typeInfo(ResultType);
     try std.testing.expect(info == .optional);
 }
 
 test "output path format matches expected pattern" {
-    // Test that the format string produces expected filenames
     var buf: [48]u8 = [_]u8{0} ** 48;
     const name1 = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{@as(u32, 1)}) catch unreachable;
     try std.testing.expectEqualStrings("sandopolis_001.gif", name1);
@@ -5926,19 +5882,15 @@ test "output path format matches expected pattern" {
 
 test "handleGameInfoKey opens from pause and closes with escape" {
     var ui = FrontendUi{ .overlay = .pause };
-    // Game info key should not handle input when not in game_info overlay
     try std.testing.expect(!handleGameInfoKey(&ui, .i, true));
     try std.testing.expectEqual(Overlay.pause, ui.overlay);
 
-    // Open game info from pause menu via the pause handler
     ui.openGameInfo();
     try std.testing.expectEqual(Overlay.game_info, ui.overlay);
 
-    // Game info key handler should consume all presses
     try std.testing.expect(handleGameInfoKey(&ui, .a, true));
     try std.testing.expectEqual(Overlay.game_info, ui.overlay);
 
-    // Escape closes back to pause
     try std.testing.expect(handleGameInfoKey(&ui, .escape, true));
     try std.testing.expectEqual(Overlay.pause, ui.overlay);
 }

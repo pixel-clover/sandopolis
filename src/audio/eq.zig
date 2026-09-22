@@ -98,10 +98,6 @@ pub const Eq3Band = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-
 test "eq3band init sets crossover frequencies" {
     const eq = Eq3Band.init(880, 5000, 48000);
     try testing.expect(eq.lf > 0.0 and eq.lf < 1.0);

@@ -63,8 +63,6 @@ pub const SubBus = struct {
         return MemoryInterface.bind(SubBus, self);
     }
 
-    // -- CDC ports behind the gate array window ------------------------------
-
     /// Mirror the CDC's transfer flags into the gate array mode register.
     pub fn syncCdcFlags(self: *SubBus) void {
         const dest: cdc_mod.Destination = @enumFromInt(self.gate.cdc_device_destination);
@@ -139,8 +137,6 @@ pub const SubBus = struct {
             else => {},
         }
     }
-
-    // -- MemoryInterface: data access ---------------------------------------
 
     pub fn read8(self: *SubBus, address: u32) u8 {
         const addr = address & 0xFFFFFF;
@@ -310,8 +306,6 @@ pub const SubBus = struct {
         self.write16(address + 2, @truncate(value));
     }
 
-    // -- MemoryInterface: timing hooks (no VDP on this bus) -----------------
-
     pub fn m68kAccessWaitMasterCycles(_: *SubBus, _: u32, _: u8) u32 {
         return 0;
     }
@@ -342,10 +336,6 @@ pub const SubBus = struct {
     }
     pub fn notifyBusAccess(_: *SubBus, _: u32, _: u32) void {}
 };
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

@@ -154,7 +154,6 @@ pub fn resolvePersistentStatePath(
     explicit_state_path: ?[]const u8,
     persistent_state_slot: u8,
 ) ![]u8 {
-    // Use per-ROM data directory when a ROM path is available
     if (explicit_state_path) |path| {
         return rom_paths.statePath(allocator, path, persistent_state_slot);
     }
@@ -191,7 +190,6 @@ pub fn deletePreviewFile(allocator: std.mem.Allocator, state_path: []const u8) !
     };
 }
 
-// Format timestamp as relative time string (e.g., "2 DAYS AGO", "JUST NOW")
 pub fn formatTimestampRelative(buffer: []u8, ns: i128) ![]const u8 {
     if (ns <= 0) return std.fmt.bufPrint(buffer, "UNKNOWN", .{});
 
@@ -225,7 +223,6 @@ pub fn formatTimestampRelative(buffer: []u8, ns: i128) ![]const u8 {
         }
         return std.fmt.bufPrint(buffer, "{d} DAYS AGO", .{diff_days});
     } else {
-        // For older saves, show the actual date
         const seconds: u64 = @intCast(@divFloor(ns, std.time.ns_per_s));
         const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = seconds };
         const epoch_day = epoch_seconds.getEpochDay();
@@ -241,7 +238,6 @@ pub fn formatTimestampRelative(buffer: []u8, ns: i128) ![]const u8 {
     }
 }
 
-// Format save slot line for display
 pub fn formatSlotLine(
     buffer: []u8,
     metadata: *const SlotMetadata,
@@ -264,7 +260,6 @@ pub fn formatSlotLine(
     });
 }
 
-// Format save file path line for display
 pub fn formatPathLine(buffer: []u8, metadata: *const SlotMetadata) ![]const u8 {
     return std.fmt.bufPrint(buffer, "FILE {s}", .{std.fs.path.basename(metadata.path.slice())});
 }
@@ -272,7 +267,6 @@ pub fn formatPathLine(buffer: []u8, metadata: *const SlotMetadata) ![]const u8 {
 const testing = std.testing;
 
 test "previousSlot wraps from first to last" {
-    // Default slot is 1, max is 3 (persistent_state_slot_count)
     try testing.expectEqual(@as(u8, 3), previousSlot(1));
     try testing.expectEqual(@as(u8, 1), previousSlot(2));
     try testing.expectEqual(@as(u8, 2), previousSlot(3));

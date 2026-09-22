@@ -722,7 +722,7 @@ test "dma 128k source window wraps correctly" {
     // After DMA: source should have wrapped within 128K window.
     // The second word should come from 0x00000 (wrapped), not 0x20000 (linear).
     // We can't easily check the source here, but the DMA should complete
-    // without corrupting VRAM — verify VDP is in a clean state.
+    // without corrupting VRAM; verify VDP is in a clean state.
     try testing.expect(!emulator.handle.machine.bus.vdp.dma_active);
 }
 
@@ -746,7 +746,7 @@ test "immediate cram write updates palette before fifo drains" {
     emulator.writeVdpData(0x0EEE); // white in 9-bit format
 
     // CRAM should be updated immediately, before any FIFO draining.
-    // The FIFO has not been serviced yet — verify CRAM was written
+    // The FIFO has not been serviced yet: verify CRAM was written
     // at writeData time, not deferred.
     try testing.expect(emulator.handle.machine.bus.vdp.fifo_len > 0); // FIFO entry pending
     try testing.expectEqual(@as(u8, 0x0E), emulator.handle.machine.bus.vdp.cram[0x0002]);
@@ -850,7 +850,7 @@ test "z80 executes proportionally within a long scheduler slice" {
     emulator.runMasterSlice(clock.ntsc_master_cycles_per_line / 2);
 
     // At 15 master cycles per Z80 cycle and 4 T-states per NOP:
-    // (1710 / 15) / 4 ≈ 28 NOPs in half a scanline.
+    // (1710 / 15) / 4 ~ 28 NOPs in half a scanline.
     // Z80 PC should have advanced significantly.
     const z80_pc = emulator.z80ProgramCounter();
     try testing.expect(z80_pc >= 10);
@@ -875,8 +875,6 @@ test "titan overdrive 1 runs 3600 frames without crashing" {
     }
     try testing.expect(non_black > 0);
 }
-
-// --- Overdrive 2 ---
 
 test "overdrive 2 rom runs for 600 frames without wedging the core" {
     var emulator = try Emulator.init(testing.allocator, overdrive2_rom);
@@ -926,8 +924,6 @@ test "overdrive 2 rom framebuffer matches golden hash after 100 frames" {
     // Golden hash: regression guard for Overdrive 2 rendering.
     try testing.expectEqual(@as(u32, 1646546174), hash);
 }
-
-// --- V Counter Test ---
 
 fn framebufferCrc32(framebuffer: []const u32) u32 {
     const bytes = std.mem.sliceAsBytes(framebuffer);
@@ -1002,8 +998,6 @@ test "vctest rom runs stably in both ntsc and pal modes" {
     }
 }
 
-// --- CRAM Flicker ---
-
 test "cram flicker rom produces visible cram dot artifacts" {
     // cram_flicker.bin generates mid-scanline CRAM writes whose visible
     // output relies on the CRAM dot artifact (single-pixel color flash).
@@ -1041,8 +1035,6 @@ test "cram flicker rom runs stably for 300 frames" {
     try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
 }
 
-// --- 68K Memory Test ---
-
 test "memtest 68k rom boots and displays memory map results" {
     // memtest_68k.bin reads from various undefined locations in the
     // 68K memory map and displays the results.  Verify it boots,
@@ -1067,8 +1059,6 @@ test "memtest 68k rom boots and displays memory map results" {
     try testing.expect(non_black_pixels > 0);
     try testing.expect(differing_pixels > 0);
 }
-
-// --- VDP Disable Register Test ROM ---
 
 test "disable reg test rom initializes vdp and produces output" {
     // DisableRegTestROM.bin is an interactive ROM for toggling VDP test
@@ -1108,8 +1098,6 @@ test "disable reg test rom runs stably for 500 frames with audio" {
     try testing.expect((emulator.vdpRegister(1) & 0x40) != 0);
 }
 
-// --- Shadow/Highlight Test ---
-
 test "shadow highlight test rom enables shadow highlight mode" {
     // The test ROM demonstrates shadow/highlight rendering by setting
     // VDP register 12 bit 3.  Verify it boots, enables the mode, and
@@ -1137,8 +1125,6 @@ test "shadow highlight test rom enables shadow highlight mode" {
     // colors due to normal, shadow, and highlight variants.
     try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
 }
-
-// --- 1536 Color Test ---
 
 test "test1536 rom uses shadow highlight for expanded color output" {
     // TEST1536.BIN combines dynamic mid-frame CRAM writes with
@@ -1169,8 +1155,6 @@ test "test1536 rom uses shadow highlight for expanded color output" {
     // shadow/highlight, verify multiple distinct colors appear.
     try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
 }
-
-// --- Multitap IO Sample ---
 
 test "multitap io sample rom boots and detects controllers" {
     // Official Sega test ROM for I/O device detection and input
@@ -1209,8 +1193,6 @@ test "multitap io sample rom reads version register" {
     // returns a non-zero value.
     try testing.expect(version != 0);
 }
-
-// --- Audio pipeline end-to-end ---
 
 const AudioSampleCollector = struct {
     hash: u32 = 0,
@@ -1266,8 +1248,6 @@ test "fm test rom audio pipeline output matches golden hash" {
     try testing.expectEqual(@as(u32, 4065629464), collector.hash);
 }
 
-// --- ROM-backed YM2612 register stream comparison for key titles ---
-//
 // These tests load commercial game ROMs from roms/, run them for enough
 // frames to reach gameplay audio, capture all YM register writes, replay
 // them through a standalone Ym2612Synth, and golden-hash the synthesized
@@ -1413,8 +1393,6 @@ test "warsong z80 instruction count per frame matches expected budget" {
     emulator.discardPendingAudio();
 }
 
-// --- Commercial ROM boot checks ---
-
 test "golden axe h32 framebuffer is cropped to 256 active pixels" {
     // Golden Axe runs in H32 mode (256 pixels wide). The framebuffer is
     // always 320 pixels, but framebufferWidth() should return the active
@@ -1450,8 +1428,6 @@ test "golden axe boots and produces visible output" {
     try testing.expect(non_black_pixels > 0);
     try testing.expect(countUniqueFramebufferColors(fb, 16) > 3);
 }
-
-// --- Zabu palette investigation (local ROM, skipped if ROM not present) ---
 
 const zabu_rom_path = "/tmp/zabu/Zabu_demo_2026-01-24.bin";
 
@@ -1561,8 +1537,6 @@ test "zabu palette investigation: detect bulk cram rewrites during scene transit
     try testing.expectEqual(@as(usize, 0), frames_with_inverted_palette);
 }
 
-// --- SG-1000 boot tests (local ROMs, skipped if not present) ---
-
 const SmsMachine = sandopolis.testing.SmsMachine;
 
 fn initSg1000(rom_path: []const u8) !SmsMachine {
@@ -1616,10 +1590,7 @@ test "sg1000 hustle chumy boots and produces visible output" {
     try testing.expect(non_black_pixels > 10);
 }
 
-
-// ---------------------------------------------------------------------------
 // Sega CD (skipped when the BIOS / disc files are not present)
-// ---------------------------------------------------------------------------
 
 const sega_cd_bios_us = "roms/bios/bios_CD_U.bin";
 const sega_cd_test_disc = "roms/cd/test.cue";

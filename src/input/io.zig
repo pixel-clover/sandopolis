@@ -132,8 +132,8 @@ pub const Io = struct {
 
     fn effectivePadIndex(self: *const Io, port: usize) usize {
         // EA 4-Way Play: TH on port 2 selects between players
-        // TH high: port 0 → pad 0 (player A), port 1 → pad 1 (player B)
-        // TH low:  port 0 → pad 2 (player C), port 1 → pad 3 (player D)
+        // TH high: port 0 -> pad 0 (player A), port 1 -> pad 1 (player B)
+        // TH low:  port 0 -> pad 2 (player C), port 1 -> pad 3 (player D)
         if (self.controller_types[0] == .ea_4way_play or self.controller_types[1] == .ea_4way_play) {
             const offset: usize = if (self.controller_th[1]) 0 else 2;
             return port + offset;
@@ -278,7 +278,7 @@ pub const Io = struct {
                 self.cycles_until_th_high[port] = self.cycles_until_th_high[port] -| m68k_cycles;
                 if (self.cycles_until_th_high[port] == 0) {
                     // The pull-up drives TH high.  If TH was low, this is a
-                    // low→high transition that the 6-button controller counts.
+                    // low-to-high transition that the 6-button controller counts.
                     if (!self.controller_th[port]) {
                         self.th_flip_count[port] +%= 1;
                         self.flip_reset_counter[port] = six_button_timeout_m68k_cycles;
@@ -448,12 +448,12 @@ test "ea 4-way play multiplexes four controllers via port 2 th" {
     // Player C has C button pressed, player A does not
     io.setButton(2, Io.Button.C, true);
 
-    // TH high on port 2 → port 1 reads pad[0] (player A)
+    // TH high on port 2 -> port 1 reads pad[0] (player A)
     io.write(0x05, 0x40);
     io.write(0x03, 0x40);
     const a_high = io.read(0x03);
 
-    // TH low on port 2 → port 1 reads pad[2] (player C)
+    // TH low on port 2 -> port 1 reads pad[2] (player C)
     io.write(0x05, 0x00);
     io.write(0x03, 0x40);
     const c_high = io.read(0x03);
@@ -471,7 +471,7 @@ test "six-button timeout mid-identification reverts to standard three-button rea
     io.write(0x09, 0x40);
     io.setButton(0, Io.Button.Z, true);
 
-    // Two TH low→high transitions: flip count = 2
+    // Two TH low-to-high transitions: flip count = 2
     io.write(0x03, 0x00);
     io.write(0x03, 0x40);
     io.write(0x03, 0x00);
@@ -479,7 +479,7 @@ test "six-button timeout mid-identification reverts to standard three-button rea
 
     try testing.expectEqual(@as(u2, 2), io.th_flip_count[0]);
 
-    // Timeout fires → counter resets to 0
+    // Timeout fires: counter resets to 0
     io.tick(Io.six_button_timeout_m68k_cycles);
     try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
 
@@ -492,13 +492,13 @@ test "six-button timeout mid-identification reverts to standard three-button rea
 }
 
 test "six-button identification wraps through multiple consecutive cycles" {
-    // After a full identification cycle (flip count wraps 3→0), a
+    // After a full identification cycle (flip count wraps 3 to 0), a
     // second complete cycle should also expose the extra buttons.
     var io = Io.init();
     io.write(0x09, 0x40);
     io.setButton(0, Io.Button.Z, true);
 
-    // First full cycle: 3 TH low→high transitions
+    // First full cycle: 3 TH low-to-high transitions
     io.write(0x03, 0x00);
     io.write(0x03, 0x40);
     io.write(0x03, 0x00);
@@ -506,10 +506,10 @@ test "six-button identification wraps through multiple consecutive cycles" {
     io.write(0x03, 0x00);
     io.write(0x03, 0x40);
 
-    // flip_count = 3, TH high → six-button state
+    // flip_count = 3, TH high: six-button state
     try testing.expectEqual(@as(u8, 0x7E), io.read(0x03));
 
-    // Complete the wrap: one more low→high transition → flip_count wraps to 0
+    // Complete the wrap: one more low-to-high transition: flip_count wraps to 0
     io.write(0x03, 0x00);
     io.write(0x03, 0x40);
     try testing.expectEqual(@as(u2, 0), io.th_flip_count[0]);
@@ -541,7 +541,7 @@ test "th pull-up from ctrl de-assertion increments six-button flip counter" {
     io.write(0x03, 0x00);
     try testing.expect(!io.controller_th[0]);
 
-    // Clear CTRL TH output → TH becomes input, will pull high after delay
+    // Clear CTRL TH output: TH becomes input, will pull high after delay
     io.write(0x09, 0x00);
     io.tick(Io.th_high_delay_m68k_cycles);
     try testing.expect(io.controller_th[0]);
@@ -609,7 +609,7 @@ test "sega mouse reports button state on the fourth nibble" {
     // Phase 3 (TH low): button nibble: Start=3, Middle=2, Right=1, Left=0
     io.write(0x03, 0x00);
 
-    // Left (bit 0) and Right (bit 1) pressed → bits 0 and 1 set
+    // Left (bit 0) and Right (bit 1) pressed: bits 0 and 1 set
     const buttons = io.read(0x03) & 0x0F;
     try testing.expectEqual(@as(u8, 0x03), buttons);
 }
@@ -626,7 +626,7 @@ test "sega mouse reports movement deltas in the last four nibbles" {
     io.write(0x03, 0x40);
     io.write(0x03, 0x00);
     // Phase 2 (TH high): overflow/sign nibble
-    // Y sign = 1 (negative), X sign = 0 (positive) → bits: YO=0, XO=0, YS=1, XS=0 = 0x02
+    // Y sign = 1 (negative), X sign = 0 (positive): bits: YO=0, XO=0, YS=1, XS=0 = 0x02
     io.write(0x03, 0x40);
     try testing.expectEqual(@as(u8, 0x02), io.read(0x03) & 0x0F);
     // Phase 3 (TH low): buttons (none pressed = 0x0)

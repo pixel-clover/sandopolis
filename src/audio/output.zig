@@ -83,8 +83,8 @@ const BoardOutputLpf = struct {
 
 // Board output low-pass filter, modelling the analog path on the Genesis
 // mainboard.  The reference uses coefficient 0x9999 at 44.1 kHz, giving
-// fc ≈ 3585 Hz.  Adjusted for our 48 kHz output rate to match the same
-// analog cutoff frequency: 0xA01B at 48 kHz → fc ≈ 3585 Hz.
+// fc ~ 3585 Hz.  Adjusted for our 48 kHz output rate to match the same
+// analog cutoff frequency: 0xA01B at 48 kHz -> fc ~ 3585 Hz.
 const board_output_history_factor: f32 = @as(f32, 0xA01B) / 65536.0;
 const board_output_input_factor: f32 = 1.0 - board_output_history_factor;
 
@@ -731,7 +731,7 @@ pub const AudioOutput = struct {
         // Apply the Genesis mainboard analog low-pass filter after the
         // blip buffer.  The blip buffer handles band-limiting at the
         // Nyquist frequency, but the real hardware has an additional
-        // analog LPF (fc ≈ 4 kHz) that shapes the output.  The
+        // analog LPF (fc ~ 4 kHz) that shapes the output.  The
         // reference also applies this filter in audio_update().
         var l: f32 = @as(f32, @floatFromInt(sample_l)) / 32768.0;
         var r: f32 = @as(f32, @floatFromInt(sample_r)) / 32768.0;
@@ -1131,7 +1131,7 @@ test "board output lpf applies high-frequency roll-off" {
         if (i > 250) peak = @max(peak, @abs(out));
     }
 
-    // The board LPF (fc ≈ 4 kHz, 0x9999 coefficient) attenuates 20 kHz to ~0.26.
+    // The board LPF (fc ~ 4 kHz, 0x9999 coefficient) attenuates 20 kHz to ~0.26.
     try std.testing.expect(peak < 0.30);
 }
 
@@ -1144,7 +1144,7 @@ test "board output lpf passes audible content with minimal loss" {
         const out = lpf.processL(@sin(phase));
         if (i > 480) peak = @max(peak, @abs(out));
     }
-    // With fc ≈ 4 kHz (0x9999 coefficient), a 1 kHz tone passes with
+    // With fc ~ 4 kHz (0x9999 coefficient), a 1 kHz tone passes with
     // only ~3% attenuation (single-pole IIR well below cutoff).
     try std.testing.expect(peak > 0.95);
 }

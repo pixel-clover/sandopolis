@@ -511,7 +511,7 @@ pub const Vdp = struct {
 
         // Keep HBlank changes (pixel >= screen width): they produce no
         // visible pixels this line, but the undo pass in renderScanline
-        // needs them to reconstruct start-of-line register state — exactly
+        // needs them to reconstruct start-of-line register state: exactly
         // like the CRAM-dot events above.  Dropping them would apply the
         // write retroactively to the line that already elapsed.
         self.reg_change_events[self.reg_change_event_count] = .{
@@ -598,7 +598,6 @@ test "H40-derived geometry depends only on reg 12 bit 0" {
 test "VDP init returns expected defaults" {
     const vdp = Vdp.init();
 
-    // Video state defaults
     try std.testing.expect(!vdp.vblank);
     try std.testing.expect(!vdp.hblank);
     try std.testing.expect(!vdp.odd_frame);
@@ -607,18 +606,15 @@ test "VDP init returns expected defaults" {
     try std.testing.expect(!vdp.sprite_overflow);
     try std.testing.expect(!vdp.sprite_collision);
 
-    // DMA state defaults
     try std.testing.expect(!vdp.dma_active);
     try std.testing.expect(!vdp.dma_fill);
     try std.testing.expect(!vdp.dma_copy);
     try std.testing.expectEqual(@as(u32, 0), vdp.dma_remaining);
 
-    // Command state defaults
     try std.testing.expect(!vdp.pending_command);
     try std.testing.expectEqual(@as(u8, 0), vdp.code);
     try std.testing.expectEqual(@as(u16, 0), vdp.addr);
 
-    // FIFO defaults
     try std.testing.expectEqual(@as(u8, 0), vdp.fifo_len);
     try std.testing.expectEqual(@as(u8, 0), vdp.pending_fifo_len);
 }
@@ -807,7 +803,7 @@ test "cram dot artifact ors written color with display output at write pixel" {
     vdp.regs[1] = 0x44; // display enable
     vdp.regs[12] = 0x01; // H40
 
-    // Set backdrop (palette 0, entry 0) to pure red: 0x000E → R=7, G=0, B=0
+    // Set backdrop (palette 0, entry 0) to pure red: 0x000E -> R=7, G=0, B=0
     vdp.cram[0] = 0x00;
     vdp.cram[1] = 0x0E;
 

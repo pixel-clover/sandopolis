@@ -1768,7 +1768,7 @@ test "CRAM writes skip the slot after a refresh slot during blanking" {
 
 test "fifo keeps per-line access slot rate through hblank on active display lines" {
     // Genesis Plus GX (and hardware): an active-display line exposes exactly
-    // 16 (H32) / 18 (H40) FIFO access slots across the WHOLE line -- the
+    // 16 (H32) / 18 (H40) FIFO access slots across the WHOLE line: the
     // hblank window does not open extra slots.  Draining at every
     // non-refresh slot during hblank made the FIFO empty ~2x too fast in
     // Titan Overdrive's write-flood scenes, letting our 68K run ahead of

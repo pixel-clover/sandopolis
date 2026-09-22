@@ -23,71 +23,54 @@ const BindingEditorState = binding_editor.State;
 const bindingEditorRowText = binding_editor.rowText;
 const bindingEditorTargetForIndex = binding_editor.targetForIndex;
 
-// Centralized UI color system: Zig orange + C blue inspired palette.
 pub const Colors = struct {
-    // Panel backgrounds
     pub const panel_primary: zsdl3.Color = .{ .r = 0x0D, .g = 0x11, .b = 0x17, .a = 0xE8 };
     pub const panel_secondary: zsdl3.Color = .{ .r = 0x0E, .g = 0x14, .b = 0x19, .a = 0xEE };
-    pub const panel_overlay: zsdl3.Color = .{ .r = 0x0F, .g = 0x13, .b = 0x18, .a = 0xD8 }; // HUD
+    pub const panel_overlay: zsdl3.Color = .{ .r = 0x0F, .g = 0x13, .b = 0x18, .a = 0xD8 };
 
-    // Primary accent: Zig orange (#F7A41D family)
-    pub const orange: zsdl3.Color = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D, .a = 0xFF }; // Zig logo orange
-    pub const gold: zsdl3.Color = .{ .r = 0xF5, .g = 0xC6, .b = 0x42, .a = 0xFF }; // lighter warm accent
+    pub const orange: zsdl3.Color = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D, .a = 0xFF };
+    pub const gold: zsdl3.Color = .{ .r = 0xF5, .g = 0xC6, .b = 0x42, .a = 0xFF };
 
-    // Secondary accent: C blue (#5B8DBE family)
-    pub const blue: zsdl3.Color = .{ .r = 0x5B, .g = 0x8D, .b = 0xBE, .a = 0xFF }; // C logo blue
-    pub const cyan: zsdl3.Color = .{ .r = 0x6E, .g = 0xB8, .b = 0xD4, .a = 0xFF }; // lighter complement
+    pub const blue: zsdl3.Color = .{ .r = 0x5B, .g = 0x8D, .b = 0xBE, .a = 0xFF };
+    pub const cyan: zsdl3.Color = .{ .r = 0x6E, .g = 0xB8, .b = 0xD4, .a = 0xFF };
 
-    // Semantic accents
-    pub const green: zsdl3.Color = .{ .r = 0x7C, .g = 0xDB, .b = 0xB8, .a = 0xFF }; // success/mint
-    pub const red: zsdl3.Color = .{ .r = 0xE8, .g = 0x5D, .b = 0x5D, .a = 0xFF }; // errors
+    pub const green: zsdl3.Color = .{ .r = 0x7C, .g = 0xDB, .b = 0xB8, .a = 0xFF };
+    pub const red: zsdl3.Color = .{ .r = 0xE8, .g = 0x5D, .b = 0x5D, .a = 0xFF };
 
-    // Text hierarchy
     pub const text_primary: zsdl3.Color = .{ .r = 0xE6, .g = 0xED, .b = 0xF3, .a = 0xFF };
     pub const text_secondary: zsdl3.Color = .{ .r = 0x8B, .g = 0x94, .b = 0x9E, .a = 0xFF };
-    pub const text_selected: zsdl3.Color = .{ .r = 0xFF, .g = 0xE0, .b = 0x99, .a = 0xFF }; // warm highlight (orange-tinted)
+    pub const text_selected: zsdl3.Color = .{ .r = 0xFF, .g = 0xE0, .b = 0x99, .a = 0xFF };
     pub const text_muted: zsdl3.Color = .{ .r = 0xC7, .g = 0xD2, .b = 0xE0, .a = 0xFF };
 
-    // Shadow
     pub const shadow: zsdl3.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x99 };
 
-    // Status colors
     pub const success: zsdl3.Color = .{ .r = 0x89, .g = 0xDA, .b = 0xA2, .a = 0xFF };
     pub const failure: zsdl3.Color = .{ .r = 0xFF, .g = 0x9B, .b = 0x8E, .a = 0xFF };
 
-    // Toast tinted backgrounds
     pub const toast_success_fill: zsdl3.Color = .{ .r = 0x0D, .g = 0x18, .b = 0x12, .a = 0xE8 };
     pub const toast_failure_fill: zsdl3.Color = .{ .r = 0x1B, .g = 0x0F, .b = 0x11, .a = 0xEC };
 };
 
-// Spacing system for consistent layout
 pub const Spacing = struct {
-    pub const line_height: f32 = 10.0; // up from 9.0 for better readability
+    pub const line_height: f32 = 10.0;
 
     pub fn shadowOffset(scale: f32) f32 {
-        return 4.0 * scale; // scale-aware (was fixed 6px)
+        return 4.0 * scale;
     }
 
     pub fn borderInset(scale: f32) f32 {
-        return 3.0 * scale; // scale-aware (was fixed 3px)
+        return 3.0 * scale;
     }
 };
 
-// Animation helpers for UI effects
 pub const Animation = struct {
-    // Generate a pulse value (0.0 to 1.0) based on frame counter
-    // Returns a smooth sine-based oscillation for selected item highlighting
     pub fn pulse(frame: u64, period_frames: u32) f32 {
         const phase = @as(f32, @floatFromInt(frame % period_frames)) / @as(f32, @floatFromInt(period_frames));
-        // Use sine for smooth oscillation, map from [-1,1] to [0,1]
         return (std.math.sin(phase * std.math.pi * 2.0) + 1.0) * 0.5;
     }
 
-    // Apply pulse effect to a color's brightness
-    // min_brightness: minimum brightness multiplier (e.g., 0.7)
-    // max_brightness: maximum brightness multiplier (e.g., 1.0)
     pub fn pulseColor(base: zsdl3.Color, frame: u64, min_brightness: f32, max_brightness: f32) zsdl3.Color {
-        const p = pulse(frame, 45); // ~0.75 second period at 60fps
+        const p = pulse(frame, 45);
         const brightness = min_brightness + (max_brightness - min_brightness) * p;
         return .{
             .r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(base.r)) * brightness)),
@@ -97,7 +80,6 @@ pub const Animation = struct {
         };
     }
 
-    // Apply pulse to alpha only (for glow effects)
     pub fn pulseAlpha(base: zsdl3.Color, frame: u64, min_alpha: u8, max_alpha: u8) zsdl3.Color {
         const p = pulse(frame, 45);
         const alpha_range = @as(f32, @floatFromInt(max_alpha - min_alpha));
@@ -110,7 +92,6 @@ pub const Animation = struct {
     }
 };
 
-// Menu line types for overlay rendering
 pub const OverlayLine = union(enum) {
     hotkey: struct {
         action: InputBindings.HotkeyAction,
@@ -122,13 +103,11 @@ pub const OverlayLine = union(enum) {
     active_state_slot,
 };
 
-// Menu section for two-column layouts
 pub const MenuSection = struct {
     header: []const u8,
     items: []const OverlayLine,
 };
 
-// Pause menu sections
 pub const pause_left_sections = [_]MenuSection{
     .{
         .header = "ACTIONS",
@@ -163,7 +142,6 @@ pub const pause_right_sections = [_]MenuSection{
     },
 };
 
-// Help menu sections
 pub const help_left_sections = [_]MenuSection{
     .{
         .header = "EMULATION",
@@ -267,7 +245,6 @@ pub fn glyphRows(ch: u8) [7]u8 {
         '+' => .{ 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 },
         '_' => .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F },
         '?' => .{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 },
-        // Icon glyphs for UI elements
         '>' => .{ 0x00, 0x08, 0x04, 0x02, 0x04, 0x08, 0x00 }, // right arrow (selected menu item)
         '<' => .{ 0x00, 0x02, 0x04, 0x08, 0x04, 0x02, 0x00 }, // left arrow (back navigation)
         '^' => .{ 0x00, 0x04, 0x0E, 0x15, 0x04, 0x04, 0x00 }, // up arrow (scroll up)
@@ -302,7 +279,6 @@ pub fn textWidth(text: []const u8, scale: f32) f32 {
             }
         }
     }
-    // Fallback: estimate based on scale (matches old bitmap width roughly)
     return @as(f32, @floatFromInt(text.len)) * 6.0 * scale;
 }
 
@@ -314,7 +290,6 @@ pub fn drawText(renderer: *zsdl3.Renderer, x: f32, y: f32, scale: f32, color: zs
             return;
         }
     }
-    // Fallback to bitmap rendering if font not initialized
     try drawTextBitmap(renderer, x, y, scale, color, text);
 }
 
@@ -390,7 +365,6 @@ pub fn renderPanel(
     const shadow_offset = Spacing.shadowOffset(scale);
     const border_inset = Spacing.borderInset(scale);
 
-    // Draw shadow
     try zsdl3.setRenderDrawColor(renderer, Colors.shadow);
     try zsdl3.renderFillRect(renderer, .{
         .x = rect.x + shadow_offset,
@@ -399,7 +373,6 @@ pub fn renderPanel(
         .h = rect.h,
     });
 
-    // Draw gradient background (subtle: top slightly lighter, bottom slightly darker)
     const top_color = adjustBrightness(fill, 1.15);
     const bottom_color = adjustBrightness(fill, 0.85);
     const gradient_steps: usize = 8; // Number of bands for gradient
@@ -417,7 +390,6 @@ pub fn renderPanel(
         });
     }
 
-    // Draw double border
     try zsdl3.setRenderDrawColor(renderer, border);
     try zsdl3.renderRect(renderer, rect);
     try zsdl3.renderRect(renderer, .{
@@ -490,7 +462,6 @@ pub fn renderTwoColumnOverlay(
     const section_gap = 6.0 * scale;
     const column_gap = 24.0 * scale;
 
-    // Calculate column widths
     var left_width: f32 = 0;
     var right_width: f32 = 0;
     var line_buffer: [80]u8 = undefined;
@@ -510,7 +481,6 @@ pub fn renderTwoColumnOverlay(
         }
     }
 
-    // Calculate heights
     var left_lines: usize = 0;
     for (left_sections, 0..) |section, i| {
         left_lines += 1 + section.items.len;
@@ -523,12 +493,10 @@ pub fn renderTwoColumnOverlay(
     }
     const max_lines = @max(left_lines, right_lines);
 
-    // Header height (title + subtitle if present)
     const header_height = if (subtitle != null) 22.0 * scale else 14.0 * scale;
     const footer_height: f32 = if (footer != null) 16.0 * scale else 0;
     const content_height = line_height * @as(f32, @floatFromInt(max_lines));
 
-    // Calculate total width - must fit columns, title, subtitle, and footer
     var content_width = left_width + column_gap + right_width;
     content_width = @max(content_width, textWidth(title, scale));
     if (subtitle) |sub| {
@@ -553,7 +521,6 @@ pub fn renderTwoColumnOverlay(
     try setClipRect(renderer, panel);
     defer clearClipRect(renderer) catch {};
 
-    // Draw title centered
     try drawText(
         renderer,
         panel.x + (panel.w - textWidth(title, scale)) * 0.5,
@@ -563,7 +530,6 @@ pub fn renderTwoColumnOverlay(
         title,
     );
 
-    // Draw subtitle if present
     if (subtitle) |sub| {
         try drawText(
             renderer,
@@ -579,47 +545,38 @@ pub fn renderTwoColumnOverlay(
     const left_x = panel.x + padding;
     const right_x = panel.x + padding + left_width + column_gap;
 
-    // Draw left column
     var y = content_y;
     for (left_sections, 0..) |section, section_idx| {
-        // Section header
         try drawText(renderer, left_x, y, scale, Colors.cyan, section.header);
         y += line_height;
 
-        // Section items
         for (section.items) |item| {
             const line = try formatOverlayLine(&line_buffer, bindings, item, persistent_state_slot);
             try drawText(renderer, left_x, y, scale, Colors.text_primary, line);
             y += line_height;
         }
 
-        // Gap between sections
         if (section_idx < left_sections.len - 1) {
             y += section_gap;
         }
     }
 
-    // Draw right column
     y = content_y;
     for (right_sections, 0..) |section, section_idx| {
-        // Section header
         try drawText(renderer, right_x, y, scale, Colors.cyan, section.header);
         y += line_height;
 
-        // Section items
         for (section.items) |item| {
             const line = try formatOverlayLine(&line_buffer, bindings, item, persistent_state_slot);
             try drawText(renderer, right_x, y, scale, Colors.text_primary, line);
             y += line_height;
         }
 
-        // Gap between sections
         if (section_idx < right_sections.len - 1) {
             y += section_gap;
         }
     }
 
-    // Draw footer if present
     if (footer) |foot| {
         try drawText(
             renderer,
@@ -990,7 +947,6 @@ pub fn renderKeyboardEditorOverlay(
         const line = try bindingEditorRowText(line_buffer[0..], bindings, target);
 
         if (target.isHeader()) {
-            // Section headers: accent color, no selection highlight
             try drawText(renderer, panel.x + padding, y, scale, Colors.cyan, line);
         } else {
             const base_color: zsdl3.Color = if (selected) Colors.text_selected else Colors.text_primary;
@@ -1031,7 +987,6 @@ pub fn renderStatusBar(
     const viewport_width = @as(f32, @floatFromInt(viewport.w));
     const viewport_height = @as(f32, @floatFromInt(viewport.h));
 
-    // Semi-transparent background bar at bottom
     const bar_rect = zsdl3.FRect{
         .x = 0,
         .y = viewport_height - bar_height,
@@ -1039,13 +994,11 @@ pub fn renderStatusBar(
         .h = bar_height,
     };
 
-    // Dark background with low opacity
     try zsdl3.setRenderDrawColor(renderer, .{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0x60 });
     try zsdl3.renderFillRect(renderer, bar_rect);
     try setClipRect(renderer, bar_rect);
     defer clearClipRect(renderer) catch {};
 
-    // ROM name on the left
     try drawText(
         renderer,
         padding,
@@ -1055,7 +1008,6 @@ pub fn renderStatusBar(
         rom_name,
     );
 
-    // Slot and region info on the right
     var info_buffer: [32]u8 = undefined;
     const region_label = if (is_pal) "PAL" else "NTSC";
     const info_text = std.fmt.bufPrint(&info_buffer, "SAVE SLOT {d} | {s}", .{ slot, region_label }) catch "SLOT ?";

@@ -35,8 +35,6 @@ pub const WordRam = struct {
     dmna: bool = false,
     priority: PriorityMode = .off,
 
-    // -- Ownership / handshake ---------------------------------------------
-
     pub fn mainOwns2M(self: *const WordRam) bool {
         return self.ret and !self.dmna;
     }
@@ -92,8 +90,6 @@ pub const WordRam = struct {
         return @intFromBool(!self.ret);
     }
 
-    // -- 2M linear view ------------------------------------------------------
-
     fn linearIndex(offset: u32) struct { bank: u1, index: usize } {
         const word = offset >> 1;
         return .{
@@ -123,8 +119,6 @@ pub const WordRam = struct {
         self.write8Linear(o + 1, @truncate(value));
     }
 
-    // -- 1M bank view --------------------------------------------------------
-
     pub fn read8Bank(self: *const WordRam, bank: u1, offset: u32) u8 {
         return self.banks[bank][offset & (bank_bytes - 1)];
     }
@@ -143,8 +137,6 @@ pub const WordRam = struct {
         self.banks[bank][o] = @truncate(value >> 8);
         self.banks[bank][o + 1] = @truncate(value);
     }
-
-    // -- 1M dot image (sub CPU, 0x080000-0x0BFFFF) -------------------------
 
     /// One pixel per byte address: even addresses map to the high nibble.
     pub fn readDot(self: *const WordRam, bank: u1, dot_offset: u32) u8 {
@@ -168,8 +160,6 @@ pub const WordRam = struct {
         else
             (prev & 0x0F) | (new_pixel << 4);
     }
-
-    // -- 1M cell image (main CPU, 0x220000-0x23FFFF) -------------------------
 
     /// Translate a cell-image byte offset (0..0x1FFFF, relative to 0x220000)
     /// to a bank byte offset. The bitmap in Word RAM is row-major with 256

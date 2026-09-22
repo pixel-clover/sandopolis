@@ -419,7 +419,7 @@ test "z80 timing keeps only the final pending wait after consecutive 68k bus acc
     try testing.expectEqual(@as(u32, 45), state.z80_stall_master_debt);
     try testing.expectEqual(@as(u32, 45), state.z80_wait_master_cycles);
     try testing.expectEqual(@as(u32, 45), audio_timing.pending_master_cycles);
-    // Two accesses at z80_phase=0: ((0 + 72) / 7) * 7 = 70 each → 140 total
+    // Two accesses at z80_phase=0: ((0 + 72) / 7) * 7 = 70 each -> 140 total
     try testing.expectEqual(@as(u32, 140), state.m68k_wait_master_cycles);
 }
 

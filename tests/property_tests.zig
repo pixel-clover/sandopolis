@@ -939,28 +939,23 @@ fn saveStateRamRoundTripProperty(input: SaveStateRamCase) !void {
     const state_path = try tempFilePath(testing.allocator, &tmp, "property.state");
     defer testing.allocator.free(state_path);
 
-    // Create a minimal ROM with valid SEGA header
     const rom = try makeRomWithSramHeader(testing.allocator, 0x1000, 0xF8, 0x200001, 0x203FFF);
     defer testing.allocator.free(rom);
 
     var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer emulator.deinit(testing.allocator);
 
-    // Set various machine state based on random input
     emulator.writeRam(input.ram_offset, input.ram_value);
     emulator.setVdpRegister(input.vdp_reg_index, input.vdp_reg_value);
     emulator.setCpuPc(input.cpu_pc);
     emulator.setCpuSr(input.cpu_sr);
     emulator.setM68kSyncCycles(input.m68k_sync_cycles);
 
-    // Save the state
     try emulator.saveToFile(state_path);
 
-    // Load the state into a new emulator
     var restored = try Emulator.loadFromFile(testing.allocator, state_path);
     defer restored.deinit(testing.allocator);
 
-    // Verify all state matches
     try testing.expectEqual(input.ram_value, restored.readRam(input.ram_offset));
     try testing.expectEqual(input.vdp_reg_value, restored.vdpRegister(input.vdp_reg_index));
     try testing.expectEqual(@as(u32, input.cpu_pc), restored.cpuPc());
@@ -975,36 +970,29 @@ fn saveStateZ80RoundTripProperty(input: SaveStateZ80Case) !void {
     const state_path = try tempFilePath(testing.allocator, &tmp, "z80_property.state");
     defer testing.allocator.free(state_path);
 
-    // Create a minimal ROM with valid SEGA header
     const rom = try makeRomWithSramHeader(testing.allocator, 0x1000, 0xF8, 0x200001, 0x203FFF);
     defer testing.allocator.free(rom);
 
     var emulator = try Emulator.initFromRomBytes(testing.allocator, rom);
     defer emulator.deinit(testing.allocator);
 
-    // Request Z80 bus and release reset to allow writes
     emulator.setZ80BusRequest(0x0100);
     emulator.setZ80ResetControl(0x0100);
 
-    // Set Z80 state
     emulator.z80WriteByte(input.z80_ram_offset, input.z80_ram_value);
 
-    // Write to YM2612 registers
     emulator.write8(0x00A0_4000, input.ym_reg);
     emulator.write8(0x00A0_4001, input.ym_value);
 
-    // Save state
     try emulator.saveToFile(state_path);
 
-    // Load into new emulator
     var restored = try Emulator.loadFromFile(testing.allocator, state_path);
     defer restored.deinit(testing.allocator);
 
-    // Verify Z80 RAM
     const restored_value = restored.read8(0x00A0_0000 + @as(u32, input.z80_ram_offset));
     try testing.expectEqual(input.z80_ram_value, restored_value);
 
-    // Verify YM2612 register (if it's not a keyon register which has side effects)
+    // Keyon register 0x28 has side effects on write.
     if (input.ym_reg != 0x28) {
         try testing.expectEqual(input.ym_value, restored.ymRegister(0, input.ym_reg));
     }
@@ -1027,7 +1015,6 @@ test "property: save-state round-trip preserves Z80 and YM2612 state" {
 fn computeFramebufferHash(framebuffer: []const u32) u64 {
     var hash: u64 = 0;
     for (framebuffer, 0..) |pixel, i| {
-        // Simple hash combining position and value
         hash ^= @as(u64, pixel) ^ (@as(u64, @intCast(i)) << 32);
         hash = hash *% 0x517cc1b727220a95;
     }
@@ -1035,7 +1022,6 @@ fn computeFramebufferHash(framebuffer: []const u32) u64 {
 }
 
 fn vdpRenderDeterminismProperty(input: VdpRenderDeterminismCase) !void {
-    // Create a minimal ROM with valid SEGA header
     const rom = try makeRomWithSramHeader(testing.allocator, 0x1000, 0xF8, 0x200001, 0x203FFF);
     defer testing.allocator.free(rom);
 
@@ -1056,28 +1042,22 @@ fn vdpRenderDeterminismProperty(input: VdpRenderDeterminismCase) !void {
     // Register 13 = horizontal scroll data table address (bits 5-0 = SA13-SA8)
     emulator.setVdpRegister(13, 0);
 
-    // Run one full frame
     emulator.runFramesDiscardingAudio(1);
 
-    // Capture first framebuffer state
     const fb1 = emulator.framebuffer();
     const hash1 = computeFramebufferHash(fb1);
 
-    // Save state
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const state_path = try tempFilePath(testing.allocator, &tmp, "render.state");
     defer testing.allocator.free(state_path);
     try emulator.saveToFile(state_path);
 
-    // Run another frame (advancing state)
     emulator.runFramesDiscardingAudio(1);
 
-    // Restore state
     var restored = try Emulator.loadFromFile(testing.allocator, state_path);
     defer restored.deinit(testing.allocator);
 
-    // The restored framebuffer should match the saved state
     const fb2 = restored.framebuffer();
     const hash2 = computeFramebufferHash(fb2);
 
@@ -1121,13 +1101,11 @@ fn mouseProtocolProperty(input: MouseProtocolCase) !void {
     io.setControllerType(0, .sega_mouse);
     io.write(0x09, 0x40); // CTRL: TH output
 
-    // Set button state.
     if ((input.buttons & 0x01) != 0) io.setMouseButton(0, MB.left, true);
     if ((input.buttons & 0x02) != 0) io.setMouseButton(0, MB.right, true);
     if ((input.buttons & 0x04) != 0) io.setMouseButton(0, MB.middle, true);
     if ((input.buttons & 0x08) != 0) io.setMouseButton(0, MB.start, true);
 
-    // Set movement delta.
     io.setMouseDelta(0, @as(i16, input.dx), @as(i16, input.dy));
 
     // Expected values.  Use i16 arithmetic to avoid i8 overflow at -128.
@@ -1149,7 +1127,6 @@ fn mouseProtocolProperty(input: MouseProtocolCase) !void {
         abs_dy & 0x0F, // phase 7: Y low
     };
 
-    // Run through the 8-nibble protocol.
     for (expected_nibbles, 0..) |expected, phase| {
         if (phase % 2 == 0) {
             io.write(0x03, 0x40); // TH high
@@ -1237,18 +1214,13 @@ test "property: psg/fm gain balance maintains calibrated ratio across inputs" {
     });
 }
 
-// --- TMS palette property ---
-
 test "property: all TMS palette entries have full alpha except transparent" {
     const SmsMachine = @import("sandopolis_src").testing.SmsMachine;
-    // Access the VDP type through a dummy machine's bus.vdp field type
     const tms_palette = @TypeOf(@as(SmsMachine, undefined).bus.vdp).tms_palette;
     for (tms_palette, 0..) |color, i| {
         if (i == 0) {
-            // Transparent: alpha = 0
             try testing.expectEqual(@as(u32, 0x00000000), color & 0xFF000000);
         } else {
-            // Non-transparent: alpha = 0xFF
             try testing.expectEqual(@as(u32, 0xFF000000), color & 0xFF000000);
         }
     }

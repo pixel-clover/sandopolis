@@ -6,7 +6,6 @@ const platform = @import("platform.zig");
 pub fn displayName(name: []const u8, buf: []u8, max_len: usize) []const u8 {
     if (name.len <= max_len) return name;
     if (max_len < 5) {
-        // Too small for ellipsis; just truncate
         const n = @min(name.len, buf.len);
         @memcpy(buf[0..n], name[0..n]);
         return buf[0..@min(n, max_len)];
@@ -119,7 +118,6 @@ test "displayName truncates long names with ellipsis" {
     const long = "Adventures of Batman & Robin, The (USA).gg";
     const short = displayName(long, &buf, 20);
     try std.testing.expectEqual(@as(usize, 20), short.len);
-    // Should start with prefix and end with suffix
     try std.testing.expect(std.mem.startsWith(u8, short, "Adventu"));
     try std.testing.expect(std.mem.endsWith(u8, short, "USA).gg"));
     try std.testing.expect(std.mem.indexOf(u8, short, "...") != null);

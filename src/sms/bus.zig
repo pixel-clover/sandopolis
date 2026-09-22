@@ -195,8 +195,6 @@ pub const SmsBus = struct {
         return page % @as(u8, @intCast(total_pages));
     }
 
-    // -- Z80 bridge host callbacks (C-compatible) --
-
     pub fn hostRead(ctx: ?*anyopaque, addr: u32) callconv(.c) u8 {
         const self: *SmsBus = @ptrCast(@alignCast(ctx orelse return 0xFF));
         return self.read(@truncate(addr));
@@ -226,8 +224,6 @@ pub const SmsBus = struct {
         // No-op: SMS has no M68K
     }
 };
-
-// -- Tests --
 
 test "sms bus cartridge ram bank 1 access" {
     var rom_buf = [_]u8{0} ** 1024;

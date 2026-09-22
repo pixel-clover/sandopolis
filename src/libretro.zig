@@ -7,7 +7,6 @@ const SystemMachine = @import("system_machine.zig").SystemMachine;
 const system_detect = @import("system.zig");
 const platform = @import("platform.zig");
 
-// Libretro API constants.
 const RETRO_API_VERSION: c_uint = 1;
 const RETRO_REGION_NTSC: c_uint = 0;
 const RETRO_REGION_PAL: c_uint = 1;
@@ -16,7 +15,6 @@ const RETRO_MEMORY_SYSTEM_RAM: c_uint = 2;
 
 const RETRO_DEVICE_JOYPAD: c_uint = 1;
 
-// Joypad button IDs (standard SNES-style mapping).
 const RETRO_DEVICE_ID_JOYPAD_B: c_uint = 0;
 const RETRO_DEVICE_ID_JOYPAD_Y: c_uint = 1;
 const RETRO_DEVICE_ID_JOYPAD_SELECT: c_uint = 2;
@@ -30,7 +28,6 @@ const RETRO_DEVICE_ID_JOYPAD_X: c_uint = 9;
 const RETRO_DEVICE_ID_JOYPAD_L: c_uint = 10;
 const RETRO_DEVICE_ID_JOYPAD_R: c_uint = 11;
 
-// Libretro callback types.
 const RetroEnvironmentFn = *const fn (c_uint, ?*anyopaque) callconv(.c) bool;
 const RetroVideoRefreshFn = *const fn (?*const anyopaque, c_uint, c_uint, usize) callconv(.c) void;
 const RetroAudioSampleFn = *const fn (i16, i16) callconv(.c) void;
@@ -38,7 +35,6 @@ const RetroAudioSampleBatchFn = *const fn ([*]const i16, usize) callconv(.c) usi
 const RetroInputPollFn = *const fn () callconv(.c) void;
 const RetroInputStateFn = *const fn (c_uint, c_uint, c_uint, c_uint) callconv(.c) i16;
 
-// Libretro structs.
 const RetroSystemInfo = extern struct {
     library_name: [*:0]const u8,
     library_version: [*:0]const u8,
@@ -72,7 +68,6 @@ const RetroGameInfo = extern struct {
     meta: ?[*:0]const u8,
 };
 
-// Core state.
 var environment_cb: ?RetroEnvironmentFn = null;
 var video_cb: ?RetroVideoRefreshFn = null;
 var audio_sample_cb: ?RetroAudioSampleFn = null;
@@ -121,8 +116,6 @@ const CoreState = struct {
 };
 
 var core: ?*CoreState = null;
-
-// --- Required Libretro API exports ---
 
 export fn retro_set_environment(cb: RetroEnvironmentFn) callconv(.c) void {
     environment_cb = cb;
@@ -228,10 +221,8 @@ export fn retro_run() callconv(.c) void {
         }
     }
 
-    // Run one frame.
     c_state.machine.runFrame();
 
-    // Video output.
     if (video_cb) |vcb| {
         const fb = c_state.machine.framebuffer();
         const w = c_state.machine.framebufferWidth();

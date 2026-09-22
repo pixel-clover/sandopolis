@@ -301,10 +301,6 @@ pub const ScdBoard = struct {
         return board;
     }
 
-    // -----------------------------------------------------------------------
-    // Backup RAM persistence
-    // -----------------------------------------------------------------------
-
     /// Attach a file for persistent RAM. Legacy 8KB internal-only images are
     /// accepted; current images also contain the 512KB cartridge.
     pub fn setBackupRamPath(self: *ScdBoard, path: []const u8) !void {
@@ -342,13 +338,10 @@ pub const ScdBoard = struct {
         self.backup_cart_dirty = false;
     }
 
-    // -----------------------------------------------------------------------
-    // Save-state serialization (in place; large arrays stream without copies
-    // because the main thread's stack is only 8MB)
-    // -----------------------------------------------------------------------
-
     pub const state_version: u16 = 2;
 
+    // Save-state serialization streams large arrays directly without copies to
+    // keep stack usage bounded within the main thread limit.
     pub fn writeState(self: *const ScdBoard, writer: anytype, comptime writeValue: anytype) !void {
         try writeValue(writer, self.sub_cpu.captureState());
         try writeValue(writer, self.gate);
@@ -458,10 +451,6 @@ pub const ScdBoard = struct {
         return address >= 0x200000 and address < 0x240000;
     }
 
-    // -----------------------------------------------------------------------
-    // ExpansionDevice: scheduling
-    // -----------------------------------------------------------------------
-
     pub fn stepMaster(self: *ScdBoard, master_cycles: u32) void {
         _ = self.sync.addMaster(master_cycles);
     }
@@ -533,10 +522,6 @@ pub const ScdBoard = struct {
     fn releaseSubReset(self: *ScdBoard) void {
         self.sub_cpu.reset(&self.sub_mem);
     }
-
-    // -----------------------------------------------------------------------
-    // ExpansionDevice: main-CPU address claims
-    // -----------------------------------------------------------------------
 
     const MainRegion = union(enum) {
         hint_vector: u2, // byte within the 4-byte vector
@@ -764,18 +749,10 @@ pub const ScdBoard = struct {
         return true;
     }
 
-    // -----------------------------------------------------------------------
-    // Introspection for tests and debuggers
-    // -----------------------------------------------------------------------
-
     pub fn subProgramCounter(self: *const ScdBoard) u32 {
         return self.sub_cpu.core.pc;
     }
 };
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

@@ -318,10 +318,6 @@ fn parseTime(word: []const u8) ParseError!u32 {
     return (msf.Msf{ .m = m, .s = s, .f = f }).toSectors();
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 const testing = std.testing;
 
 const SizeTable = struct {

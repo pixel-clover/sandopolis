@@ -24,42 +24,33 @@ pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 
     var list = std.ArrayListUnmanaged(u8).empty;
     errdefer list.deinit(allocator);
 
-    // Header
     try list.appendSlice(allocator, &magic);
     try list.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, version)));
     try list.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @as(u32, @intCast(m.bus.rom.len)))));
 
-    // Variant flags
     try list.append(allocator, @intFromBool(m.is_game_gear));
     try list.append(allocator, @intFromBool(m.is_sg1000));
 
-    // Z80 state
     const z80_state = m.z80.captureState();
     try list.appendSlice(allocator, std.mem.asBytes(&z80_state));
 
-    // VDP state
     try list.appendSlice(allocator, std.mem.asBytes(&m.bus.vdp));
 
-    // Bus RAM, mapper, cartridge RAM
     try list.appendSlice(allocator, &m.bus.ram);
     try list.appendSlice(allocator, &m.bus.page);
     try list.append(allocator, @intFromBool(m.bus.ram_bank_enabled));
     try list.append(allocator, @as(u8, m.bus.ram_bank));
     try list.appendSlice(allocator, &m.bus.cartridge_ram);
 
-    // Machine state
     try list.append(allocator, @intFromBool(m.pal_mode));
     try list.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, m.z80_cycle_count)));
 
-    // I/O port state
     try list.append(allocator, m.bus.io.memory_control);
     try list.append(allocator, m.bus.io.io_control);
     try list.appendSlice(allocator, &m.bus.io.gg_regs);
 
-    // PSG state
     try appendPsg(allocator, &list, &m.audio.psg);
 
-    // ROM data
     try list.appendSlice(allocator, m.bus.rom);
 
     return list.toOwnedSlice(allocator);
@@ -69,48 +60,38 @@ pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 
 pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachine {
     var pos: usize = 0;
 
-    // Verify header
     const magic_bytes = try readSlice(data, &pos, 8);
     if (!std.mem.eql(u8, magic_bytes, &magic)) return error.InvalidSaveState;
     const ver = std.mem.readInt(u16, (try readSlice(data, &pos, 2))[0..2], .little);
     if (ver != version) return error.UnsupportedSaveStateVersion;
     const rom_len = std.mem.readInt(u32, (try readSlice(data, &pos, 4))[0..4], .little);
 
-    // Variant flags
     const is_gg = (try readSlice(data, &pos, 1))[0] != 0;
     const is_sg = (try readSlice(data, &pos, 1))[0] != 0;
 
-    // Z80 state
     const z80_bytes = try readSlice(data, &pos, @sizeOf(Z80.State));
     var z80_state: Z80.State = undefined;
     @memcpy(std.mem.asBytes(&z80_state), z80_bytes);
 
-    // VDP state
     const vdp_bytes = try readSlice(data, &pos, @sizeOf(SmsVdp));
 
-    // Bus state
     const ram = try readSlice(data, &pos, 8 * 1024);
     const page_regs = try readSlice(data, &pos, 3);
     const ram_bank_enabled = (try readSlice(data, &pos, 1))[0] != 0;
     const ram_bank: u1 = @truncate((try readSlice(data, &pos, 1))[0]);
     const cartridge_ram = try readSlice(data, &pos, 2 * 16 * 1024);
 
-    // Machine state
     const pal_mode = (try readSlice(data, &pos, 1))[0] != 0;
     const z80_cycle_count = std.mem.readInt(u32, (try readSlice(data, &pos, 4))[0..4], .little);
 
-    // I/O port state
     const memory_control = (try readSlice(data, &pos, 1))[0];
     const io_control = (try readSlice(data, &pos, 1))[0];
     const gg_regs = try readSlice(data, &pos, 7);
 
-    // PSG state
     const psg = try readPsg(data, &pos);
 
-    // ROM
     const rom_data = try readSlice(data, &pos, rom_len);
 
-    // Build new machine
     var machine = try SmsMachine.initFromRomBytes(allocator, rom_data);
     errdefer machine.deinit(allocator);
 

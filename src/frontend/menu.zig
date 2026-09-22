@@ -8,7 +8,6 @@ pub const VideoAspectMode = config.VideoAspectMode;
 pub const VideoScaleMode = config.VideoScaleMode;
 pub const FontFace = config.FontFace;
 
-// All possible UI overlay states. Only one overlay is active at a time.
 pub const Overlay = enum {
     none,
     home,
@@ -47,7 +46,6 @@ pub const Overlay = enum {
     }
 };
 
-// Frontend UI visibility state
 pub const FrontendUi = struct {
     overlay: Overlay = .none,
     /// Tracks the overlay that was active before opening a child overlay
@@ -118,14 +116,12 @@ pub const FrontendUi = struct {
     }
 };
 
-// Animation state for slide-in effects (separate from FrontendUi to avoid complexity)
 pub const SlideAnimation = struct {
     panel_open_frame: u64 = 0,
     was_panel_visible: bool = false,
 
     const animation_frames: u64 = 12; // ~200ms at 60fps
 
-    // Update animation state based on current panel visibility
     pub fn update(self: *SlideAnimation, panel_visible: bool, current_frame: u64) void {
         if (panel_visible and !self.was_panel_visible) {
             self.panel_open_frame = current_frame;
@@ -133,7 +129,6 @@ pub const SlideAnimation = struct {
         self.was_panel_visible = panel_visible;
     }
 
-    // Calculate slide-in animation progress (0.0 = start, 1.0 = complete)
     pub fn progress(self: *const SlideAnimation, current_frame: u64) f32 {
         if (self.panel_open_frame == 0) return 1.0;
         const elapsed = current_frame -| self.panel_open_frame;
@@ -144,14 +139,12 @@ pub const SlideAnimation = struct {
         return 1.0 - (inv * inv * inv);
     }
 
-    // Calculate Y offset for slide-down animation (returns pixels to offset from top)
     pub fn slideOffset(self: *const SlideAnimation, current_frame: u64, panel_height: f32) f32 {
         const p = self.progress(current_frame);
         return -panel_height * (1.0 - p);
     }
 };
 
-// Home menu action types
 pub const HomeMenuAction = union(enum) {
     open_rom,
     recent_rom: usize,
@@ -160,7 +153,6 @@ pub const HomeMenuAction = union(enum) {
     quit,
 };
 
-// Home menu state
 pub const HomeMenuState = struct {
     selected_index: usize = 0,
 
@@ -203,7 +195,6 @@ pub const HomeMenuState = struct {
     }
 };
 
-// Settings menu action types
 pub const SettingsMenuAction = enum {
     video_aspect_mode,
     video_scale_mode,
@@ -230,7 +221,6 @@ pub const settings_menu_actions = [_]SettingsMenuAction{
     .close,
 };
 
-// Settings menu state
 pub const SettingsMenuState = struct {
     selected_index: usize = 0,
 
@@ -256,7 +246,6 @@ pub const SettingsMenuState = struct {
     }
 };
 
-// Home screen command result
 pub const HomeScreenCommand = union(enum) {
     none,
     open_dialog,
@@ -264,7 +253,6 @@ pub const HomeScreenCommand = union(enum) {
     quit,
 };
 
-// Frontend gamepad command result
 pub const FrontendGamepadCommand = union(enum) {
     ignored,
     consumed,
@@ -273,14 +261,12 @@ pub const FrontendGamepadCommand = union(enum) {
     quit,
 };
 
-// Frontend event handling disposition
 pub const EventDisposition = enum {
     unhandled,
     handled,
     quit,
 };
 
-// Format a home menu item for display
 pub fn formatHomeMenuItem(
     buffer: []u8,
     cfg: *const FrontendConfig,
@@ -302,7 +288,6 @@ pub fn formatHomeMenuItem(
     };
 }
 
-// Get the action for a home menu index
 pub fn homeMenuActionForIndex(selected_index: usize, cfg: *const FrontendConfig) HomeMenuAction {
     if (selected_index == 0) return .open_rom;
     const recent_end = 1 + cfg.recent_rom_count;
@@ -343,7 +328,6 @@ pub fn prevControllerType(ct: ControllerType) ControllerType {
     };
 }
 
-// Format a settings menu action line for display
 pub fn formatSettingsActionLine(
     buffer: []u8,
     action: SettingsMenuAction,
@@ -372,7 +356,6 @@ pub fn formatSettingsActionLine(
     };
 }
 
-// Return a short description for the currently highlighted settings action
 pub fn settingsActionHint(action: SettingsMenuAction) []const u8 {
     return switch (action) {
         .video_aspect_mode => "Display aspect ratio: Stretch, 4:3 TV, or square pixels",
@@ -388,7 +371,6 @@ pub fn settingsActionHint(action: SettingsMenuAction) []const u8 {
     };
 }
 
-// Convert a home screen command to a frontend gamepad command
 pub fn gamepadCommandFromHome(command: HomeScreenCommand) FrontendGamepadCommand {
     return switch (command) {
         .none => .consumed,
@@ -398,7 +380,6 @@ pub fn gamepadCommandFromHome(command: HomeScreenCommand) FrontendGamepadCommand
     };
 }
 
-// Activate the currently selected home menu item and return the resulting command
 pub fn activateHomeMenuSelection(
     ui: *FrontendUi,
     home_menu: *const HomeMenuState,
@@ -419,8 +400,6 @@ pub fn activateHomeMenuSelection(
         .quit => .quit,
     };
 }
-
-// --- Unit tests ---
 
 test "overlay default is none" {
     const ui = FrontendUi{};
@@ -478,7 +457,6 @@ test "resumeGame returns to none" {
 test "closeSaveManager returns to parent overlay" {
     var ui = FrontendUi{};
     ui.overlay = .pause;
-    // Simulate opening save manager from pause
     ui.parent_overlay = ui.overlay;
     ui.overlay = .save_manager;
     ui.delete_confirm_pending = true;

@@ -369,8 +369,6 @@ test "public API detects checksum mismatch for corrupted ROMs" {
     try testing.expect(metadata.computed_checksum != 0xDEAD);
 }
 
-// --- SG-1000 integration ---
-
 const SmsMachine = sandopolis.testing.SmsMachine;
 
 test "sg1000 machine init from rom bytes and run frame produces framebuffer output" {
@@ -450,9 +448,7 @@ test "emulator facade exposes framebuffer and timing after init" {
     try testing.expect(width == 320 or width == 256);
 }
 
-// ---------------------------------------------------------------------------
 // Sega CD: main/sub CPU communication through the gate array
-// ---------------------------------------------------------------------------
 
 fn be16(buf: []u8, offset: usize, value: u16) void {
     std.mem.writeInt(u16, buf[offset..][0..2], value, .big);
@@ -473,7 +469,7 @@ fn makeSegaCdMiniBios(allocator: std.mem.Allocator) ![]u8 {
     be32(bios, 0x0, 0x00FFFE00); // SSP
     be32(bios, 0x4, 0x00000200); // PC
 
-    // -- Main program at 0x200 --
+    // Main program at 0x200
     var p: usize = 0x200;
     // move.b #0,$A12001        ; hold sub in reset
     be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0000); be32(bios, p + 4, 0x00A12001); p += 8;
@@ -503,7 +499,7 @@ fn makeSegaCdMiniBios(allocator: std.mem.Allocator) ![]u8 {
     // bra.s *
     be16(bios, p, 0x60FE);
 
-    // -- Sub program image at 0x1000 (copied to PRG-RAM 0) --
+    // Sub program image at 0x1000 (copied to PRG-RAM 0)
     const s: usize = 0x1000;
     be32(bios, s + 0x0, 0x00080000); // SSP: top of PRG-RAM
     be32(bios, s + 0x4, 0x00000200); // PC

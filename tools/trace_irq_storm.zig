@@ -12,7 +12,7 @@ const testing = @import("sandopolis_testing");
 // --derail mode locates the exact frame + instruction where a ROM derails:
 // it runs frame by frame with instruction tracing and reports the first jump
 // from real code into the live 68000 vector table (ppc >= 0x100, pc_after <
-// 0x100 -- 0x000..0x0FF is never valid code; note demos legitimately place
+// 0x100; 0x000..0x0FF is never valid code; note demos legitimately place
 // routines in the unused-vector/header region 0x100..0x3FF), with a trace
 // tail and a histogram of exceptions seen before the derail.
 //

@@ -444,7 +444,7 @@ const Opn2Core = struct {
                     0x27 => {
                         // Only latch the control bits here; load-edge
                         // detection and reset/flag-clear belong to
-                        // doTimerA/doTimerB (Nuked semantics) — doing them
+                        // doTimerA/doTimerB (Nuked semantics); doing them
                         // at write time reloaded/cleared a sample early and
                         // could double-fire within one 24-cycle window.
                         self.mode_ch3 = (write.value & 0xC0) >> 6;
@@ -964,7 +964,7 @@ const Opn2Core = struct {
 
         if (kon_event) {
             // Key-on always enters attack state, matching the Nuked OPN2
-            // reference (ym3438.c:638).  The attack→decay transition
+            // reference (ym3438.c:638).  The attack-to-decay transition
             // happens naturally when level reaches 0 on the next clock.
             next_state = .attack;
             if (self.eg_ratemax) {
@@ -1005,7 +1005,7 @@ const Opn2Core = struct {
         }
 
         // Envelope off (matches Nuked): key-off has no special SSG-EG
-        // clause — the inverted level is handled by the ssg_level mapping
+        // clause: the inverted level is handled by the ssg_level mapping
         // above, and forcing MAX here would cut SSG-EG release tails short.
         if (!kon_event and self.eg_ssg_hold_up_latch[slot] == 0 and current_state != .attack and eg_off) {
             next_state = .release;
@@ -1473,7 +1473,7 @@ test "ym key on always enters attack state even when level is zero" {
 
     try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
     // Key-on always enters attack, matching Nuked OPN2 (ym3438.c:638).
-    // The attack→decay transition happens on the next clock when level==0.
+    // The attack-to-decay transition happens on the next clock when level==0.
     try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.attack)), core.eg_state[slot]);
 }
 

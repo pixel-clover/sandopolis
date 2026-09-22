@@ -18,7 +18,7 @@ fn readStatus(vdp: *Vdp, open_bus: *u16, runtime: *const cpu_runtime.RuntimeStat
     // status read taken mid-instruction must be sampled at the instruction's
     // actual read cycle.  Use the live intra-instruction elapsed master cycles
     // from the CPU core (GPGX `m68k_cycles()` / jgenesis per-opcode offset),
-    // not an opcode heuristic -- the latter cannot track the core's timing and
+    // not an opcode heuristic; the latter cannot track the core's timing and
     // desyncs cycle-exact raster demos (e.g. TiTAN Overdrive).
     // On real hardware, undefined VDP status bits (15:10) return the
     // instruction prefetch word, not the last value on the data bus.

@@ -679,7 +679,7 @@ test "cpu memory z80 control registers support byte reads and writes on even add
     fixture.initRuntime();
     var view = fixture.view();
 
-    // With prefetch=0: BUSREQ not granted → bit 8 set → high byte 0x01
+    // With prefetch=0: BUSREQ not granted -> bit 8 set -> high byte 0x01
     try testing.expectEqual(@as(u8, 0x01), view.read8(0x00A1_1100));
     try testing.expectEqual(@as(u8, 0x00), view.read8(0x00A1_1101));
     // Reset page returns prefetch bytes
@@ -750,7 +750,7 @@ test "cpu memory z80 control register pages mirror across a111xx and a112xx" {
 
     // BUSREQ write at mirrored even address 0xA111FE asserts bus request
     view.write8(0x00A1_11FE, 0x01);
-    // Bus granted: bit 8 cleared, other bits from prefetch=0 → 0x0000
+    // Bus granted: bit 8 cleared, other bits from prefetch=0 -> 0x0000
     try testing.expectEqual(@as(u16, 0x0000), view.read16(0x00A1_1100));
 
     // Release at mirrored odd address (ignored since odd)

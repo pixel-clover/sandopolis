@@ -14,17 +14,14 @@ pub const app_name = "sandopolis";
 ///      - Windows: %APPDATA%/sandopolis/sandopolis.cfg
 ///   3. Current working directory: ./sandopolis.cfg
 pub fn resolveConfigPath(allocator: std.mem.Allocator) ![]u8 {
-    // 1. Explicit environment variable
     if (getEnvOwned(allocator, "SANDOPOLIS_CONFIG")) |path| return path;
 
-    // 2. Platform-specific app data directory
     if (platformConfigDir(allocator)) |dir| {
         defer allocator.free(dir);
         platform.cwd().makePath(dir) catch {};
         return std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ dir, std.fs.path.sep, config_file_name });
     }
 
-    // 3. Fallback: current working directory
     return allocator.dupe(u8, config_file_name);
 }
 

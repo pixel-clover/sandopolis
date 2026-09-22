@@ -129,8 +129,6 @@ pub const Disc = struct {
         return sources;
     }
 
-    // -- Constructors -------------------------------------------------------
-
     /// In-memory disc. `cue_text` null means a single MODE1/2048 image in
     /// `files[0]`. Otherwise `files[i]` backs the i-th FILE entry of the
     /// sheet, in order, and file names in the sheet are not consulted.
@@ -192,8 +190,6 @@ pub const Disc = struct {
         return .{ .allocator = allocator, .layout = layout, .sources = sources, .source_path = source_path };
     }
 
-    // -- Queries ------------------------------------------------------------
-
     pub fn leadOutLba(self: *const Disc) u32 {
         return self.layout.lead_out_lba;
     }
@@ -217,8 +213,6 @@ pub const Disc = struct {
     pub fn trackCount(self: *const Disc) usize {
         return self.layout.tracks.len;
     }
-
-    // -- Sector access ------------------------------------------------------
 
     /// Read one 2352-byte raw sector. Data tracks stored as 2048-byte user
     /// data get a synthesized sync/header (mode 1) with zeroed EDC/ECC.
@@ -337,10 +331,6 @@ const DirSizes = struct {
         return file.getEndPos() catch null;
     }
 };
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

@@ -206,8 +206,6 @@ fn readU32(data: []const u8, offset: usize) u32 {
         (@as(u32, data[offset + 3]) << 24);
 }
 
-// -- Tests --
-
 test "isZip detects PK header" {
     const zip_magic = [_]u8{ 'P', 'K', 3, 4, 0, 0 };
     try testing.expect(isZip(&zip_magic));
@@ -282,9 +280,7 @@ test "extract stored zip entry" {
 test "readRomFile extracts ROM from deflated zip" {
     const rom = readRomFile(testing.allocator, "roms/Aerial Assault (World).zip", 8 * 1024 * 1024) catch return;
     defer testing.allocator.free(rom);
-    // Should extract the .gg file (131072 bytes)
     try testing.expectEqual(@as(usize, 131072), rom.len);
-    // Verify it starts with standard Z80 startup (DI = 0xF3)
     try testing.expectEqual(@as(u8, 0xF3), rom[0]);
 }
 

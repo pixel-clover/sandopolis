@@ -131,10 +131,6 @@ pub const Cdd = struct {
         self.fader = (reg >> 4) & 0x3FF;
     }
 
-    // -----------------------------------------------------------------------
-    // Commands
-    // -----------------------------------------------------------------------
-
     /// Process a completed ten-nibble command. Returns false when the
     /// checksum does not match (the command is ignored).
     pub fn command(self: *Cdd, cmd: *const [10]u8, disc: ?*Disc) bool {
@@ -234,10 +230,6 @@ pub const Cdd = struct {
         self.drive = then;
     }
 
-    // -----------------------------------------------------------------------
-    // 75 Hz tick
-    // -----------------------------------------------------------------------
-
     /// Advance one sector period. Returns the sector delivered this tick.
     pub fn tick(self: *Cdd, disc: ?*Disc) SectorEvent {
         // While the head is still moving the decoder free-runs on empty
@@ -311,10 +303,6 @@ pub const Cdd = struct {
         return .{ .data = .{ .lba = self.lba, .raw = &self.raw_sector } };
     }
 
-    // -----------------------------------------------------------------------
-    // Status nibbles
-    // -----------------------------------------------------------------------
-
     fn putBcd(self: *Cdd, index: usize, value: u8) void {
         const bcd = msf.toBcd(value);
         self.status[index] = bcd >> 4;
@@ -328,16 +316,12 @@ pub const Cdd = struct {
         self.putBcd(6, time.f);
     }
 
-    // -----------------------------------------------------------------------
-    // Status registers
-    //
     // RS0-RS9 are latched register state, not a recomputed view: the CDD only
     // rewrites them while processing a command, so whatever the last reply
     // left behind is what the host keeps reading between commands. RS1
     // doubles as the "what is being reported" selector, and 0xF means "no
-    // valid position" - set while seeking and after a stop, and cleared by
+    // valid position", set while seeking and after a stop, and cleared by
     // the first poll that finds the drive parked again.
-    // -----------------------------------------------------------------------
 
     /// RS1 value meaning "RS2-RS8 hold no valid position".
     const rs1_no_position: u8 = 0xF;
@@ -474,10 +458,6 @@ pub const Cdd = struct {
         }
     }
 };
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
