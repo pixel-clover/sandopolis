@@ -438,7 +438,7 @@ pub fn consumeHintForLine(self: *Vdp, line: u16, visible_lines: u16) bool {
     // The H-Int counter also runs its check on the first vblank line: it
     // fires there when the counter sits at zero, but neither decrements nor
     // reloads (hardware & Genesis Plus GX).  With a per-line counter
-    // (reg 10 = 0) that is 225 HInts per NTSC frame, not 224 -- skipping it
+    // (reg 10 = 0) that is 225 HInts per NTSC frame, not 224; skipping it
     // slid HINT-streamed raster effects one step per frame vs the
     // reference (Titan Overdrive's PAL "TITAN" gradient shear).
     if (line == visible_lines) {

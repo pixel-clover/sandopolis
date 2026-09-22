@@ -52,7 +52,6 @@ pub const Toast = struct {
         while (self.count > 0) {
             const front = self.queue[self.head];
             if (front.message.len != 0 and frame_number < front.hide_after_frame) break;
-            // Current toast expired; discard and advance.
             self.queue[self.head] = .{};
             self.head = (self.head + 1) % queue_capacity;
             self.count -= 1;
@@ -61,7 +60,6 @@ pub const Toast = struct {
 
     pub fn show(self: *Toast, style: Style, message: []const u8, frame_number: u64) void {
         if (self.count < queue_capacity) {
-            // Space in queue; append.
             const slot = (self.head + self.count) % queue_capacity;
             self.queue[slot] = .{
                 .style = style,

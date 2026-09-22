@@ -38,7 +38,6 @@ fn exec(ctx: chilli.CommandContext) !void {
     const rom_arg = try ctx.getArg("rom_file", []const u8);
     config.rom_path = if (rom_arg.len > 0) try ctx.app_allocator.dupe(u8, rom_arg) else null;
 
-    // --audio-mode
     const audio_str = try ctx.getFlag("audio-mode", []const u8);
     if (audio_str.len != 0) {
         config.audio_mode = AudioOutput.RenderMode.parse(audio_str) catch
@@ -46,7 +45,6 @@ fn exec(ctx: chilli.CommandContext) !void {
         config.audio_mode_overridden = true;
     }
 
-    // --audio-queue-ms
     const audio_queue_str = try ctx.getFlag("audio-queue-ms", []const u8);
     if (audio_queue_str.len != 0) {
         const parsed = std.fmt.parseUnsigned(u16, audio_queue_str, 10) catch
@@ -60,11 +58,9 @@ fn exec(ctx: chilli.CommandContext) !void {
     const renderer_str = try ctx.getFlag("renderer", []const u8);
     config.renderer_name = if (renderer_str.len > 0) try ctx.app_allocator.dupe(u8, renderer_str) else null;
 
-    // --config
     const config_str = try ctx.getFlag("config", []const u8);
     config.config_path = if (config_str.len > 0) try ctx.app_allocator.dupe(u8, config_str) else null;
 
-    // --pal / --ntsc (mutually exclusive)
     const pal = try ctx.getFlag("pal", bool);
     const ntsc = try ctx.getFlag("ntsc", bool);
     if (pal and ntsc) return error.ConflictingTimingFlags;

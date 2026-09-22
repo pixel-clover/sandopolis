@@ -82,19 +82,19 @@ pub const SmsIo = struct {
             //   Bit 7: Port B TH output level
             const ctrl = self.io_control;
 
-            // Port A TH → bit 6 of port DD
+            // Port A TH -> bit 6 of port DD
             if ((ctrl & 0x02) == 0) {
-                // TH-A is output: return output level (bit 5 → bit 6)
+                // TH-A is output: return output level (bit 5 -> bit 6)
                 data = (data & ~@as(u8, 0x40)) | ((ctrl & 0x20) << 1);
             }
-            // else: TH-A is input → leave as 1 (export SMS pull-up, already set)
+            // else: TH-A is input: leave as 1 (export SMS pull-up, already set)
 
-            // Port B TH → bit 7 of port DD
+            // Port B TH -> bit 7 of port DD
             if ((ctrl & 0x08) == 0) {
                 // TH-B is output: return output level (bit 7)
                 data = (data & ~@as(u8, 0x80)) | (ctrl & 0x80);
             }
-            // else: TH-B is input → leave as 1 (export SMS pull-up, already set)
+            // else: TH-B is input: leave as 1 (export SMS pull-up, already set)
 
             return data;
         }
@@ -207,17 +207,17 @@ test "sms io nationality detection pattern" {
     // 0x55 = 0101_0101: bit1=0(TH-A out), bit3=0(TH-B out), bit5=0(low), bit7=0(low)
     io.portOut(0x3F, 0x55);
     const dd1 = io.portIn(0xDD);
-    // TH is output with level low → bits 6-7 = 0
+    // TH is output with level low: bits 6-7 = 0
     try testing.expectEqual(@as(u8, 0x00), dd1 & 0xC0);
 
     // Step 2: Write 0xAA: TH-A/TH-B as INPUT (bits 1,3=1)
     // 0xAA = 1010_1010: bit1=1(TH-A in), bit3=1(TH-B in)
     io.portOut(0x3F, 0xAA);
     const dd2 = io.portIn(0xDD);
-    // TH is input → export SMS returns 1 (pull-up)
+    // TH is input: export SMS returns 1 (pull-up)
     try testing.expectEqual(@as(u8, 0xC0), dd2 & 0xC0);
 
-    // Export detection: dd1 != dd2 (0x00 vs 0xC0) → export console confirmed
+    // Export detection: dd1 != dd2 (0x00 vs 0xC0): export console confirmed
     try testing.expect((dd1 & 0xC0) != (dd2 & 0xC0));
 
     // Step 3: TH output high

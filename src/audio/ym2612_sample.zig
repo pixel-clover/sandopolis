@@ -1,8 +1,6 @@
 const std = @import("std");
 const math = std.math;
 
-// --- Constants ---
-
 const ENV_BITS: u5 = 10;
 const ENV_LEN: u32 = 1 << ENV_BITS; // 1024
 const ENV_STEP: f64 = 128.0 / @as(f64, @floatFromInt(ENV_LEN));
@@ -34,8 +32,6 @@ const SLOT1: usize = 0;
 const SLOT2: usize = 2;
 const SLOT3: usize = 1;
 const SLOT4: usize = 3;
-
-// --- Static Lookup Tables ---
 
 // Sustain level table (3dB per step)
 // attenuation value (10 bits) = (SL << 2) << 3
@@ -229,7 +225,6 @@ const lfo_pm_output: [56][8]u8 = .{
 // Multiple table: (v&0x0f)? (v&0x0f)*2 : 1
 const ml_table: [16]u32 = .{ 1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30 };
 
-// --- LFO PM table (128*8*32 = 32768 entries, built at init time) ---
 // All tables computed at comptime for deterministic results across platforms.
 
 const tl_tab: [TL_TAB_LEN]i32 = blk: {
@@ -302,8 +297,6 @@ const lfo_pm_table: [128 * 8 * 32]i32 = blk: {
     }
     break :blk tab;
 };
-
-// --- Data Structures ---
 
 pub const FmSlot = struct {
     // Detune table index (into the parent Ym2612Sample.dt_tab)
@@ -440,8 +433,6 @@ pub const Ym2612Sample = struct {
     scratch_c1: i32 = 0,
     scratch_c2: i32 = 0,
     scratch_mem: i32 = 0,
-
-    // ----- Public API -----
 
     pub fn init() Ym2612Sample {
         var self = Ym2612Sample{};
@@ -631,8 +622,6 @@ pub const Ym2612Sample = struct {
         return .{ lt, rt };
     }
 
-    // ----- Internal functions -----
-
     fn writeData(self: *Ym2612Sample, v: u8) void {
         const addr = self.address;
         const addr_lo: u8 = @truncate(addr);
@@ -797,8 +786,6 @@ pub const Ym2612Sample = struct {
         return @intCast((r >> 2) & 3);
     }
 
-    // --- Key on/off ---
-
     fn fmKeyon(self: *Ym2612Sample, ch_idx: usize, s: usize) void {
         const slot = &self.ch[ch_idx].slot[s];
 
@@ -905,8 +892,6 @@ pub const Ym2612Sample = struct {
         self.sl3.key_csm = 1;
     }
 
-    // --- Timers ---
-
     fn internalTimerA(self: *Ym2612Sample) void {
         if (self.mode & 0x01 != 0) {
             self.tac -= 1;
@@ -957,8 +942,6 @@ pub const Ym2612Sample = struct {
 
         self.mode = v;
     }
-
-    // --- Frequency/EG helpers ---
 
     fn setDetMul(self: *Ym2612Sample, ch_idx: usize, s: usize, v: u8) void {
         const slot = &self.ch[ch_idx].slot[s];
@@ -1023,8 +1006,6 @@ pub const Ym2612Sample = struct {
         slot.eg_sel_rr = eg_rate_select[slot.rr + slot.ksr];
     }
 
-    // --- LFO ---
-
     fn advanceLfo(self: *Ym2612Sample) void {
         if (self.lfo_timer_overflow != 0) {
             self.lfo_timer += 1;
@@ -1043,8 +1024,6 @@ pub const Ym2612Sample = struct {
             }
         }
     }
-
-    // --- Envelope generator ---
 
     fn advanceEgChannels(self: *Ym2612Sample) void {
         const eg_cnt = self.eg_cnt;
@@ -1169,8 +1148,6 @@ pub const Ym2612Sample = struct {
         }
     }
 
-    // --- Phase generator helpers ---
-
     fn updatePhaseLfoSlot(self: *Ym2612Sample, ch_idx: usize, s: usize, pm: u32, kc: u8, fc: u32) void {
         const slot = &self.ch[ch_idx].slot[s];
         const lfo_fn_offset = lfo_pm_table[((fc & 0x7f0) << 4) + pm];
@@ -1245,8 +1222,6 @@ pub const Ym2612Sample = struct {
         }
     }
 
-    // --- Operator calculation ---
-
     fn opCalc(phase: u32, env: u32, pm: u32, opmask: u32) i32 {
         const p_idx = (env << 3) + sin_tab[((phase >> SIN_BITS) +% (pm >> 1)) & SIN_MASK];
         if (p_idx >= TL_TAB_LEN)
@@ -1264,8 +1239,6 @@ pub const Ym2612Sample = struct {
     fn volumeCalc(slot: *const FmSlot, am: u32) u32 {
         return slot.vol_out + (am & slot.am_mask);
     }
-
-    // --- Channel calculation (8 algorithms) ---
 
     fn chanCalcRange(self: *Ym2612Sample, start: usize, count: usize) void {
         for (start..start + count) |ch_i| {
@@ -1399,8 +1372,6 @@ pub const Ym2612Sample = struct {
         }
     }
 
-    // --- Reset helpers ---
-
     fn resetChannels(self: *Ym2612Sample) void {
         for (&self.ch) |*ch| {
             ch.mem_value = 0;
@@ -1434,14 +1405,10 @@ pub const Ym2612Sample = struct {
         }
     }
 
-    // --- Utility ---
-
     fn asI32(v: u32) i32 {
         return @bitCast(v);
     }
 };
-
-// --- Unit Tests ---
 
 test "ym2612 sample init produces valid state" {
     const ym = Ym2612Sample.init();

@@ -103,8 +103,6 @@ pub const SmsVdp = struct {
         self.* = init();
     }
 
-    // -- Display mode queries --
-
     /// Internal visible lines for VDP timing and interrupts.
     /// On GG, the VDP still runs in 192-line SMS mode internally;
     /// the 144-line viewport is applied only during rendering.
@@ -143,8 +141,6 @@ pub const SmsVdp = struct {
         }
         return .mode_192;
     }
-
-    // -- VDP port interface --
 
     pub fn readData(self: *SmsVdp) u8 {
         self.control_latch = false;
@@ -222,8 +218,6 @@ pub const SmsVdp = struct {
         }
     }
 
-    // -- V/H counters --
-
     pub fn readVCounter(self: *const SmsVdp) u8 {
         const line = self.scanline;
         return switch (self.displayMode()) {
@@ -266,8 +260,6 @@ pub const SmsVdp = struct {
         return @truncate(line -% 57);
     }
 
-    // -- Interrupts --
-
     pub fn isFrameInterruptEnabled(self: *const SmsVdp) bool {
         return (self.regs[1] & 0x20) != 0;
     }
@@ -280,8 +272,6 @@ pub const SmsVdp = struct {
         return (self.vint_pending and self.isFrameInterruptEnabled()) or
             (self.hint_pending and self.isLineInterruptEnabled());
     }
-
-    // -- Scanline processing --
 
     /// Advance VDP by one scanline. Returns true if entering vblank.
     pub fn stepScanline(self: *SmsVdp) bool {
@@ -384,8 +374,6 @@ pub const SmsVdp = struct {
         return self.paletteColor(index);
     }
 
-    // -- Color conversion --
-
     fn cramToRgba(color: u8) u32 {
         // SMS CRAM: --BBGGRR (6-bit, 2 bits per channel)
         const r: u32 = @as(u32, color & 0x03) * 85; // Scale 0-3 to 0-255
@@ -410,8 +398,6 @@ pub const SmsVdp = struct {
         }
         return cramToRgba(self.cram[index]);
     }
-
-    // -- Rendering --
 
     fn renderBlankLine(self: *SmsVdp, line: u16) void {
         const bg = self.backdropColor();
@@ -451,17 +437,12 @@ pub const SmsVdp = struct {
             return;
         }
 
-        // Fill with backdrop
         const bg = self.backdropColor();
         @memset(&line_buf, bg);
 
-        // Render background tiles
         self.renderBackground(line, &line_buf, &priority_buf);
-
-        // Render sprites (behind priority tiles, in front of non-priority tiles)
         self.renderSprites(line, &line_buf, &priority_buf);
 
-        // Left column blanking
         if (self.isLeftColumnBlanked()) {
             @memset(line_buf[0..8], bg);
         }
@@ -480,8 +461,6 @@ pub const SmsVdp = struct {
             @memcpy(self.framebuffer[offset..][0..framebuffer_width], &line_buf);
         }
     }
-
-    // -- TMS9918A rendering (SG-1000) --
 
     fn renderScanlineTms(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32) void {
         // Backdrop: register 7 lower nibble (TMS palette index)
@@ -710,8 +689,6 @@ pub const SmsVdp = struct {
         }
     }
 
-    // -- Mode 4 rendering (SMS/GG) --
-
     fn renderBackground(self: *SmsVdp, line: u16, line_buf: *[framebuffer_width]u32, priority_buf: *[framebuffer_width]bool) void {
         const name_base = self.nameTableBase();
         const visible_lines = self.activeVisibleLines();
@@ -885,8 +862,6 @@ pub const SmsVdp = struct {
     }
 };
 
-// -- Tests --
-
 test "sms vdp latches vertical scroll once per frame" {
     var vdp = SmsVdp.init();
     vdp.reset();
@@ -1029,7 +1004,7 @@ test "sms vdp sprite collision sets status flag" {
 
     const sat_base: u16 = 0x3F00;
 
-    // Two sprites at same position, both on line 1 (Y=0 → displayed at Y+1=1)
+    // Two sprites at same position, both on line 1 (Y=0 -> displayed at Y+1=1)
     vdp.vram[sat_base] = 0x00; // sprite 0 Y=0
     vdp.vram[sat_base + 1] = 0x00; // sprite 1 Y=0
     vdp.vram[sat_base + 2] = 0xD0; // terminator

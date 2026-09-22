@@ -61,7 +61,6 @@ pub const DebuggerState = struct {
 
     pub fn toggleBreakpoint(self: *DebuggerState, address: u32) void {
         const masked = address & 0xFFFFFF;
-        // If already set, remove it.
         for (0..self.breakpoint_count) |i| {
             if (self.breakpoints[i] == masked) {
                 self.breakpoints[i] = self.breakpoints[self.breakpoint_count - 1];
@@ -69,7 +68,6 @@ pub const DebuggerState = struct {
                 return;
             }
         }
-        // Otherwise add if there is room.
         if (self.breakpoint_count < max_breakpoints) {
             self.breakpoints[self.breakpoint_count] = masked;
             self.breakpoint_count += 1;
@@ -118,7 +116,6 @@ fn debuggerScale(viewport: zsdl3.Rect) f32 {
     const required_h = 22.0 * 10.0 * base + 30.0 * base;
     const margin = 8.0 * base;
     if (required_w + margin <= vw and required_h + margin <= vh) return base;
-    // Try smaller scales
     const scales = [_]f32{ 2.0, 1.5, 1.0 };
     for (scales) |s| {
         if (s >= base) continue;
@@ -170,7 +167,6 @@ pub fn render(
     const glyph_w = 6.0 * scale;
     const margin = 4.0 * scale;
 
-    // Measure content width based on active tab
     const tab_cols: f32 = switch (state.tab) {
         .cpu => 28.0, // "D0 XXXXXXXX  D4 XXXXXXXX" = 28 chars
         .memory => blk: {
@@ -180,13 +176,11 @@ pub fn render(
         .vdp => 28.0, // "MODE H40 LINE 224/224" ~ 24 chars
         .tiles => 36.0, // palette row + tile grid needs width
     };
-    // Footer is the widest fixed text; ensure panel fits it
     const footer_cols: f32 = 36.0; // "F10 CLOSE  TAB TABS  PGUP/DN SCROLL"
     const content_cols = @max(tab_cols, footer_cols);
     const panel_w_raw = content_cols * glyph_w + padding * 2;
     const panel_w = @min(panel_w_raw, vw - margin * 2);
 
-    // Measure content height based on active tab
     const tab_lines: f32 = switch (state.tab) {
         .cpu => 18.5, // PC + SP + flags + 4 D-regs + gap + 4 A-regs + gap + header + 6 disasm
         .memory => blk: {
@@ -201,7 +195,6 @@ pub fn render(
     const panel_h_raw = total_lines * line_h + padding * 2;
     const panel_h = @min(panel_h_raw, vh - margin * 2);
 
-    // Position: right-aligned, clamped to viewport
     const panel_x = @max(margin, vw - panel_w - margin);
     const panel_y = margin;
 
@@ -213,7 +206,6 @@ pub fn render(
     const content_w = panel_w - padding * 2;
     var y = panel_y + padding;
 
-    // Tab header
     {
         const cpu_color = if (state.tab == .cpu) ui.Colors.cyan else ui.Colors.text_muted;
         const mem_color = if (state.tab == .memory) ui.Colors.cyan else ui.Colors.text_muted;
@@ -235,7 +227,6 @@ pub fn render(
         .tiles => try renderTileTab(renderer, machine, content_x, y, content_bottom, scale, line_h, glyph_w),
     }
 
-    // Footer
     const footer_y = panel_y + panel_h - padding - line_h;
     const footer_text = switch (state.tab) {
         .cpu => "[SPC] STEP [B] BRK [G] RUN [F10] CLOSE [TAB] TABS",
@@ -287,7 +278,6 @@ fn renderCpuTab(
     try ui.drawText(renderer, x, y, scale, ui.Colors.text_secondary, flags_text);
     y += line_h * 1.5;
 
-    // Data registers
     for (0..4) |i| {
         if (y + line_h > max_y) return;
         const d_lo: u32 = machine.cpu.core.d_regs[i].l;
@@ -298,7 +288,6 @@ fn renderCpuTab(
     }
     y += line_h * 0.5;
 
-    // Address registers
     for (0..4) |i| {
         if (y + line_h > max_y) return;
         const a_lo: u32 = machine.cpu.core.a_regs[i].l;
@@ -446,7 +435,6 @@ fn renderTileTab(
     var buf: [64]u8 = undefined;
     const vdp = &machine.bus.vdp;
 
-    // Palette viewer: show all 4 palettes (16 colors each).
     if (y + line_h > max_y) return;
     try ui.drawText(renderer, x, y, scale, ui.Colors.cyan, "CRAM PALETTE");
     y += line_h;
@@ -455,7 +443,6 @@ fn renderTileTab(
     const swatch_gap = scale;
     for (0..4) |pal| {
         if (y + swatch_sz > max_y) break;
-        // Palette label
         const pal_label = std.fmt.bufPrint(&buf, "P{d}", .{pal}) catch "?";
         try ui.drawText(renderer, x, y, scale * 0.8, ui.Colors.text_muted, pal_label);
         const swatch_x_start = x + glyph_w * 3;
@@ -474,17 +461,14 @@ fn renderTileTab(
     }
     y += line_h * 0.5;
 
-    // Tile grid: show VRAM patterns rendered with palette 0.
     if (y + line_h > max_y) return;
     try ui.drawText(renderer, x, y, scale, ui.Colors.cyan, "VRAM TILES (PAL 0)");
     y += line_h;
 
-    // Each tile is 8x8 pixels; render at 1px = scale pixels.
     const px_sz = scale;
     const tile_px: f32 = 8.0 * px_sz;
     const tile_gap = scale * 0.5;
 
-    // Compute how many tiles fit in the available width and height.
     const avail_w = @as(f32, @floatFromInt(machine.bus.vdp.screenWidth())) * scale * 1.2;
     const cols = @max(@as(usize, 1), @as(usize, @intFromFloat(avail_w / (tile_px + tile_gap))));
     const avail_h = max_y - y;
@@ -493,7 +477,7 @@ fn renderTileTab(
     _ = total_tiles;
 
     // Page offset: reuse memory_address scrolled by tile count.
-    // Each PGUP/PGDN moves 256 bytes → 8 tiles.
+    // Each PGUP/PGDN moves 256 bytes -> 8 tiles.
     const tile_page_offset: usize = 0; // Could be driven by state in the future.
 
     for (0..rows) |tile_row| {
@@ -507,7 +491,6 @@ fn renderTileTab(
             const tx = x + @as(f32, @floatFromInt(tile_col)) * (tile_px + tile_gap);
             const pattern_base: u32 = @as(u32, @intCast(tile_idx)) * 32;
 
-            // Render 8 rows of 8 pixels each.
             for (0..8) |row| {
                 const row_addr = pattern_base + @as(u32, @intCast(row)) * 4;
                 const b0 = vdp.vramReadByte(@intCast(row_addr & 0xFFFF));
@@ -568,7 +551,6 @@ test "breakpoint toggle adds and removes addresses" {
     try std.testing.expectEqual(@as(u8, 2), state.breakpoint_count);
     try std.testing.expect(state.hasBreakpoint(0x001000));
 
-    // Toggle off the first breakpoint.
     state.toggleBreakpoint(0x000200);
     try std.testing.expectEqual(@as(u8, 1), state.breakpoint_count);
     try std.testing.expect(!state.hasBreakpoint(0x000200));

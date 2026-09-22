@@ -48,8 +48,6 @@ pub const Pcm = struct {
         self.ram = ram;
     }
 
-    // -- Register / RAM access (window-relative offset, odd bytes) ----------
-
     pub fn read8(self: *const Pcm, offset: u32) u8 {
         const off = offset & 0x3FFF;
         if ((off & 1) == 0) return 0;
@@ -106,8 +104,6 @@ pub const Pcm = struct {
         }
     }
 
-    // -- Synthesis -----------------------------------------------------------
-
     /// Produce one stereo sample (called every 384 sub-CPU cycles).
     pub fn clockSample(self: *Pcm) [2]i16 {
         if (!self.enabled) {
@@ -143,10 +139,6 @@ pub const Pcm = struct {
         return self.last_sample;
     }
 };
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 

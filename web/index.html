@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta content="width=device-width, initial-scale=1" name="viewport">
-    <title>Sandopolis - Sega Genesis / Master System / Game Gear / SG-1000 Emulator</title>
+    <title>Sandopolis - Sega Genesis / Sega CD / Master System / Game Gear / SG-1000 Emulator</title>
     <style>
         * {
             margin: 0;
@@ -96,7 +96,9 @@
         }
 
         body {
-            background: var(--bg);
+            background:
+                radial-gradient(circle at top, color-mix(in srgb, var(--text-heading) 7%, transparent), transparent 34rem),
+                var(--bg);
             color: var(--text);
             font-family: var(--font-ui);
             font-weight: 400;
@@ -126,7 +128,8 @@
 
         header .subtitle {
             color: var(--text-heading);
-            font-size: 0.62rem;
+            font-size: 0.68rem;
+            line-height: 1.5;
             font-family: var(--font-mono);
             letter-spacing: 0.3em;
             text-transform: uppercase;
@@ -191,7 +194,7 @@
         /* ROM loader */
         #drop-zone {
             border: 2px dashed var(--border-accent);
-            border-radius: 3px;
+            border-radius: var(--radius-md);
             padding: 14px 24px;
             text-align: center;
             cursor: pointer;
@@ -199,6 +202,7 @@
             transition: all var(--transition-fast);
             max-width: 660px;
             width: 100%;
+            background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
         }
 
         #drop-zone:hover, #drop-zone.drag-over {
@@ -234,7 +238,7 @@
             position: relative;
             background: var(--screen-bg);
             border: 3px solid #1A1A24;
-            border-radius: 3px;
+            border-radius: var(--radius-md);
             overflow: hidden;
             box-shadow: 0 0 0 1px var(--border-accent), var(--shadow-md), inset 0 0 20px rgba(0, 0, 0, 0.4);
             transition: box-shadow var(--transition-fast);
@@ -356,8 +360,8 @@
             gap: 8px;
             background: var(--bg-panel);
             border: 1px solid var(--border);
-            border-radius: 3px;
-            padding: 6px;
+            border-radius: var(--radius-md);
+            padding: 8px;
             max-width: 660px;
             width: 100%;
             flex-wrap: wrap;
@@ -371,7 +375,7 @@
             gap: 4px;
             background: var(--group-bg);
             border: 1px solid color-mix(in srgb, var(--group-accent) 30%, var(--border));
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             padding: 5px 6px;
             transition: background var(--transition-normal);
         }
@@ -412,7 +416,7 @@
             background: color-mix(in srgb, var(--group-accent) 4%, var(--bg-input));
             color: var(--text);
             border: 1px solid color-mix(in srgb, var(--group-accent) 20%, var(--border));
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             padding: 4px 10px;
             font-family: var(--font-ui);
             font-size: 0.68rem;
@@ -488,11 +492,12 @@
             justify-content: space-between;
             max-width: 660px;
             width: 100%;
-            padding: 4px 10px;
+            padding: 6px 10px;
             margin-bottom: 8px;
             font-size: 0.68rem;
             color: var(--text-muted);
             font-family: var(--font-mono);
+            border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
         }
 
         .status-bar .status-left {
@@ -514,7 +519,7 @@
             width: 100%;
             background: var(--bg-panel);
             border: 1px solid var(--border);
-            border-radius: 3px;
+            border-radius: var(--radius-md);
             padding: 14px 18px;
             margin-bottom: 12px;
             box-shadow: var(--shadow-sm);
@@ -552,7 +557,7 @@
             background: var(--bg-input);
             color: var(--text);
             border: 1px solid var(--border);
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             padding: 3px 6px;
             font-family: var(--font-ui);
             font-size: 0.72rem;
@@ -621,7 +626,7 @@
             background: var(--bg-input);
             color: var(--text);
             border: 1px solid var(--border);
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             padding: 3px 6px;
             font-family: var(--font-ui);
             font-size: 0.68rem;
@@ -717,8 +722,9 @@
 
         .help-panel {
             background: var(--bg-panel);
-            border: 2px solid var(--text-heading);
-            border-radius: 3px;
+            border: 1px solid var(--text-heading);
+            border-top: 3px solid var(--text-heading);
+            border-radius: var(--radius-lg);
             padding: 20px 28px;
             max-width: 540px;
             width: 90%;
@@ -763,7 +769,7 @@
             display: inline-block;
             background: var(--bg);
             border: 1px solid var(--border);
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             padding: 1px 5px;
             color: var(--text);
             font-size: 0.68rem;
@@ -1010,6 +1016,22 @@
             color: var(--text-accent);
         }
 
+        button:focus-visible,
+        select:focus-visible,
+        input:focus-visible,
+        a:focus-visible,
+        #drop-zone:focus-within {
+            outline: 2px solid var(--text-accent);
+            outline-offset: 2px;
+        }
+
+        button:disabled,
+        select:disabled,
+        input:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
         /* Animations */
         @keyframes modalPop {
             from {
@@ -1087,6 +1109,15 @@
                 gap: 4px;
             }
         }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                scroll-behavior: auto !important;
+                transition-duration: 0.01ms !important;
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1097,13 +1128,13 @@
 
 <header>
     <h1>SANDOPOLIS</h1>
-    <span class="subtitle">Sega Genesis / Master System / Game Gear / SG-1000 Emulator</span>
+    <span class="subtitle">Sega Genesis / Sega CD / Master System / Game Gear / SG-1000 Emulator</span>
     <br>
     <span class="era-tag">8-BIT</span> <span class="era-tag">16-BIT</span>
 </header>
 
 <div id="drop-zone">
-    <label for="rom-input">Drop a ROM file here or <u>click to browse</u></label>
+    <label for="rom-input">Drop a ROM or disc image here or <u>click to browse</u></label>
     <input accept=".bin,.md,.smd,.gen,.sms,.gg,.sg,.zip,.cue,.iso" id="rom-input" multiple type="file">
     <select id="recent-roms" style="display:none">
         <option value="">Recent ROMs...</option>
@@ -1165,23 +1196,23 @@
 <div class="hidden" id="settings-panel">
     <h3>SETTINGS</h3>
     <div class="settings-grid">
-        <label>Aspect Ratio</label>
+        <label for="aspect-mode">Aspect Ratio</label>
         <select id="aspect-mode" title="Display aspect ratio mode">
             <option title="Correct 4:3 TV aspect ratio" value="fit">4:3 Fit</option>
             <option title="Stretch to fill the screen area" value="stretch">Stretch</option>
             <option title="Raw pixel dimensions without correction" value="native">Native</option>
         </select>
-        <label>Scaling</label>
+        <label for="scale-mode">Scaling</label>
         <select id="scale-mode" title="Pixel scaling mode">
             <option title="Smooth scaling to fill available space" value="fit">Fit</option>
             <option title="Scale by whole numbers for even pixel sizes" value="integer">Integer</option>
         </select>
-        <label>Controller</label>
+        <label for="controller-type">Controller</label>
         <select id="controller-type" title="Emulated controller type">
             <option title="Genesis 6-button controller with X, Y, Z, and Mode" value="1">6-Button</option>
             <option title="Original Genesis 3-button controller" value="0">3-Button</option>
         </select>
-        <label>Sega CD BIOS</label>
+        <label for="bios-input">Sega CD BIOS</label>
         <span>
             <input accept=".bin" id="bios-input" multiple title="Load Sega CD BIOS images (bios_CD_U.bin, bios_CD_E.bin, bios_CD_J.bin); kept in this browser" type="file">
             <span id="bios-status" title="Loaded Sega CD BIOS regions">none</span>
@@ -1211,6 +1242,9 @@
                 <div class="help-row">[F5] Quick Save &nbsp;[F8] Quick Load</div>
                 <div class="help-row">[F6] Slot Save &nbsp;[F9] Slot Load</div>
                 <div class="help-row">[F11] Fullscreen &nbsp;[F1] Help</div>
+                <h4>SEGA CD</h4>
+                <div class="help-row">Upload BIOS files in Settings; they stay in this browser.</div>
+                <div class="help-row">Select an .iso, or select the .cue and .bin files together.</div>
             </div>
             <div>
                 <h4>GAMEPAD</h4>

@@ -23,9 +23,7 @@ pub fn isSegaCdDiscImage(bytes: []const u8) bool {
     return false;
 }
 
-/// Detect whether a ROM belongs to a Genesis or SMS system.
-/// Checks for SMS "TMR SEGA" header first, then Genesis "SEGA" header.
-/// Falls back to Genesis if neither is found (most common case for headerless ROMs).
+/// Detect system type from ROM or disc image headers.
 pub fn detectSystem(rom: []const u8) SystemType {
     if (sms_cartridge.isSmsRom(rom)) {
         // Check region code to distinguish Game Gear from SMS.
@@ -38,7 +36,6 @@ pub fn detectSystem(rom: []const u8) SystemType {
     if (isSegaCdDiscImage(rom)) return .segacd;
     // Genesis ROMs have "SEGA" at offset 0x100
     if (rom.len >= 0x104 and std.mem.eql(u8, rom[0x100..0x104], "SEGA")) return .genesis;
-    // Default to Genesis for unknown ROMs
     return .genesis;
 }
 

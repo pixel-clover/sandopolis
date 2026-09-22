@@ -32,7 +32,6 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Result {
         const line = trimLine(raw_line);
         if (line.len == 0) continue;
 
-        // Input bindings
         if (std.mem.startsWith(u8, line, "keyboard.") or
             std.mem.startsWith(u8, line, "gamepad.") or
             std.mem.startsWith(u8, line, "hotkey.") or
@@ -43,7 +42,6 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Result {
             continue;
         }
 
-        // Frontend settings
         parseFrontendLine(&frontend, line);
     }
 
@@ -66,7 +64,6 @@ pub fn save(
     try w.writeAll("# Sandopolis configuration\n");
     try w.writeAll("# Delete this file to reset all settings to defaults.\n\n");
 
-    // Frontend settings
     try w.writeAll("# Video\n");
     try w.print("video.aspect = {s}\n", .{frontend.video_aspect_mode.configValue()});
     try w.print("video.scale = {s}\n", .{frontend.video_scale_mode.configValue()});
@@ -88,7 +85,6 @@ pub fn save(
 
     try w.writeByte('\n');
 
-    // Input bindings (uses existing writeContents)
     try bindings.writeContents(w);
 
     try w.flush();

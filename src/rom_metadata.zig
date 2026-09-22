@@ -1,20 +1,17 @@
 const std = @import("std");
 const Machine = @import("machine.zig").Machine;
 
-// Timing mode options
 pub const TimingModeOption = enum {
     auto,
     pal,
     ntsc,
 };
 
-// Resolved timing configuration
 pub const ResolvedTimingMode = struct {
     pal_mode: bool,
     description: []const u8,
 };
 
-// Resolved console region configuration
 pub const ResolvedConsoleRegion = struct {
     overseas: bool,
     description: []const u8,
@@ -112,7 +109,6 @@ pub fn inferConsoleIsOverseasFromCountryCodes(country_codes: ?[]const u8) ?bool 
     return null;
 }
 
-// Resolve timing mode from ROM metadata and user preference
 pub fn resolveTimingMode(metadata: Machine.RomMetadata, timing_mode: TimingModeOption) ResolvedTimingMode {
     return switch (timing_mode) {
         .pal => .{ .pal_mode = true, .description = "PAL/50Hz (forced)" },
@@ -129,7 +125,6 @@ pub fn resolveTimingMode(metadata: Machine.RomMetadata, timing_mode: TimingModeO
     };
 }
 
-// Resolve console region from ROM metadata
 pub fn resolveConsoleRegion(metadata: Machine.RomMetadata) ResolvedConsoleRegion {
     if (inferConsoleIsOverseasFromCountryCodes(metadata.country_codes)) |overseas| {
         return .{
@@ -140,7 +135,6 @@ pub fn resolveConsoleRegion(metadata: Machine.RomMetadata) ResolvedConsoleRegion
     return .{ .overseas = true, .description = "Overseas/export (auto default)" };
 }
 
-// Log ROM metadata to debug output
 pub fn logLoadedRomMetadata(machine: *Machine, rom_path: []const u8) void {
     const metadata = machine.romMetadata();
     std.debug.print("Loading ROM: {s}\n", .{rom_path});
@@ -172,7 +166,6 @@ pub fn logLoadedRomMetadata(machine: *Machine, rom_path: []const u8) void {
     }
 }
 
-// Game database entry for product code lookups.
 pub const GameInfo = struct {
     title: []const u8,
     notes: []const u8 = "",

@@ -702,12 +702,12 @@ function togglePause() {
     if (running) {
         running = false;
         if (rafId) cancelAnimationFrame(rafId);
-        if (audioCtx) audioCtx.suspend();
+        suspendAudio();
         setStatus("Paused: click screen to resume");
     } else {
         running = true;
         resumeFrame();
-        if (audioCtx && audioEnabled) audioCtx.resume();
+        resumeAudio();
         setStatus("Playing now: " + currentRomName);
     }
 }
@@ -718,7 +718,7 @@ function pauseForOverlay() {
     if (running) {
         running = false;
         if (rafId) cancelAnimationFrame(rafId);
-        if (audioCtx) audioCtx.suspend();
+        suspendAudio();
     }
 }
 
@@ -731,14 +731,14 @@ function onVisibilityChange() {
             pausedByVisibility = true;
             running = false;
             if (rafId) cancelAnimationFrame(rafId);
-            if (audioCtx) audioCtx.suspend();
+            suspendAudio();
         }
     } else if (pausedByVisibility) {
         pausedByVisibility = false;
         if (emu) {
             running = true;
             resumeFrame();
-            if (audioCtx && audioEnabled) audioCtx.resume();
+            resumeAudio();
         }
     }
 }
@@ -749,7 +749,7 @@ function resumeAfterOverlay() {
     if (wasRunningBeforeOverlay && emu) {
         running = true;
         resumeFrame();
-        if (audioCtx && audioEnabled) audioCtx.resume();
+        resumeAudio();
     }
 }
 
@@ -923,11 +923,35 @@ function flushWorkletAudio() {
     audioBufferLevel = 0;
 }
 
+function suspendAudio() {
+    if (audioCtx) audioCtx.suspend().catch((err) => console.warn("Web Audio suspend failed:", err));
+}
+
+function resumeAudio() {
+    if (!audioCtx || !audioEnabled) return;
+    const ctx = audioCtx;
+    ctx.resume().then(() => {
+        if (ctx !== audioCtx) return;
+        updateAudioToggleLabel();
+        if (running && ctx.state !== "running") showToast("Audio blocked: click RETRY");
+    }).catch((err) => {
+        if (ctx !== audioCtx) return;
+        console.warn("Web Audio resume failed:", err);
+        updateAudioToggleLabel();
+        showToast("Audio blocked: click RETRY");
+    });
+}
+
 function toggleAudio() {
+    if (audioEnabled && running && audioCtx && audioCtx.state !== "running") {
+        flushWorkletAudio();
+        resumeAudio();
+        return;
+    }
     audioEnabled = !audioEnabled;
     updateAudioToggleLabel();
     if (audioCtx) {
-        if (audioEnabled) audioCtx.resume(); else audioCtx.suspend();
+        if (audioEnabled) resumeAudio(); else suspendAudio();
     }
     // Drop whatever sits in the worklet ring so re-enabling audio never
     // replays stale samples or starts hundreds of milliseconds behind.
@@ -936,7 +960,8 @@ function toggleAudio() {
 }
 
 function updateAudioToggleLabel() {
-    document.getElementById("audio-toggle").textContent = audioEnabled ? "ON" : "OFF";
+    const retry = audioEnabled && running && audioCtx && audioCtx.state !== "running";
+    document.getElementById("audio-toggle").textContent = retry ? "RETRY" : audioEnabled ? "ON" : "OFF";
 }
 
 // Audio (Firefox-compatible: no outputChannelCount, handle mono fallback)
@@ -965,16 +990,19 @@ async function initAudio() {
                 audioBufferCapacity = e.data.capacity;
             }
         };
+        audioCtx.addEventListener("statechange", updateAudioToggleLabel);
         gainNode = audioCtx.createGain();
         gainNode.gain.value = masterVolume / 100;
         audioNode.connect(gainNode);
         gainNode.connect(audioCtx.destination);
-        if (!audioEnabled) audioCtx.suspend();
+        if (!audioEnabled) suspendAudio();
     } catch (err) {
         console.warn("Web Audio init failed:", err);
+        if (audioCtx) audioCtx.close().catch(() => {});
         audioCtx = null;
         audioNode = null;
         gainNode = null;
+        showToast("Web Audio unavailable");
     }
 }
 
@@ -1201,8 +1229,13 @@ async function loadDisc(cueFile, binFile) {
     const cue = new Uint8Array(await cueFile.arrayBuffer());
     const bin = new Uint8Array(await binFile.arrayBuffer());
     const cuePtr = e.sandopolis_alloc(cue.length);
+    if (!cuePtr) {
+        setStatus("Failed to allocate memory.");
+        return;
+    }
     const binPtr = e.sandopolis_alloc(bin.length);
-    if (!cuePtr || !binPtr) {
+    if (!binPtr) {
+        e.sandopolis_free(cuePtr, cue.length);
         setStatus("Failed to allocate memory.");
         return;
     }
@@ -1210,7 +1243,6 @@ async function loadDisc(cueFile, binFile) {
     new Uint8Array(e.memory.buffer).set(bin, binPtr);
     emu = e.sandopolis_create_disc(cuePtr, cue.length, binPtr, bin.length);
     e.sandopolis_free(cuePtr, cue.length);
-    e.sandopolis_free(binPtr, bin.length);
     if (!emu) {
         setStatus("Failed to start the Sega CD (BIOS region mismatch or bad image?).");
         return;
@@ -1268,8 +1300,12 @@ async function loadRom(file) {
         setStatus("Load a Sega CD BIOS in Settings first.");
         return;
     }
-    emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
-    e.sandopolis_free(romPtr, romBytes.length);
+    if (systemHint === 4) {
+        emu = e.sandopolis_create_disc(romPtr, 0, romPtr, romBytes.length);
+    } else {
+        emu = e.sandopolis_create(romPtr, romBytes.length, systemHint);
+        e.sandopolis_free(romPtr, romBytes.length);
+    }
     if (!emu) {
         setStatus("Failed to initialize emulator.");
         return;
@@ -1290,9 +1326,7 @@ function startAfterLoad() {
     applySettings();
 
     // Resume AudioContext on user gesture (required by browsers)
-    if (audioCtx && audioCtx.state === "suspended" && audioEnabled) {
-        audioCtx.resume();
-    }
+    resumeAudio();
 
     const isPal = e.sandopolis_is_pal(emu);
     const sysType = e.sandopolis_system_type ? e.sandopolis_system_type(emu) : 0;
@@ -1301,6 +1335,7 @@ function startAfterLoad() {
     if (aboutOpen) updateAboutInfo();
 
     running = true;
+    updateAudioToggleLabel();
     // Use precise Genesis frame rates to avoid audio drift.
     // NTSC: 53693175 / (262*3420) = 59.9227 fps
     // PAL: 53203424 / (313*3420) = 49.7015 fps

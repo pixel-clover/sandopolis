@@ -3,11 +3,9 @@ const platform = @import("../platform.zig");
 const zsdl3 = @import("zsdl3");
 const AudioOutput = @import("../audio/output.zig").AudioOutput;
 
-// Configuration constants
 pub const config_file_name = "sandopolis_frontend.cfg";
 pub const recent_rom_limit: usize = 8;
 
-// Path storage for config values
 pub const PathCopy = struct {
     len: usize = 0,
     bytes: [std.fs.max_path_bytes]u8 = [_]u8{0} ** std.fs.max_path_bytes,
@@ -24,7 +22,6 @@ pub const PathCopy = struct {
     }
 };
 
-// Video display modes
 pub const VideoAspectMode = enum {
     stretch,
     four_three,
@@ -175,7 +172,6 @@ pub const FontFace = enum {
     }
 };
 
-// Frontend configuration
 pub const FrontendConfig = struct {
     recent_rom_count: usize = 0,
     recent_roms: [recent_rom_limit]PathCopy = [_]PathCopy{.{}} ** recent_rom_limit,
@@ -384,7 +380,6 @@ pub fn defaultConfigPath(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(u8, config_file_name);
 }
 
-// Compute video destination rectangle based on aspect and scale modes
 pub fn computeVideoDestinationRect(
     viewport: zsdl3.Rect,
     source_width: u16,
@@ -532,7 +527,7 @@ test "four_three aspect ratio is correct for each console resolution" {
 test "square_pixels preserves native pixel aspect for each console" {
     const viewport = zsdl3.Rect{ .x = 0, .y = 0, .w = 1280, .h = 720 };
 
-    // Genesis H40 (320x224): 320:224 ≈ 1.4286
+    // Genesis H40 (320x224): 320:224 ~ 1.4286
     const gen = computeVideoDestinationRect(viewport, 320, 224, .square_pixels, .fit);
     try t.expectApproxEqAbs(@as(f32, 320.0 / 224.0), gen.w / gen.h, 0.01);
 
@@ -554,7 +549,6 @@ test "PathCopy set truncates long paths" {
     pc.set("short.md");
     try t.expectEqualStrings("short.md", pc.slice());
 
-    // Fill to capacity
     const max = std.fs.max_path_bytes;
     var long: [max + 10]u8 = undefined;
     @memset(&long, 'x');

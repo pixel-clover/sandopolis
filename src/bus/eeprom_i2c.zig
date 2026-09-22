@@ -544,8 +544,6 @@ pub fn storageSize(spec_index: usize) usize {
     return @as(usize, i2c_specs[spec_index].size_mask) + 1;
 }
 
-// ---- Tests ----
-
 fn makeTestEeprom(spec_index: usize, wiring: WiringConfig, data: []u8) EepromI2c {
     return EepromI2c.init(spec_index, wiring, data);
 }
@@ -789,7 +787,7 @@ test "sega wiring word writes drive the i2c lines from the low byte" {
     var data = [_]u8{0} ** 128;
     var eeprom = makeTestEeprom(0, .sega, &data);
 
-    // SCL is D1, SDA is D0 — both live in the LOW byte of a word write.
+    // SCL is D1, SDA is D0; both live in the LOW byte of a word write.
     try std.testing.expect(eeprom.writeWord(0x20_0000, 0x0003));
     try std.testing.expectEqual(@as(u1, 1), eeprom.sda);
     try std.testing.expectEqual(@as(u1, 1), eeprom.scl);

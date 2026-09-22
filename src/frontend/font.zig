@@ -94,7 +94,6 @@ fn buildAtlas(
     const ascent = @as(f32, @floatFromInt(ascent_raw)) * scale;
     const line_height = (@as(f32, @floatFromInt(ascent_raw - descent_raw + line_gap_raw)) * scale);
 
-    // First pass: measure total atlas width
     var glyphs: [char_count]Glyph = undefined;
     var atlas_width: u32 = 0;
     var atlas_height: u32 = 0;
@@ -132,7 +131,6 @@ fn buildAtlas(
     if (atlas_width == 0) atlas_width = 1;
     if (atlas_height == 0) atlas_height = 1;
 
-    // Rasterize all glyphs into a single alpha bitmap
     const bitmap = try std.heap.c_allocator.alloc(u8, atlas_width * atlas_height);
     defer std.heap.c_allocator.free(bitmap);
     @memset(bitmap, 0);
@@ -154,13 +152,11 @@ fn buildAtlas(
         );
     }
 
-    // Convert alpha bitmap to ARGB8888 for SDL texture
     const rgba = try std.heap.c_allocator.alloc(u8, atlas_width * atlas_height * 4);
     defer std.heap.c_allocator.free(rgba);
 
     for (0..atlas_width * atlas_height) |j| {
         const a = bitmap[j];
-        // ARGB8888: A in high byte, then R, G, B
         rgba[j * 4 + 0] = 0xFF; // B
         rgba[j * 4 + 1] = 0xFF; // G
         rgba[j * 4 + 2] = 0xFF; // R

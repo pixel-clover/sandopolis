@@ -267,7 +267,6 @@ pub fn main(init: std.process.Init) !void {
     };
     const ref_probes: *const [4]u64 = @ptrFromInt(base + probe_off);
 
-    // --- Sandopolis ---
     var emu = try testing.Emulator.init(allocator, args.rom_path);
     defer emu.deinit(allocator);
     if (args.pal) {

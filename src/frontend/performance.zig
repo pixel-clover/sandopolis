@@ -4,7 +4,6 @@ const AudioOutput = @import("../audio/output.zig").AudioOutput;
 const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 const ui = @import("ui.zig");
 
-// Performance monitoring thresholds and sampling configuration
 pub const spike_log_threshold_ns: u64 = 4 * std.time.ns_per_ms;
 pub const spike_log_burst_delta_ns: u64 = 8 * std.time.ns_per_ms;
 pub const spike_window_ns: u64 = std.time.ns_per_s;
@@ -290,7 +289,6 @@ pub fn isThresholdSlowFrame(perf: *const HudState) bool {
     return perf.last_overrun_ns >= spike_log_threshold_ns;
 }
 
-// Formatting helpers
 pub fn formatDurationMsTenths(buffer: []u8, ns: u64) ![]const u8 {
     const tenths = (ns + 50_000) / 100_000;
     return std.fmt.bufPrint(buffer, "{d}.{d}", .{ tenths / 10, tenths % 10 });
@@ -408,7 +406,6 @@ pub fn formatSpikeWindowLine(buffer: []u8, summary: *const SpikeWindowSummary) !
     });
 }
 
-// HUD Rendering
 pub fn renderHud(renderer: *zsdl3.Renderer, viewport: zsdl3.Rect, perf: *const HudState) !void {
     const title = "PERF HUD";
     const scale = @min(ui.overlayScale(viewport), 2.0);

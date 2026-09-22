@@ -29,7 +29,6 @@ fn wasmLogNoop(
     _: anytype,
 ) void {}
 
-// Emulator instance holding machine, audio output, and save state.
 const WasmEmulator = struct {
     machine: SystemMachine,
     audio: AudioOutput,
@@ -97,9 +96,15 @@ fn finishWasmEmulator(machine: SystemMachine) WasmEmulator {
 }
 
 /// Create a Sega CD emulator from a CUE sheet and its single BIN image.
-export fn sandopolis_create_disc(cue_ptr: [*]const u8, cue_len: usize, bin_ptr: [*]const u8, bin_len: usize) ?*WasmEmulator {
+/// The BIN allocation is consumed whether creation succeeds or fails.
+export fn sandopolis_create_disc(cue_ptr: [*]const u8, cue_len: usize, bin_ptr: [*]u8, bin_len: usize) ?*WasmEmulator {
     const Disc = @import("scd/cdrom/reader.zig").Disc;
-    const disc = Disc.fromMemory(allocator, cue_ptr[0..cue_len], &.{bin_ptr[0..bin_len]}) catch return null;
+    const bin = bin_ptr[0..bin_len];
+    var transferred = false;
+    defer if (!transferred) allocator.free(bin);
+    const cue: ?[]const u8 = if (cue_len == 0) null else cue_ptr[0..cue_len];
+    const disc = Disc.fromOwnedMemory(allocator, cue, &.{bin}) catch return null;
+    transferred = true;
     const machine = SystemMachine.initSegaCdFromDisc(allocator, disc, .{ .bios = &wasm_bios.set }) catch return null;
     const emu = allocator.create(WasmEmulator) catch {
         var m = machine;
@@ -126,8 +131,6 @@ fn initWasmEmulator(alloc: std.mem.Allocator, raw_bytes: []const u8, system_hint
     return finishWasmEmulator(machine);
 }
 
-// Memory allocation for JS interop
-
 export fn sandopolis_alloc(len: usize) ?[*]u8 {
     const slice = allocator.alloc(u8, len) catch return null;
     return slice.ptr;
@@ -136,8 +139,6 @@ export fn sandopolis_alloc(len: usize) ?[*]u8 {
 export fn sandopolis_free(ptr: [*]u8, len: usize) void {
     allocator.free(ptr[0..len]);
 }
-
-// Lifecycle
 
 /// Create an emulator instance. `system_hint`: 0=auto-detect, 1=SMS, 2=GG, 3=SG-1000, 4=Sega CD (.iso bytes).
 export fn sandopolis_create(rom_ptr: [*]const u8, rom_len: usize, system_hint: u8) ?*WasmEmulator {
@@ -156,14 +157,10 @@ export fn sandopolis_destroy(emu: *WasmEmulator) void {
     allocator.destroy(emu);
 }
 
-// Frame execution
-
 export fn sandopolis_run_frame(emu: *WasmEmulator) void {
     emu.machine.runFrame();
     emu.frame_count += 1;
 }
-
-// Video
 
 export fn sandopolis_framebuffer_ptr(emu: *const WasmEmulator) [*]const u32 {
     return emu.machine.framebuffer().ptr;
@@ -185,13 +182,9 @@ export fn sandopolis_screen_height(emu: *const WasmEmulator) u32 {
     return emu.machine.screenHeight();
 }
 
-// Input
-
 export fn sandopolis_set_button(emu: *WasmEmulator, port: u32, button: u16, pressed: bool) void {
     emu.machine.setButton(port, button, pressed);
 }
-
-// Machine control
 
 export fn sandopolis_reset(emu: *WasmEmulator) void {
     emu.machine.softReset();
@@ -200,8 +193,6 @@ export fn sandopolis_reset(emu: *WasmEmulator) void {
 export fn sandopolis_is_pal(emu: *const WasmEmulator) bool {
     return emu.machine.palMode();
 }
-
-// Audio
 
 export fn sandopolis_audio_render(emu: *WasmEmulator) usize {
     emu.audio_sample_count = 0;

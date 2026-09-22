@@ -114,7 +114,7 @@ pub const SystemMachine = union(enum) {
                 sms.is_game_gear = (sys == .gg);
                 sms.is_sg1000 = (sys == .sg1000);
                 try sms.bus.setSourcePath(allocator, effective_path);
-                // NOTE: no bindPointers() here — the struct is moved by the
+                // NOTE: no bindPointers() here: the struct is moved by the
                 // return below; SmsMachine.runFrame binds lazily.
                 return .{ .sms = sms };
             }

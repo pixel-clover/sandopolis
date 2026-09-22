@@ -129,8 +129,6 @@ pub const Disc = struct {
         return sources;
     }
 
-    // -- Constructors -------------------------------------------------------
-
     /// In-memory disc. `cue_text` null means a single MODE1/2048 image in
     /// `files[0]`. Otherwise `files[i]` backs the i-th FILE entry of the
     /// sheet, in order, and file names in the sheet are not consulted.
@@ -143,6 +141,24 @@ pub const Disc = struct {
         if (layout.files.len != files.len) return error.FileCountMismatch;
 
         const sources = try ownedMemorySources(allocator, files);
+        return .{ .allocator = allocator, .layout = layout, .sources = sources };
+    }
+
+    /// In-memory disc that takes ownership of `files` only on success.
+    pub fn fromOwnedMemory(allocator: std.mem.Allocator, cue_text: ?[]const u8, files: []const []u8) !Disc {
+        if (files.len == 0) return error.NoTracks;
+        var sizes = try allocator.alloc([]const u8, files.len);
+        defer allocator.free(sizes);
+        for (files, 0..) |bytes, i| sizes[i] = bytes;
+
+        var ctx = MemorySizes{ .files = sizes };
+        var layout = try cue.parse(allocator, cue_text orelse single_iso_sheet, &ctx, MemorySizes.lookup);
+        errdefer layout.deinit();
+        if (layout.files.len != files.len) return error.FileCountMismatch;
+
+        const sources = try allocator.alloc(SectorSource, files.len);
+        errdefer allocator.free(sources);
+        for (sources, files) |*source, bytes| source.* = .{ .memory = bytes };
         return .{ .allocator = allocator, .layout = layout, .sources = sources };
     }
 
@@ -192,8 +208,6 @@ pub const Disc = struct {
         return .{ .allocator = allocator, .layout = layout, .sources = sources, .source_path = source_path };
     }
 
-    // -- Queries ------------------------------------------------------------
-
     pub fn leadOutLba(self: *const Disc) u32 {
         return self.layout.lead_out_lba;
     }
@@ -217,8 +231,6 @@ pub const Disc = struct {
     pub fn trackCount(self: *const Disc) usize {
         return self.layout.tracks.len;
     }
-
-    // -- Sector access ------------------------------------------------------
 
     /// Read one 2352-byte raw sector. Data tracks stored as 2048-byte user
     /// data get a synthesized sync/header (mode 1) with zeroed EDC/ECC.
@@ -338,10 +350,6 @@ const DirSizes = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 const testing = std.testing;
 
 fn fillPattern(buf: []u8, seed: u8) void {
@@ -408,6 +416,19 @@ test "raw 2352 data and audio tracks from a cue sheet in memory" {
     try testing.expectEqual(@as(i16, -2), frames[0][1]);
     try testing.expectEqual(@as(i16, -32768), frames[1][0]);
     try testing.expectError(error.NotAudioTrack, disc.readAudioSector(0, &frames));
+}
+
+test "owned memory disc keeps the caller allocation" {
+    const image = try testing.allocator.alloc(u8, 2 * user_data_bytes);
+    var transferred = false;
+    defer if (!transferred) testing.allocator.free(image);
+    @memset(image, 0);
+
+    var disc = try Disc.fromOwnedMemory(testing.allocator, null, &.{image});
+    transferred = true;
+    defer disc.deinit();
+
+    try testing.expectEqual(image.ptr, disc.sources[0].memory.ptr);
 }
 
 test "virtual pregap reads as silence or a bare data header" {

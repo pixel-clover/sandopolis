@@ -31,8 +31,6 @@ const Args = struct {
     persist: usize = 10,
 };
 
-// ---- Genesis Plus GX libretro reference core ----
-
 const ReferenceApi = struct {
     lib: std.DynLib,
     set_environment: *const fn (c.retro_environment_t) callconv(.c) void,
@@ -128,8 +126,6 @@ fn inputStateCb(_: c_uint, _: c_uint, _: c_uint, _: c_uint) callconv(.c) i16 {
     return 0;
 }
 
-// ---- RAM divergence ----
-
 /// Count 68K-work-RAM byte differences.  GPGX stores work RAM word-swapped on
 /// little-endian hosts (READ_BYTE(base, addr^1)); `swapped` selects that
 /// alignment.  Returns the differing byte count for the given alignment.
@@ -152,7 +148,6 @@ pub fn main(init: std.process.Init) !void {
     defer arg_it.deinit();
     const args = try parseArgs(&arg_it);
 
-    // --- Genesis Plus GX ---
     var api = ReferenceApi.open(default_core_path) catch |err| {
         std.debug.print(
             "error: cannot open Genesis Plus GX reference core at {s} ({s}).\n" ++
@@ -191,7 +186,6 @@ pub fn main(init: std.process.Init) !void {
     const ref_ram_ptr = api.get_memory_data(c.RETRO_MEMORY_SYSTEM_RAM) orelse return error.NoReferenceRam;
     const ref_ram_len = api.get_memory_size(c.RETRO_MEMORY_SYSTEM_RAM);
 
-    // --- Sandopolis ---
     var emu = try testing.Emulator.init(allocator, args.rom_path);
     defer emu.deinit(allocator);
     if (args.pal) {
@@ -263,7 +257,7 @@ pub fn main(init: std.process.Init) !void {
             }
             peak_diverge = @max(peak_diverge, diverge);
         } else if (in_episode) {
-            // Episode closed (recovered) -- report it if long enough to matter.
+            // Episode closed (recovered); report it if long enough to matter.
             const dur = frame - onset_frame;
             if (dur >= args.persist) {
                 episode_count += 1;

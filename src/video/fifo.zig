@@ -1733,6 +1733,13 @@ pub fn writeControl(self: *Vdp, value: u16) void {
             // would drop any pending data port writes that are still in the
             // pipeline, corrupting VRAM (e.g. Warsong's stats panel tiles).
         }
+
+        if ((self.code & 0x20) == 0) {
+            if (currentDataPortReadWordWithQueuedWrites(self, self.code, self.addr)) |word| {
+                self.read_buffer = word;
+                advanceAddr(self);
+            }
+        }
     }
 }
 
@@ -1768,7 +1775,7 @@ test "CRAM writes skip the slot after a refresh slot during blanking" {
 
 test "fifo keeps per-line access slot rate through hblank on active display lines" {
     // Genesis Plus GX (and hardware): an active-display line exposes exactly
-    // 16 (H32) / 18 (H40) FIFO access slots across the WHOLE line -- the
+    // 16 (H32) / 18 (H40) FIFO access slots across the WHOLE line: the
     // hblank window does not open extra slots.  Draining at every
     // non-refresh slot during hblank made the FIFO empty ~2x too fast in
     // Titan Overdrive's write-flood scenes, letting our 68K run ahead of
@@ -2039,6 +2046,21 @@ test "CRAM data reads inherit undriven bits from the fifo front word" {
 
     try testing.expectEqual(@as(u16, 0), vdp.readData());
     try testing.expectEqual(@as(u16, 0xA323), vdp.read_buffer);
+}
+
+test "read command prefetches the first data word" {
+    var vdp = Vdp.init();
+    vdp.regs[15] = 2;
+    vdp.cram[0] = 0x02;
+    vdp.cram[1] = 0x22;
+    vdp.cram[2] = 0x04;
+    vdp.cram[3] = 0x44;
+
+    vdp.writeControl(0x0000);
+    vdp.writeControl(0x0020); // CRAM read at address 0.
+
+    try testing.expectEqual(@as(u16, 0x0222), vdp.readData());
+    try testing.expectEqual(@as(u16, 0x0444), vdp.read_buffer);
 }
 
 test "VSRAM data reads inherit undriven bits from the fifo front word" {
