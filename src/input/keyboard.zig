@@ -3,7 +3,7 @@ const zsdl3 = @import("zsdl3");
 const InputBindings = @import("mapping.zig");
 
 pub fn keyboardStatePressed(state: []const bool, scancode: zsdl3.Scancode) bool {
-    const index: usize = @intFromEnum(scancode);
+    const index: usize = @backingInt(scancode);
     return index < state.len and state[index];
 }
 
@@ -152,9 +152,9 @@ test "hotkeyActionDescription returns non-empty strings for all actions" {
 }
 
 test "keyboardStatePressed handles bounds correctly" {
-    var state = [_]bool{false} ** 16;
+    var state: [16]bool = @splat(false);
     state[5] = true;
-    try testing.expect(keyboardStatePressed(&state, @enumFromInt(5)));
-    try testing.expect(!keyboardStatePressed(&state, @enumFromInt(0)));
-    try testing.expect(!keyboardStatePressed(&state, @enumFromInt(100)));
+    try testing.expect(keyboardStatePressed(&state, @fromBackingInt(@intCast(5))));
+    try testing.expect(!keyboardStatePressed(&state, @fromBackingInt(@intCast(0))));
+    try testing.expect(!keyboardStatePressed(&state, @fromBackingInt(@intCast(100))));
 }

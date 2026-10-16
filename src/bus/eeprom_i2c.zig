@@ -623,7 +623,7 @@ fn readDataByte(eeprom: *EepromI2c, wiring: WiringConfig, ack: bool) u8 {
 }
 
 test "i2c eeprom start and stop detection transitions state" {
-    var data = [_]u8{0} ** 128;
+    var data: [128]u8 = @splat(0);
     var eeprom = makeTestEeprom(0, .sega, &data); // X24C01, 7-bit mode
 
     try std.testing.expectEqual(I2cState.stand_by, eeprom.state);
@@ -636,7 +636,7 @@ test "i2c eeprom start and stop detection transitions state" {
 }
 
 test "i2c eeprom 7-bit mode write and read cycle" {
-    var data = [_]u8{0} ** 128;
+    var data: [128]u8 = @splat(0);
     var eeprom = makeTestEeprom(0, .sega, &data); // X24C01
 
     // Write 0xA5 to address 0x10
@@ -657,7 +657,7 @@ test "i2c eeprom 7-bit mode write and read cycle" {
 }
 
 test "i2c eeprom page write wraps within page boundary" {
-    var data = [_]u8{0} ** 128;
+    var data: [128]u8 = @splat(0);
     var eeprom = makeTestEeprom(0, .sega, &data); // X24C01, pagewrite_mask=0x03
 
     // Write starting at address 0x02 (within page 0x00-0x03)
@@ -675,7 +675,7 @@ test "i2c eeprom page write wraps within page boundary" {
 }
 
 test "i2c eeprom 8-bit mode device address and word address" {
-    var data = [_]u8{0} ** 256;
+    var data: [256]u8 = @splat(0);
     var eeprom = makeTestEeprom(1, .sega, &data); // X24C02, 8-bit mode
 
     // Write 0xBE to address 0x42
@@ -697,7 +697,7 @@ test "i2c eeprom 8-bit mode device address and word address" {
 }
 
 test "i2c eeprom address out of range returns null" {
-    var data = [_]u8{0} ** 128;
+    var data: [128]u8 = @splat(0);
     var eeprom = makeTestEeprom(0, .sega, &data);
 
     try std.testing.expectEqual(@as(?u8, null), eeprom.readByte(0x100000));
@@ -707,7 +707,7 @@ test "i2c eeprom address out of range returns null" {
 }
 
 test "i2c eeprom dirty flag set on write" {
-    var data = [_]u8{0} ** 128;
+    var data: [128]u8 = @splat(0);
     var eeprom = makeTestEeprom(0, .sega, &data);
 
     try std.testing.expect(!eeprom.dirty);
@@ -721,7 +721,7 @@ test "i2c eeprom dirty flag set on write" {
 }
 
 test "i2c eeprom resetState clears protocol state but not data" {
-    var data = [_]u8{0} ** 128;
+    var data: [128]u8 = @splat(0);
     var eeprom = makeTestEeprom(0, .sega, &data);
 
     sendStart(&eeprom, .sega);
@@ -737,7 +737,7 @@ test "i2c eeprom resetState clears protocol state but not data" {
 }
 
 test "i2c eeprom 16-bit mode write and read cycle" {
-    var data = [_]u8{0} ** 0x10000;
+    var data: [0x10000]u8 = @splat(0);
     var eeprom = makeTestEeprom(12, .sega, &data); // 24C512, 16-bit word address
 
     // Write 0x5C to address 0x1234
@@ -765,7 +765,7 @@ test "i2c eeprom 16-bit mode write and read cycle" {
 }
 
 test "acclaim 32m bank-shift exposes rom until the eeprom is selected" {
-    var data = [_]u8{0xFF} ** 512;
+    var data: [512]u8 = @splat(0xFF);
     var eeprom = makeTestEeprom(4, .acclaim_32m, &data); // 24C04 (NBA Jam TE)
 
     // Power-on: reads fall through to cartridge ROM across the window.
@@ -784,7 +784,7 @@ test "acclaim 32m bank-shift exposes rom until the eeprom is selected" {
 }
 
 test "sega wiring word writes drive the i2c lines from the low byte" {
-    var data = [_]u8{0} ** 128;
+    var data: [128]u8 = @splat(0);
     var eeprom = makeTestEeprom(0, .sega, &data);
 
     // SCL is D1, SDA is D0; both live in the LOW byte of a word write.
@@ -798,7 +798,7 @@ test "sega wiring word writes drive the i2c lines from the low byte" {
 }
 
 test "codemasters wiring uses split write and read windows" {
-    var data = [_]u8{0} ** 1024;
+    var data: [1024]u8 = @splat(0);
     var eeprom = makeTestEeprom(5, .codemasters, &data); // 24C08
 
     try std.testing.expect(!eeprom.writeByte(0x20_0001, 0xFF)); // outside write window
@@ -808,7 +808,7 @@ test "codemasters wiring uses split write and read windows" {
 }
 
 test "i2c detect finds known game by product code" {
-    var rom = [_]u8{0} ** 0x200;
+    var rom: [0x200]u8 = @splat(0);
     @memcpy(rom[0x183 .. 0x183 + 7], "T-12046");
 
     const result = detect(&rom);
@@ -818,7 +818,7 @@ test "i2c detect finds known game by product code" {
 }
 
 test "i2c detect returns null for unknown game" {
-    var rom = [_]u8{0} ** 0x200;
+    var rom: [0x200]u8 = @splat(0);
     @memcpy(rom[0x183 .. 0x183 + 7], "UNKNOWN");
 
     try std.testing.expectEqual(@as(?DetectResult, null), detect(&rom));

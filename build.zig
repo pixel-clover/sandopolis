@@ -1,9 +1,43 @@
 const std = @import("std");
 
 const CpuDeps = struct {
-    rocket68: *std.Build.Dependency,
+    rocket68: std.Build.LazyPath,
     jgz80: *std.Build.Dependency,
 };
+
+fn sourceDependency(comptime name: []const u8) std.Build.LazyPath {
+    // shortcut: Zig 0.17 dependency-map access, replace with b.dependency when Rocket 68 fixes its package metadata checks.
+    const dependencies = @import("root").dependencies;
+    inline for (dependencies.root_deps) |dep| {
+        if (comptime std.mem.eql(u8, dep[0], name)) {
+            return .{ .cwd_relative = @field(dependencies.packages, dep[1]).build_root };
+        }
+    }
+    @compileError("missing source dependency: " ++ name);
+}
+
+fn addCpuHeaders(module: *std.Build.Module, b: *std.Build, deps: CpuDeps) void {
+    const bridge = b.addTranslateC(.{
+        .root_source_file = b.path("src/cpu/jgz80_bridge.h"),
+        .target = module.resolved_target.?,
+        .optimize = module.optimize.?,
+        .link_libc = true,
+    });
+    module.addImport("jgz80_bridge", bridge.createModule());
+
+    const rocket = b.addTranslateC(.{
+        .root_source_file = deps.rocket68.path(b, "include/disasm.h"),
+        .target = module.resolved_target.?,
+        .optimize = module.optimize.?,
+        .link_libc = true,
+    });
+    rocket.addIncludePath(deps.rocket68.path(b, "include"));
+    rocket.addIncludePath(deps.rocket68.path(b, "src/m68k"));
+    if (module.resolved_target.?.result.cpu.arch == .wasm32) {
+        rocket.addIncludePath(b.path("src/wasm_compat"));
+    }
+    module.addImport("rocket68_headers", rocket.createModule());
+}
 
 fn createTestingApiModule(
     b: *std.Build,
@@ -16,10 +50,11 @@ fn createTestingApiModule(
         .target = target,
         .optimize = optimize,
     });
-    module.addIncludePath(deps.rocket68.path("include"));
-    module.addIncludePath(deps.rocket68.path("src/m68k"));
+    module.addIncludePath(deps.rocket68.path(b, "include"));
+    module.addIncludePath(deps.rocket68.path(b, "src/m68k"));
     module.addIncludePath(deps.jgz80.path("."));
     module.addIncludePath(b.path("src/cpu"));
+    addCpuHeaders(module, b, deps);
     return module;
 }
 
@@ -34,18 +69,20 @@ fn createSandopolisApiModule(
         .target = target,
         .optimize = optimize,
     });
-    module.addIncludePath(deps.rocket68.path("include"));
-    module.addIncludePath(deps.rocket68.path("src/m68k"));
+    module.addIncludePath(deps.rocket68.path(b, "include"));
+    module.addIncludePath(deps.rocket68.path(b, "src/m68k"));
     module.addIncludePath(deps.jgz80.path("."));
     module.addIncludePath(b.path("src/cpu"));
+    addCpuHeaders(module, b, deps);
     return module;
 }
 
 fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
     addCpuIncludePaths(step, b, deps);
+    addCpuHeaders(step.root_module, b, deps);
 
     step.root_module.addCSourceFiles(.{
-        .root = deps.rocket68.path("."),
+        .root = deps.rocket68.path(b, "."),
         .files = &.{
             "src/m68k/m68k.c",
             "src/m68k/ops_arith.c",
@@ -72,14 +109,15 @@ fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDe
 }
 
 fn addCpuIncludePaths(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
-    step.root_module.addIncludePath(deps.rocket68.path("include"));
-    step.root_module.addIncludePath(deps.rocket68.path("src/m68k"));
+    step.root_module.addIncludePath(deps.rocket68.path(b, "include"));
+    step.root_module.addIncludePath(deps.rocket68.path(b, "src/m68k"));
     step.root_module.addIncludePath(deps.jgz80.path("."));
     step.root_module.addIncludePath(b.path("src/cpu"));
 }
 
 fn pathExists(b: *std.Build, relative_path: []const u8) bool {
-    b.build_root.handle.access(b.graph.io, relative_path, .{}) catch return false;
+    b.graph.poisonCache();
+    _ = b.root.statFile(b.graph.io, relative_path) catch return false;
     return true;
 }
 
@@ -91,11 +129,28 @@ fn runOrDefault(b: *std.Build, argv: []const []const u8, default_value: []const 
 }
 
 fn addStbTruetype(step: *std.Build.Step.Compile, b: *std.Build) void {
+    const font = b.addTranslateC(.{
+        .root_source_file = b.path("src/frontend/fonts/stb_truetype.h"),
+        .target = step.root_module.resolved_target.?,
+        .optimize = step.root_module.optimize.?,
+        .link_libc = true,
+    });
+    step.root_module.addImport("stb_truetype", font.createModule());
     step.root_module.addCSourceFiles(.{
         .files = &.{"src/frontend/fonts/stb_impl.c"},
         .flags = &.{"-std=c99"},
     });
     step.root_module.addIncludePath(b.path("src/frontend/fonts"));
+}
+
+fn addLibretroHeaders(step: *std.Build.Step.Compile, b: *std.Build) void {
+    const headers = b.addTranslateC(.{
+        .root_source_file = b.path("external/libretro/libretro.h"),
+        .target = step.root_module.resolved_target.?,
+        .optimize = step.root_module.optimize.?,
+        .link_libc = true,
+    });
+    step.root_module.addImport("libretro_headers", headers.createModule());
 }
 
 fn linkSdl3(step: *std.Build.Step.Compile, sdl3_lib: *std.Build.Step.Compile) void {
@@ -107,15 +162,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const regression_optimize =
-        b.option(std.builtin.OptimizeMode, "regression-optimize", "Optimize mode for regression tests") orelse .ReleaseSafe;
+        b.option(std.builtin.OptimizeMode, "regression-optimize", "Optimize mode for regression tests") orelse .safe;
     const version = @import("build.zig.zon").version;
 
-    // SDL3 bindings vendored from zig-gamedev/zsdl (see external/zsdl3/):
-    // depending on the zsdl package pulled its build script into the graph,
-    // which lazily fetches prebuilt SDL tarballs whose pinned Windows
-    // package fails Zig 0.16's fetch-time validation. SDL3 itself is built
-    // from source via the sdl3 dependency.
     const zsdl3_module = b.createModule(.{
+        // Upstream zsdl's build script still uses getInstallPath, removed in Zig 0.17.
         .root_source_file = b.path("external/zsdl3/sdl3.zig"),
     });
     const chilli = b.dependency("chilli", .{});
@@ -126,7 +177,7 @@ pub fn build(b: *std.Build) void {
     });
     const sdl3_lib = sdl3_dep.artifact("SDL3");
     const cpu_deps: CpuDeps = .{
-        .rocket68 = b.dependency("rocket68", .{}),
+        .rocket68 = sourceDependency("rocket68"),
         .jgz80 = b.dependency("jgz80", .{}),
     };
     const sandopolis_api = createSandopolisApiModule(b, target, optimize, cpu_deps);
@@ -178,9 +229,7 @@ pub fn build(b: *std.Build) void {
     // Run step
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
@@ -317,6 +366,13 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(compare_ym, b, cpu_deps);
     if (compare_ym_available) {
+        const ym_headers = b.addTranslateC(.{
+            .root_source_file = b.path("external/Nuked-OPN2/ym3438.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        compare_ym.root_module.addImport("ym3438", ym_headers.createModule());
         compare_ym.root_module.addIncludePath(b.path("external/Nuked-OPN2"));
         compare_ym.root_module.addCSourceFiles(.{
             .root = b.path("external/Nuked-OPN2"),
@@ -326,9 +382,7 @@ pub fn build(b: *std.Build) void {
         compare_ym.root_module.link_libc = true;
     }
     const compare_ym_run = b.addRunArtifact(compare_ym);
-    if (b.args) |args| {
-        compare_ym_run.addArgs(args);
-    }
+    compare_ym_run.addPassthruArgs();
     const compare_ym_step = b.step("compare-ym", "Compare raw YM output against external/Nuked-OPN2");
     compare_ym_step.dependOn(&compare_ym_run.step);
 
@@ -344,12 +398,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(dump_audio, b, cpu_deps);
+    addLibretroHeaders(dump_audio, b);
     dump_audio.root_module.addIncludePath(b.path("external/libretro"));
     dump_audio.root_module.link_libc = true;
     const dump_audio_run = b.addRunArtifact(dump_audio);
-    if (b.args) |args| {
-        dump_audio_run.addArgs(args);
-    }
+    dump_audio_run.addPassthruArgs();
     const dump_audio_step = b.step("dump-audio", "Dump headless audio to WAV using Sandopolis or a reference libretro core");
     dump_audio_step.dependOn(&dump_audio_run.step);
 
@@ -365,12 +418,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(trace_diff, b, cpu_deps);
+    addLibretroHeaders(trace_diff, b);
     trace_diff.root_module.addIncludePath(b.path("external/libretro"));
     trace_diff.root_module.link_libc = true;
     const trace_diff_run = b.addRunArtifact(trace_diff);
-    if (b.args) |args| {
-        trace_diff_run.addArgs(args);
-    }
+    trace_diff_run.addPassthruArgs();
     const trace_diff_step = b.step("trace-diff", "Differential test vs Genesis Plus GX: report first 68K-RAM divergence");
     trace_diff_step.dependOn(&trace_diff_run.step);
 
@@ -386,12 +438,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(stall_diff, b, cpu_deps);
+    addLibretroHeaders(stall_diff, b);
     stall_diff.root_module.addIncludePath(b.path("external/libretro"));
     stall_diff.root_module.link_libc = true;
     const stall_diff_run = b.addRunArtifact(stall_diff);
-    if (b.args) |args| {
-        stall_diff_run.addArgs(args);
-    }
+    stall_diff_run.addPassthruArgs();
     const stall_diff_step = b.step("stall-diff", "Compare per-mechanism 68K stall accounting vs instrumented Genesis Plus GX");
     stall_diff_step.dependOn(&stall_diff_run.step);
 
@@ -407,12 +458,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(dump_frames, b, cpu_deps);
+    addLibretroHeaders(dump_frames, b);
     dump_frames.root_module.addIncludePath(b.path("external/libretro"));
     dump_frames.root_module.link_libc = true;
     const dump_frames_run = b.addRunArtifact(dump_frames);
-    if (b.args) |args| {
-        dump_frames_run.addArgs(args);
-    }
+    dump_frames_run.addPassthruArgs();
     const dump_frames_step = b.step("dump-frames", "Capture Sandopolis + Genesis Plus GX framebuffers at a frame as PPMs");
     dump_frames_step.dependOn(&dump_frames_run.step);
 
@@ -428,12 +478,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(vram_diff, b, cpu_deps);
+    addLibretroHeaders(vram_diff, b);
     vram_diff.root_module.addIncludePath(b.path("external/libretro"));
     vram_diff.root_module.link_libc = true;
     const vram_diff_run = b.addRunArtifact(vram_diff);
-    if (b.args) |args| {
-        vram_diff_run.addArgs(args);
-    }
+    vram_diff_run.addPassthruArgs();
     const vram_diff_step = b.step("vram-diff", "Compare Sandopolis vs Genesis Plus GX VRAM byte-for-byte at a frame");
     vram_diff_step.dependOn(&vram_diff_run.step);
 
@@ -450,9 +499,7 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(trace_sound_boot, b, cpu_deps);
     const trace_sound_boot_run = b.addRunArtifact(trace_sound_boot);
-    if (b.args) |args| {
-        trace_sound_boot_run.addArgs(args);
-    }
+    trace_sound_boot_run.addPassthruArgs();
     const trace_sound_boot_step = b.step("trace-sound-boot", "Trace M68K writes to the sound CPU bring-up regions");
     trace_sound_boot_step.dependOn(&trace_sound_boot_run.step);
 
@@ -469,9 +516,7 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(trace_m68k_failure, b, cpu_deps);
     const trace_m68k_failure_run = b.addRunArtifact(trace_m68k_failure);
-    if (b.args) |args| {
-        trace_m68k_failure_run.addArgs(args);
-    }
+    trace_m68k_failure_run.addPassthruArgs();
     const trace_m68k_failure_step = b.step("trace-m68k-failure", "Trace the last M68K instructions before a bad CPU state");
     trace_m68k_failure_step.dependOn(&trace_m68k_failure_run.step);
 
@@ -488,9 +533,7 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(trace_irq_storm, b, cpu_deps);
     const trace_irq_storm_run = b.addRunArtifact(trace_irq_storm);
-    if (b.args) |args| {
-        trace_irq_storm_run.addArgs(args);
-    }
+    trace_irq_storm_run.addPassthruArgs();
     const trace_irq_storm_step = b.step("trace-irq-storm", "Per-ROM progress/storm diagnostic (--derail locates a crash)");
     trace_irq_storm_step.dependOn(&trace_irq_storm_run.step);
 
@@ -506,12 +549,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addExternalCpuCores(trace_ym_writes, b, cpu_deps);
+    addLibretroHeaders(trace_ym_writes, b);
     trace_ym_writes.root_module.addIncludePath(b.path("external/libretro"));
     trace_ym_writes.root_module.link_libc = true;
     const trace_ym_writes_run = b.addRunArtifact(trace_ym_writes);
-    if (b.args) |args| {
-        trace_ym_writes_run.addArgs(args);
-    }
+    trace_ym_writes_run.addPassthruArgs();
     const trace_ym_writes_step = b.step("trace-ym-writes", "Dump decoded YM register writes from Sandopolis or a reference libretro core");
     trace_ym_writes_step.dependOn(&trace_ym_writes_run.step);
 
@@ -528,9 +570,7 @@ pub fn build(b: *std.Build) void {
     });
     addExternalCpuCores(trace_z80_audio_ops, b, cpu_deps);
     const trace_z80_audio_ops_run = b.addRunArtifact(trace_z80_audio_ops);
-    if (b.args) |args| {
-        trace_z80_audio_ops_run.addArgs(args);
-    }
+    trace_z80_audio_ops_run.addPassthruArgs();
     const trace_z80_audio_ops_step = b.step("trace-z80-audio-ops", "Dump raw Z80 audio-mapped writes from Sandopolis");
     trace_z80_audio_ops_step.dependOn(&trace_z80_audio_ops_run.step);
 
@@ -544,6 +584,7 @@ pub fn build(b: *std.Build) void {
         .root_module = docs_module,
     });
     addCpuIncludePaths(docs_obj, b, cpu_deps);
+    addCpuHeaders(docs_module, b, cpu_deps);
     const install_docs = b.addInstallDirectory(.{
         .source_dir = docs_obj.getEmittedDocs(),
         .install_dir = .prefix,
@@ -569,7 +610,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/wasm.zig"),
             .target = wasm_target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .imports = &.{
                 .{ .name = "build_options", .module = build_options.createModule() },
             },

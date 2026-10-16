@@ -42,7 +42,7 @@ pub const Error = error{
 fn storageIntType(comptime T: type) type {
     const int_info = @typeInfo(T).int;
     const bit_count: u16 = ((int_info.bits + 7) / 8) * 8;
-    return std.meta.Int(int_info.signedness, bit_count);
+    return @Int(int_info.signedness, bit_count);
 }
 
 fn skipSaveStateField(comptime Parent: type, comptime field_name: []const u8) bool {
@@ -66,7 +66,7 @@ pub fn writeValue(writer: anytype, value: anytype) !void {
             try writer.writeInt(Storage, @as(Storage, value), std.builtin.Endian.little);
         },
         .@"enum" => {
-            try writeValue(writer, @intFromEnum(value));
+            try writeValue(writer, @backingInt(value));
         },
         .array => |array_info| {
             if (array_info.child == u8) {
@@ -79,9 +79,9 @@ pub fn writeValue(writer: anytype, value: anytype) !void {
             }
         },
         .@"struct" => |struct_info| {
-            inline for (struct_info.fields) |field| {
-                if (comptime skipSaveStateField(T, field.name)) continue;
-                try writeValue(writer, @field(value, field.name));
+            inline for (struct_info.field_names) |name| {
+                if (comptime skipSaveStateField(T, name)) continue;
+                try writeValue(writer, @field(value, name));
             }
         },
         .@"union" => |union_info| {
@@ -134,23 +134,23 @@ pub fn readInto(reader: anytype, out: anytype) !void {
             }
         },
         .@"struct" => |struct_info| {
-            inline for (struct_info.fields) |field| {
-                if (comptime skipSaveStateField(T, field.name)) {
-                    @field(out.*, field.name) = std.mem.zeroes(field.type);
+            inline for (struct_info.field_names) |name| {
+                if (comptime skipSaveStateField(T, name)) {
+                    @field(out.*, name) = std.mem.zeroes(@FieldType(T, name));
                     continue;
                 }
-                try readInto(reader, &@field(out.*, field.name));
+                try readInto(reader, &@field(out.*, name));
             }
         },
         .@"union" => |union_info| {
             const Tag = union_info.tag_type orelse @compileError("save-state unions must be tagged");
             const tag = try readValue(reader, Tag);
 
-            inline for (union_info.fields) |field| {
-                if (tag == @field(Tag, field.name)) {
-                    var payload: field.type = undefined;
+            inline for (union_info.field_names) |name| {
+                if (tag == @field(Tag, name)) {
+                    var payload: @FieldType(T, name) = undefined;
                     try readInto(reader, &payload);
-                    out.* = @unionInit(T, field.name, payload);
+                    out.* = @unionInit(T, name, payload);
                     return;
                 }
             }
@@ -402,9 +402,27 @@ fn tempFilePath(allocator: std.mem.Allocator, tmp: *testing.TmpDir, file_name: [
     return std.fs.path.join(allocator, &.{ dir_path, file_name });
 }
 
+test "save-state reflection preserves field order and tagged union bytes" {
+    const Sample = struct {
+        count: u16,
+        enabled: bool,
+        payload: union(enum(u8)) { small: u8, large: u16 },
+    };
+    const original: Sample = .{ .count = 0x1234, .enabled = true, .payload = .{ .large = 0x5678 } };
+    var buffer: [6]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try writeValue(&writer, original);
+    try testing.expectEqualSlices(u8, &.{ 0x34, 0x12, 1, 1, 0x78, 0x56 }, writer.buffered());
+    var reader: std.Io.Reader = .fixed(&buffer);
+    try testing.expectEqualDeep(original, try readValue(&reader, Sample));
+    buffer[3] = 2;
+    reader = .fixed(&buffer);
+    try testing.expectError(error.InvalidSaveState, readValue(&reader, Sample));
+}
+
 test "default state path derives from ROM source path, numbered slots, and fallback" {
     const allocator = testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -502,7 +520,7 @@ test "save-state round-trips ssf bank registers and eeprom state" {
 
     // EEPROM: contents and I2C protocol state survive the round trip.
     {
-        var rom = [_]u8{0} ** 0x400;
+        var rom: [0x400]u8 = @splat(0);
         @memcpy(rom[0x100..0x104], "SEGA");
         @memcpy(rom[0x183 .. 0x183 + 7], "T-12046"); // known EEPROM game
         var machine = try Machine.initFromRomBytes(allocator, &rom);

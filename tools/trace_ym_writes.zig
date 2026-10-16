@@ -5,9 +5,7 @@ const AudioOutput = testing.AudioOutput;
 const YmDacSampleEvent = testing.YmDacSampleEvent;
 const YmWriteEvent = testing.YmWriteEvent;
 
-const c = @cImport({
-    @cInclude("libretro.h");
-});
+const c = @import("libretro_headers");
 
 const default_reference_core_path = "external/Genesis-Plus-GX/genesis_plus_gx_libretro.so";
 const default_frames: usize = 120;
@@ -378,9 +376,9 @@ fn traceReference(allocator: std.mem.Allocator, config: Config) !StreamSummary {
 
     const cwd_path = try platform.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd_path);
-    const cwd_z = try allocator.dupeZ(u8, cwd_path);
+    const cwd_z = try allocator.dupeSentinel(u8, cwd_path, 0);
     defer allocator.free(cwd_z);
-    const rom_path_z = try allocator.dupeZ(u8, config.rom_path);
+    const rom_path_z = try allocator.dupeSentinel(u8, config.rom_path, 0);
     defer allocator.free(rom_path_z);
 
     var frontend = ReferenceFrontend{

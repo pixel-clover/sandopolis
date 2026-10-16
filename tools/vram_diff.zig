@@ -2,9 +2,7 @@ const std = @import("std");
 const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
-const c = @cImport({
-    @cInclude("libretro.h");
-});
+const c = @import("libretro_headers");
 
 // VRAM differential: run BOTH Sandopolis and the Genesis Plus GX reference core
 // to the same frame, then compare their 64KB VRAM byte-for-byte.  trace-diff
@@ -223,7 +221,7 @@ pub fn main(init: std.process.Init) !void {
 
     const cwd = try platform.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
-    const cwd_z = try allocator.dupeZ(u8, cwd);
+    const cwd_z = try allocator.dupeSentinel(u8, cwd, 0);
     defer allocator.free(cwd_z);
     var front = Frontend{ .system_dir_z = cwd_z, .pal = args.pal };
     active = &front;
@@ -238,7 +236,7 @@ pub fn main(init: std.process.Init) !void {
     api.init();
     defer api.deinit();
 
-    const rom_z = try allocator.dupeZ(u8, args.rom_path);
+    const rom_z = try allocator.dupeSentinel(u8, args.rom_path, 0);
     defer allocator.free(rom_z);
     var game = c.struct_retro_game_info{ .path = rom_z.ptr, .data = null, .size = 0, .meta = null };
     if (!api.load_game(&game)) return error.RetroLoadGameFailed;

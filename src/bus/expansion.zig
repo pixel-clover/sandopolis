@@ -98,7 +98,7 @@ pub const ExpansionDevice = struct {
 /// `base` and records scheduling calls.
 pub const ProbeDevice = struct {
     base: u32,
-    ram: [64 * 1024]u8 = [_]u8{0} ** (64 * 1024),
+    ram: [64 * 1024]u8 = @splat(0),
     master_credit: u64 = 0,
     flush_count: u32 = 0,
     reset_count: u32 = 0,

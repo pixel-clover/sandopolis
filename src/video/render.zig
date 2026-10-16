@@ -266,9 +266,9 @@ pub fn renderScanline(self: *Vdp, line: u16) void {
 
     const line_start = @as(usize, line) * Vdp.framebuffer_width;
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
     var sh_buf: [Vdp.framebuffer_width]u8 = undefined;
     if (sh_mode) {
         @memset(&sh_buf, SH_SHADOW);
@@ -1029,7 +1029,7 @@ fn renderSpritesToBuffer(
     // Collision buffer covers the full 512-pixel internal coordinate space.
     // On real hardware, the VDP detects sprite overlap across all positions,
     // including off-screen pixels outside the visible display area.
-    var collision_buf = [_]u8{0} ** 512;
+    var collision_buf: [512]u8 = @splat(0);
 
     var sprites_on_line: u8 = 0;
     var pixel_budget_used: u16 = 0;
@@ -1247,10 +1247,10 @@ test "s/h highlight operator sprite color 3E raises intensity one step" {
     const sprite_base: u16 = 0x0200;
     writeTestSpriteEntry(&vdp, sprite_base, 0x6000, 128); // palette 3
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_SHADOW} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_SHADOW);
     @memset(sh_buf[4..8], SH_NORMAL);
 
     renderSpritesToBuffer(&vdp, 0, vdp.tileHeight(), vdp.tileHeightMask(), vdp.tileSizeBytes(), &pixel_buf, &layer_buf, &source_buf, &sh_buf, true);
@@ -1276,16 +1276,16 @@ test "s/h shadow operator sprite color 3F forces shadow" {
     const sprite_base: u16 = 0x0200;
     writeTestSpriteEntry(&vdp, sprite_base, 0x6000, 128); // palette 3
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
     @memset(sh_buf[4..8], SH_HIGHLIGHT);
 
     renderSpritesToBuffer(&vdp, 0, vdp.tileHeight(), vdp.tileHeightMask(), vdp.tileSizeBytes(), &pixel_buf, &layer_buf, &source_buf, &sh_buf, true);
 
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, pixel_buf[0..8]);
-    try std.testing.expectEqualSlices(u8, &[_]u8{SH_SHADOW} ** 8, sh_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(SH_SHADOW)), sh_buf[0..8]);
 }
 
 test "s/h sprite pixels of color 14 in palettes 0-2 are never shadowed" {
@@ -1303,17 +1303,17 @@ test "s/h sprite pixels of color 14 in palettes 0-2 are never shadowed" {
     const sprite_base: u16 = 0x0200;
     writeTestSpriteEntry(&vdp, sprite_base, 0x0000, 128); // palette 0, low priority
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_SHADOW} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_SHADOW);
 
     renderSpritesToBuffer(&vdp, 0, vdp.tileHeight(), vdp.tileHeightMask(), vdp.tileSizeBytes(), &pixel_buf, &layer_buf, &source_buf, &sh_buf, true);
 
     // The pixel is drawn, and the hardware quirk exempts sprite color 14 of
     // any palette from shadow: it always displays at normal intensity.
-    try std.testing.expectEqualSlices(u8, &[_]u8{14} ** 8, pixel_buf[0..8]);
-    try std.testing.expectEqualSlices(u8, &[_]u8{SH_NORMAL} ** 8, sh_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(14)), pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(SH_NORMAL)), sh_buf[0..8]);
 }
 
 test "backdrop honors s/h raises from high-priority transparent tiles" {
@@ -1364,10 +1364,10 @@ test "sprite pixel budget overflow sets the sprite overflow status flag" {
         );
     }
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
@@ -1397,10 +1397,10 @@ test "exact H40 sprite pixel budget does not overflow" {
         );
     }
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
@@ -1420,10 +1420,10 @@ test "sprite Y is masked to 9 bits outside interlace mode 2" {
     // uses 9 bits, so this reads as 0x080 and the sprite lands on line 0.
     writeTestSpriteEntryFull(&vdp, sprite_base, 0x0280, 0x00, 0x00, 0x0000, 128);
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
@@ -1440,10 +1440,10 @@ test "sprite renderer draws a simple sprite row and tracks counters" {
     const sprite_base: u16 = 0x0200;
     writeTestSpriteEntry(&vdp, sprite_base, 0x0000, 128);
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
     var counters = @import("../performance_profile.zig").CoreFrameCounters{};
     vdp.setActiveExecutionCounters(&counters);
     defer vdp.setActiveExecutionCounters(null);
@@ -1466,10 +1466,10 @@ test "sprite renderer respects horizontal flip" {
     const sprite_base: u16 = 0x0200;
     writeTestSpriteEntry(&vdp, sprite_base, 0x0800, 128);
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
@@ -1486,10 +1486,10 @@ test "sprite renderer invalidates cached sprite entries on SAT writes" {
     const sprite_base: u16 = 0x0200;
     writeTestSpriteEntry(&vdp, sprite_base, 0x0000, 128);
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[0..8]);
@@ -1498,7 +1498,7 @@ test "sprite renderer invalidates cached sprite entries on SAT writes" {
     vdp.vramWriteWord(sprite_base + 6, 136);
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
-    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(0)), pixel_buf[0..8]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[8..16]);
 }
 
@@ -1517,10 +1517,10 @@ test "off-screen sprite widths still trigger next-line sprite masking" {
         writeTestSpriteEntryFull(&vdp, entry_base, 128, 0x0C, next_link, 0x0000, 96);
     }
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
     try std.testing.expect(vdp.sprite_dot_overflow);
@@ -1531,7 +1531,7 @@ test "off-screen sprite widths still trigger next-line sprite masking" {
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
-    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(0)), pixel_buf[0..8]);
 }
 
 test "sprite renderer rebuilds cache when the SAT base changes" {
@@ -1544,10 +1544,10 @@ test "sprite renderer rebuilds cache when the SAT base changes" {
     writeTestSpriteEntry(&vdp, 0x0200, 0x0000, 128);
     writeTestSpriteEntry(&vdp, 0x0400, 0x0000, 136);
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[0..8]);
@@ -1556,7 +1556,7 @@ test "sprite renderer rebuilds cache when the SAT base changes" {
     vdp.regs[5] = 0x02;
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 
-    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, pixel_buf[0..8]);
+    try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(0)), pixel_buf[0..8]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, pixel_buf[8..16]);
 }
 
@@ -1579,10 +1579,10 @@ test "sprite collision wraps in the 9-bit internal coordinate space" {
     // x=0 sprite masking behavior.
     writeTestSpriteEntryFull(&vdp, sprite_base + 8, 128, 0x00, 0, 0x0001, 1);
 
-    var pixel_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var layer_buf: [Vdp.framebuffer_width]u8 = [_]u8{LAYER_BACKDROP} ** Vdp.framebuffer_width;
-    var source_buf: [Vdp.framebuffer_width]u8 = [_]u8{0} ** Vdp.framebuffer_width;
-    var sh_buf: [Vdp.framebuffer_width]u8 = [_]u8{SH_NORMAL} ** Vdp.framebuffer_width;
+    var pixel_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var layer_buf: [Vdp.framebuffer_width]u8 = @splat(LAYER_BACKDROP);
+    var source_buf: [Vdp.framebuffer_width]u8 = @splat(0);
+    var sh_buf: [Vdp.framebuffer_width]u8 = @splat(SH_NORMAL);
 
     renderSpriteLineForTest(&vdp, &pixel_buf, &layer_buf, &source_buf, &sh_buf);
 

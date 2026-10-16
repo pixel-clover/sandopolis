@@ -65,7 +65,7 @@ pub const SubBus = struct {
 
     /// Mirror the CDC's transfer flags into the gate array mode register.
     pub fn syncCdcFlags(self: *SubBus) void {
-        const dest: cdc_mod.Destination = @enumFromInt(self.gate.cdc_device_destination);
+        const dest: cdc_mod.Destination = @fromBackingInt(@intCast(self.gate.cdc_device_destination));
         const host = dest == .main_read or dest == .sub_read;
         self.gate.cdc_data_set_ready = host and self.cdc.dataSetReady();
         self.gate.cdc_end_of_transfer = self.cdc.end_of_transfer;
@@ -86,7 +86,7 @@ pub const SubBus = struct {
     /// Sub-side host data port (0xFF8008): pops a word while DD selects
     /// the sub CPU.
     fn cdcHostReadSub(self: *SubBus) u16 {
-        if (@as(cdc_mod.Destination, @enumFromInt(self.gate.cdc_device_destination)) != .sub_read) return 0xFFFF;
+        if (@as(cdc_mod.Destination, @fromBackingInt(@intCast(self.gate.cdc_device_destination))) != .sub_read) return 0xFFFF;
         const r = self.cdc.hostRead();
         if (r.raise_irq) self.cdc_irq_request = true;
         return r.word;
@@ -95,7 +95,7 @@ pub const SubBus = struct {
     /// Complete a triggered transfer whose destination is a DMA target.
     pub fn runPendingDma(self: *SubBus) void {
         if (!self.cdc.transferPending()) return;
-        const dest: cdc_mod.Destination = @enumFromInt(self.gate.cdc_device_destination);
+        const dest: cdc_mod.Destination = @fromBackingInt(@intCast(self.gate.cdc_device_destination));
         switch (dest) {
             .pcm_ram, .prg_ram, .word_ram => {},
             else => return,
@@ -353,8 +353,8 @@ const Fixture = struct {
             .cpu = Cpu.init(),
             .gate = .{},
             .word_ram = .{},
-            .prg_ram = [_]u8{0} ** prg_ram_bytes,
-            .backup_ram = [_]u8{0} ** backup_ram_bytes,
+            .prg_ram = @splat(0),
+            .backup_ram = @splat(0),
             .cdc = .{},
         };
         return f;
@@ -522,7 +522,7 @@ test "cdc register port auto-increments and host/dma transfers route by destinat
 
 test "cdc DMA uses destination address units and advances the register" {
     const PcmSink = struct {
-        bytes: [0x1000]u8 = [_]u8{0} ** 0x1000,
+        bytes: [0x1000]u8 = @splat(0),
 
         fn read(ctx: *anyopaque, address: u32) u8 {
             const self: *@This() = @ptrCast(@alignCast(ctx));
@@ -541,7 +541,7 @@ test "cdc DMA uses destination address units and advances the register" {
     for (&f.cdc.ram, 0..) |*b, i| b.* = @truncate(i);
     f.cdc.ifctrl = cdc_mod.Ifctrl.douten;
 
-    f.gate.cdc_device_destination = @intFromEnum(cdc_mod.Destination.prg_ram);
+    f.gate.cdc_device_destination = @backingInt(cdc_mod.Destination.prg_ram);
     f.gate.cdc_dma_address = 0x1000;
     f.cdc.dac = 0x0200;
     f.cdc.dbc = 15;
@@ -552,7 +552,7 @@ test "cdc DMA uses destination address units and advances the register" {
 
     var pcm = PcmSink{};
     bus.pcm = .{ .ctx = &pcm, .read8Fn = PcmSink.read, .write8Fn = PcmSink.write };
-    f.gate.cdc_device_destination = @intFromEnum(cdc_mod.Destination.pcm_ram);
+    f.gate.cdc_device_destination = @backingInt(cdc_mod.Destination.pcm_ram);
     f.gate.cdc_dma_address = 0x0100;
     f.cdc.dac = 0x0300;
     f.cdc.dbc = 15;

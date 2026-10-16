@@ -176,7 +176,7 @@ pub const AudioOutput = struct {
     const max_psg_commands_per_push: usize = 8192;
 
     timing_is_pal: bool = false,
-    sample_chunk: [4096]i16 = [_]i16{0} ** 4096,
+    sample_chunk: [4096]i16 = @splat(0),
     ym_write_buffer: [max_ym_writes_per_push]YmWriteEvent = undefined,
     ym_dac_buffer: [max_ym_dac_samples_per_push]YmDacSampleEvent = undefined,
     ym_reset_buffer: [max_ym_reset_events_per_push]YmResetEvent = undefined,
@@ -652,7 +652,7 @@ pub const AudioOutput = struct {
         pub const pcm_rate_x1000: u64 = 32_552_083; // 12.5 MHz / 384
 
         rate_x1000: u64,
-        fifo: [fifo_len][2]i16 = [_][2]i16{.{ 0, 0 }} ** fifo_len,
+        fifo: [fifo_len][2]i16 = @splat(.{ 0, 0 }),
         read_index: usize = 0,
         write_index: usize = 0,
         /// Accumulated (master_cycles * rate) not yet turned into a sample.

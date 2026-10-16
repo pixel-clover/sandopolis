@@ -15,7 +15,7 @@ check_zig = \
       exit 1; \
     fi
 
-BUILD_TYPE    ?= ReleaseSafe
+BUILD_TYPE    ?= safe
 BUILD_OPTS    = -Doptimize=$(BUILD_TYPE)
 JOBS          ?= $(shell nproc || echo 2)
 SRC_DIR       := src
@@ -27,7 +27,7 @@ SITE_DIR      := site
 BINARY_NAME   := sandopolis
 BINARY_PATH   := $(BUILD_DIR)/bin/$(BINARY_NAME)
 PREFIX        ?= /usr/local
-RELEASE_MODE := ReleaseSmall
+RELEASE_MODE := small
 TMP_DIRS	  := .zig-cache .zig-cache-unit .zig-global-cache
 ARGS          ?=
 UV            ?= $(shell which uv || echo ~/.local/bin/uv)
@@ -49,7 +49,7 @@ help: ## Show the help messages for all targets
 
 all: build test lint docs  ## build, test, lint, and doc
 
-build: ## Build project (default Mode=$(BUILD_TYPE); override with e.g. `BUILD_TYPE=Debug`)
+build: ## Build project (default Mode=$(BUILD_TYPE); override with e.g. `BUILD_TYPE=debug`)
 	@echo "Building project in $(BUILD_TYPE) mode with $(JOBS) concurrent jobs..."
 	$(ZIG) build $(BUILD_OPTS) -j$(JOBS)
 
@@ -106,11 +106,11 @@ clean: ## Remove docs output, build artifacts, and cache directories
 
 lint: ## Check code style and formatting of Zig files
 	@echo "Running code style checks..."
-	$(ZIG) fmt --check .
+	$(ZIG) fmt --check build.zig build.zig.zon $(SRC_DIR) $(TEST_DIR) tools
 
 format: ## Format Zig files
 	@echo "Formatting Zig files..."
-	$(ZIG) fmt .
+	$(ZIG) fmt build.zig build.zig.zon $(SRC_DIR) $(TEST_DIR) tools
 
 docs: ## Generate Zig API docs and build the MkDocs site
 	@echo "Generating Zig API documentation into $(DOC_OUT)..."

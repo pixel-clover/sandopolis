@@ -56,7 +56,7 @@
                 echo "  make build"
                 echo "  make test"
                 echo "  make help"
-                echo "  BUILD_TYPE=ReleaseFast make run ARGS=\"'tests/testroms/titan-overdrive2.bin'\""
+                echo "  BUILD_TYPE=fast make run ARGS=\"'tests/testroms/titan-overdrive2.bin'\""
               '';
           };
         }

@@ -397,7 +397,7 @@ test "sg1000 machine init from rom bytes and run frame produces framebuffer outp
         0x76, // HALT
     };
 
-    var rom = [_]u8{0} ** 0x4000;
+    var rom: [0x4000]u8 = @splat(0);
     @memcpy(rom[0..program.len], &program);
 
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
@@ -428,7 +428,7 @@ test "sg1000 system detection creates sms machine with sg1000 flag" {
 
     // Content detection: SG-1000 ROMs have no standard header, so they
     // fall through to Genesis by default. Extension must override.
-    const rom = [_]u8{0} ** 0x4000;
+    const rom: [0x4000]u8 = @splat(0);
     try testing.expectEqual(SystemType.genesis, system_detect.detectSystem(&rom));
 }
 
@@ -472,30 +472,62 @@ fn makeSegaCdMiniBios(allocator: std.mem.Allocator) ![]u8 {
     // Main program at 0x200
     var p: usize = 0x200;
     // move.b #0,$A12001        ; hold sub in reset
-    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0000); be32(bios, p + 4, 0x00A12001); p += 8;
+    be16(bios, p, 0x13FC);
+    be16(bios, p + 2, 0x0000);
+    be32(bios, p + 4, 0x00A12001);
+    p += 8;
     // move.b #0,$A12003        ; PRG-RAM bank 0
-    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0000); be32(bios, p + 4, 0x00A12003); p += 8;
+    be16(bios, p, 0x13FC);
+    be16(bios, p + 2, 0x0000);
+    be32(bios, p + 4, 0x00A12003);
+    p += 8;
     // lea $1000,a0 ; lea $20000,a1 ; move.w #255,d0
-    be16(bios, p, 0x41F9); be32(bios, p + 2, 0x00001000); p += 6;
-    be16(bios, p, 0x43F9); be32(bios, p + 2, 0x00020000); p += 6;
-    be16(bios, p, 0x303C); be16(bios, p + 2, 0x00FF); p += 4;
+    be16(bios, p, 0x41F9);
+    be32(bios, p + 2, 0x00001000);
+    p += 6;
+    be16(bios, p, 0x43F9);
+    be32(bios, p + 2, 0x00020000);
+    p += 6;
+    be16(bios, p, 0x303C);
+    be16(bios, p + 2, 0x00FF);
+    p += 4;
     // copy: move.l (a0)+,(a1)+ ; dbra d0,copy
-    be16(bios, p, 0x22D8); p += 2;
-    be16(bios, p, 0x51C8); be16(bios, p + 2, 0xFFFC); p += 4;
+    be16(bios, p, 0x22D8);
+    p += 2;
+    be16(bios, p, 0x51C8);
+    be16(bios, p + 2, 0xFFFC);
+    p += 4;
     // move.b #1,$A12001        ; release sub reset
-    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0001); be32(bios, p + 4, 0x00A12001); p += 8;
+    be16(bios, p, 0x13FC);
+    be16(bios, p + 2, 0x0001);
+    be32(bios, p + 4, 0x00A12001);
+    p += 8;
     // move.w #$1234,$A12010    ; command 0
-    be16(bios, p, 0x33FC); be16(bios, p + 2, 0x1234); be32(bios, p + 4, 0x00A12010); p += 8;
+    be16(bios, p, 0x33FC);
+    be16(bios, p + 2, 0x1234);
+    be32(bios, p + 4, 0x00A12010);
+    p += 8;
     // poll: move.w $A12020,d0 ; cmp.w #$1235,d0 ; bne.s poll
     const poll = p;
-    be16(bios, p, 0x3039); be32(bios, p + 2, 0x00A12020); p += 6;
-    be16(bios, p, 0x0C40); be16(bios, p + 2, 0x1235); p += 4;
-    be16(bios, p, 0x6600 | @as(u16, @truncate(@as(u32, @bitCast(@as(i32, @intCast(poll)) - @as(i32, @intCast(p + 2)))) & 0xFF))); p += 2;
+    be16(bios, p, 0x3039);
+    be32(bios, p + 2, 0x00A12020);
+    p += 6;
+    be16(bios, p, 0x0C40);
+    be16(bios, p + 2, 0x1235);
+    p += 4;
+    be16(bios, p, 0x6600 | @as(u16, @truncate(@as(u32, @bitCast(@as(i32, @intCast(poll)) - @as(i32, @intCast(p + 2)))) & 0xFF)));
+    p += 2;
     // move.b #1,$A12000        ; IFL2 -> sub INT2 (byte write: a word write
     //                          ; would also clear SRES in the low byte)
-    be16(bios, p, 0x13FC); be16(bios, p + 2, 0x0001); be32(bios, p + 4, 0x00A12000); p += 8;
+    be16(bios, p, 0x13FC);
+    be16(bios, p + 2, 0x0001);
+    be32(bios, p + 4, 0x00A12000);
+    p += 8;
     // move.w #1,$A12012        ; command 1 = "IFL2 sent" marker
-    be16(bios, p, 0x33FC); be16(bios, p + 2, 0x0001); be32(bios, p + 4, 0x00A12012); p += 8;
+    be16(bios, p, 0x33FC);
+    be16(bios, p + 2, 0x0001);
+    be32(bios, p + 4, 0x00A12012);
+    p += 8;
     // bra.s *
     be16(bios, p, 0x60FE);
 
@@ -506,17 +538,28 @@ fn makeSegaCdMiniBios(allocator: std.mem.Allocator) ![]u8 {
     be32(bios, s + 0x68, 0x00000300); // level 2 autovector
     var q: usize = s + 0x200;
     // move.b #4,$FF8033        ; enable INT2
-    be16(bios, q, 0x13FC); be16(bios, q + 2, 0x0004); be32(bios, q + 4, 0x00FF8033); q += 8;
+    be16(bios, q, 0x13FC);
+    be16(bios, q + 2, 0x0004);
+    be32(bios, q + 4, 0x00FF8033);
+    q += 8;
     // move.w #$2000,sr         ; allow interrupts
-    be16(bios, q, 0x46FC); be16(bios, q + 2, 0x2000); q += 4;
+    be16(bios, q, 0x46FC);
+    be16(bios, q + 2, 0x2000);
+    q += 4;
     // loop: move.w $FF8010,d0 ; addq.w #1,d0 ; move.w d0,$FF8020 ; bra.s loop
     const loop = q;
-    be16(bios, q, 0x3039); be32(bios, q + 2, 0x00FF8010); q += 6;
-    be16(bios, q, 0x5240); q += 2;
-    be16(bios, q, 0x33C0); be32(bios, q + 2, 0x00FF8020); q += 6;
+    be16(bios, q, 0x3039);
+    be32(bios, q + 2, 0x00FF8010);
+    q += 6;
+    be16(bios, q, 0x5240);
+    q += 2;
+    be16(bios, q, 0x33C0);
+    be32(bios, q + 2, 0x00FF8020);
+    q += 6;
     be16(bios, q, 0x6000 | @as(u16, @truncate(@as(u32, @bitCast(@as(i32, @intCast(loop)) - @as(i32, @intCast(q + 2)))) & 0xFF)));
     // INT2 handler at 0x300: addq.l #1,$400 ; rte
-    be16(bios, s + 0x300, 0x52B9); be32(bios, s + 0x302, 0x00000400);
+    be16(bios, s + 0x300, 0x52B9);
+    be32(bios, s + 0x302, 0x00000400);
     be16(bios, s + 0x306, 0x4E73);
     return bios;
 }

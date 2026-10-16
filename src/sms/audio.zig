@@ -118,7 +118,7 @@ pub const SmsAudio = struct {
 
 test "sms audio init and render silence" {
     var audio = SmsAudio.init();
-    var buf = [_]i16{0} ** 2048;
+    var buf: [2048]i16 = @splat(0);
     const samples = audio.renderFrame(false, &buf);
     try testing.expect(samples > 0);
     // With default PSG state (all attenuated), output should be near-silent
@@ -133,7 +133,7 @@ test "sms audio lpf smooths output" {
     audio.psg.doCommand(0x01); // high 6 bits: period = 0x01F = 31
     audio.psg.doCommand(0x90); // channel 0 volume = 0 (max)
 
-    var buf = [_]i16{0} ** 4096;
+    var buf: [4096]i16 = @splat(0);
     const samples = audio.renderFrame(false, &buf);
     try testing.expect(samples > 100);
 

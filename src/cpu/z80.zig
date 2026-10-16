@@ -1,6 +1,4 @@
-const c = @cImport({
-    @cInclude("jgz80_bridge.h");
-});
+const c = @import("jgz80_bridge");
 
 const std = @import("std");
 const clock = @import("../clock.zig");
@@ -293,14 +291,14 @@ pub const Z80 = struct {
     /// across the C boundary.
     fn assertEventLayoutMatches(comptime ZigType: type, comptime CType: type) void {
         comptime {
-            const zig_fields = @typeInfo(ZigType).@"struct".fields;
-            const c_fields = @typeInfo(CType).@"struct".fields;
+            const zig_fields = @typeInfo(ZigType).@"struct".field_names;
+            const c_fields = @typeInfo(CType).@"struct".field_names;
             std.debug.assert(@sizeOf(ZigType) == @sizeOf(CType));
             std.debug.assert(@alignOf(ZigType) == @alignOf(CType));
             std.debug.assert(zig_fields.len == c_fields.len);
-            for (zig_fields) |field| {
-                std.debug.assert(@offsetOf(ZigType, field.name) == @offsetOf(CType, field.name));
-                std.debug.assert(field.type == @FieldType(CType, field.name));
+            for (zig_fields) |name| {
+                std.debug.assert(@offsetOf(ZigType, name) == @offsetOf(CType, name));
+                std.debug.assert(@FieldType(ZigType, name) == @FieldType(CType, name));
             }
         }
     }

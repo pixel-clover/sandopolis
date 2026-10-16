@@ -6,12 +6,9 @@ const runtime_state = @import("runtime_state.zig");
 const CoreFrameCounters = @import("../performance_profile.zig").CoreFrameCounters;
 const SchedulerCpu = @import("../scheduler/runtime.zig").SchedulerCpu;
 
-const c = @cImport({
-    @cInclude("disasm.h");
-    @cInclude("m68k.h");
-});
+const c = @import("rocket68_headers");
 
-var fallback_memory = [_]u8{0} ** 8;
+var fallback_memory: [8]u8 = @splat(0);
 
 const DisasmCpu = struct {
     core: c.M68kCpu,

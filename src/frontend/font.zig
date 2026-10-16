@@ -1,9 +1,7 @@
 const std = @import("std");
 const zsdl3 = @import("zsdl3");
 
-const stbtt = @cImport({
-    @cInclude("stb_truetype.h");
-});
+const stbtt = @import("stb_truetype");
 
 pub const font_jbm_regular = @embedFile("fonts/ttf/JetBrainsMono-Regular.ttf");
 pub const font_jbm_light = @embedFile("fonts/ttf/JetBrainsMono-Light.ttf");

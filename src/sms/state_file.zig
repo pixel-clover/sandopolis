@@ -205,7 +205,7 @@ fn readSlice(data: []const u8, pos: *usize, len: usize) ![]const u8 {
 }
 
 test "sms state round-trip" {
-    var rom = [_]u8{0xC7} ** 1024;
+    var rom: [1024]u8 = @splat(0xC7);
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
     defer machine.deinit(testing.allocator);
     machine.bindPointers();
@@ -231,7 +231,7 @@ test "sms state round-trip" {
 }
 
 test "sms state round-trip preserves io and psg state" {
-    var rom = [_]u8{0xC7} ** 1024;
+    var rom: [1024]u8 = @splat(0xC7);
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
     defer machine.deinit(testing.allocator);
     machine.bindPointers();
@@ -259,7 +259,7 @@ test "sms state round-trip preserves io and psg state" {
 }
 
 test "gg state round-trip preserves is_game_gear flag" {
-    var rom = [_]u8{0xC7} ** 1024;
+    var rom: [1024]u8 = @splat(0xC7);
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
     defer machine.deinit(testing.allocator);
     machine.is_game_gear = true;

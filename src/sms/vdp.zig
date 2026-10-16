@@ -4,10 +4,10 @@ const testing = std.testing;
 /// SMS VDP (TMS9918A derivative, Mode 4).
 /// 16KB VRAM, 32-byte CRAM, 11 registers, 256-pixel-wide output.
 pub const SmsVdp = struct {
-    vram: [16 * 1024]u8 = [_]u8{0} ** (16 * 1024),
-    cram: [64]u8 = [_]u8{0} ** 64, // SMS: 32 bytes (1 per color), GG: 64 bytes (2 per color)
+    vram: [16 * 1024]u8 = @splat(0),
+    cram: [64]u8 = @splat(0), // SMS: 32 bytes (1 per color), GG: 64 bytes (2 per color)
     regs: [11]u8 = default_regs,
-    framebuffer: [framebuffer_width * max_framebuffer_height]u32 = [_]u32{0} ** (framebuffer_width * max_framebuffer_height),
+    framebuffer: [framebuffer_width * max_framebuffer_height]u32 = @splat(0),
 
     // Control port state
     control_latch: bool = false,
@@ -427,7 +427,7 @@ pub const SmsVdp = struct {
 
     fn renderScanline(self: *SmsVdp, line: u16) void {
         var line_buf: [framebuffer_width]u32 = undefined;
-        var priority_buf: [framebuffer_width]bool = [_]bool{false} ** framebuffer_width;
+        var priority_buf: [framebuffer_width]bool = @splat(false);
 
         // TMS9918 modes use different rendering paths
         if (self.graphicsMode() != .mode4) {
@@ -621,7 +621,7 @@ pub const SmsVdp = struct {
         const sprite_height: u16 = if (is_16x16) 16 else 8;
         const display_height: u16 = if (is_magnified) sprite_height * 2 else sprite_height;
 
-        var sprite_drawn: [framebuffer_width]bool = [_]bool{false} ** framebuffer_width;
+        var sprite_drawn: [framebuffer_width]bool = @splat(false);
         var sprites_on_line: usize = 0;
 
         var sprite_idx: usize = 0;
@@ -773,7 +773,7 @@ pub const SmsVdp = struct {
 
         var sprite_count: u8 = 0;
         const max_sprites: u8 = 8;
-        var sprite_drawn: [framebuffer_width]bool = [_]bool{false} ** framebuffer_width;
+        var sprite_drawn: [framebuffer_width]bool = @splat(false);
 
         // Scan SAT for sprites on this line
         for (0..64) |i| {
@@ -916,8 +916,8 @@ test "sms vdp zoom magnifies only the first four sprites on a line" {
     }
     vdp.vram[(sat + 5) & 0x3FFF] = 0xD0;
 
-    var line_buf = [_]u32{0} ** SmsVdp.framebuffer_width;
-    var priority_buf = [_]bool{false} ** SmsVdp.framebuffer_width;
+    var line_buf: [SmsVdp.framebuffer_width]u32 = @splat(0);
+    var priority_buf: [SmsVdp.framebuffer_width]bool = @splat(false);
     vdp.renderSprites(4, &line_buf, &priority_buf);
 
     var first_width: usize = 0;

@@ -49,7 +49,7 @@ def rmse(ppm_a: str, ppm_b: str) -> float:
 
 
 def dump(rom: str, frame: int, pal: bool, prefix: str) -> None:
-    args = [ZIG, "build", "dump-frames", "-Doptimize=ReleaseFast", "--",
+    args = [ZIG, "build", "dump-frames", "-Doptimize=fast", "--",
             rom, str(frame)]
     if pal:
         args.append("--pal")

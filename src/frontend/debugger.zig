@@ -12,7 +12,7 @@ pub const DebuggerState = struct {
     running_to_breakpoint: bool = false,
     memory_address: u32 = 0x000000,
     tab: Tab = .cpu,
-    breakpoints: [max_breakpoints]u32 = [_]u32{0} ** max_breakpoints,
+    breakpoints: [max_breakpoints]u32 = @splat(0),
     breakpoint_count: u8 = 0,
 
     pub const Tab = enum {

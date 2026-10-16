@@ -2,9 +2,7 @@ const std = @import("std");
 const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
-const c = @cImport({
-    @cInclude("ym3438.h");
-});
+const c = @import("ym3438");
 
 const ScheduledWrite = struct {
     clock: usize,

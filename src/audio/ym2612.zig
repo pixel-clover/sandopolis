@@ -216,9 +216,9 @@ const Opn2Core = struct {
     pg_fnum: u16 = 0,
     pg_block: u8 = 0,
     pg_kcode: u8 = 0,
-    pg_inc: [24]u32 = [_]u32{0} ** 24,
-    pg_phase: [24]u32 = [_]u32{0} ** 24,
-    pg_reset: [24]bool = [_]bool{false} ** 24,
+    pg_inc: [24]u32 = @splat(0),
+    pg_phase: [24]u32 = @splat(0),
+    pg_reset: [24]bool = @splat(false),
     pg_read: u32 = 0,
 
     eg_cycle: u8 = 0,
@@ -237,28 +237,28 @@ const Opn2Core = struct {
     eg_sl: [2]u8 = .{ 0, 0 },
     eg_lfo_am: u8 = 0,
     eg_tl: [2]u8 = .{ 0, 0 },
-    eg_state: [24]u8 = [_]u8{@intFromEnum(EgState.release)} ** 24,
-    eg_level: [24]u16 = [_]u16{0x3ff} ** 24,
-    eg_out: [24]u16 = [_]u16{0x3ff} ** 24,
-    eg_kon: [24]u8 = [_]u8{0} ** 24,
-    eg_kon_csm: [24]u8 = [_]u8{0} ** 24,
-    eg_kon_latch: [24]u8 = [_]u8{0} ** 24,
-    eg_ssg_enable: [24]u8 = [_]u8{0} ** 24,
-    eg_ssg_pgrst_latch: [24]u8 = [_]u8{0} ** 24,
-    eg_ssg_repeat_latch: [24]u8 = [_]u8{0} ** 24,
-    eg_ssg_hold_up_latch: [24]u8 = [_]u8{0} ** 24,
-    eg_ssg_dir: [24]u8 = [_]u8{0} ** 24,
-    eg_ssg_inv: [24]u8 = [_]u8{0} ** 24,
+    eg_state: [24]u8 = @splat(@backingInt(EgState.release)),
+    eg_level: [24]u16 = @splat(0x3ff),
+    eg_out: [24]u16 = @splat(0x3ff),
+    eg_kon: [24]u8 = @splat(0),
+    eg_kon_csm: [24]u8 = @splat(0),
+    eg_kon_latch: [24]u8 = @splat(0),
+    eg_ssg_enable: [24]u8 = @splat(0),
+    eg_ssg_pgrst_latch: [24]u8 = @splat(0),
+    eg_ssg_repeat_latch: [24]u8 = @splat(0),
+    eg_ssg_hold_up_latch: [24]u8 = @splat(0),
+    eg_ssg_dir: [24]u8 = @splat(0),
+    eg_ssg_inv: [24]u8 = @splat(0),
     eg_read: [2]u32 = .{ 0, 0 },
     eg_read_inc: u8 = 0,
 
-    fm_op1: [6][2]i16 = [_][2]i16{[_]i16{ 0, 0 }} ** 6,
-    fm_op2: [6]i16 = [_]i16{0} ** 6,
-    fm_out: [24]i16 = [_]i16{0} ** 24,
-    fm_mod: [24]i16 = [_]i16{0} ** 24,
+    fm_op1: [6][2]i16 = @splat(.{ 0, 0 }),
+    fm_op2: [6]i16 = @splat(0),
+    fm_out: [24]i16 = @splat(0),
+    fm_mod: [24]i16 = @splat(0),
 
-    ch_acc: [6]i16 = [_]i16{0} ** 6,
-    ch_out: [6]i16 = [_]i16{0} ** 6,
+    ch_acc: [6]i16 = @splat(0),
+    ch_out: [6]i16 = @splat(0),
     ch_lock: i16 = 0,
     ch_lock_l: u8 = 0,
     ch_lock_r: u8 = 0,
@@ -297,39 +297,39 @@ const Opn2Core = struct {
     // amplification and sign-extension fallback.  When false, use the
     // YM3438 (integrated) output path matching the reference emulator.
     ym2612_output_mode: bool = false,
-    mode_kon: [24]u8 = [_]u8{0} ** 24,
+    mode_kon: [24]u8 = @splat(0),
     mode_csm: u8 = 0,
     mode_kon_csm: u8 = 0,
 
-    ks: [24]u8 = [_]u8{0} ** 24,
-    ar: [24]u8 = [_]u8{0} ** 24,
-    sr: [24]u8 = [_]u8{0} ** 24,
-    dt: [24]u8 = [_]u8{0} ** 24,
-    multi: [24]u8 = [_]u8{1} ** 24,
-    sl: [24]u8 = [_]u8{0} ** 24,
-    rr: [24]u8 = [_]u8{0} ** 24,
-    dr: [24]u8 = [_]u8{0} ** 24,
-    am: [24]u8 = [_]u8{0} ** 24,
-    tl: [24]u8 = [_]u8{0} ** 24,
-    ssg_eg: [24]u8 = [_]u8{0} ** 24,
+    ks: [24]u8 = @splat(0),
+    ar: [24]u8 = @splat(0),
+    sr: [24]u8 = @splat(0),
+    dt: [24]u8 = @splat(0),
+    multi: [24]u8 = @splat(1),
+    sl: [24]u8 = @splat(0),
+    rr: [24]u8 = @splat(0),
+    dr: [24]u8 = @splat(0),
+    am: [24]u8 = @splat(0),
+    tl: [24]u8 = @splat(0),
+    ssg_eg: [24]u8 = @splat(0),
 
-    fnum: [6]u16 = [_]u16{0} ** 6,
-    block: [6]u8 = [_]u8{0} ** 6,
-    kcode: [6]u8 = [_]u8{0} ** 6,
-    fnum_3ch: [6]u16 = [_]u16{0} ** 6,
-    block_3ch: [6]u8 = [_]u8{0} ** 6,
-    kcode_3ch: [6]u8 = [_]u8{0} ** 6,
+    fnum: [6]u16 = @splat(0),
+    block: [6]u8 = @splat(0),
+    kcode: [6]u8 = @splat(0),
+    fnum_3ch: [6]u16 = @splat(0),
+    block_3ch: [6]u8 = @splat(0),
+    kcode_3ch: [6]u8 = @splat(0),
     // Single shared frequency-MSB latches (not per-channel): the real chip
     // has one $A4 and one $AC latch that any subsequent $A0-$A2/$A8-$AA low
     // write consumes, and some drivers rely on that.
     reg_a4: u8 = 0,
     reg_ac: u8 = 0,
-    connect: [6]u8 = [_]u8{0} ** 6,
-    fb: [6]u8 = [_]u8{0} ** 6,
-    pan_l: [6]u8 = [_]u8{1} ** 6,
-    pan_r: [6]u8 = [_]u8{1} ** 6,
-    ams: [6]u8 = [_]u8{0} ** 6,
-    pms: [6]u8 = [_]u8{0} ** 6,
+    connect: [6]u8 = @splat(0),
+    fb: [6]u8 = @splat(0),
+    pan_l: [6]u8 = @splat(1),
+    pan_r: [6]u8 = @splat(1),
+    ams: [6]u8 = @splat(0),
+    pms: [6]u8 = @splat(0),
     pin_test_in: u8 = 0,
     busy: bool = false,
     busy_cycles_remaining: u8 = 0,
@@ -944,7 +944,7 @@ const Opn2Core = struct {
         self.eg_read[0] = self.eg_read_inc;
         self.eg_read_inc = @intFromBool(self.eg_inc > 0);
 
-        const current_state: EgState = @enumFromInt(self.eg_state[slot]);
+        const current_state: EgState = @fromBackingInt(@intCast(self.eg_state[slot]));
         var next_state = current_state;
         var level: i16 = @intCast(self.eg_level[slot]);
         var ssg_level = level;
@@ -1016,7 +1016,7 @@ const Opn2Core = struct {
 
         self.eg_kon[slot] = self.eg_kon_latch[slot];
         self.eg_level[slot] = @intCast(@as(u16, @bitCast(next_level)) & 0x03FF);
-        self.eg_state[slot] = @intFromEnum(next_state);
+        self.eg_state[slot] = @backingInt(next_state);
     }
 
     fn envelopePrepare(self: *Opn2Core) void {
@@ -1042,7 +1042,7 @@ const Opn2Core = struct {
         self.eg_inc = inc;
         self.eg_ratemax = (rate >> 1) == 0x1F;
 
-        var rate_sel: EgState = @enumFromInt(self.eg_state[slot]);
+        var rate_sel: EgState = @fromBackingInt(@intCast(self.eg_state[slot]));
         if ((self.eg_kon[slot] != 0 and self.eg_ssg_repeat_latch[slot] != 0) or
             (self.eg_kon[slot] == 0 and self.eg_kon_latch[slot] != 0))
         {
@@ -1474,7 +1474,7 @@ test "ym key on always enters attack state even when level is zero" {
     try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
     // Key-on always enters attack, matching Nuked OPN2 (ym3438.c:638).
     // The attack-to-decay transition happens on the next clock when level==0.
-    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.attack)), core.eg_state[slot]);
+    try std.testing.expectEqual(@as(u8, @backingInt(EgState.attack)), core.eg_state[slot]);
 }
 
 test "ym key on with ratemax enters attack state with instant level zero" {
@@ -1491,7 +1491,7 @@ test "ym key on with ratemax enters attack state with instant level zero" {
     // Level goes to 0 (instant attack), but state is attack, not decay.
     // The decay transition happens on the next clock.
     try std.testing.expectEqual(@as(u16, 0), core.eg_level[slot]);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.attack)), core.eg_state[slot]);
+    try std.testing.expectEqual(@as(u8, @backingInt(EgState.attack)), core.eg_state[slot]);
 }
 
 test "ym lfo reset state matches disabled waveform defaults" {
@@ -1747,7 +1747,7 @@ test "ym key off releases output over time" {
 
     inline for (.{ 0, 6, 12, 18 }) |slot| {
         try std.testing.expectEqual(@as(u8, 0), synth.core.eg_kon[slot]);
-        try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.release)), synth.core.eg_state[slot]);
+        try std.testing.expectEqual(@as(u8, @backingInt(EgState.release)), synth.core.eg_state[slot]);
     }
 }
 
@@ -1852,7 +1852,7 @@ test "ym ssg-eg key off during attack inverts the level and releases normally" {
     // Key is currently ON in attack state
     core.eg_kon[slot] = 1;
     core.eg_kon_latch[slot] = 0; // Key OFF event pending
-    core.eg_state[slot] = @intFromEnum(EgState.attack);
+    core.eg_state[slot] = @backingInt(EgState.attack);
 
     // Fully-attacked level 0 inverts to (0x200 - 0) & 0x3FF = 0x200.
     core.eg_level[slot] = 0x000;
@@ -1861,7 +1861,7 @@ test "ym ssg-eg key off during attack inverts the level and releases normally" {
     core.envelopeAdsr();
 
     try std.testing.expectEqual(@as(u16, 0x200), core.eg_level[slot]);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(EgState.release)), core.eg_state[slot]);
+    try std.testing.expectEqual(@as(u8, @backingInt(EgState.release)), core.eg_state[slot]);
 }
 
 test "ym dac output appears when enabled" {

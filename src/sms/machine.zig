@@ -18,7 +18,7 @@ pub const SmsMachine = struct {
     z80_cycle_count: u32 = 0,
 
     // Audio buffer for frame output
-    audio_buffer: [8192]i16 = [_]i16{0} ** 8192,
+    audio_buffer: [8192]i16 = @splat(0),
     audio_sample_count: usize = 0,
 
     bound: bool = false,
@@ -243,7 +243,7 @@ pub const SmsMachine = struct {
 
 test "sms machine init" {
     // Minimal ROM: RST 0x00 loop (0xC7 = RST 0)
-    var rom = [_]u8{0xC7} ** 1024; // 1KB of RST 0 (infinite loop at 0x0000)
+    var rom: [1024]u8 = @splat(0xC7); // 1KB of RST 0 (infinite loop at 0x0000)
     var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
     defer machine.deinit(testing.allocator);
     try testing.expectEqual(@as(u16, 256), machine.framebufferWidth());
@@ -270,7 +270,7 @@ test "sms machine run frames produces visible output" {
 }
 
 test "sms machine save and restore state" {
-    var rom = [_]u8{0} ** 1024;
+    var rom: [1024]u8 = @splat(0);
     // LD A, 0xE0; OUT (0xBF), A; LD A, 0x81; OUT (0xBF), A; JR -2 (loop)
     rom[0] = 0x3E;
     rom[1] = 0xE0;
@@ -308,7 +308,7 @@ test "sms machine save and restore state" {
 }
 
 test "sms soft reset preserves ram, vdp, and mapper state" {
-    var rom = [_]u8{0} ** 1024;
+    var rom: [1024]u8 = @splat(0);
     // LD A, 0xE0; OUT (0xBF), A; LD A, 0x81; OUT (0xBF), A; JR -2 (loop)
     rom[0] = 0x3E;
     rom[1] = 0xE0;
@@ -362,7 +362,7 @@ test "sms vdp register write via z80 port" {
     // ROM that writes VDP register 1 = 0xE0 (display enable + frame interrupt + Mode 4)
     // Z80 instructions: OUT (0xBF), A (= data), then OUT (0xBF), A (= reg command)
     // LD A, 0xE0; OUT (0xBF), A; LD A, 0x81; OUT (0xBF), A; JR -4 (loop)
-    var rom = [_]u8{0} ** 1024;
+    var rom: [1024]u8 = @splat(0);
     rom[0] = 0x3E; // LD A, 0xE0
     rom[1] = 0xE0;
     rom[2] = 0xD3; // OUT (0xBF), A

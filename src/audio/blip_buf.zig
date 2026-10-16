@@ -93,7 +93,7 @@ pub fn BlipBuf(comptime capacity: usize) type {
         offset: u64 = time_unit / max_ratio / 2,
         size: usize = capacity,
         integrator: [2]i32 = .{ 0, 0 },
-        buffer: [2][buf_len]i32 = .{ .{0} ** buf_len, .{0} ** buf_len },
+        buffer: [2][buf_len]i32 = .{ @splat(0), @splat(0) },
 
         /// Set input clock rate and output sample rate.
         pub fn setRates(self: *Self, clock_rate: f64, sample_rate: f64) void {
@@ -108,7 +108,7 @@ pub fn BlipBuf(comptime capacity: usize) type {
         pub fn clear(self: *Self) void {
             self.offset = self.factor / 2;
             self.integrator = .{ 0, 0 };
-            self.buffer = .{ .{0} ** buf_len, .{0} ** buf_len };
+            self.buffer = .{ @splat(0), @splat(0) };
         }
 
         /// Number of clocks needed to produce `samples` additional output samples.

@@ -44,22 +44,22 @@ pub extern fn SDL_OpenJoystick(id: zsdl3.Joystick.Id) ?*SdlJoystick;
 pub extern fn SDL_CloseJoystick(joystick: *SdlJoystick) void;
 
 pub fn inputFromGamepadButton(button: u8) ?InputBindings.GamepadInput {
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_up)) return .dpad_up;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_down)) return .dpad_down;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_left)) return .dpad_left;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.dpad_right)) return .dpad_right;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.south)) return .south;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.east)) return .east;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.west)) return .west;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.north)) return .north;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.left_shoulder)) return .left_shoulder;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.right_shoulder)) return .right_shoulder;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.back)) return .back;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.start)) return .start;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.guide)) return .guide;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.left_stick)) return .left_stick;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.right_stick)) return .right_stick;
-    if (button == @intFromEnum(zsdl3.Gamepad.Button.misc1)) return .misc1;
+    if (button == @backingInt(zsdl3.Gamepad.Button.dpad_up)) return .dpad_up;
+    if (button == @backingInt(zsdl3.Gamepad.Button.dpad_down)) return .dpad_down;
+    if (button == @backingInt(zsdl3.Gamepad.Button.dpad_left)) return .dpad_left;
+    if (button == @backingInt(zsdl3.Gamepad.Button.dpad_right)) return .dpad_right;
+    if (button == @backingInt(zsdl3.Gamepad.Button.south)) return .south;
+    if (button == @backingInt(zsdl3.Gamepad.Button.east)) return .east;
+    if (button == @backingInt(zsdl3.Gamepad.Button.west)) return .west;
+    if (button == @backingInt(zsdl3.Gamepad.Button.north)) return .north;
+    if (button == @backingInt(zsdl3.Gamepad.Button.left_shoulder)) return .left_shoulder;
+    if (button == @backingInt(zsdl3.Gamepad.Button.right_shoulder)) return .right_shoulder;
+    if (button == @backingInt(zsdl3.Gamepad.Button.back)) return .back;
+    if (button == @backingInt(zsdl3.Gamepad.Button.start)) return .start;
+    if (button == @backingInt(zsdl3.Gamepad.Button.guide)) return .guide;
+    if (button == @backingInt(zsdl3.Gamepad.Button.left_stick)) return .left_stick;
+    if (button == @backingInt(zsdl3.Gamepad.Button.right_stick)) return .right_stick;
+    if (button == @backingInt(zsdl3.Gamepad.Button.misc1)) return .misc1;
     return null;
 }
 
@@ -85,7 +85,7 @@ pub fn updateAxisPair(
     negative_input: InputBindings.GamepadInput,
     positive_input: InputBindings.GamepadInput,
 ) [max_transitions]?Transition {
-    var transitions = [_]?Transition{null} ** max_transitions;
+    var transitions: [max_transitions]?Transition = @splat(null);
     var next_index: usize = 0;
     const next_negative = value <= -threshold;
     const next_positive = value >= threshold;
@@ -118,7 +118,7 @@ pub fn updateLeftStickState(
     return switch (axis) {
         .leftx => updateAxisPair(&state.left, &state.right, value, threshold, .dpad_left, .dpad_right),
         .lefty => updateAxisPair(&state.up, &state.down, value, threshold, .dpad_up, .dpad_down),
-        else => [_]?Transition{null} ** max_transitions,
+        else => @splat(null),
     };
 }
 
@@ -128,7 +128,7 @@ pub fn updateTriggerState(
     threshold: i16,
     input: InputBindings.GamepadInput,
 ) [max_transitions]?Transition {
-    var transitions = [_]?Transition{null} ** max_transitions;
+    var transitions: [max_transitions]?Transition = @splat(null);
     const pressed = value >= threshold;
     if (state.* != pressed) {
         transitions[0] = .{
@@ -152,7 +152,7 @@ pub fn updateGamepadAxisState(
         .leftx, .lefty => updateLeftStickState(stick_state, axis, value, axis_threshold),
         .left_trigger => updateTriggerState(&trigger_state.left, value, trigger_threshold, .left_trigger),
         .right_trigger => updateTriggerState(&trigger_state.right, value, trigger_threshold, .right_trigger),
-        else => [_]?Transition{null} ** max_transitions,
+        else => @splat(null),
     };
 }
 
@@ -165,12 +165,12 @@ pub fn updateJoystickAxisState(
     return switch (axis) {
         0 => updateAxisPair(&state.left, &state.right, value, threshold, .dpad_left, .dpad_right),
         1 => updateAxisPair(&state.up, &state.down, value, threshold, .dpad_up, .dpad_down),
-        else => [_]?Transition{null} ** max_transitions,
+        else => @splat(null),
     };
 }
 
 pub fn updateHatState(state: *DirectionState, value: u8) [max_transitions]?Transition {
-    var transitions = [_]?Transition{null} ** max_transitions;
+    var transitions: [max_transitions]?Transition = @splat(null);
     var next_index: usize = 0;
     const next_up = (value & hat_up) != 0;
     const next_down = (value & hat_down) != 0;
@@ -270,7 +270,7 @@ pub fn assignGamepadSlot(
                 gamepads[port] = .{ .id = id, .handle = handle };
                 stick_states[port] = .{};
                 trigger_states[port] = .{};
-                std.debug.print("Opened Gamepad ID: {d} for player {d}\n", .{ @intFromEnum(id), port + 1 });
+                std.debug.print("Opened Gamepad ID: {d} for player {d}\n", .{ @backingInt(id), port + 1 });
             }
             return;
         }
@@ -293,7 +293,7 @@ pub fn removeGamepadSlot(
                 trigger_states[port] = .{};
                 assigned.handle.close();
                 gamepads[port] = null;
-                std.debug.print("Closed Gamepad ID: {d} from player {d}\n", .{ @intFromEnum(id), port + 1 });
+                std.debug.print("Closed Gamepad ID: {d} from player {d}\n", .{ @backingInt(id), port + 1 });
                 return;
             }
         }
@@ -316,7 +316,7 @@ pub fn assignJoystickSlot(
                 joysticks[port] = .{ .id = id, .handle = handle };
                 axis_states[port] = .{};
                 hat_states[port] = .{};
-                std.debug.print("Opened Joystick ID: {d} for player {d}\n", .{ @intFromEnum(id), port + 1 });
+                std.debug.print("Opened Joystick ID: {d} for player {d}\n", .{ @backingInt(id), port + 1 });
             }
             return;
         }
@@ -339,7 +339,7 @@ pub fn removeJoystickSlot(
                 hat_states[port] = .{};
                 SDL_CloseJoystick(assigned.handle);
                 joysticks[port] = null;
-                std.debug.print("Closed Joystick ID: {d} from player {d}\n", .{ @intFromEnum(id), port + 1 });
+                std.debug.print("Closed Joystick ID: {d} from player {d}\n", .{ @backingInt(id), port + 1 });
                 return;
             }
         }

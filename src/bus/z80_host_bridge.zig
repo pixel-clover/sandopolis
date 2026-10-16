@@ -68,11 +68,11 @@ const TimingProbe = struct {
     last_write_address: u32 = 0,
     last_write_value: u8 = 0,
     access_count: u8 = 0,
-    access_times: [8]u32 = [_]u32{0} ** 8,
-    access_addresses: [8]u32 = [_]u32{0} ** 8,
-    memory: [8]u8 = [_]u8{0xFF} ** 8,
-    high_memory: [8]u8 = [_]u8{0xFF} ** 8,
-    window_memory: [32]u8 = [_]u8{0xFF} ** 32,
+    access_times: [8]u32 = @splat(0),
+    access_addresses: [8]u32 = @splat(0),
+    memory: [8]u8 = @splat(0xFF),
+    high_memory: [8]u8 = @splat(0xFF),
+    window_memory: [32]u8 = @splat(0xFF),
 
     fn memoryIndex(self: *const TimingProbe, address: u32) ?usize {
         if (address < self.memory.len) return @intCast(address);

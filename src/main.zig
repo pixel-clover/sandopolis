@@ -1807,8 +1807,7 @@ fn handleBindingEditorKey(
             else => {
                 if (editor.capture_gamepad) {
                     editor.setStatus(.neutral, "PRESS A GAMEPAD BUTTON");
-                } else if (editor.currentTarget().isHeader()) {
-                } else if (switch (editor.currentTarget()) {
+                } else if (editor.currentTarget().isHeader()) {} else if (switch (editor.currentTarget()) {
                     .hotkey => true,
                     else => false,
                 } and isHotkeyModifierScancode(scancode)) {
@@ -2143,7 +2142,7 @@ const assignJoystickSlot = gamepad.assignJoystickSlot;
 const removeJoystickSlot = gamepad.removeJoystickSlot;
 
 fn tryInitAudio(userdata: *u8) ?AudioInit {
-    const playback_device: zsdl3.AudioDeviceId = @enumFromInt(zsdl3.AUDIO_DEVICE_DEFAULT_PLAYBACK);
+    const playback_device: zsdl3.AudioDeviceId = @fromBackingInt(@intCast(zsdl3.AUDIO_DEVICE_DEFAULT_PLAYBACK));
     const candidate_formats = [_]zsdl3.AudioFormat{
         zsdl3.AudioFormat.S16,
     };
@@ -2784,7 +2783,7 @@ pub fn main(init: std.process.Init) !void {
     );
     defer window.destroy();
 
-    const requested_renderer_name_z = if (cli.renderer_name) |name| try allocator.dupeZ(u8, name) else null;
+    const requested_renderer_name_z = if (cli.renderer_name) |name| try allocator.dupeSentinel(u8, name, 0) else null;
     defer if (requested_renderer_name_z) |name| allocator.free(name);
 
     const renderer = zsdl3.Renderer.create(window, if (requested_renderer_name_z) |name| name else null) catch |err| {
@@ -2816,12 +2815,12 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (audio) |a| SDL_DestroyAudioStream(a.stream);
 
-    var gamepads = [_]?GamepadSlot{null} ** InputBindings.player_count;
-    var gamepad_sticks = [_]DirectionState{.{}} ** InputBindings.player_count;
-    var gamepad_triggers = [_]TriggerState{.{}} ** InputBindings.player_count;
-    var joysticks = [_]?JoystickSlot{null} ** InputBindings.player_count;
-    var joystick_axes = [_]DirectionState{.{}} ** InputBindings.player_count;
-    var joystick_hats = [_]DirectionState{.{}} ** InputBindings.player_count;
+    var gamepads: [InputBindings.player_count]?GamepadSlot = @splat(null);
+    var gamepad_sticks: [InputBindings.player_count]DirectionState = @splat(.{});
+    var gamepad_triggers: [InputBindings.player_count]TriggerState = @splat(.{});
+    var joysticks: [InputBindings.player_count]?JoystickSlot = @splat(null);
+    var joystick_axes: [InputBindings.player_count]DirectionState = @splat(.{});
+    var joystick_hats: [InputBindings.player_count]DirectionState = @splat(.{});
     defer {
         for (gamepads) |slot| {
             if (slot) |assigned| assigned.handle.close();
@@ -2972,10 +2971,10 @@ pub fn main(init: std.process.Init) !void {
                 zsdl3.EventType.quit => break :mainLoop,
                 zsdl3.EventType.window_focus_lost => {
                     machine.releaseAllInputs();
-                    gamepad_sticks = [_]DirectionState{.{}} ** InputBindings.player_count;
-                    gamepad_triggers = [_]TriggerState{.{}} ** InputBindings.player_count;
-                    joystick_axes = [_]DirectionState{.{}} ** InputBindings.player_count;
-                    joystick_hats = [_]DirectionState{.{}} ** InputBindings.player_count;
+                    gamepad_sticks = @splat(.{});
+                    gamepad_triggers = @splat(.{});
+                    joystick_axes = @splat(.{});
+                    joystick_hats = @splat(.{});
                 },
                 zsdl3.EventType.gamepad_added => assignGamepadSlot(&gamepads, &joysticks, &gamepad_sticks, &gamepad_triggers, event.gdevice.which),
                 zsdl3.EventType.gamepad_removed => {
@@ -3083,7 +3082,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 zsdl3.EventType.gamepad_axis_motion => {
                     const port = findGamepadPort(&gamepads, event.gaxis.which) orelse continue;
-                    const axis: zsdl3.Gamepad.Axis = @enumFromInt(event.gaxis.axis);
+                    const axis: zsdl3.Gamepad.Axis = @fromBackingInt(@intCast(event.gaxis.axis));
                     const transitions = updateGamepadAxisState(
                         &gamepad_sticks[port],
                         &gamepad_triggers[port],
@@ -4047,10 +4046,10 @@ test "axis helpers honor custom thresholds" {
 }
 
 test "gamepad button mapping includes guide and stick clicks" {
-    try std.testing.expectEqual(InputBindings.GamepadInput.guide, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.guide)).?);
-    try std.testing.expectEqual(InputBindings.GamepadInput.left_stick, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.left_stick)).?);
-    try std.testing.expectEqual(InputBindings.GamepadInput.right_stick, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.right_stick)).?);
-    try std.testing.expectEqual(InputBindings.GamepadInput.misc1, gamepadInputFromButton(@intFromEnum(zsdl3.Gamepad.Button.misc1)).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.guide, gamepadInputFromButton(@backingInt(zsdl3.Gamepad.Button.guide)).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.left_stick, gamepadInputFromButton(@backingInt(zsdl3.Gamepad.Button.left_stick)).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.right_stick, gamepadInputFromButton(@backingInt(zsdl3.Gamepad.Button.right_stick)).?);
+    try std.testing.expectEqual(InputBindings.GamepadInput.misc1, gamepadInputFromButton(@backingInt(zsdl3.Gamepad.Button.misc1)).?);
 }
 
 test "joystick hat transitions mirror dpad directions and diagonals" {
@@ -4433,7 +4432,7 @@ test "core counter sampling enters burst mode after a threshold slow frame" {
 
 test "binding editor opens releases inputs and rebinds selected action" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
@@ -4482,7 +4481,7 @@ test "binding editor opens releases inputs and rebinds selected action" {
 
 test "binding editor clears hotkeys during capture" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
@@ -4512,7 +4511,7 @@ test "binding editor clears hotkeys during capture" {
 
 test "binding editor captures modifier hotkeys" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     var ui = FrontendUi{};
     var editor = BindingEditorState{};
     var bindings = InputBindings.Bindings.defaults();
@@ -4533,7 +4532,7 @@ test "binding editor captures modifier hotkeys" {
         true,
     ));
     const hotkey_base = 5 + InputBindings.player_count * InputBindings.all_actions.len * 2;
-    editor.selected_index = hotkey_base + @intFromEnum(InputBindings.HotkeyAction.reload_rom);
+    editor.selected_index = hotkey_base + @backingInt(InputBindings.HotkeyAction.reload_rom);
     try std.testing.expect(handleBindingEditorKey(&ui, &editor, &bindings, &machine, test_cfg_path, &test_frontend_cfg, .@"return", .{ .input = .@"return" }, true));
     try std.testing.expect(handleBindingEditorKey(
         &ui,
@@ -4738,7 +4737,7 @@ test "audio playback shadow clamps to its mirror capacity instead of overflowing
 
 test "quick state helper saves and restores machine state" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
 
     var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
@@ -4765,7 +4764,7 @@ test "persistent state helper saves and restores machine state" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
@@ -4798,7 +4797,7 @@ test "persistent state helper cycles slots and keeps files separate" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
@@ -4844,7 +4843,7 @@ test "persistent state load sync exits home screen and updates current rom path"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
@@ -4896,7 +4895,7 @@ test "save manager enter load resyncs the current rom path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
@@ -4949,7 +4948,7 @@ test "save manager metadata tracks slot files and deletions" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
@@ -5027,7 +5026,7 @@ test "save state preview sidecar round-trips sampled pixels" {
     const preview_path = try std.fs.path.join(allocator, &.{ dir_path, "slot1.state.preview" });
     defer allocator.free(preview_path);
 
-    var framebuffer = [_]u32{0} ** (Vdp.framebuffer_width * 224);
+    var framebuffer: [Vdp.framebuffer_width * 224]u32 = @splat(0);
     for (0..224) |y| {
         for (0..Vdp.framebuffer_width) |x| {
             framebuffer[y * Vdp.framebuffer_width + x] =
@@ -5231,7 +5230,7 @@ test "settings actions persist frontend video settings" {
 
 test "guide button toggles pause and resumes overlays" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
 
     var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
@@ -5328,7 +5327,7 @@ test "save manager gamepad controls save load delete and close" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     const dir_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, ".");
     defer allocator.free(dir_path);
     const rom_path = try std.fs.path.join(allocator, &.{ dir_path, "frontend.bin" });
@@ -5533,8 +5532,8 @@ test "file dialog state records cancellations" {
 
 test "dialog path copy truncates paths exceeding buffer capacity" {
     var path_copy = DialogPathCopy{};
-    const long_path = "a" ** (std.fs.max_path_bytes + 100);
-    path_copy.set(long_path);
+    const long_path: [std.fs.max_path_bytes + 100]u8 = @splat('a');
+    path_copy.set(&long_path);
     try std.testing.expectEqual(std.fs.max_path_bytes, path_copy.len);
     try std.testing.expectEqual(std.fs.max_path_bytes, path_copy.slice().len);
     for (path_copy.slice()) |c| {
@@ -5544,8 +5543,8 @@ test "dialog path copy truncates paths exceeding buffer capacity" {
 
 test "dialog path copy handles exact buffer capacity" {
     var path_copy = DialogPathCopy{};
-    const exact_path = "b" ** std.fs.max_path_bytes;
-    path_copy.set(exact_path);
+    const exact_path: [std.fs.max_path_bytes]u8 = @splat('b');
+    path_copy.set(&exact_path);
     try std.testing.expectEqual(std.fs.max_path_bytes, path_copy.len);
 }
 
@@ -5789,7 +5788,7 @@ fn gifOutputPath(current_rom: []const u8) ?[256]u8 {
         }
     }
     // Fallback to CWD
-    var buf: [256]u8 = [_]u8{0} ** 256;
+    var buf: [256]u8 = @splat(0);
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{i}) catch return null;
@@ -5813,7 +5812,7 @@ fn wavOutputPath(current_rom: []const u8) ?[256]u8 {
             return path;
         }
     }
-    var buf: [256]u8 = [_]u8{0} ** 256;
+    var buf: [256]u8 = @splat(0);
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.wav", .{i}) catch return null;
@@ -5837,7 +5836,7 @@ fn screenshotOutputPath(current_rom: []const u8) ?[256]u8 {
             return path;
         }
     }
-    var buf: [256]u8 = [_]u8{0} ** 256;
+    var buf: [256]u8 = @splat(0);
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.bmp", .{i}) catch return null;
@@ -5866,7 +5865,7 @@ test "screenshot output path returns optional type" {
 }
 
 test "output path format matches expected pattern" {
-    var buf: [48]u8 = [_]u8{0} ** 48;
+    var buf: [48]u8 = @splat(0);
     const name1 = std.fmt.bufPrint(&buf, "sandopolis_{d:0>3}.gif", .{@as(u32, 1)}) catch unreachable;
     try std.testing.expectEqualStrings("sandopolis_001.gif", name1);
 
@@ -5925,7 +5924,7 @@ test "frontend config psg_volume clamps to 200" {
 
 test "pause overlay key opens game info with i" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
     var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
     var ui = FrontendUi{ .overlay = .pause };

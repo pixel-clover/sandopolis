@@ -19,7 +19,7 @@ pub const SmsBus = struct {
     source_path: ?[]const u8 = null,
     source_path_owned: bool = false,
     is_sg1000: bool = false,
-    ram: [8 * 1024]u8 = [_]u8{0} ** (8 * 1024),
+    ram: [8 * 1024]u8 = @splat(0),
     vdp: SmsVdp = SmsVdp.init(),
     input: SmsInput = SmsInput{},
     io: SmsIo = undefined, // Initialized in init()
@@ -28,7 +28,7 @@ pub const SmsBus = struct {
     page: [3]u8 = .{ 0, 1, 2 },
     ram_bank_enabled: bool = false,
     ram_bank: u1 = 0,
-    cartridge_ram: [2 * 16 * 1024]u8 = [_]u8{0} ** (2 * 16 * 1024),
+    cartridge_ram: [2 * 16 * 1024]u8 = @splat(0),
 
     /// Create a bus with a borrowed ROM slice (caller keeps ownership).
     /// The io pointers are left undefined: taking &bus.vdp here would
@@ -101,7 +101,7 @@ pub const SmsBus = struct {
     }
 
     pub fn reset(self: *SmsBus) void {
-        self.ram = [_]u8{0} ** (8 * 1024);
+        self.ram = @splat(0);
         self.vdp.reset();
         self.page = .{ 0, 1, 2 };
         self.ram_bank_enabled = false;
@@ -226,7 +226,7 @@ pub const SmsBus = struct {
 };
 
 test "sms bus cartridge ram bank 1 access" {
-    var rom_buf = [_]u8{0} ** 1024;
+    var rom_buf: [1024]u8 = @splat(0);
     var bus = SmsBus.init(&rom_buf);
 
     // Enable cartridge RAM bank 1: bit 3=1 (enable), bit 2=1 (bank 1)
@@ -249,7 +249,7 @@ test "sms bus cartridge ram bank 1 access" {
 }
 
 test "sms bus read rom page 0" {
-    var rom_buf = [_]u8{0} ** (32 * 1024);
+    var rom_buf: [32 * 1024]u8 = @splat(0);
     rom_buf[0] = 0x42;
     rom_buf[0x100] = 0xAB;
     const bus = SmsBus.init(&rom_buf);
@@ -258,7 +258,7 @@ test "sms bus read rom page 0" {
 }
 
 test "sms bus ram read write mirror" {
-    var rom_buf = [_]u8{0} ** 1024;
+    var rom_buf: [1024]u8 = @splat(0);
     var bus = SmsBus.init(&rom_buf);
     bus.write(0xC000, 0x55);
     try testing.expectEqual(@as(u8, 0x55), bus.read(0xC000));
@@ -268,7 +268,7 @@ test "sms bus ram read write mirror" {
 
 test "sms bus mapper page switch" {
     // 64KB ROM = 4 pages of 16KB
-    var rom_buf = [_]u8{0} ** (64 * 1024);
+    var rom_buf: [64 * 1024]u8 = @splat(0);
     rom_buf[2 * 0x4000] = 0xAA; // First byte of page 2
     rom_buf[3 * 0x4000] = 0xBB; // First byte of page 3
     var bus = SmsBus.init(&rom_buf);
@@ -283,7 +283,7 @@ test "sms bus mapper page switch" {
 
 test "sg1000 bus uses flat rom and 1kb mirrored ram" {
     // SG-1000: ROM direct-mapped 0x0000-0xBFFF, 1KB RAM at 0xC000 mirrored
-    var rom_buf = [_]u8{0} ** (48 * 1024);
+    var rom_buf: [48 * 1024]u8 = @splat(0);
     rom_buf[0x0000] = 0xF3; // First byte (DI instruction)
     rom_buf[0x4000] = 0xAA; // Byte in second 16KB
     rom_buf[0x8000] = 0xBB; // Byte in third 16KB
@@ -316,7 +316,7 @@ test "sg1000 bus uses flat rom and 1kb mirrored ram" {
 
 test "sg1000 bus 1kb ram does not alias into 8kb" {
     // Verify SG-1000 only has 1KB RAM, not 8KB
-    var rom_buf = [_]u8{0} ** (16 * 1024);
+    var rom_buf: [16 * 1024]u8 = @splat(0);
     var bus = SmsBus.init(&rom_buf);
     bus.is_sg1000 = true;
 

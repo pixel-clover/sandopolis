@@ -74,7 +74,7 @@ pub fn nextOutputPath(rom_path: []const u8, extension: []const u8) ?[256]u8 {
     const stem = std.fs.path.stem(rom_path);
     const parent = std.fs.path.dirname(rom_path);
 
-    var result: [256]u8 = [_]u8{0} ** 256;
+    var result: [256]u8 = @splat(0);
     var i: u32 = 1;
     while (i <= 999) : (i += 1) {
         const name = if (parent) |p|

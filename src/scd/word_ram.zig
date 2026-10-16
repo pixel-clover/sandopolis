@@ -25,7 +25,7 @@ pub const PriorityMode = enum(u2) {
 };
 
 pub const WordRam = struct {
-    banks: [2][bank_bytes]u8 = .{ [_]u8{0} ** bank_bytes, [_]u8{0} ** bank_bytes },
+    banks: [2][bank_bytes]u8 = .{ @splat(0), @splat(0) },
     mode: Mode = .two_m,
     /// 2M: 1 = main CPU owns the whole block, 0 = sub CPU owns it.
     /// 1M: selects which bank the main CPU owns (bank = ret); sub gets the other.
@@ -325,7 +325,7 @@ test "cell image maps VDP tile order onto the row-major bitmap" {
 
     // Every cell-image byte maps to a distinct bank byte (bijection).
     var wr = WordRam{};
-    var seen = [_]bool{false} ** bank_bytes;
+    var seen: [bank_bytes]bool = @splat(false);
     var c: u32 = 0;
     while (c < bank_bytes) : (c += 1) {
         const o = WordRam.cellImageToBank(c);

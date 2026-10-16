@@ -113,7 +113,7 @@ test "sega cd state round-trips the sub-board and keeps a memory disc out of the
     std.mem.writeInt(u32, bios[4..8], 0x00000200, .big);
     bios[0x200] = 0x60;
     bios[0x201] = 0xFE;
-    var iso = [_]u8{0} ** (2 * 2048);
+    var iso: [2 * 2048]u8 = @splat(0);
     @memcpy(iso[0..14], "SEGADISCSYSTEM");
     var disc = try Disc.fromMemory(testing.allocator, null, &.{&iso});
     errdefer disc.deinit();

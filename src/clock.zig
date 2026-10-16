@@ -27,7 +27,6 @@ pub const refresh_interval: u32 = 128;
 /// 68K is fully halted for the entire DMA duration (legacy behavior).
 pub const enable_dma_refresh_windows: bool = false;
 
-
 pub inline fn m68kCyclesToMaster(cycles: u32) u32 {
     return cycles * m68k_divider;
 }

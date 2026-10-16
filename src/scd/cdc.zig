@@ -77,7 +77,7 @@ pub const DmaSink = struct {
 };
 
 pub const Cdc = struct {
-    ram: [buffer_bytes]u8 = [_]u8{0} ** buffer_bytes,
+    ram: [buffer_bytes]u8 = @splat(0),
 
     // Register file (indexed by RS).
     ifstat: u8 = 0xFF,
@@ -423,7 +423,7 @@ test "dma transfer delivers DBC+1 bytes to the sink and wraps the buffer" {
     const Sink = struct {
         dest: ?Destination = null,
         base: u32 = 0,
-        bytes: [64]u8 = [_]u8{0} ** 64,
+        bytes: [64]u8 = @splat(0),
         count: usize = 0,
 
         fn write(ctx: *anyopaque, destination: Destination, address: u32, data: []const u8) void {

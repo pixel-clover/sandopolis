@@ -247,7 +247,7 @@ test "WAV recorder duration calculation is correct" {
 
     var recorder = try WavRecorder.start(tmp_path, 48000, 2);
 
-    var samples: [9600]i16 = [_]i16{0} ** 9600;
+    var samples: [9600]i16 = @splat(0);
     for (0..10) |_| {
         try recorder.addSamples(&samples);
     }
@@ -278,7 +278,7 @@ test "WAV recorder handles large recordings" {
 
     var recorder = try WavRecorder.start(tmp_path, 48000, 2);
 
-    var samples: [8192]i16 = [_]i16{0} ** 8192;
+    var samples: [8192]i16 = @splat(0);
     for (0..samples.len) |i| {
         samples[i] = @intCast(@as(i32, @intCast(i % 32768)) - 16384);
     }

@@ -229,7 +229,7 @@ const ml_table: [16]u32 = .{ 1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 
 
 const tl_tab: [TL_TAB_LEN]i32 = blk: {
     @setEvalBranchQuota(200000);
-    var tab = [_]i32{0} ** TL_TAB_LEN;
+    var tab: [TL_TAB_LEN]i32 = @splat(0);
     for (0..TL_RES_LEN) |xi| {
         const x: f64 = @floatFromInt(xi);
         var m: f64 = @as(f64, 65536.0) / math.pow(f64, 2.0, (x + 1.0) * (ENV_STEP / 4.0) / 8.0);
@@ -254,7 +254,7 @@ const tl_tab: [TL_TAB_LEN]i32 = blk: {
 
 const sin_tab: [SIN_LEN]u32 = blk: {
     @setEvalBranchQuota(200000);
-    var tab = [_]u32{0} ** SIN_LEN;
+    var tab: [SIN_LEN]u32 = @splat(0);
     for (0..SIN_LEN) |ii| {
         const i_f: f64 = @floatFromInt(ii);
         const m_val: f64 = @sin(((i_f * 2.0) + 1.0) * math.pi / @as(f64, @floatFromInt(SIN_LEN)));
@@ -277,7 +277,7 @@ const sin_tab: [SIN_LEN]u32 = blk: {
 
 const lfo_pm_table: [128 * 8 * 32]i32 = blk: {
     @setEvalBranchQuota(200000);
-    var tab = [_]i32{0} ** (128 * 8 * 32);
+    var tab: [128 * 8 * 32]i32 = @splat(0);
     for (0..8) |i_depth| {
         for (0..128) |fnum| {
             for (0..8) |step| {
@@ -382,7 +382,7 @@ const ConnDest = enum {
 };
 
 pub const Ym2612Sample = struct {
-    ch: [6]FmChannel = [_]FmChannel{FmChannel{}} ** 6,
+    ch: [6]FmChannel = @splat(FmChannel{}),
 
     dacen: bool = false,
     dacout: i32 = 0,
@@ -405,7 +405,7 @@ pub const Ym2612Sample = struct {
     sl3: Fm3Slot = Fm3Slot{},
 
     // Panning (bitmasks)
-    pan: [12]u32 = [_]u32{0} ** 12,
+    pan: [12]u32 = @splat(0),
 
     // Envelope generator
     eg_cnt: u32 = 0,
@@ -419,16 +419,16 @@ pub const Ym2612Sample = struct {
     lfo_pm: u32 = 0,
 
     // Detune table
-    dt_tab: [8][32]i32 = [_][32]i32{[_]i32{0} ** 32} ** 8,
+    dt_tab: [8][32]i32 = @splat(@splat(0)),
 
     // Chip type
     chip_type: ChipType = .discrete,
 
     // Operator output mask (for 9-bit vs 14-bit DAC)
-    op_mask: [8][4]u32 = [_][4]u32{[_]u32{0xFFFFFFFF} ** 4} ** 8,
+    op_mask: [8][4]u32 = @splat(@splat(0xFFFFFFFF)),
 
     // Scratch space for channel calculation
-    out_fm: [6]i32 = [_]i32{0} ** 6,
+    out_fm: [6]i32 = @splat(0),
     scratch_m2: i32 = 0,
     scratch_c1: i32 = 0,
     scratch_c2: i32 = 0,
@@ -547,7 +547,7 @@ pub const Ym2612Sample = struct {
         self.refreshFcEgChan(5);
 
         // Clear outputs
-        self.out_fm = [_]i32{0} ** 6;
+        self.out_fm = @splat(0);
 
         // Update SSG-EG
         self.updateSsgEgChannels();

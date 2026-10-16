@@ -16,7 +16,7 @@ pub const slot_count: usize = StateFile.persistent_state_slot_count;
 
 pub const Preview = struct {
     available: bool = false,
-    pixels: [preview_pixel_count]u32 = [_]u32{0} ** preview_pixel_count,
+    pixels: [preview_pixel_count]u32 = @splat(0),
 
     pub fn captureFromFramebuffer(framebuffer: []const u32) Preview {
         const source_height = framebuffer.len / Vdp.framebuffer_width;
@@ -95,7 +95,7 @@ pub const SlotMetadata = struct {
 };
 
 pub const ManagerState = struct {
-    slots: [slot_count]SlotMetadata = [_]SlotMetadata{.{}} ** slot_count,
+    slots: [slot_count]SlotMetadata = @splat(.{}),
 
     pub fn refresh(
         self: *ManagerState,
@@ -232,7 +232,7 @@ pub fn formatTimestampRelative(buffer: []u8, ns: i128) ![]const u8 {
         return std.fmt.bufPrint(buffer, "{d:0>4}-{d:0>2}-{d:0>2}", .{
             year_day.year,
             // std.time.epoch.Month is already 1-based (jan = 1).
-            @intFromEnum(month_day.month),
+            @backingInt(month_day.month),
             month_day.day_index + 1,
         });
     }

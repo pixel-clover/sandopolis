@@ -108,21 +108,21 @@ pub fn discRegion(sector0: []const u8) ?BiosRegion {
 const testing = std.testing;
 
 test "validate accepts a 128KB image with SEGA header and rejects others" {
-    var good = [_]u8{0} ** bios_size;
+    var good: [bios_size]u8 = @splat(0);
     @memcpy(good[0x100..0x104], "SEGA");
     try validate(&good);
 
-    var short = [_]u8{0} ** 0x200;
+    var short: [0x200]u8 = @splat(0);
     @memcpy(short[0x100..0x104], "SEGA");
     try testing.expectError(error.BiosWrongSize, validate(&short));
 
-    const blank = [_]u8{0} ** bios_size;
+    const blank: [bios_size]u8 = @splat(0);
     try testing.expectError(error.BiosMissingHeader, validate(&blank));
 }
 
 test "selectForDisc precedence: preference, then disc region, then any" {
-    const us = [_]u8{1} ** 4;
-    const jp = [_]u8{2} ** 4;
+    const us: [4]u8 = @splat(1);
+    const jp: [4]u8 = @splat(2);
     const set = BiosSet{ .us = &us, .jp = &jp };
 
     // Explicit preference wins when present, errors when absent.
@@ -142,7 +142,7 @@ test "selectForDisc precedence: preference, then disc region, then any" {
 }
 
 test "disc region from security sector country byte" {
-    var sector = [_]u8{0} ** 2048;
+    var sector: [2048]u8 = @splat(0);
     sector[0x1F0] = 'U';
     try testing.expectEqual(BiosRegion.us, discRegion(&sector).?);
     sector[0x1F0] = 'E';

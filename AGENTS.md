@@ -154,7 +154,7 @@ Additional validation when relevant:
 
 Audio investigation workflow:
 
-- Prefer `-Doptimize=ReleaseSafe` for ROM-backed audio investigation unless you specifically need `Debug`.
+- Prefer `-Doptimize=safe` for ROM-backed audio investigation unless you specifically need `debug`.
 - Start cross-emulator FM investigation with `zig build trace-ym-writes -- ...` to compare Sandopolis YM register streams against a reference
   emulator.
 - If ROM-backed YM output diverges but the raw YM core already matches reference scenarios, use `zig build trace-z80-audio-ops -- ...` to inspect the
@@ -162,11 +162,11 @@ Audio investigation workflow:
 
 Optimize mode guidance:
 
-- Do not use the default `Debug` build for normal game execution or long ROM/audio comparisons unless you specifically need debug assertions or
+- Do not use the default `debug` build for normal game execution or long ROM/audio comparisons unless you specifically need debug assertions or
   traces.
-- Prefer `-Doptimize=ReleaseSafe` for most emulator investigation work: it is much faster than `Debug` while keeping safety checks enabled.
-- Prefer `-Doptimize=ReleaseFast` for long gameplay runs, performance-sensitive audio capture, and other throughput-heavy manual checks.
-- Keep `Debug` for narrow tracing, stepping, and assertion-heavy debugging where runtime speed is not important.
+- Prefer `-Doptimize=safe` for most emulator investigation work: it is much faster than `debug` while keeping safety checks enabled.
+- Prefer `-Doptimize=fast` for long gameplay runs, performance-sensitive audio capture, and other throughput-heavy manual checks.
+- Keep `debug` for narrow tracing, stepping, and assertion-heavy debugging where runtime speed is not important.
 
 ## Testing Expectations
 
