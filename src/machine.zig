@@ -846,7 +846,7 @@ fn seedDummyTestRom(rom: []u8) void {
 
 test "machine snapshots restore CPU bus and Z80 state" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -1002,7 +1002,7 @@ test "machine soft reset preserves runtime memory and phase while resetting cpu 
 
 test "machine binding helpers update and release controller state" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -1025,7 +1025,7 @@ test "machine binding helpers update and release controller state" {
 
 test "machine audio drain helper routes pending audio to sink policy" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
 
     const MockSink = struct {
         can_accept: bool = true,
@@ -1129,7 +1129,7 @@ test "rom checksum validation detects correct and incorrect checksums" {
 
 test "machine installs dummy test rom vectors and program" {
     const allocator = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x400;
+    const rom: [0x400]u8 = @splat(0);
 
     var machine = try Machine.initFromRomBytes(allocator, rom[0..]);
     defer machine.deinit(allocator);
@@ -1218,7 +1218,7 @@ test "machine facade methods expose VDP and I/O state without direct bus access"
 
 test "sms machine romSize facade returns ROM length" {
     const SmsMachine = @import("sms/machine.zig").SmsMachine;
-    const rom = [_]u8{0} ** 0x4000;
+    const rom: [0x4000]u8 = @splat(0);
     var sms = try SmsMachine.initFromRomBytes(std.testing.allocator, &rom);
     defer sms.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0x4000), sms.romSize());

@@ -8,7 +8,7 @@ pub const recent_rom_limit: usize = 8;
 
 pub const PathCopy = struct {
     len: usize = 0,
-    bytes: [std.fs.max_path_bytes]u8 = [_]u8{0} ** std.fs.max_path_bytes,
+    bytes: [std.fs.max_path_bytes]u8 = @splat(0),
 
     pub fn slice(self: *const PathCopy) []const u8 {
         return self.bytes[0..self.len];
@@ -174,7 +174,7 @@ pub const FontFace = enum {
 
 pub const FrontendConfig = struct {
     recent_rom_count: usize = 0,
-    recent_roms: [recent_rom_limit]PathCopy = [_]PathCopy{.{}} ** recent_rom_limit,
+    recent_roms: [recent_rom_limit]PathCopy = @splat(.{}),
     last_open_dir: PathCopy = .{},
     video_aspect_mode: VideoAspectMode = .stretch,
     video_scale_mode: VideoScaleMode = .fit,
@@ -328,7 +328,7 @@ pub const FrontendConfig = struct {
         target.set(path);
         const previous_entries = self.recent_roms;
         const previous_count = self.recent_rom_count;
-        self.recent_roms = [_]PathCopy{.{}} ** recent_rom_limit;
+        self.recent_roms = @splat(.{});
         self.recent_roms[0] = target;
         var next_count: usize = 1;
         for (previous_entries[0..previous_count]) |entry| {

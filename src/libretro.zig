@@ -334,7 +334,7 @@ export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
     c_state.* = .{
         .machine = undefined,
         .audio = AudioOutput.init(),
-        .audio_buffer = [_]i16{0} ** 8192,
+        .audio_buffer = @splat(0),
         .audio_sample_count = 0,
     };
     // Sega CD discs load by path (a .cue references sibling files) with the
@@ -408,7 +408,7 @@ export fn retro_get_memory_size(id: c_uint) callconv(.c) usize {
 
 test "retro memory api exposes battery sram" {
     const talloc = std.testing.allocator;
-    var rom = [_]u8{0} ** 0x400;
+    var rom: [0x400]u8 = @splat(0);
     @memcpy(rom[0x100..0x104], "SEGA");
     rom[0x1B0] = 'R';
     rom[0x1B1] = 'A';
@@ -425,14 +425,14 @@ test "retro memory api exposes battery sram" {
     try std.testing.expectEqual(@as(usize, 64 * 1024), machine.workRam().len);
 
     // A machine with no SRAM header and no EEPROM exposes nothing.
-    var plain = try SystemMachine.initFromRomBytes(talloc, &[_]u8{0} ** 0x400, null);
+    var plain = try SystemMachine.initFromRomBytes(talloc, &@as([0x400]u8, @splat(0)), null);
     defer plain.deinit(talloc);
     try std.testing.expectEqual(@as(?[]u8, null), plain.persistentSaveRam());
 }
 
 test "libretro core runs sms machines through the facade" {
     const talloc = std.testing.allocator;
-    const rom = [_]u8{0} ** 0x4000;
+    const rom: [0x4000]u8 = @splat(0);
     var machine = try SystemMachine.initFromRomBytes(talloc, &rom, .sms);
     defer machine.deinit(talloc);
 

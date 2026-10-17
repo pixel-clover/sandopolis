@@ -491,12 +491,12 @@ const TestFixture = struct {
     trace: sound_write_trace.Trace,
 
     fn init(allocator: std.mem.Allocator) !TestFixture {
-        var rom = [_]u8{0} ** 0x4000;
+        var rom: [0x4000]u8 = @splat(0);
         @memcpy(rom[0x100..0x104], "SEGA");
 
         return .{
             .cartridge = try Cartridge.initFromRomBytes(allocator, &rom),
-            .ram = [_]u8{0} ** (64 * 1024),
+            .ram = @splat(0),
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),

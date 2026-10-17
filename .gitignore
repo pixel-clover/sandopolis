@@ -51,7 +51,7 @@ htmlcov/
 # Zig Specific
 ########################
 zig-cache/
-.zig-cache/
+.zig-cache*/
 zig-out/
 
 ########################

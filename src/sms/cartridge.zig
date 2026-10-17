@@ -93,19 +93,19 @@ fn decodeRegion(code: u4) SmsRomMetadata.Region {
 }
 
 test "sms cartridge detection positive" {
-    var rom = [_]u8{0} ** 0x8000; // 32KB
+    var rom: [0x8000]u8 = @splat(0); // 32KB
     @memcpy(rom[0x7FF0..][0..8], "TMR SEGA");
     try testing.expect(isSmsRom(&rom));
 }
 
 test "sms cartridge detection negative" {
-    var rom = [_]u8{0} ** 0x200;
+    var rom: [0x200]u8 = @splat(0);
     @memcpy(rom[0x100..][0..4], "SEGA"); // Genesis header
     try testing.expect(!isSmsRom(&rom));
 }
 
 test "sms cartridge metadata parsing" {
-    var rom = [_]u8{0} ** 0x8000;
+    var rom: [0x8000]u8 = @splat(0);
     @memcpy(rom[0x7FF0..][0..8], "TMR SEGA");
     rom[0x7FFA] = 0x34; // Checksum low
     rom[0x7FFB] = 0x12; // Checksum high
@@ -136,16 +136,16 @@ test "decodeRegion maps all known codes" {
 
 test "sms cartridge detection at alternate offsets" {
     // Header at 0x3FF0
-    var rom16k = [_]u8{0} ** 0x4000;
+    var rom16k: [0x4000]u8 = @splat(0);
     @memcpy(rom16k[0x3FF0..][0..8], "TMR SEGA");
     try testing.expect(isSmsRom(&rom16k));
 
     // Header at 0x1FF0
-    var rom8k = [_]u8{0} ** 0x2000;
+    var rom8k: [0x2000]u8 = @splat(0);
     @memcpy(rom8k[0x1FF0..][0..8], "TMR SEGA");
     try testing.expect(isSmsRom(&rom8k));
 
     // ROM too short for any header
-    const tiny = [_]u8{0} ** 16;
+    const tiny: [16]u8 = @splat(0);
     try testing.expect(!isSmsRom(&tiny));
 }

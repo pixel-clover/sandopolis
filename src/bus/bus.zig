@@ -55,7 +55,7 @@ pub const Bus = struct {
         const bus = Bus{
             .rom = cartridge.rom,
             .cartridge = cartridge,
-            .ram = [_]u8{0} ** (64 * 1024),
+            .ram = @splat(0),
             .vdp = Vdp.init(),
             .io = Io.init(),
             .z80 = Z80.init(),
@@ -308,7 +308,7 @@ pub const Bus = struct {
         const active_execution_counters = self.active_execution_counters;
 
         self.cartridge.resetHardwareState();
-        self.ram = [_]u8{0} ** self.ram.len;
+        self.ram = @splat(0);
 
         self.vdp = Vdp.init();
         self.vdp.pal_mode = pal_mode;
@@ -614,7 +614,7 @@ const ControlTransitionTiming = struct {
 };
 
 const ControlWriteTimingProbe = struct {
-    rom: [0x0400]u8 = [_]u8{0} ** 0x0400,
+    rom: [0x0400]u8 = @splat(0),
     runtime: cpu_runtime.RuntimeState = .{},
     last_write_address: u32 = std.math.maxInt(u32),
     last_write_value: u16 = 0,

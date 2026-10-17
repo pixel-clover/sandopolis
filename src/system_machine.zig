@@ -819,7 +819,7 @@ test "state buffer round-trips through the facade and dispatches on magic" {
     const t = @import("std").testing;
 
     // SMS machine: save, then load back through the facade.
-    var sms_rom = [_]u8{0xC7} ** 1024;
+    var sms_rom: [1024]u8 = @splat(0xC7);
     var machine = try SystemMachine.initFromRomBytes(testing_alloc, &sms_rom, .sms);
     defer machine.deinit(testing_alloc);
     machine.runFrame();
@@ -829,7 +829,7 @@ test "state buffer round-trips through the facade and dispatches on magic" {
     try t.expectEqual(system_detect.SystemType.sms, machine.systemType());
 
     // Loading a Genesis buffer into the same instance switches the variant.
-    var gen_rom = [_]u8{0} ** 0x400;
+    var gen_rom: [0x400]u8 = @splat(0);
     @memcpy(gen_rom[0x100..0x104], "SEGA");
     var gen_machine = try SystemMachine.initFromRomBytes(testing_alloc, &gen_rom, null);
     defer gen_machine.deinit(testing_alloc);
@@ -841,7 +841,7 @@ test "state buffer round-trips through the facade and dispatches on magic" {
     machine.runFrame();
 
     // A corrupt buffer leaves the machine untouched.
-    const junk = [_]u8{0} ** 64;
+    const junk: [64]u8 = @splat(0);
     try t.expectError(error.InvalidSaveState, machine.loadStateFromBuffer(testing_alloc, &junk));
     try t.expectEqual(system_detect.SystemType.genesis, machine.systemType());
 }
@@ -849,13 +849,13 @@ test "state buffer round-trips through the facade and dispatches on magic" {
 test "stateBufferMatchesSystem distinguishes system families by magic" {
     const t = @import("std").testing;
 
-    var sms_rom = [_]u8{0xC7} ** 1024;
+    var sms_rom: [1024]u8 = @splat(0xC7);
     var sms_machine = try SystemMachine.initFromRomBytes(testing_alloc, &sms_rom, .sms);
     defer sms_machine.deinit(testing_alloc);
     const sms_buf = try sms_machine.saveStateToBuffer(testing_alloc);
     defer testing_alloc.free(sms_buf);
 
-    var gen_rom = [_]u8{0} ** 0x400;
+    var gen_rom: [0x400]u8 = @splat(0);
     @memcpy(gen_rom[0x100..0x104], "SEGA");
     var gen_machine = try SystemMachine.initFromRomBytes(testing_alloc, &gen_rom, null);
     defer gen_machine.deinit(testing_alloc);
@@ -875,7 +875,7 @@ test "loadStateFromBuffer keeps the persistent save RAM allocation stable" {
     const t = @import("std").testing;
 
     // Genesis ROM with a battery-backed SRAM header at 0x200001-0x203FFF.
-    var rom = [_]u8{0} ** 0x400;
+    var rom: [0x400]u8 = @splat(0);
     @memcpy(rom[0x100..0x104], "SEGA");
     rom[0x1B0] = 'R';
     rom[0x1B1] = 'A';
@@ -905,7 +905,7 @@ test "loadStateFromBuffer keeps the persistent save RAM allocation stable" {
 
 test "unified setButton maps genesis masks to sms buttons" {
     const t = @import("std").testing;
-    var rom = [_]u8{0xC7} ** 1024;
+    var rom: [1024]u8 = @splat(0xC7);
     var machine = try SystemMachine.initFromRomBytes(testing_alloc, &rom, .sms);
     defer machine.deinit(testing_alloc);
 
@@ -922,7 +922,7 @@ test "unified setButton maps genesis masks to sms buttons" {
 
 test "configured bindings apply to sms and release cleanly" {
     const t = @import("std").testing;
-    var rom = [_]u8{0xC7} ** 1024;
+    var rom: [1024]u8 = @splat(0xC7);
     var machine = try SystemMachine.initFromRomBytes(testing_alloc, &rom, .sms);
     defer machine.deinit(testing_alloc);
 
@@ -1015,15 +1015,15 @@ test "golden axe shadow highlight high priority tiles are not darkened" {
 test "classifyStateBuffer maps every known magic and rejects junk" {
     const t = @import("std").testing;
 
-    var sms_hdr = [_]u8{0} ** 16;
+    var sms_hdr: [16]u8 = @splat(0);
     @memcpy(sms_hdr[0..8], &sms_state_file.magic);
     try t.expectEqual(StateSystem.sms, classifyStateBuffer(&sms_hdr).?);
 
-    var gen_hdr = [_]u8{0} ** 16;
+    var gen_hdr: [16]u8 = @splat(0);
     @memcpy(gen_hdr[0..8], &genesis_state_file.magic);
     try t.expectEqual(StateSystem.genesis, classifyStateBuffer(&gen_hdr).?);
 
-    var scd_hdr = [_]u8{0} ** 16;
+    var scd_hdr: [16]u8 = @splat(0);
     @memcpy(scd_hdr[0..8], &scd_state_file.magic);
     try t.expectEqual(StateSystem.segacd, classifyStateBuffer(&scd_hdr).?);
 
@@ -1031,7 +1031,7 @@ test "classifyStateBuffer maps every known magic and rejects junk" {
     try t.expect(classifyStateBuffer("SNDSXXXX........") == null);
 
     // A Genesis machine must not accept a Sega CD buffer as same-family.
-    var gen_rom = [_]u8{0} ** 0x400;
+    var gen_rom: [0x400]u8 = @splat(0);
     @memcpy(gen_rom[0x100..0x104], "SEGA");
     var gen_machine = try SystemMachine.initFromRomBytes(testing_alloc, &gen_rom, null);
     defer gen_machine.deinit(testing_alloc);
@@ -1042,12 +1042,12 @@ test "classifyStateBuffer maps every known magic and rejects junk" {
 test "initWithOptions refuses a disc image without a BIOS and delegates otherwise" {
     const t = @import("std").testing;
     // No BIOS configured: a Sega CD disc cannot boot.
-    var iso = [_]u8{0} ** 0x800;
+    var iso: [0x800]u8 = @splat(0);
     @memcpy(iso[0..14], "SEGADISCSYSTEM");
     try t.expectError(error.BiosMissing, SystemMachine.initFromRomBytesWithOptions(testing_alloc, &iso, null, .{}));
 
     // Cartridge systems ignore the BIOS options entirely.
-    var gen_rom = [_]u8{0} ** 0x400;
+    var gen_rom: [0x400]u8 = @splat(0);
     @memcpy(gen_rom[0x100..0x104], "SEGA");
     var machine = try SystemMachine.initFromRomBytesWithOptions(testing_alloc, &gen_rom, null, .{ .preferred_bios_region = .jp });
     defer machine.deinit(testing_alloc);
@@ -1065,7 +1065,7 @@ test "facade boots a sega cd from bios bytes and an in-memory iso" {
     bios[0x200] = 0x60; // bra.s *
     bios[0x201] = 0xFE;
 
-    var iso = [_]u8{0} ** (2 * 2048);
+    var iso: [2 * 2048]u8 = @splat(0);
     @memcpy(iso[0..14], "SEGADISCSYSTEM");
     iso[0x1F0] = 'U';
 

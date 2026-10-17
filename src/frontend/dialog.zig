@@ -19,7 +19,7 @@ pub const State = struct {
     selected_path: PathCopy = .{},
     failure_message: MessageCopy = .{},
     default_location_len: usize = 0,
-    default_location_z: [std.fs.max_path_bytes + 1]u8 = [_]u8{0} ** (std.fs.max_path_bytes + 1),
+    default_location_z: [std.fs.max_path_bytes + 1]u8 = @splat(0),
     outcome: enum {
         idle,
         selected,

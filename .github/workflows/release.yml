@@ -131,12 +131,12 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} \
+            zig build -Doptimize=fast -Dtarget=${{ matrix.target }} \
               -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" \
               -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" \
               -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
           else
-            zig build -Doptimize=ReleaseFast \
+            zig build -Doptimize=fast \
               -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" \
               -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" \
               -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
@@ -144,7 +144,7 @@ jobs:
 
       - name: Build the binary (Windows)
         if: runner.os == 'Windows'
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
+        run: zig build -Doptimize=fast -Dtarget=${{ matrix.target }} -Dgit-branch="${{ steps.build_meta.outputs.git_branch }}" -Dgit-hash="${{ steps.build_meta.outputs.git_hash }}" -Dbuild-time="${{ steps.build_meta.outputs.build_time }}"
 
       - name: Verify built binary exists (Unix)
         if: runner.os != 'Windows'

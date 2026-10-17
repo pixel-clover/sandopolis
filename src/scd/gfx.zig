@@ -143,7 +143,7 @@ pub const Gfx = struct {
 
 test "graphics ASIC renders a stamp-map line and completes" {
     var ram = WordRam{ .ret = false };
-    var regs = [_]u16{0} ** 8;
+    var regs: [8]u16 = @splat(0);
     regs[1] = 0x4000;
     regs[3] = 0x6000;
     regs[5] = 1;

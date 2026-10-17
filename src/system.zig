@@ -74,26 +74,26 @@ test "detect system from extension after zip stripping" {
 }
 
 test "detect system genesis" {
-    var rom = [_]u8{0} ** 0x200;
+    var rom: [0x200]u8 = @splat(0);
     @memcpy(rom[0x100..0x104], "SEGA");
     try testing.expectEqual(SystemType.genesis, detectSystem(&rom));
 }
 
 test "detect system sms" {
-    var rom = [_]u8{0} ** 0x8000;
+    var rom: [0x8000]u8 = @splat(0);
     @memcpy(rom[0x7FF0..][0..8], "TMR SEGA");
     try testing.expectEqual(SystemType.sms, detectSystem(&rom));
 }
 
 test "detect system game gear" {
-    var rom = [_]u8{0} ** 0x8000;
+    var rom: [0x8000]u8 = @splat(0);
     @memcpy(rom[0x7FF0..][0..8], "TMR SEGA");
     rom[0x7FFF] = 0x6C; // Region=game_gear_export(6), size=C
     try testing.expectEqual(SystemType.gg, detectSystem(&rom));
 }
 
 test "detect system unknown defaults to genesis" {
-    const rom = [_]u8{0} ** 0x100;
+    const rom: [0x100]u8 = @splat(0);
     try testing.expectEqual(SystemType.genesis, detectSystem(&rom));
 }
 
@@ -105,18 +105,18 @@ test "detect sega cd from disc image extension" {
 
 test "detect sega cd from disc header in raw sector bytes" {
     // 2048-byte user-data image: header at offset 0.
-    var iso = [_]u8{0} ** 0x200;
+    var iso: [0x200]u8 = @splat(0);
     @memcpy(iso[0..15], "SEGADISCSYSTEM ");
     try testing.expectEqual(SystemType.segacd, detectSystem(&iso));
 
     // 2352-byte raw sector: 12-byte sync + 4-byte header precede user data.
-    var raw = [_]u8{0} ** 0x200;
+    var raw: [0x200]u8 = @splat(0);
     @memcpy(raw[16..31], "SEGADISCSYSTEM ");
     try testing.expectEqual(SystemType.segacd, detectSystem(&raw));
 }
 
 test "genesis rom with SEGA header is not misdetected as sega cd" {
-    var rom = [_]u8{0} ** 0x200;
+    var rom: [0x200]u8 = @splat(0);
     @memcpy(rom[0x100..0x104], "SEGA");
     try testing.expectEqual(SystemType.genesis, detectSystem(&rom));
 }

@@ -184,10 +184,10 @@ pub const Bindings = struct {
 
     pub fn defaults() Bindings {
         var bindings = Bindings{
-            .keyboard = [_][actions.len]?KeyboardInput{[_]?KeyboardInput{null} ** actions.len} ** player_count,
-            .gamepad = [_][actions.len]?GamepadInput{[_]?GamepadInput{null} ** actions.len} ** player_count,
-            .hotkeys = [_]HotkeyBinding{.{}} ** hotkey_actions.len,
-            .controller_types = [_]ControllerType{.six_button} ** player_count,
+            .keyboard = @splat(@splat(null)),
+            .gamepad = @splat(@splat(null)),
+            .hotkeys = @splat(.{}),
+            .controller_types = @splat(.six_button),
             .gamepad_axis_threshold = default_gamepad_axis_threshold,
             .joystick_axis_threshold = default_joystick_axis_threshold,
             .trigger_threshold = default_trigger_threshold,
@@ -598,11 +598,11 @@ fn trimLine(raw_line: []const u8) []const u8 {
 }
 
 pub fn actionIndex(action: Action) usize {
-    return @intFromEnum(action);
+    return @backingInt(action);
 }
 
 fn hotkeyIndex(action: HotkeyAction) usize {
-    return @intFromEnum(action);
+    return @backingInt(action);
 }
 
 fn hotkeyBindingEql(a: HotkeyBinding, b: HotkeyBinding) bool {
@@ -661,18 +661,20 @@ fn portName(port: usize) []const u8 {
 }
 
 fn parseAction(name: []const u8) ?Action {
-    inline for (std.meta.fields(Action)) |field| {
-        if (std.ascii.eqlIgnoreCase(name, field.name)) {
-            return @enumFromInt(field.value);
+    const info = @typeInfo(Action).@"enum";
+    inline for (info.field_names, info.field_values) |field, value| {
+        if (std.ascii.eqlIgnoreCase(name, field)) {
+            return @fromBackingInt(@intCast(value));
         }
     }
     return null;
 }
 
 fn parseHotkeyAction(name: []const u8) ?HotkeyAction {
-    inline for (std.meta.fields(HotkeyAction)) |field| {
-        if (std.ascii.eqlIgnoreCase(name, field.name)) {
-            return @enumFromInt(field.value);
+    const info = @typeInfo(HotkeyAction).@"enum";
+    inline for (info.field_names, info.field_values) |field, value| {
+        if (std.ascii.eqlIgnoreCase(name, field)) {
+            return @fromBackingInt(@intCast(value));
         }
     }
     return null;
@@ -716,9 +718,10 @@ fn parseHotkeyBinding(name: []const u8) !HotkeyBinding {
 }
 
 fn parseKeyboardInput(name: []const u8) ?KeyboardInput {
-    inline for (std.meta.fields(KeyboardInput)) |field| {
-        if (std.ascii.eqlIgnoreCase(name, field.name)) {
-            return @enumFromInt(field.value);
+    const info = @typeInfo(KeyboardInput).@"enum";
+    inline for (info.field_names, info.field_values) |field, value| {
+        if (std.ascii.eqlIgnoreCase(name, field)) {
+            return @fromBackingInt(@intCast(value));
         }
     }
     return null;
@@ -746,9 +749,10 @@ fn writeKeyboardInputDisplay(writer: anytype, input: KeyboardInput) !void {
 }
 
 fn parseGamepadInput(name: []const u8) ?GamepadInput {
-    inline for (std.meta.fields(GamepadInput)) |field| {
-        if (std.ascii.eqlIgnoreCase(name, field.name)) {
-            return @enumFromInt(field.value);
+    const info = @typeInfo(GamepadInput).@"enum";
+    inline for (info.field_names, info.field_values) |field, value| {
+        if (std.ascii.eqlIgnoreCase(name, field)) {
+            return @fromBackingInt(@intCast(value));
         }
     }
     return null;
@@ -820,18 +824,18 @@ test "input bindings parse overrides and unbinds" {
         \\controller.p2 = three_button
     );
 
-    try testing.expect(bindings.keyboard[0][@intFromEnum(Action.a)] == .q);
-    try testing.expect(bindings.keyboard[0][@intFromEnum(Action.b)] == null);
-    try testing.expect(bindings.keyboard[1][@intFromEnum(Action.start)] == .rshift);
-    try testing.expect(bindings.gamepad[1][@intFromEnum(Action.start)] == .guide);
-    try testing.expect(bindings.gamepad[0][@intFromEnum(Action.mode)] == .misc1);
+    try testing.expect(bindings.keyboard[0][@backingInt(Action.a)] == .q);
+    try testing.expect(bindings.keyboard[0][@backingInt(Action.b)] == null);
+    try testing.expect(bindings.keyboard[1][@backingInt(Action.start)] == .rshift);
+    try testing.expect(bindings.gamepad[1][@backingInt(Action.start)] == .guide);
+    try testing.expect(bindings.gamepad[0][@backingInt(Action.mode)] == .misc1);
     try testing.expectEqual(@as(i16, 12_000), bindings.gamepad_axis_threshold);
     try testing.expectEqual(@as(i16, default_joystick_axis_threshold), bindings.joystick_axis_threshold);
     try testing.expectEqual(@as(i16, 20_000), bindings.trigger_threshold);
-    try testing.expectEqual(HotkeyBinding{ .input = .backspace }, bindings.hotkeys[@intFromEnum(HotkeyAction.quit)]);
+    try testing.expectEqual(HotkeyBinding{ .input = .backspace }, bindings.hotkeys[@backingInt(HotkeyAction.quit)]);
     try testing.expectEqual(
         HotkeyBinding{ .input = .f3, .modifiers = .{ .shift = true, .ctrl = true } },
-        bindings.hotkeys[@intFromEnum(HotkeyAction.reload_rom)],
+        bindings.hotkeys[@backingInt(HotkeyAction.reload_rom)],
     );
     try testing.expectEqual(ControllerType.three_button, bindings.controller_types[1]);
 }

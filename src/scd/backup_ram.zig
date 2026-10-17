@@ -22,7 +22,7 @@ pub const block_bytes: usize = 64;
 const signature = "SEGA_CD_ROM\x00\x01\x00\x00\x00RAM_CARTRIDGE___";
 
 pub fn formatBlock(total_bytes: usize) [format_block_bytes]u8 {
-    var block = [_]u8{0} ** format_block_bytes;
+    var block: [format_block_bytes]u8 = @splat(0);
     @memset(block[0..11], '_');
     block[0x0F] = 0x40;
     const free_blocks: u16 = @intCast(total_bytes / block_bytes - 3);
@@ -56,7 +56,7 @@ pub fn isFormattedBytes(ram: []const u8) bool {
 
 /// Fresh, formatted image.
 pub fn initialImage() [size]u8 {
-    var ram = [_]u8{0} ** size;
+    var ram: [size]u8 = @splat(0);
     format(&ram);
     return ram;
 }
@@ -79,7 +79,7 @@ test "fresh image carries a valid format block with 125 free blocks" {
 }
 
 test "a blank or corrupted image is not formatted" {
-    var ram = [_]u8{0} ** size;
+    var ram: [size]u8 = @splat(0);
     try testing.expect(!isFormatted(&ram));
     format(&ram);
     try testing.expect(isFormatted(&ram));

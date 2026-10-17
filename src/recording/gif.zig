@@ -70,10 +70,10 @@ pub const GifRecorder = struct {
             self.file.seekBy(-1) catch {};
         }
 
-        var palette: [max_colors]u32 = [_]u32{0} ** max_colors;
+        var palette: [max_colors]u32 = @splat(0);
         var palette_size: u16 = 0;
 
-        var color_map: [4096]ColorEntry = [_]ColorEntry{.{ .color = 0, .index = 0, .used = false }} ** 4096;
+        var color_map: [4096]ColorEntry = @splat(.{ .color = 0, .index = 0, .used = false });
 
         var indices: [max_pixel_count]u8 = undefined;
 
@@ -236,7 +236,7 @@ fn lzwCompress(rec: *GifRecorder, data: []const u8) !void {
     const first_code: u16 = 258;
     const max_code_value: u16 = 4095;
 
-    var hash_table: [lzw_hash_size]LzwHashEntry = [_]LzwHashEntry{.{}} ** lzw_hash_size;
+    var hash_table: [lzw_hash_size]LzwHashEntry = @splat(.{});
     var table_size: u16 = first_code;
     var code_size: u4 = 9;
 
@@ -277,7 +277,7 @@ fn lzwCompress(rec: *GifRecorder, data: []const u8) !void {
                 }
             } else {
                 try emitCode(rec, clear_code, code_size, &bit_buf, &bit_count, &block_buf, &block_len);
-                hash_table = [_]LzwHashEntry{.{}} ** lzw_hash_size;
+                hash_table = @splat(.{});
                 table_size = first_code;
                 code_size = 9;
             }

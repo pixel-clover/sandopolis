@@ -933,7 +933,7 @@ test "overdrive 2 PAL boot passes the plane stability check" {
 
     emulator.runFramesDiscardingAudio(100);
 
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 12), emulator.workRamSlice()[0x179A..0x17A6]);
+    try testing.expectEqualSlices(u8, &(@as([12]u8, @splat(0))), emulator.workRamSlice()[0x179A..0x17A6]);
 }
 
 fn framebufferCrc32(framebuffer: []const u32) u32 {
@@ -1218,6 +1218,8 @@ const AudioSampleCollector = struct {
     }
 };
 
+// Rocket 68 v0.3.1 changes CPU timing and audio-write timestamps. These audio
+// hashes were cross-checked with the same dependency under Zig 0.16 and 0.17.
 test "fm test rom audio pipeline output matches golden hash" {
     // Run the FM Test ROM with full audio processing (YM + PSG + mixing +
     // filtering + DC blocking) and golden-hash the rendered output.  This
@@ -1258,7 +1260,7 @@ test "fm test rom audio pipeline output matches golden hash" {
     // VBLANK status flag at line starts, deadline-based 68K refresh, CRAM
     // DMA post-refresh slot loss); real-audio RMS verified unchanged via
     // dump-audio.
-    try testing.expectEqual(@as(u32, 4065629464), collector.hash);
+    try testing.expectEqual(@as(u32, 2800665685), collector.hash);
 }
 
 // These tests load commercial game ROMs from roms/, run them for enough
@@ -1342,7 +1344,7 @@ test "sonic and knuckles ym synthesis matches golden hash (900 frames)" {
     // refresh; CRAM DMA post-refresh slot loss) plus the timestamp-aware
     // write replay in this harness; real-audio RMS verified unchanged via
     // dump-audio before/after (4773 -> 4796).
-    try testing.expectEqual(@as(u32, 4225238829), hash);
+    try testing.expectEqual(@as(u32, 2186041808), hash);
 }
 
 test "streets of rage ym synthesis matches golden hash (900 frames)" {
@@ -1353,7 +1355,7 @@ test "streets of rage ym synthesis matches golden hash (900 frames)" {
     // replay this ROM degenerated to constant silence (hash 0) after the
     // FIFO fix shifted which frame each GEMS write burst landed in; the
     // emulator's real audio was verified unchanged (RMS 1150 -> 1174).
-    try testing.expectEqual(@as(u32, 3887966128), hash);
+    try testing.expectEqual(@as(u32, 2940249024), hash);
 }
 
 test "warsong ym synthesis matches golden hash (900 frames)" {
@@ -1368,7 +1370,7 @@ test "warsong ym synthesis matches golden hash (900 frames)" {
     // test); real-audio RMS verified unchanged (3154 -> 3139).
     // Re-baselined 2026-09 after VRAM copy DMA was corrected to consume one
     // read and one write access slot per byte.
-    try testing.expectEqual(@as(u32, 2693464747), hash);
+    try testing.expectEqual(@as(u32, 239197611), hash);
 }
 
 test "warsong z80 instruction count per frame matches expected budget" {

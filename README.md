@@ -8,7 +8,7 @@
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/pixel-clover/sandopolis/tests.yml?label=tests&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-007ec6?style=flat&labelColor=282c34&logo=open-source-initiative)](https://github.com/pixel-clover/sandopolis/blob/main/LICENSE)
-[![Zig](https://img.shields.io/badge/zig-0.16.0-F7A41D?style=flat&labelColor=282c34&logo=zig)](https://ziglang.org/download/)
+[![Zig](https://img.shields.io/badge/zig-0.17.0-F7A41D?style=flat&labelColor=282c34&logo=zig)](https://ziglang.org/download/)
 [![Release](https://img.shields.io/github/release/pixel-clover/sandopolis.svg?label=release&style=flat&labelColor=282c34&logo=github)](https://github.com/pixel-clover/sandopolis/releases/latest)
 [![Play Online](https://img.shields.io/badge/play%20online-browser-507ec6?style=flat&labelColor=282c34&logo=webassembly)](https://pixel-clover.github.io/sandopolis/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-507ec6?style=flat&labelColor=282c34&logo=docker)](https://github.com/orgs/pixel-clover/packages/container/package/sandopolis-web)
@@ -97,14 +97,14 @@ cd sandopolis
 
 ```bash
 # This can take some time
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=fast
 ```
 
 If the build is successful, you can find the built binary at `zig-out/bin/`.
 
 > [!NOTE]
 > To build from source, you mainly need to have Zig and Git installed.
-> The current version of the emulator is developed and tested using Zig 0.16.0.
+> The current version of the emulator is developed and tested using Zig 0.17.0.
 
 #### Run the Emulator
 

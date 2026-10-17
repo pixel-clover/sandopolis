@@ -121,6 +121,122 @@ test "File seekTo and seekBy reposition the stream" {
     try std.testing.expectEqual(@as(u8, 'a'), buf[0]);
 }
 
+test "Dir and File wrappers preserve file contents and metadata" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = Dir{ .d = tmp.dir };
+    try dir.makePath("nested");
+
+    var file = try dir.createFile("nested/data.bin", .{ .read = true });
+    try file.writeAll("ab");
+    try std.testing.expectEqual(@as(usize, 2), try file.write("cd"));
+    try std.testing.expectEqual(@as(u64, 4), try file.getEndPos());
+    try std.testing.expectEqual(@as(u64, 4), (try file.stat()).size);
+    try file.seekTo(0);
+    const contents = try file.readToEndAlloc(std.testing.allocator, 4);
+    defer std.testing.allocator.free(contents);
+    try std.testing.expectEqualStrings("abcd", contents);
+    try file.seekTo(0);
+    const unlimited_contents = try file.readToEndAlloc(std.testing.allocator, std.math.maxInt(usize));
+    defer std.testing.allocator.free(unlimited_contents);
+    try std.testing.expectEqualStrings("abcd", unlimited_contents);
+    file.close();
+
+    try dir.access("nested/data.bin", .{});
+    try dir.rename("nested/data.bin", "nested/moved.bin");
+    var reopened = try dir.openFile("nested/moved.bin", .{});
+    defer reopened.close();
+    var buf: [4]u8 = undefined;
+    _ = reopened.reader(&buf);
+    _ = reopened.writer(&buf);
+    try std.testing.expectEqual(@as(usize, 4), try reopened.read(&buf));
+    try std.testing.expectEqualSlices(u8, "abcd", &buf);
+
+    const path = try dir.realpathAlloc(std.testing.allocator, "nested/moved.bin");
+    defer std.testing.allocator.free(path);
+    try std.testing.expect(std.mem.endsWith(u8, path, "nested/moved.bin"));
+    const read_contents = try dir.readFileAlloc(std.testing.allocator, "nested/moved.bin", 4);
+    defer std.testing.allocator.free(read_contents);
+    try std.testing.expectEqualStrings("abcd", read_contents);
+    const unlimited_read = try dir.readFileAlloc(std.testing.allocator, "nested/moved.bin", std.math.maxInt(usize));
+    defer std.testing.allocator.free(unlimited_read);
+    try std.testing.expectEqualStrings("abcd", unlimited_read);
+    try std.testing.expectError(error.StreamTooLong, dir.readFileAlloc(std.testing.allocator, "nested/moved.bin", 3));
+    try dir.deleteFile("nested/moved.bin");
+    try std.testing.expectError(error.FileNotFound, dir.access("nested/moved.bin", .{}));
+
+    const empty = try dir.createFile("nested/empty.bin", .{});
+    empty.close();
+    const empty_contents = try dir.readFileAlloc(std.testing.allocator, "nested/empty.bin", 0);
+    defer std.testing.allocator.free(empty_contents);
+    try std.testing.expectEqual(@as(usize, 0), empty_contents.len);
+}
+
+test "clock and synchronization wrappers work without process init" {
+    var mutex: Mutex = .{};
+    mutex.lock();
+    mutex.unlock();
+    const before = try Instant.now();
+    sleep(1);
+    const after = try Instant.now();
+    try std.testing.expect(after.ns >= before.ns);
+    try std.testing.expectEqual(@as(u64, @intCast(after.ns - before.ns)), after.since(before));
+    try std.testing.expectEqual(@as(u64, 0), before.since(after));
+    try std.testing.expect(nanoTimestamp() != 0);
+}
+
+test "process wrappers use initialized args and environment" {
+    const saved_io = process_io;
+    const saved_environ = process_environ;
+    const saved_args = process_args;
+    defer {
+        process_io = saved_io;
+        process_environ = saved_environ;
+        process_args = saved_args;
+    }
+    process_io = null;
+    process_environ = null;
+    process_args = null;
+    try std.testing.expectError(error.EnvironmentVariableNotFound, getEnvVarOwned(std.testing.allocator, "SANDOPOLIS_PLATFORM_TEST"));
+    try std.testing.expectError(error.Unsupported, argsWithAllocator(std.testing.allocator));
+
+    var environ: std.process.Environ.Map = .init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("SANDOPOLIS_PLATFORM_TEST", "working");
+    const args: std.process.Args = .{ .vector = switch (@import("builtin").os.tag) {
+        .windows => &.{},
+        .wasi, .emscripten => if (@import("builtin").link_libc) &.{ "sandopolis", "example.bin" } else {},
+        .freestanding, .other => {},
+        else => &.{ "sandopolis", "example.bin" },
+    } };
+    init(.{
+        .minimal = .{ .environ = .empty, .args = args },
+        .arena = undefined,
+        .gpa = std.testing.allocator,
+        .io = io(),
+        .environ_map = &environ,
+        .preopens = undefined,
+    });
+    const value = try getEnvVarOwned(std.testing.allocator, "SANDOPOLIS_PLATFORM_TEST");
+    defer std.testing.allocator.free(value);
+    try std.testing.expectEqualStrings("working", value);
+    try std.testing.expectError(error.EnvironmentVariableNotFound, getEnvVarOwned(std.testing.allocator, "SANDOPOLIS_PLATFORM_MISSING"));
+
+    if (@import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi and
+        @import("builtin").os.tag != .emscripten and @import("builtin").os.tag != .freestanding and
+        @import("builtin").os.tag != .other)
+    {
+        var iterator = try argsWithAllocator(std.testing.allocator);
+        defer iterator.deinit();
+        try std.testing.expectEqualStrings("sandopolis", iterator.next().?);
+        try std.testing.expectEqualStrings("example.bin", iterator.next().?);
+        try std.testing.expect(iterator.next() == null);
+    }
+    try cwd().access(".", .{});
+    _ = stdout();
+    _ = stderr();
+}
+
 pub fn stdout() File {
     return .{ .f = std.Io.File.stdout() };
 }
@@ -153,11 +269,15 @@ pub const Dir = struct {
     }
 
     pub fn readFileAlloc(self: Dir, allocator: std.mem.Allocator, sub_path: []const u8, max_bytes: usize) ![]u8 {
-        return self.d.readFileAlloc(io(), sub_path, allocator, .limited(max_bytes));
+        const limit: std.Io.Limit = if (max_bytes == std.math.maxInt(usize))
+            .unlimited
+        else
+            .limited(max_bytes + 1);
+        return self.d.readFileAlloc(io(), sub_path, allocator, limit);
     }
 
     pub fn realpathAlloc(self: Dir, allocator: std.mem.Allocator, sub_path: []const u8) ![]u8 {
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const n = try self.d.realPathFile(io(), sub_path, &buf);
         return allocator.dupe(u8, buf[0..n]);
     }

@@ -34,8 +34,8 @@ pub const Channel = struct {
 };
 
 pub const Pcm = struct {
-    ram: [wave_ram_bytes]u8 = [_]u8{0} ** wave_ram_bytes,
-    channels: [channel_count]Channel = [_]Channel{.{}} ** channel_count,
+    ram: [wave_ram_bytes]u8 = @splat(0),
+    channels: [channel_count]Channel = @splat(.{}),
     enabled: bool = false,
     selected_channel: u3 = 0,
     bank: u4 = 0,

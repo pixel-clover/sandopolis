@@ -29,7 +29,7 @@ fn deinterleaveSmdPayload(allocator: std.mem.Allocator, payload: []const u8) ![]
 
     // Deinterleave the last partial block by zero-padding it to a full block.
     if (remainder > 0) {
-        var padded: [16 * 1024]u8 = [_]u8{0} ** (16 * 1024);
+        var padded: [16 * 1024]u8 = @splat(0);
         @memcpy(padded[0..remainder], payload[i .. i + remainder]);
         var j: usize = 0;
         while (j < block_size / 2) : (j += 1) {
@@ -723,7 +723,7 @@ pub const Cartridge = struct {
 
     pub fn captureRamState(self: *const Cartridge) RamState {
         return .{
-            .ram_type = @intFromEnum(self.ram.ram_type),
+            .ram_type = @backingInt(self.ram.ram_type),
             .persistent = self.ram.persistent,
             .dirty = self.ram.dirty,
             .mapped = self.ram.mapped,
@@ -740,7 +740,7 @@ pub const Cartridge = struct {
         if (saved_ram) |saved_ram_bytes| {
             const next_ram_bytes = next_ram orelse return error.InvalidSaveState;
             if (next_ram_bytes.len != saved_ram_bytes.len) return error.InvalidSaveState;
-            if (@intFromEnum(self.ram.ram_type) != state.ram_type) return error.InvalidSaveState;
+            if (@backingInt(self.ram.ram_type) != state.ram_type) return error.InvalidSaveState;
             std.mem.copyForwards(u8, next_ram_bytes, saved_ram_bytes);
         }
 

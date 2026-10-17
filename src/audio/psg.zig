@@ -262,7 +262,7 @@ test "psg tone at max volume produces non-zero output" {
     psg.doCommand(0x85);
     psg.doCommand(0x00);
 
-    var buf: [64]i16 = [_]i16{0} ** 64;
+    var buf: [64]i16 = @splat(0);
     psg.update(&buf, 64);
 
     var nonzero: usize = 0;
@@ -275,7 +275,7 @@ test "psg tone at max volume produces non-zero output" {
 test "psg silence at max attenuation" {
     var psg = Psg{};
 
-    var buf: [64]i16 = [_]i16{0} ** 64;
+    var buf: [64]i16 = @splat(0);
     psg.update(&buf, 64);
 
     for (buf) |s| {
@@ -290,7 +290,7 @@ test "psg noise produces output" {
     psg.doCommand(0xE4);
 
     // The integrated noise LFSR starts low and needs several shifts before the first high pulse appears.
-    var buf: [1024]i16 = [_]i16{0} ** 1024;
+    var buf: [1024]i16 = @splat(0);
     psg.update(&buf, buf.len);
 
     var nonzero: usize = 0;
@@ -324,7 +324,7 @@ test "psg integrated power-on stays silent until attenuation writes occur" {
     psg.doCommand(0x80);
     psg.doCommand(0x00);
 
-    var buf: [16]i16 = [_]i16{0} ** 16;
+    var buf: [16]i16 = @splat(0);
     psg.update(&buf, buf.len);
 
     for (buf) |sample| {
@@ -339,7 +339,7 @@ test "psg volume write after power-on enables audible output" {
     psg.doCommand(0x80);
     psg.doCommand(0x00);
 
-    var buf: [16]i16 = [_]i16{0} ** 16;
+    var buf: [16]i16 = @splat(0);
     psg.update(&buf, buf.len);
 
     var nonzero = false;
@@ -360,7 +360,7 @@ test "psg zero tone period behaves like period one" {
     psg.doCommand(0x80);
     psg.doCommand(0x00);
 
-    var buf: [8]i16 = [_]i16{0} ** 8;
+    var buf: [8]i16 = @splat(0);
     psg.update(&buf, buf.len);
 
     var saw_positive = false;
@@ -381,7 +381,7 @@ test "psg tone output is bipolar matching reference" {
     psg.doCommand(0x81);
     psg.doCommand(0x00);
 
-    var buf: [16]i16 = [_]i16{0} ** 16;
+    var buf: [16]i16 = @splat(0);
     psg.update(&buf, buf.len);
 
     var saw_positive = false;
@@ -514,7 +514,7 @@ test "psg stereo update buffer writes interleaved samples" {
     psg.channel_pan[0][0] = true;
     psg.channel_pan[0][1] = false;
 
-    var buf: [32]i16 = [_]i16{0} ** 32;
+    var buf: [32]i16 = @splat(0);
     psg.updateStereo(&buf, 16);
 
     // Should have some non-zero left samples and zero right samples

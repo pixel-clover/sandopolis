@@ -45,7 +45,7 @@ pub const max_cdda_frames: u32 = 2048;
 pub const max_pcm_frames: u32 = 2048;
 
 /// The empty block the decoder latches while the drive is seeking.
-const blank_sector = [_]u8{0} ** reader.raw_sector_bytes;
+const blank_sector: [reader.raw_sector_bytes]u8 = @splat(0);
 
 pub const ScdBoard = struct {
     allocator: std.mem.Allocator,
@@ -65,7 +65,7 @@ pub const ScdBoard = struct {
     pcm: Pcm,
     gfx: Gfx,
     /// PCM samples produced this host frame (one per 384-cycle tick).
-    pcm_frames: [max_pcm_frames][2]i16 = [_][2]i16{.{ 0, 0 }} ** max_pcm_frames,
+    pcm_frames: [max_pcm_frames][2]i16 = @splat(.{ 0, 0 }),
     pcm_frame_count: u32 = 0,
     pcm_overflow: u32 = 0,
     /// Slices handed to the audio stage; valid until the next take.
@@ -73,7 +73,7 @@ pub const ScdBoard = struct {
     /// Sub cycles x 75 accumulated toward the next sector tick.
     sector_accumulator: u64 = 0,
     /// CD-DA frames delivered this host frame (drained by the audio path).
-    cdda_frames: [max_cdda_frames][2]i16 = [_][2]i16{.{ 0, 0 }} ** max_cdda_frames,
+    cdda_frames: [max_cdda_frames][2]i16 = @splat(.{ 0, 0 }),
     cdda_frame_count: u32 = 0,
     cdda_overflow: u32 = 0,
     /// BIOS image, borrowed from the Genesis cartridge slot (served as the
@@ -94,7 +94,7 @@ pub const ScdBoard = struct {
             .sub_mem = undefined,
             .gate = .{},
             .word_ram = .{},
-            .prg_ram = [_]u8{0} ** prg_ram_bytes,
+            .prg_ram = @splat(0),
             .persistent_ram = initialPersistentRam(),
             .sync = scd_clock.SubSync.init(pal_mode),
             .disc = disc,
@@ -141,7 +141,7 @@ pub const ScdBoard = struct {
     }
 
     fn initialPersistentRam() [persistent_ram_bytes]u8 {
-        var image = [_]u8{0} ** persistent_ram_bytes;
+        var image: [persistent_ram_bytes]u8 = @splat(0);
         const internal = backup_ram_mod.initialImage();
         @memcpy(image[0..backup_ram_bytes], &internal);
         backup_ram_mod.formatBytes(image[backup_ram_bytes..]);
@@ -499,7 +499,7 @@ pub const ScdBoard = struct {
         self.sub_cpu = Cpu.init();
         self.gate.reset();
         self.word_ram = .{};
-        self.prg_ram = [_]u8{0} ** prg_ram_bytes;
+        self.prg_ram = @splat(0);
         self.sync.drain();
         self.sync.remainder = 0;
         self.cdd = Cdd.init(self.disc != null);
@@ -609,7 +609,7 @@ pub const ScdBoard = struct {
 
     /// Main-side CDC host data port (0xA12008).
     fn mainHostRead(self: *ScdBoard) u16 {
-        if (@as(cdc_mod.Destination, @enumFromInt(self.gate.cdc_device_destination)) != .main_read) return 0xFFFF;
+        if (@as(cdc_mod.Destination, @fromBackingInt(@intCast(self.gate.cdc_device_destination))) != .main_read) return 0xFFFF;
         const r = self.cdc.hostRead();
         if (r.raise_irq) self.gate.raise(.cdc, &self.sub_cpu);
         return r.word;
@@ -765,7 +765,7 @@ fn writeBe16(buf: []u8, offset: usize, value: u16) void {
 }
 
 test "main window addresses classify to prg ram, bios mirror, word ram, and gate array" {
-    var bios = [_]u8{0} ** 0x20000;
+    var bios: [0x20000]u8 = @splat(0);
     bios[0x1234] = 0xAB;
     const board = try ScdBoard.create(testing.allocator, &bios, null, false);
     defer board.destroy();
@@ -808,7 +808,7 @@ test "main window addresses classify to prg ram, bios mirror, word ram, and gate
 }
 
 test "backup RAM cartridge exposes ID, protected RAM, and write control" {
-    var bios = [_]u8{0} ** 0x20000;
+    var bios: [0x20000]u8 = @splat(0);
     const board = try ScdBoard.create(testing.allocator, &bios, null, false);
     defer board.destroy();
 
@@ -826,7 +826,7 @@ test "backup RAM cartridge exposes ID, protected RAM, and write control" {
 }
 
 test "1M mode routes main accesses to the owned bank and its cell image" {
-    var bios = [_]u8{0} ** 0x200;
+    var bios: [0x200]u8 = @splat(0);
     const board = try ScdBoard.create(testing.allocator, &bios, null, false);
     defer board.destroy();
     board.word_ram.subSetMode(.one_m);
@@ -845,7 +845,7 @@ test "1M mode routes main accesses to the owned bank and its cell image" {
 }
 
 test "sub cpu runs a program from prg ram once released from reset" {
-    var bios = [_]u8{0} ** 0x200;
+    var bios: [0x200]u8 = @splat(0);
     const board = try ScdBoard.create(testing.allocator, &bios, null, false);
     defer board.destroy();
 
@@ -881,7 +881,7 @@ test "sub cpu runs a program from prg ram once released from reset" {
 }
 
 test "gate array access from main flushes pending sub credit first" {
-    var bios = [_]u8{0} ** 0x200;
+    var bios: [0x200]u8 = @splat(0);
     const board = try ScdBoard.create(testing.allocator, &bios, null, false);
     defer board.destroy();
     writeBe32(&board.prg_ram, 0x0, 0x00080000);
@@ -906,7 +906,7 @@ test "cdd status registers keep the reset pattern until a command is processed" 
     // and requires the gate array reset value (zeros, checksum F); the drive
     // spinning up must not leak into the registers on its own. Genesis Plus
     // GX likewise only rewrites them from the command path.
-    var bios = [_]u8{0} ** 0x200;
+    var bios: [0x200]u8 = @splat(0);
     var image: [4 * 2048]u8 = undefined;
     @memset(&image, 0);
     @memcpy(image[0..14], "SEGADISCSYSTEM");
@@ -926,7 +926,7 @@ test "cdd status registers keep the reset pattern until a command is processed" 
 
     // A STATUS command reveals the spun-up drive.
     var bus = &board.sub_bus;
-    var cmd = [_]u8{0} ** 10;
+    var cmd: [10]u8 = @splat(0);
     cmd[9] = cdd_mod.checksum(&cmd);
     var j: usize = 0;
     while (j < 10) : (j += 2) bus.write16(0xFF8042 + @as(u32, @intCast(j)), (@as(u16, cmd[j]) << 8) | cmd[j + 1]);
@@ -936,7 +936,7 @@ test "cdd status registers keep the reset pattern until a command is processed" 
 }
 
 test "drive ticks at 75 Hz, raises INT4 under HOCK, and decodes data sectors into the CDC" {
-    var bios = [_]u8{0} ** 0x200;
+    var bios: [0x200]u8 = @splat(0);
     var image: [4 * 2048]u8 = undefined;
     for (&image, 0..) |*b, i| b.* = @truncate(i * 5);
     @memcpy(image[0..14], "SEGADISCSYSTEM");
@@ -975,7 +975,7 @@ test "drive ticks at 75 Hz, raises INT4 under HOCK, and decodes data sectors int
     try testing.expectEqual(cdd_mod.DriveStatus.playing, board.cdd.drive);
     // The registers only change when the sub CPU polls.
     try testing.expectEqual(@as(u8, 0x2), board.gate.cdd_status[0]);
-    var poll = [_]u8{0} ** 10;
+    var poll: [10]u8 = @splat(0);
     poll[9] = cdd_mod.checksum(&poll);
     i = 0;
     while (i < 10) : (i += 2) bus.write16(0xFF8042 + @as(u32, @intCast(i)), (@as(u16, poll[i]) << 8) | poll[i + 1]);
@@ -1024,7 +1024,7 @@ test "drive ticks at 75 Hz, raises INT4 under HOCK, and decodes data sectors int
 }
 
 test "pcm and cd-da samples accumulate per window and are handed to the audio stage" {
-    var bios = [_]u8{0} ** 0x200;
+    var bios: [0x200]u8 = @splat(0);
     const board = try ScdBoard.create(testing.allocator, &bios, null, false);
     defer board.destroy();
 
@@ -1052,7 +1052,7 @@ test "pcm and cd-da samples accumulate per window and are handed to the audio st
 }
 
 test "playing an audio track streams faded cd-da frames to the audio stage" {
-    var bios = [_]u8{0} ** 0x200;
+    var bios: [0x200]u8 = @splat(0);
     const sheet =
         \\FILE "d.bin" BINARY
         \\  TRACK 01 MODE1/2048

@@ -1,28 +1,28 @@
 .{
     .name = .sandopolis,
-    .version = "0.1.0-alpha.9",
+    .version = "0.1.0-alpha.10",
     .fingerprint = 0x50bf614ce7c127dd, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .minish = .{
-            .url = "https://github.com/CogitatorTech/minish/archive/refs/tags/v0.3.0.tar.gz",
-            .hash = "minish-0.3.0-SQtSTYI3AgCxWdWbKxS_lvmfbp0wJk29ZW5C9CozJaxm",
+            .url = "https://github.com/CogitatorTech/minish/archive/refs/tags/v0.5.0.tar.gz",
+            .hash = "minish-0.5.0-SQtSTXUkAwA1iUHhQRCfM-092BYRlYDLTFCSodBi_EFq",
         },
         .chilli = .{
-            .url = "https://github.com/CogitatorTech/chilli/archive/refs/tags/v0.3.2.tar.gz",
-            .hash = "chilli-0.3.2-c19PrireAQAXEfA7xrmJW2lrSiNiuuG8wtJI-MJVZgFU",
+            .url = "https://github.com/CogitatorTech/chilli/archive/refs/tags/v0.4.0.tar.gz",
+            .hash = "chilli-0.4.0-c19PrpzYAQAByfO0ayR5w2mpw8ncare-Lk6Uu0E8tjwf",
         },
         .jgz80 = .{
             .url = "https://github.com/habedi/jgz80-fork/archive/e987b9229c700c4db2c3f84dfce4fc0e63817701.tar.gz",
             .hash = "N-V-__8AAOj4AgCPCxSePjb6U-Kb3CMWSn14SVV5AOOWXXCt",
         },
         .rocket68 = .{
-            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.2.3.tar.gz",
-            .hash = "rocket68-0.2.3-Jd6gXFfqAgCi1Go_xl9TSEtyY_5lJuqtA2LTwPVeEkWR",
+            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.3.1.tar.gz",
+            .hash = "rocket68-0.3.1-Jd6gXGWjAwCRm8LbHKRJKPni8RG837IVi_RSxGdGIzDu",
         },
         .sdl3 = .{
-            .url = "https://github.com/castholm/SDL/archive/refs/tags/v0.5.2+3.4.12.tar.gz",
-            .hash = "sdl-0.5.2+3.4.12-SDL--qPKpwHc40bqAlYs7W9pXJVyLwsGDNa4shNXbOZr",
+            .url = "https://github.com/castholm/SDL/archive/refs/tags/v0.6.0+3.4.18.tar.gz",
+            .hash = "sdl-0.6.0+3.4.18-SDL--p-gqAGWpnfTLlhs0dgjDtc4P4_CHeNLGY_SX_Fv",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "external/zsdl3", "LICENSE", "README.md" },

@@ -5,7 +5,7 @@ pub const duration_frames: u64 = 300;
 
 pub const MessageCopy = struct {
     len: usize = 0,
-    bytes: [max_message_bytes]u8 = [_]u8{0} ** max_message_bytes,
+    bytes: [max_message_bytes]u8 = @splat(0),
 
     pub fn slice(self: *const MessageCopy) []const u8 {
         return self.bytes[0..self.len];
@@ -36,7 +36,7 @@ const Entry = struct {
 pub const Toast = struct {
     const queue_capacity = 3;
 
-    queue: [queue_capacity]Entry = [_]Entry{.{}} ** queue_capacity,
+    queue: [queue_capacity]Entry = @splat(.{}),
     head: usize = 0,
     count: usize = 0,
 

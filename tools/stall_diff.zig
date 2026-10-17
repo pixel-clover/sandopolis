@@ -2,9 +2,7 @@ const std = @import("std");
 const platform = @import("sandopolis_testing").platform;
 const testing = @import("sandopolis_testing");
 
-const c = @cImport({
-    @cInclude("libretro.h");
-});
+const c = @import("libretro_headers");
 
 // 68K stall-accounting differential: lockstep-run Sandopolis and an
 // instrumented Genesis Plus GX build (sando_probe_counters in vdp_ctrl.c)
@@ -228,7 +226,7 @@ pub fn main(init: std.process.Init) !void {
 
     const cwd = try platform.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
-    const cwd_z = try allocator.dupeZ(u8, cwd);
+    const cwd_z = try allocator.dupeSentinel(u8, cwd, 0);
     defer allocator.free(cwd_z);
     var front = Frontend{ .system_dir_z = cwd_z, .pal = args.pal };
     active = &front;
@@ -243,7 +241,7 @@ pub fn main(init: std.process.Init) !void {
     api.init();
     defer api.deinit();
 
-    const rom_z = try allocator.dupeZ(u8, args.rom_path);
+    const rom_z = try allocator.dupeSentinel(u8, args.rom_path, 0);
     defer allocator.free(rom_z);
     var game = c.struct_retro_game_info{ .path = rom_z.ptr, .data = null, .size = 0, .meta = null };
     if (!api.load_game(&game)) return error.RetroLoadGameFailed;
@@ -395,11 +393,21 @@ pub fn main(init: std.process.Init) !void {
             "  sum    : ours={d:>12} gpgx={d:>12} delta={d}\n",
         .{
             args.frames,
-            ours_total.fifo_w,      gpgx_total.fifo_w,      @as(i64, @intCast(ours_total.fifo_w)) - @as(i64, @intCast(gpgx_total.fifo_w)),
-            ours_total.dma,         gpgx_total.dma,         @as(i64, @intCast(ours_total.dma)) - @as(i64, @intCast(gpgx_total.dma)),
-            ours_total.refresh,     gpgx_total.refresh,     @as(i64, @intCast(ours_total.refresh)) - @as(i64, @intCast(gpgx_total.refresh)),
-            ours_total.cont,        gpgx_total.cont,        @as(i64, @intCast(ours_total.cont)) - @as(i64, @intCast(gpgx_total.cont)),
-            ours_sum,               gpgx_sum,               @as(i64, @intCast(ours_sum)) - @as(i64, @intCast(gpgx_sum)),
+            ours_total.fifo_w,
+            gpgx_total.fifo_w,
+            @as(i64, @intCast(ours_total.fifo_w)) - @as(i64, @intCast(gpgx_total.fifo_w)),
+            ours_total.dma,
+            gpgx_total.dma,
+            @as(i64, @intCast(ours_total.dma)) - @as(i64, @intCast(gpgx_total.dma)),
+            ours_total.refresh,
+            gpgx_total.refresh,
+            @as(i64, @intCast(ours_total.refresh)) - @as(i64, @intCast(gpgx_total.refresh)),
+            ours_total.cont,
+            gpgx_total.cont,
+            @as(i64, @intCast(ours_total.cont)) - @as(i64, @intCast(gpgx_total.cont)),
+            ours_sum,
+            gpgx_sum,
+            @as(i64, @intCast(ours_sum)) - @as(i64, @intCast(gpgx_sum)),
         },
     );
     try stdout.flush();

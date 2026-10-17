@@ -148,7 +148,7 @@ fn runDerail(allocator: std.mem.Allocator, emulator: *testing.Emulator, output: 
 
     // Tally which exception vectors fire before the derail (2=bus,3=addr,4=illegal,
     // 5=div0,6=chk,7=trapv,8=priv; 25-31=autovector IRQ; 32+=TRAP).
-    var exc_hist = [_]u64{0} ** 64;
+    var exc_hist: [64]u64 = @splat(0);
     var last_nonirq_exc_ctx: ?struct { frame: usize, ppc: u32, ir: u16, ex: i32 } = null;
 
     var frame: usize = 0;

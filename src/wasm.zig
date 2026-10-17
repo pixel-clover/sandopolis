@@ -88,7 +88,7 @@ fn finishWasmEmulator(machine: SystemMachine) WasmEmulator {
         .machine = m,
         .audio = AudioOutput.init(),
         .snapshot = null,
-        .audio_buffer = [_]i16{0} ** 8192,
+        .audio_buffer = @splat(0),
         .audio_sample_count = 0,
         .last_save_buf = null,
         .last_save_len = 0,
@@ -531,7 +531,7 @@ test "wasm sms audio sample count returns interleaved i16 count not stereo pairs
     // Regression: the WASM SMS audio path previously returned n/2 (stereo pairs)
     // but JS reads audio_sample_count as individual i16 elements. This caused
     // half the audio data to be silently dropped on the web.
-    const rom = [_]u8{0} ** 0x4000;
+    const rom: [0x4000]u8 = @splat(0);
     var emu = try initWasmEmulator(std.testing.allocator, &rom, 1); // hint=1 (SMS)
     defer emu.machine.deinit(std.testing.allocator);
 

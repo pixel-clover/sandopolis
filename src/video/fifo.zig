@@ -35,7 +35,7 @@ const TransferPhaseBoundaryEvent = struct {
 };
 
 fn buildSlotLookupTable(comptime slot_count: u16, comptime slot_set: []const u8) [slot_count]bool {
-    var table: [slot_count]bool = .{false} ** slot_count;
+    var table: [slot_count]bool = @splat(false);
     inline for (slot_set) |set_idx| {
         table[@as(usize, set_idx)] = true;
     }
@@ -309,9 +309,9 @@ const TransferEvent = struct {
 };
 
 const ProjectedDmaTransferState = struct {
-    fifo_entries: [4]Vdp.ProjectedFifoEntry = [_]Vdp.ProjectedFifoEntry{.{}} ** 4,
+    fifo_entries: [4]Vdp.ProjectedFifoEntry = @splat(.{}),
     fifo_len: u8 = 0,
-    pending_fifo_entries: [16]Vdp.ProjectedFifoEntry = [_]Vdp.ProjectedFifoEntry{.{}} ** 16,
+    pending_fifo_entries: [16]Vdp.ProjectedFifoEntry = @splat(.{}),
     pending_fifo_len: u8 = 0,
     dma_active: bool = false,
     dma_fill: bool = false,
@@ -1013,8 +1013,8 @@ fn fifoTickLatency(self: *Vdp) void {
 }
 
 fn fifoWaitUntilNextOpen(self: *const Vdp) u32 {
-    var fifo_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 4;
-    var pending_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 16;
+    var fifo_entries: [4]Vdp.ProjectedFifoEntry = @splat(.{});
+    var pending_entries: [16]Vdp.ProjectedFifoEntry = @splat(.{});
     var fifo_len: u8 = 0;
     var pending_len: u8 = 0;
     snapshotSimFifos(self, fifo_entries[0..], &fifo_len, pending_entries[0..], &pending_len);
@@ -1047,8 +1047,8 @@ fn fifoWaitUntilNextOpen(self: *const Vdp) u32 {
 }
 
 fn fifoWaitUntilDrained(self: *const Vdp) u32 {
-    var fifo_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 4;
-    var pending_entries = [_]Vdp.ProjectedFifoEntry{.{}} ** 16;
+    var fifo_entries: [4]Vdp.ProjectedFifoEntry = @splat(.{});
+    var pending_entries: [16]Vdp.ProjectedFifoEntry = @splat(.{});
     var fifo_len: u8 = 0;
     var pending_len: u8 = 0;
     snapshotSimFifos(self, fifo_entries[0..], &fifo_len, pending_entries[0..], &pending_len);

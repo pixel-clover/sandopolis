@@ -24,7 +24,7 @@ pub const IrqSource = enum(u3) {
     subcode = 6,
 
     pub fn level(self: IrqSource) u3 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
     pub fn bit(self: IrqSource) u8 {
         return @as(u8, 1) << self.level();
@@ -87,8 +87,8 @@ pub const GateArray = struct {
     // Communication registers (0x0E..0x2E)
     comm_flag_main: u8 = 0,
     comm_flag_sub: u8 = 0,
-    command: [8]u16 = [_]u16{0} ** 8,
-    status: [8]u16 = [_]u16{0} ** 8,
+    command: [8]u16 = @splat(0),
+    status: [8]u16 = @splat(0),
 
     // Timers, interrupts, CD fader, CDD (0x30..0x36)
     timer_reload: u8 = 0,
@@ -100,19 +100,19 @@ pub const GateArray = struct {
     cd_fader: u16 = 0,
     /// Bit 8 = no audio track playing (D/M), bit 2 = HOCK (sub-writable).
     cdd_control: u16 = 0x0100,
-    cdd_status: [10]u8 = [_]u8{0} ** 10,
-    cdd_command: [10]u8 = [_]u8{0} ** 10,
+    cdd_status: [10]u8 = @splat(0),
+    cdd_command: [10]u8 = @splat(0),
 
     // Font (0x4C..0x56)
     font_color: u8 = 0,
     font_bits: u16 = 0,
 
     // Graphics ASIC (0x58..0x66)
-    gfx_regs: [8]u16 = [_]u16{0} ** 8,
+    gfx_regs: [8]u16 = @splat(0),
 
     // Subcode (0x68, 0x100..0x17F)
     subcode_address: u16 = 0,
-    subcode_buffer: [64]u16 = [_]u16{0} ** 64,
+    subcode_buffer: [64]u16 = @splat(0),
 
     /// Sub cycles accumulated toward the next 384-cycle tick.
     tick_accumulator: u32 = 0,
@@ -215,8 +215,8 @@ pub const GateArray = struct {
     fn memoryModeWord(self: *const GateArray, wr: *const WordRam, sub_side: bool) u16 {
         var v: u16 = @as(u16, self.write_protect) << 8;
         v |= @as(u16, self.prg_bank) << 6;
-        if (sub_side) v |= @as(u16, @intFromEnum(wr.priority)) << 3;
-        v |= @as(u16, @intFromEnum(wr.mode)) << 2;
+        if (sub_side) v |= @as(u16, @backingInt(wr.priority)) << 3;
+        v |= @as(u16, @backingInt(wr.mode)) << 2;
         v |= @as(u16, @intFromBool(wr.dmna)) << 1;
         v |= @intFromBool(wr.ret);
         return v;
@@ -370,7 +370,7 @@ pub const GateArray = struct {
         self.cd_fader = 0;
         self.cdd_control = 0x0100;
         self.cdd_status = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xF };
-        self.cdd_command = [_]u8{0xF} ** 10;
+        self.cdd_command = @splat(0xF);
         self.font_color = 0;
         self.font_bits = 0;
     }
@@ -399,8 +399,8 @@ pub const GateArray = struct {
             },
             0x02 => {
                 if (lo) {
-                    p.word_ram.priority = @enumFromInt(@as(u2, @truncate((value >> 3) & 3)));
-                    p.word_ram.subSetMode(@enumFromInt(@as(u1, @truncate((value >> 2) & 1))));
+                    p.word_ram.priority = @fromBackingInt(@intCast(@as(u2, @truncate((value >> 3) & 3))));
+                    p.word_ram.subSetMode(@fromBackingInt(@intCast(@as(u1, @truncate((value >> 2) & 1)))));
                     p.word_ram.subSetRet((value & 1) != 0);
                 }
             },

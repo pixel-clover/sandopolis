@@ -93,7 +93,7 @@ pub fn checksum(nibbles: *const [10]u8) u8 {
 }
 
 pub const Cdd = struct {
-    status: [10]u8 = [_]u8{0} ** 10,
+    status: [10]u8 = @splat(0),
     drive: DriveStatus = .no_disc,
     format: ReportFormat = .absolute_time,
     /// Current head position. Negative while the head is parked in the
@@ -110,8 +110,8 @@ pub const Cdd = struct {
     /// Volume 0x000-0x3FF applied to CD-DA (from 0xFF8034 bits 4-14).
     fader: u16 = 0x3FF,
     disc_present: bool = false,
-    raw_sector: [reader.raw_sector_bytes]u8 = [_]u8{0} ** reader.raw_sector_bytes,
-    audio_frames: [reader.audio_frames_per_sector][2]i16 = [_][2]i16{.{ 0, 0 }} ** reader.audio_frames_per_sector,
+    raw_sector: [reader.raw_sector_bytes]u8 = @splat(0),
+    audio_frames: [reader.audio_frames_per_sector][2]i16 = @splat(.{ 0, 0 }),
     scan_forward: bool = true,
 
     /// Power-on: the status registers read as all zeros with a valid
@@ -122,7 +122,7 @@ pub const Cdd = struct {
         // the TOC; only then does an empty tray read back as NO DISC.
         var cdd = Cdd{ .disc_present = disc_present };
         cdd.drive = .stopped;
-        cdd.status = [_]u8{0} ** 10;
+        cdd.status = @splat(0);
         cdd.status[9] = checksum(&cdd.status);
         return cdd;
     }
@@ -135,7 +135,7 @@ pub const Cdd = struct {
     /// checksum does not match (the command is ignored).
     pub fn command(self: *Cdd, cmd: *const [10]u8, disc: ?*Disc) bool {
         if (checksum(cmd) != (cmd[9] & 0x0F)) return false;
-        const code: Command = @enumFromInt(@as(u4, @truncate(cmd[0])));
+        const code: Command = @fromBackingInt(@intCast(@as(u4, @truncate(cmd[0]))));
 
         if (!self.disc_present and code != .close_tray and code != .open_tray) {
             // A bare status poll keeps whatever the drive last reported;
@@ -149,7 +149,7 @@ pub const Cdd = struct {
             .status => self.replyPoll(disc),
             .stop => self.replyStopped(),
             .report => {
-                self.format = @enumFromInt(@as(u4, @truncate(cmd[3])));
+                self.format = @fromBackingInt(@intCast(@as(u4, @truncate(cmd[3]))));
                 if (self.format == .track_start_time or self.format == .track_number) {
                     self.report_track = msf.fromBcd(@intCast(((cmd[4] & 0x0F) << 4) | (cmd[5] & 0x0F)));
                 }
@@ -332,7 +332,7 @@ pub const Cdd = struct {
 
     /// Reply carrying only the drive state; RS1-RS8 keep the previous one.
     fn replyDrive(self: *Cdd) void {
-        self.status[0] = @intFromEnum(self.drive);
+        self.status[0] = @backingInt(self.drive);
         self.seal();
     }
 
@@ -351,7 +351,7 @@ pub const Cdd = struct {
     /// OPEN TRAY: like a stop, but the drive stays open.
     fn replyTrayOpen(self: *Cdd) void {
         @memset(&self.status, 0);
-        self.status[0] = @intFromEnum(DriveStatus.tray_open);
+        self.status[0] = @backingInt(DriveStatus.tray_open);
         self.status[1] = rs1_no_position;
         self.seal();
     }
@@ -360,7 +360,7 @@ pub const Cdd = struct {
     /// holds that reply for every poll until it arrives at the target.
     fn replySeeking(self: *Cdd) void {
         @memset(&self.status, 0);
-        self.status[0] = @intFromEnum(DriveStatus.seeking);
+        self.status[0] = @backingInt(DriveStatus.seeking);
         self.status[1] = rs1_no_position;
         self.seal();
     }
@@ -374,24 +374,24 @@ pub const Cdd = struct {
         if (self.seek_ticks_left > seek_report_lead_ticks) return;
 
         const reported = self.drive;
-        self.status[0] = @intFromEnum(reported);
+        self.status[0] = @backingInt(reported);
         const d = disc orelse {
             self.seal();
             return;
         };
         // Stopped, or any state past PAUSE (tray open, no disc, reading the
         // TOC, lead-out): there is no position to report, so RS1-RS8 stand.
-        if (reported == .stopped or @intFromEnum(reported) > @intFromEnum(DriveStatus.paused)) {
+        if (reported == .stopped or @backingInt(reported) > @backingInt(DriveStatus.paused)) {
             self.seal();
             return;
         }
         if (self.status[1] == rs1_no_position) {
             // Seeking has ended, so absolute time is meaningful again.
-            self.status[1] = @intFromEnum(ReportFormat.absolute_time);
+            self.status[1] = @backingInt(ReportFormat.absolute_time);
         }
         // Only the three position formats refresh on a poll; a TOC report
         // stands until the host asks for it again.
-        const fmt: ReportFormat = @enumFromInt(@as(u4, @truncate(self.status[1])));
+        const fmt: ReportFormat = @fromBackingInt(@intCast(@as(u4, @truncate(self.status[1]))));
         switch (fmt) {
             .absolute_time, .relative_time, .track_number => self.writeReport(fmt, d),
             else => {},
@@ -401,9 +401,9 @@ pub const Cdd = struct {
 
     /// Command 0x02 (report TOC / position info): RS1 selects the format.
     fn replyReport(self: *Cdd, fmt: ReportFormat, disc: ?*Disc) void {
-        self.status[0] = @intFromEnum(self.drive);
+        self.status[0] = @backingInt(self.drive);
         @memset(self.status[1..9], 0);
-        self.status[1] = @intFromEnum(fmt);
+        self.status[1] = @backingInt(fmt);
         if (disc) |d| self.writeReport(fmt, d);
         self.seal();
     }
@@ -462,7 +462,7 @@ pub const Cdd = struct {
 const testing = std.testing;
 
 fn makeCommand(code: u8, args: []const u8) [10]u8 {
-    var cmd = [_]u8{0} ** 10;
+    var cmd: [10]u8 = @splat(0);
     cmd[0] = code;
     for (args, 0..) |a, i| cmd[1 + i] = a;
     cmd[9] = checksum(&cmd);
@@ -658,7 +658,7 @@ test "a loaded disc spins up from stopped to reading-toc without a command" {
     _ = cdd.command(&makeCommand(0x4, &.{ 0, 0, 0, 0, 0, 0, 0 }), &disc);
     try testing.expectEqual(DriveStatus.paused, cdd.drive);
     try testing.expect(cdd.seek_ticks_left > 0);
-    try testing.expectEqual(@as(u8, @intFromEnum(DriveStatus.seeking)), cdd.status[0]);
+    try testing.expectEqual(@as(u8, @backingInt(DriveStatus.seeking)), cdd.status[0]);
 
     // Without a disc nothing spins up.
     var empty = Cdd.init(false);
@@ -761,7 +761,7 @@ test "a head parked in the lead-in reports the first track" {
     const ev = cdd.tick(&disc);
     try testing.expectEqual(@as(i32, -5), ev.data.lba);
     try testing.expectEqualSlices(u8, &.{ 0x00, 0x01, 0x70, 0x01 }, ev.data.raw[12..16]);
-    try testing.expectEqualSlices(u8, &([_]u8{0} ** 32), ev.data.raw[16..48]);
+    try testing.expectEqualSlices(u8, &@as([32]u8, @splat(0)), ev.data.raw[16..48]);
     try testing.expectEqual(@as(i32, -4), cdd.lba);
 }
 
