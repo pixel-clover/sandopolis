@@ -90,7 +90,14 @@ pub const ScdBoard = struct {
         board.* = .{
             .allocator = allocator,
             .sub_cpu = Cpu.init(),
-            .sub_bus = undefined,
+            .sub_bus = .{
+                .cpu = undefined,
+                .gate = undefined,
+                .word_ram = undefined,
+                .prg_ram = undefined,
+                .backup_ram = undefined,
+                .cdc = undefined,
+            },
             .sub_mem = undefined,
             .gate = .{},
             .word_ram = .{},
@@ -117,15 +124,13 @@ pub const ScdBoard = struct {
 
     /// Rebuild internal pointers after the board moved or was cloned.
     pub fn bind(self: *ScdBoard) void {
-        self.sub_bus = .{
-            .cpu = &self.sub_cpu,
-            .gate = &self.gate,
-            .word_ram = &self.word_ram,
-            .prg_ram = &self.prg_ram,
-            .backup_ram = self.internalBackupRam(),
-            .cdc = &self.cdc,
-            .pcm = .{ .ctx = &self.pcm, .read8Fn = pcmRead8, .write8Fn = pcmWrite8 },
-        };
+        self.sub_bus.cpu = &self.sub_cpu;
+        self.sub_bus.gate = &self.gate;
+        self.sub_bus.word_ram = &self.word_ram;
+        self.sub_bus.prg_ram = &self.prg_ram;
+        self.sub_bus.backup_ram = self.internalBackupRam();
+        self.sub_bus.cdc = &self.cdc;
+        self.sub_bus.pcm = .{ .ctx = &self.pcm, .read8Fn = pcmRead8, .write8Fn = pcmWrite8 };
         self.sub_mem = self.sub_bus.memoryInterface();
         self.publishCddStatus();
     }
@@ -209,12 +214,15 @@ pub const ScdBoard = struct {
                 // The decoder free-runs while the drive seeks: it latches an
                 // empty block and still raises DECI, which is how the BIOS
                 // keeps its sector sync alive across a seek.
+                self.gate.cdd_control |= 0x0100;
                 if (self.cdc.decodeSector(&blank_sector)) self.gate.raise(.cdc, &self.sub_cpu);
             },
             .data => |d| {
+                self.gate.cdd_control |= 0x0100;
                 if (self.cdc.decodeSector(d.raw)) self.gate.raise(.cdc, &self.sub_cpu);
             },
             .audio => |a| {
+                self.gate.cdd_control &= ~@as(u16, 0x0100);
                 if (self.cdc.decodeSector(&blank_sector)) self.gate.raise(.cdc, &self.sub_cpu);
                 self.pushCdda(a.frames);
             },
@@ -1083,4 +1091,19 @@ test "playing an audio track streams faded cd-da frames to the audio stage" {
     try testing.expectEqual(@as(usize, 2 * 588), ext.cdda.len);
     try testing.expectEqual(@as(i16, 0x4000 * 0x200 / 0x400), ext.cdda[0][0]);
     try testing.expectEqual(@as(i16, 0x4000 * 0x200 / 0x400), ext.cdda[1175][1]);
+    try testing.expectEqual(@as(u16, 0), board.gate.cdd_control & 0x0100);
 }
+
+test "bind preserves backup_ram_dirty and request flags on sub_bus" {
+    var bios: [0x200]u8 = @splat(0);
+    const board = try ScdBoard.create(testing.allocator, &bios, null, false);
+    defer board.destroy();
+
+    board.sub_bus.backup_ram_dirty = true;
+    board.sub_bus.cdc_irq_request = true;
+    board.bind();
+
+    try testing.expect(board.sub_bus.backup_ram_dirty);
+    try testing.expect(board.sub_bus.cdc_irq_request);
+}
+

@@ -1814,6 +1814,16 @@ uint8_t jgz80_get_psg_noise(Jgz80Handle *handle) {
     return handle->psg_noise & 0x07u;
 }
 
+uint8_t jgz80_get_psg_latched_channel(Jgz80Handle *handle) {
+    if (!handle) return 1u;
+    return handle->psg_latched_channel & 0x03u;
+}
+
+uint8_t jgz80_get_psg_latched_is_volume(Jgz80Handle *handle) {
+    if (!handle) return 1u;
+    return handle->psg_latched_is_volume ? 1u : 0u;
+}
+
 uint32_t jgz80_take_68k_bus_access_count(Jgz80Handle *handle) {
     if (!handle) return 0u;
     const uint32_t count = handle->m68k_bus_access_count;

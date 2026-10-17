@@ -38,18 +38,20 @@ pub const SmsMachine = struct {
         self.z80.deinit();
     }
 
-    /// Rebind all internal self-referential pointers. Must be called after
-    /// the SmsMachine reaches its final memory location (e.g., after being
-    /// assigned into a heap-allocated WasmEmulator).
-    pub fn bindPointers(self: *SmsMachine) void {
-        // Propagate variant flags to VDP and I/O
+    /// Propagate variant and region flags to VDP, I/O, and bus.
+    pub fn applyVariantFlags(self: *SmsMachine) void {
         self.bus.vdp.is_game_gear = self.is_game_gear;
         self.bus.io.is_game_gear = self.is_game_gear;
         self.bus.vdp.is_sg1000 = self.is_sg1000;
         self.bus.is_sg1000 = self.is_sg1000;
-        // The region lives on the machine; vdp.reset() would otherwise
-        // silently drop PAL timing (313-line frames vs 262).
         self.bus.vdp.pal_mode = self.pal_mode;
+    }
+
+    /// Rebind all internal self-referential pointers. Must be called after
+    /// the SmsMachine reaches its final memory location (e.g., after being
+    /// assigned into a heap-allocated WasmEmulator).
+    pub fn bindPointers(self: *SmsMachine) void {
+        self.applyVariantFlags();
 
         // Fix SmsBus internal pointers (io.vdp, io.input)
         self.bus.rebindPointers();
