@@ -360,6 +360,7 @@ pub const Cpu = struct {
         self.pending_wait_cycles = 0;
         self.pending_wait_master_cycles = 0;
         self.sub_instruction_advanced_master = 0;
+        self.pending_irq_levels = 0;
         self.instruction_trace.clear();
     }
 
@@ -892,3 +893,33 @@ test "withdrawInterrupt drops one pending level and reports whether it was pendi
     try std.testing.expectEqual(@as(u8, 0), cpu.pending_irq_levels);
     try std.testing.expectEqual(@as(c_int, 0), cpu.core.irq_level);
 }
+
+test "Cpu.reset clears pending_irq_levels" {
+    const MinimalMemory = struct {
+        pub fn read8(_: *@This(), _: u32) u8 { return 0; }
+        pub fn read16(_: *@This(), _: u32) u16 { return 0; }
+        pub fn read32(_: *@This(), _: u32) u32 { return 0; }
+        pub fn write8(_: *@This(), _: u32, _: u8) void {}
+        pub fn write16(_: *@This(), _: u32, _: u16) void {}
+        pub fn write32(_: *@This(), _: u32, _: u32) void {}
+        pub fn m68kAccessWaitMasterCycles(_: *@This(), _: u32, _: u8) u32 { return 0; }
+        pub fn shouldHaltCpu(_: *const @This()) bool { return false; }
+        pub fn projectedDmaWaitMasterCycles(_: *const @This(), _: u32) u32 { return 0; }
+        pub fn dataPortReadWaitMasterCycles(_: *@This()) u32 { return 0; }
+        pub fn reserveDataPortWriteWaitMasterCycles(_: *@This()) u32 { return 0; }
+        pub fn controlPortWriteWaitMasterCycles(_: *@This()) u32 { return 0; }
+        pub fn setCpuRuntimeState(_: *@This(), _: runtime_state.RuntimeState) void {}
+        pub fn clearCpuRuntimeState(_: *@This()) void {}
+        pub fn notifyBusAccess(_: *@This(), _: u32, _: u32) void {}
+    };
+    var mem = MinimalMemory{};
+    var memory = MemoryInterface.bind(MinimalMemory, &mem);
+    var cpu = Cpu.init();
+    cpu.requestInterrupt(6);
+    try std.testing.expect(cpu.isInterruptPending(6));
+    cpu.reset(&memory);
+    try std.testing.expectEqual(@as(u8, 0), cpu.pending_irq_levels);
+    try std.testing.expect(!cpu.isInterruptPending(6));
+}
+
+

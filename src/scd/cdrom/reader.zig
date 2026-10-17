@@ -324,10 +324,10 @@ fn resolveSheetFile(allocator: std.mem.Allocator, base_dir: []const u8, name: []
     } else |_| {}
     errdefer allocator.free(exact);
 
-    var dir = try std.Io.Dir.cwd().openDir(platform.io(), base_dir, .{ .iterate = true });
-    defer dir.close(platform.io());
+    var dir = try platform.cwd().openDir(base_dir, .{ .iterate = true });
+    defer dir.close();
     var it = dir.iterate();
-    while (try it.next(platform.io())) |entry| {
+    while (try it.next()) |entry| {
         if (std.ascii.eqlIgnoreCase(entry.name, std.fs.path.basename(name))) {
             allocator.free(exact);
             return std.fs.path.join(allocator, &.{ base_dir, entry.name });

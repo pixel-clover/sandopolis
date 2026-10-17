@@ -114,13 +114,13 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachin
     const addr_off = @offsetOf(SmsVdp, "addr");
     const addr_raw = std.mem.readInt(u16, vdp_raw[addr_off..][0..2], .little);
     std.mem.writeInt(u16, vdp_raw[addr_off..][0..2], addr_raw & 0x3FFF, .little);
-    machine.bus.vdp.is_game_gear = is_gg; // Re-apply after VDP state overwrite
     if (machine.bus.vdp.scanline >= machine.bus.vdp.totalLines()) machine.bus.vdp.scanline = 0;
     @memcpy(&machine.bus.page, page_regs);
     machine.bus.ram_bank_enabled = ram_bank_enabled;
     machine.bus.ram_bank = ram_bank;
     @memcpy(&machine.bus.cartridge_ram, cartridge_ram);
     machine.pal_mode = pal_mode;
+    machine.applyVariantFlags(); // Re-apply variant and region flags after VDP state overwrite
     machine.z80_cycle_count = z80_cycle_count;
     machine.bus.io.memory_control = memory_control;
     machine.bus.io.io_control = io_control;

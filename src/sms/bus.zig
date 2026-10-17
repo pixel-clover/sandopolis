@@ -79,6 +79,7 @@ pub const SmsBus = struct {
 
     pub fn clone(self: *const SmsBus, alloc: std.mem.Allocator) !SmsBus {
         const rom_copy = try alloc.alloc(u8, self.rom.len);
+        errdefer alloc.free(rom_copy);
         @memcpy(rom_copy, self.rom);
         const path_copy: ?[]const u8 = if (self.source_path) |p| try alloc.dupe(u8, p) else null;
         return SmsBus{
@@ -97,6 +98,7 @@ pub const SmsBus = struct {
             .ram_bank_enabled = self.ram_bank_enabled,
             .ram_bank = self.ram_bank,
             .cartridge_ram = self.cartridge_ram,
+            .is_sg1000 = self.is_sg1000,
         };
     }
 
