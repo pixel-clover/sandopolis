@@ -418,6 +418,16 @@ pub const Z80 = struct {
         return 0;
     }
 
+    pub fn getPsgLatchedChannel(self: *const Z80) u2 {
+        if (self.handle) |h| return @truncate(c.jgz80_get_psg_latched_channel(h));
+        return 1;
+    }
+
+    pub fn getPsgLatchedIsVolume(self: *const Z80) bool {
+        if (self.handle) |h| return c.jgz80_get_psg_latched_is_volume(h) != 0;
+        return true;
+    }
+
     pub fn writeBusReq(self: *Z80, val: u16) void {
         if (self.handle) |h| c.jgz80_write_bus_req(h, val);
     }

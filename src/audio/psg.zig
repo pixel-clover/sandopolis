@@ -80,6 +80,28 @@ pub const Psg = struct {
         return psg;
     }
 
+    pub fn restoreShadow(
+        self: *Psg,
+        tone_periods: [3]u16,
+        volumes: [4]u4,
+        noise: u8,
+        latched_channel: u2,
+        latched_is_volume: bool,
+    ) void {
+        for (0..3) |ch| {
+            self.tones[ch].countdown_master = tone_periods[ch];
+            self.tones[ch].attenuation = volumes[ch];
+            self.tones[ch].level = psg_levels[volumes[ch]];
+        }
+        self.noise.attenuation = volumes[3];
+        self.noise.level = psg_levels[volumes[3]];
+        self.noise.noise_type = if ((noise & 4) != 0) .white else .periodic;
+        self.noise.frequency_mode = @intCast(noise & 3);
+        self.latched.channel = latched_channel;
+        self.latched.is_volume = latched_is_volume;
+    }
+
+
     fn effectiveTonePeriod(period: u16) u16 {
         // Integrated SN76489 clones treat tone period 0 as period 1.
         return if (period == 0) 1 else period;
