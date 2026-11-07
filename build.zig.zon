@@ -2,7 +2,7 @@
     .name = .sandopolis,
     .version = "0.1.0-alpha.10",
     .fingerprint = 0x50bf614ce7c127dd, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .minish = .{
             .url = "https://github.com/CogitatorTech/minish/archive/refs/tags/v0.5.0.tar.gz",
