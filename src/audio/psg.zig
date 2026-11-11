@@ -101,7 +101,6 @@ pub const Psg = struct {
         self.latched.is_volume = latched_is_volume;
     }
 
-
     fn effectiveTonePeriod(period: u16) u16 {
         // Integrated SN76489 clones treat tone period 0 as period 1.
         return if (period == 0) 1 else period;

@@ -1106,4 +1106,3 @@ test "bind preserves backup_ram_dirty and request flags on sub_bus" {
     try testing.expect(board.sub_bus.backup_ram_dirty);
     try testing.expect(board.sub_bus.cdc_irq_request);
 }
-

@@ -437,7 +437,6 @@ pub const AudioOutput = struct {
         );
     }
 
-
     fn takePendingEvents(self: *AudioOutput, z80: *Z80) PendingAudioEvents {
         const overflow = z80.takeOverflowCounts();
         self.last_overflow_events = overflow;
@@ -956,7 +955,6 @@ test "syncYmStateFromZ80 restores psg tone, volume, noise, and latch state" {
     try std.testing.expectEqual(@as(u4, 3), audio.psg.noise.attenuation);
     try std.testing.expectEqual(@as(u2, 1), audio.psg.noise.frequency_mode);
 }
-
 
 test "psg commands produce nonzero blip output before mute" {
     // Validate that PSG commands produce audible output in the blip
