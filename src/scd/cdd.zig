@@ -39,6 +39,7 @@ pub const ReportFormat = enum(u4) {
     track_start_time = 0x5,
     error_report = 0x6,
     not_ready = 0xF,
+    _,
 };
 
 pub const Command = enum(u4) {
@@ -455,6 +456,7 @@ pub const Cdd = struct {
                 }
             },
             .error_report, .not_ready => {},
+            _ => {},
         }
     }
 };
@@ -802,3 +804,16 @@ test "fader register maps bits 4-14 to the volume" {
     cdd.setFaderRegister(0x0800);
     try testing.expectEqual(@as(u16, 0x080), cdd.fader);
 }
+
+test "cdd handles subcode and undefined report formats without panic" {
+    var cdd = Cdd.init(true);
+    // Command 0x02 with report format 0x7 (e.g. subcode query or reserved format)
+    _ = cdd.command(&makeCommand(0x2, &.{ 0, 0, 0x7 }), null);
+    try testing.expectEqual(@as(u8, 0x7), cdd.status[1]);
+
+    // Poll status when status[1] has an unsupported format
+    cdd.status[1] = 0x8;
+    _ = cdd.command(&makeCommand(0x0, &.{}), null);
+    try testing.expectEqual(@as(u8, 0x8), cdd.status[1]);
+}
+

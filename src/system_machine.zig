@@ -5,6 +5,7 @@ const SmsInput = @import("sms/input.zig").SmsInput;
 const system_detect = @import("system.zig");
 const rom_loader = @import("rom_loader.zig");
 const clock = @import("clock.zig");
+const rom_metadata = @import("rom_metadata.zig");
 const sms_clock = @import("sms/clock.zig");
 const genesis_state_file = @import("state_file.zig");
 const sms_state_file = @import("sms/state_file.zig");
@@ -113,6 +114,7 @@ pub const SystemMachine = union(enum) {
                 errdefer sms.deinit(allocator);
                 sms.is_game_gear = (sys == .gg);
                 sms.is_sg1000 = (sys == .sg1000);
+                sms.applyVariantFlags();
                 try sms.bus.setSourcePath(allocator, effective_path);
                 // NOTE: no bindPointers() here: the struct is moved by the
                 // return below; SmsMachine.runFrame binds lazily.
@@ -122,6 +124,11 @@ pub const SystemMachine = union(enum) {
             // and set source path for SRAM resolution.
             var genesis = try Machine.initFromRomBytes(allocator, rom_data);
             errdefer genesis.deinit(allocator);
+            const metadata = genesis.romMetadata();
+            const timing = rom_metadata.resolveTimingMode(metadata, .auto);
+            const reg = rom_metadata.resolveConsoleRegion(metadata);
+            genesis.setPalMode(timing.pal_mode);
+            genesis.setConsoleIsOverseas(reg.overseas);
             const source_copy = try allocator.dupe(u8, effective_path);
             const Cartridge = @import("bus/cartridge.zig").Cartridge;
             const save_copy = Cartridge.savePathForRom(allocator, effective_path) catch null;
@@ -162,9 +169,18 @@ pub const SystemMachine = union(enum) {
                 var sms = try SmsMachine.initFromRomBytes(allocator, rom_bytes);
                 sms.is_game_gear = (sys == .gg);
                 sms.is_sg1000 = (sys == .sg1000);
+                sms.applyVariantFlags();
                 return .{ .sms = sms };
             },
-            .genesis => return .{ .genesis = try Machine.initFromRomBytes(allocator, rom_bytes) },
+            .genesis => {
+                var genesis = try Machine.initFromRomBytes(allocator, rom_bytes);
+                const metadata = genesis.romMetadata();
+                const timing = rom_metadata.resolveTimingMode(metadata, .auto);
+                const reg = rom_metadata.resolveConsoleRegion(metadata);
+                genesis.setPalMode(timing.pal_mode);
+                genesis.setConsoleIsOverseas(reg.overseas);
+                return .{ .genesis = genesis };
+            },
             .segacd => {
                 const disc = try Disc.fromMemory(allocator, discSheetForImage(rom_bytes), &.{rom_bytes});
                 return initSegaCdFromDisc(allocator, disc, options);
@@ -205,7 +221,21 @@ pub const SystemMachine = union(enum) {
         const region = try bios_set.selectForDisc(disc_region, options.preferred_bios_region);
         const bios = bios_set.get(region).?;
         try scd_bios.validate(bios);
-        const genesis = try Machine.initSegaCd(allocator, bios, mutable_disc);
+        var genesis = try Machine.initSegaCd(allocator, bios, mutable_disc);
+        switch (region) {
+            .jp => {
+                genesis.setConsoleIsOverseas(false);
+                genesis.setPalMode(false);
+            },
+            .eu => {
+                genesis.setConsoleIsOverseas(true);
+                genesis.setPalMode(true);
+            },
+            .us => {
+                genesis.setConsoleIsOverseas(true);
+                genesis.setPalMode(false);
+            },
+        }
         return .{ .genesis = genesis };
     }
 
@@ -652,6 +682,14 @@ pub const SystemMachine = union(enum) {
     fn adoptStableScdBoard(old_machine: *Machine, next_machine: *Machine) void {
         const old_board = old_machine.scd orelse return;
         const new_board = next_machine.scd orelse return;
+        // If the loaded board has no disc (e.g. an in-memory disc that has no
+        // path in the save state buffer), preserve the existing disc from the
+        // old board so the running session retains its media.
+        if (new_board.disc == null and old_board.disc != null) {
+            new_board.disc = old_board.disc;
+            old_board.disc = null;
+            new_board.cdd.disc_present = true;
+        }
         // Swap the whole structs: the new machine now owns the old
         // allocation (with the new contents), the old machine frees the
         // other one on deinit. If the temporary cannot be allocated the
@@ -1101,6 +1139,45 @@ test "facade boots a sega cd from bios bytes and an in-memory iso" {
     try t.expectEqual(SystemMachine.SystemType.segacd, machine.systemType());
     // The board allocation (libretro save-RAM pointer) survived the load.
     try t.expectEqual(board_before, machine.genesis.scd.?);
-    // A memory-backed disc has no path to reopen from: the drive is empty.
-    try t.expect(machine.genesis.scd.?.disc == null);
+    // A memory-backed disc has no path in the state file: the running disc is preserved.
+    try t.expect(machine.genesis.scd.?.disc != null);
+
+    // EU BIOS configured PAL timing and overseas console.
+    try t.expect(machine.palMode());
+    try t.expect(machine.consoleIsOverseas());
 }
+
+test "facade sets region and pal mode from bios selection" {
+    const t = @import("std").testing;
+    const bios = try testing_alloc.alloc(u8, 128 * 1024);
+    defer testing_alloc.free(bios);
+    @memset(bios, 0);
+    @memcpy(bios[0x100..0x104], "SEGA");
+    std.mem.writeInt(u32, bios[0..4], 0x00FFFE00, .big);
+    std.mem.writeInt(u32, bios[4..8], 0x00000200, .big);
+    bios[0x200] = 0x60;
+    bios[0x201] = 0xFE;
+
+    var iso: [2 * 2048]u8 = @splat(0);
+    @memcpy(iso[0..14], "SEGADISCSYSTEM");
+    iso[0x1F0] = 'J';
+
+    const set = SystemMachine.BiosSet{ .jp = bios };
+    var machine = try SystemMachine.initFromRomBytesWithOptions(testing_alloc, &iso, null, .{ .bios = &set });
+    defer machine.deinit(testing_alloc);
+
+    try t.expect(!machine.palMode());
+    try t.expect(!machine.consoleIsOverseas());
+}
+
+test "game gear dimensions are active before the first frame runs" {
+    const t = @import("std").testing;
+    var gg_rom: [0x400]u8 = @splat(0);
+    @memcpy(gg_rom[0..8], "TMR SEGA");
+    var machine = try SystemMachine.initFromRomBytes(testing_alloc, &gg_rom, .gg);
+    defer machine.deinit(testing_alloc);
+
+    try t.expectEqual(@as(u16, 160), machine.framebufferWidth());
+    try t.expectEqual(@as(u16, 144), machine.screenHeight());
+}
+

@@ -286,6 +286,25 @@ pub const Dir = struct {
         return std.Io.Dir.rename(self.d, old_sub_path, self.d, new_sub_path, io());
     }
 
+    pub const OpenDirOptions = std.Io.Dir.OpenOptions;
+    pub const Entry = std.Io.Dir.Entry;
+
+    pub const Iterator = struct {
+        it: std.Io.Dir.Iterator,
+
+        pub fn next(self: *Iterator) !?Entry {
+            return self.it.next(io());
+        }
+    };
+
+    pub fn openDir(self: Dir, sub_path: []const u8, opts: OpenDirOptions) !Dir {
+        return .{ .d = try self.d.openDir(io(), sub_path, opts) };
+    }
+
+    pub fn iterate(self: Dir) Iterator {
+        return .{ .it = self.d.iterate() };
+    }
+
     pub fn close(self: *Dir) void {
         self.d.close(io());
     }

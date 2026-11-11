@@ -31,12 +31,13 @@ pub const Gfx = struct {
             self.cycle_credit -= line_cycles;
             self.renderLine(regs, ram);
             const remaining: u8 = @truncate(regs[6]);
-            regs[6] = (regs[6] & 0xFF00) | (remaining - 1);
-            if (remaining == 1) {
+            if (remaining <= 1) {
+                regs[6] &= 0xFF00;
                 self.active = false;
                 regs[0] &= 0x7FFF;
                 return true;
             }
+            regs[6] = (regs[6] & 0xFF00) | (remaining - 1);
         }
         return false;
     }
@@ -174,3 +175,14 @@ test "graphics ASIC renders a stamp-map line and completes" {
     try std.testing.expect(gfx.advance(1000, &regs, &ram));
     try std.testing.expectEqual(@as(u8, 0xB0), ram.read8Linear(0x18000));
 }
+
+test "graphics ASIC advance with zero line counter terminates safely without underflow" {
+    var ram = WordRam{ .ret = false };
+    var regs: [8]u16 = @splat(0);
+    regs[6] = 0;
+    var gfx = Gfx{ .active = true };
+    try std.testing.expect(gfx.advance(1000, &regs, &ram));
+    try std.testing.expect(!gfx.active);
+    try std.testing.expectEqual(@as(u16, 0), regs[6] & 0x00FF);
+}
+

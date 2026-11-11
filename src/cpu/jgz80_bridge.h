@@ -236,6 +236,10 @@ uint8_t jgz80_get_psg_volume(Jgz80Handle *handle, uint8_t channel);
 
 uint8_t jgz80_get_psg_noise(Jgz80Handle *handle);
 
+uint8_t jgz80_get_psg_latched_channel(Jgz80Handle *handle);
+
+uint8_t jgz80_get_psg_latched_is_volume(Jgz80Handle *handle);
+
 uint32_t jgz80_take_68k_bus_access_count(Jgz80Handle *handle);
 
 uint32_t jgz80_take_overflow_counts(Jgz80Handle * handle, uint32_t * ym_write, uint32_t * ym_dac, uint32_t * ym_reset,

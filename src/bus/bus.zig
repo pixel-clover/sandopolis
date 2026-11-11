@@ -345,6 +345,7 @@ pub const Bus = struct {
         self.cpu_runtime_state = .{};
         self.m68k_sound_write_trace.clear();
         self.ensureZ80HostWindow();
+        if (self.expansion) |dev| dev.reset();
     }
 
     pub fn shouldHaltCpu(self: *const Bus) bool {

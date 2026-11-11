@@ -404,6 +404,9 @@ pub const AudioOutput = struct {
             self.ym_sample.write(1, 0xF0 | ch_code);
         }
 
+        // Sync PSG state from the Z80 bridge shadow.
+        self.syncPsgStateFromZ80(z80);
+
         // Reset blip delta tracking so the first sample after restore
         // doesn't produce a huge discontinuity pop.
         self.blip_fm_last_left = 0;
@@ -412,6 +415,28 @@ pub const AudioOutput = struct {
         self.blip_psg_last_right = 0;
         self.blip.clear();
     }
+
+    pub fn syncPsgStateFromZ80(self: *AudioOutput, z80: *const Z80) void {
+        const tones = [3]u16{
+            z80.getPsgTone(0),
+            z80.getPsgTone(1),
+            z80.getPsgTone(2),
+        };
+        const volumes = [4]u4{
+            @truncate(z80.getPsgVolume(0)),
+            @truncate(z80.getPsgVolume(1)),
+            @truncate(z80.getPsgVolume(2)),
+            @truncate(z80.getPsgVolume(3)),
+        };
+        self.psg.restoreShadow(
+            tones,
+            volumes,
+            z80.getPsgNoise(),
+            z80.getPsgLatchedChannel(),
+            z80.getPsgLatchedIsVolume(),
+        );
+    }
+
 
     fn takePendingEvents(self: *AudioOutput, z80: *Z80) PendingAudioEvents {
         const overflow = z80.takeOverflowCounts();
@@ -908,6 +933,30 @@ test "syncYmStateFromZ80 restores key-on for every held channel, not just the la
         }
     }
 }
+
+test "syncYmStateFromZ80 restores psg tone, volume, noise, and latch state" {
+    var z80 = Z80.init();
+    defer z80.deinit();
+
+    // Configure PSG via Z80 port writes
+    z80.writeByte(0x7F11, 0x85); // Tone 0 period low = 5
+    z80.writeByte(0x7F11, 0x0A); // Tone 0 period high = 10 -> period = 165
+    z80.writeByte(0x7F11, 0x92); // Tone 0 attenuation = 2
+    z80.writeByte(0x7F11, 0xB4); // Tone 1 attenuation = 4
+    z80.writeByte(0x7F11, 0xE5); // Noise: white noise, freq mode 1
+    z80.writeByte(0x7F11, 0xF3); // Noise attenuation = 3
+
+    var audio = AudioOutput.init();
+    audio.reset();
+    audio.syncYmStateFromZ80(&z80);
+
+    try std.testing.expectEqual(@as(u16, 165), audio.psg.tones[0].countdown_master);
+    try std.testing.expectEqual(@as(u4, 2), audio.psg.tones[0].attenuation);
+    try std.testing.expectEqual(@as(u4, 4), audio.psg.tones[1].attenuation);
+    try std.testing.expectEqual(@as(u4, 3), audio.psg.noise.attenuation);
+    try std.testing.expectEqual(@as(u2, 1), audio.psg.noise.frequency_mode);
+}
+
 
 test "psg commands produce nonzero blip output before mute" {
     // Validate that PSG commands produce audible output in the blip

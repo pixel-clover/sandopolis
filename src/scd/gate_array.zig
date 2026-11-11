@@ -468,7 +468,7 @@ pub const GateArray = struct {
                 if (hi) v = (v & 0x00FF) | (value & 0xFF00);
                 if (lo) v = (v & 0xFF00) | (value & 0x00FF);
                 self.gfx_regs[i] = v;
-                effects.gfx_start = off == 0x66;
+                effects.gfx_start = off == 0x66 and lo;
             },
             0x68 => {
                 if (lo) self.subcode_address = value & 0x007E;
@@ -645,9 +645,20 @@ test "font renderer expands 1bpp source bits into two-color nibbles" {
 
 test "trace-vector write requests a graphics operation" {
     var f = Fixture.init();
-    const effects = f.ga.subWriteWithEffects(0x66, 0x1234, 0b11, f.p());
-    try testing.expect(effects.gfx_start);
+    // High byte write alone must not trigger ASIC start before low byte is written
+    const hi_effects = f.ga.subWriteWithEffects(0x66, 0x1200, 0b10, f.p());
+    try testing.expect(!hi_effects.gfx_start);
+    try testing.expectEqual(@as(u16, 0x1200), f.ga.gfx_regs[7]);
+
+    // Low byte write completes the vector and starts ASIC
+    const lo_effects = f.ga.subWriteWithEffects(0x66, 0x0034, 0b01, f.p());
+    try testing.expect(lo_effects.gfx_start);
     try testing.expectEqual(@as(u16, 0x1234), f.ga.gfx_regs[7]);
+
+    // Word write starts ASIC immediately
+    const word_effects = f.ga.subWriteWithEffects(0x66, 0x5678, 0b11, f.p());
+    try testing.expect(word_effects.gfx_start);
+    try testing.expectEqual(@as(u16, 0x5678), f.ga.gfx_regs[7]);
 }
 
 test "cdd command completes on the checksum nibble write" {

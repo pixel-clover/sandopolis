@@ -144,11 +144,7 @@ export fn retro_set_input_state(cb: RetroInputStateFn) callconv(.c) void {
 export fn retro_init() callconv(.c) void {}
 
 export fn retro_deinit() callconv(.c) void {
-    if (core) |c| {
-        c.machine.deinit(allocator);
-        allocator.destroy(c);
-        core = null;
-    }
+    retro_unload_game();
 }
 
 export fn retro_api_version() callconv(.c) c_uint {
@@ -322,11 +318,15 @@ export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
     // Free a still-loaded instance if the frontend skips retro_unload_game.
     retro_unload_game();
 
-    // Prefer the file extension for system detection when the frontend
-    // provides a path (e.g. ".sg" for SG-1000 ROMs that content detection
-    // cannot distinguish from SMS); fall back to content-based detection.
     const hint: ?system_detect.SystemType = if (info.path) |p|
         system_detect.detectSystemFromExtension(std.mem.span(p))
+    else
+        null;
+
+    const detected_sys: ?system_detect.SystemType = if (hint) |h|
+        h
+    else if (info.data) |d|
+        if (info.size > 0) system_detect.detectSystem(d[0..info.size]) else null
     else
         null;
 
@@ -337,19 +337,33 @@ export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
         .audio_buffer = @splat(0),
         .audio_sample_count = 0,
     };
-    // Sega CD discs load by path (a .cue references sibling files) with the
-    // BIOS from the frontend's system directory; cartridges load from bytes.
-    if (hint == .segacd) {
-        const path = std.mem.span(info.path orelse {
-            allocator.destroy(c_state);
-            return false;
-        });
+    // Sega CD discs load with the BIOS from the frontend's system directory;
+    // cartridges load from bytes.
+    if (detected_sys == .segacd) {
         c_state.loadBios();
-        c_state.machine = SystemMachine.initWithOptions(allocator, path, .{ .bios = &c_state.bios_set }) catch {
+        const scd_machine: ?SystemMachine = blk: {
+            if (info.path) |p| {
+                const path = std.mem.span(p);
+                if (SystemMachine.initWithOptions(allocator, path, .{ .bios = &c_state.bios_set })) |m| {
+                    break :blk m;
+                } else |_| {}
+            }
+            if (info.data) |d| {
+                if (info.size > 0) {
+                    if (SystemMachine.initFromRomBytesWithOptions(allocator, d[0..info.size], .segacd, .{ .bios = &c_state.bios_set })) |m| {
+                        break :blk m;
+                    } else |_| {}
+                }
+            }
+            break :blk null;
+        };
+        if (scd_machine) |m| {
+            c_state.machine = m;
+        } else {
             c_state.freeBios();
             allocator.destroy(c_state);
             return false;
-        };
+        }
     } else {
         const rom_data = info.data orelse {
             allocator.destroy(c_state);

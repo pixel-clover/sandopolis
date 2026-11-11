@@ -682,7 +682,7 @@ fn handleSaveManagerKey(
     if (hotkey_action) |action| {
         switch (action) {
             .save_state_file, .load_state_file, .next_state_slot => {
-                _ = handlePersistentStateAction(
+                const load_result = handlePersistentStateAction(
                     allocator,
                     action,
                     machine,
@@ -694,6 +694,9 @@ fn handleSaveManagerKey(
                     frame_counter,
                     notifications,
                 );
+                if (load_result == .loaded_machine) {
+                    syncFrontendAfterPersistentStateLoad(ui, current_rom_path, machine);
+                }
                 refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
                 return true;
             },
@@ -1222,6 +1225,7 @@ fn handleSaveManagerGamepadInput(
     wav_recorder: *?WavRecorder,
     audio: ?*AudioInit,
     frame_counter: *u32,
+    current_rom_path: ?*DialogPathCopy,
     input: InputBindings.GamepadInput,
     pressed: bool,
     notifications: FrontendNotifications,
@@ -1265,7 +1269,7 @@ fn handleSaveManagerGamepadInput(
                     _ = deletePersistentStateFile(allocator, machine, explicit_state_path, persistent_state_slot.*, notifications);
                     refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
                 } else {
-                    _ = handlePersistentStateAction(
+                    const load_result = handlePersistentStateAction(
                         allocator,
                         .load_state_file,
                         machine,
@@ -1277,6 +1281,11 @@ fn handleSaveManagerGamepadInput(
                         frame_counter,
                         notifications,
                     );
+                    if (load_result == .loaded_machine) {
+                        if (current_rom_path) |crp| {
+                            syncFrontendAfterPersistentStateLoad(ui, crp, machine);
+                        }
+                    }
                     refreshSaveManager(save_manager, allocator, machine, explicit_state_path, notifications);
                 }
             }
@@ -1343,6 +1352,7 @@ fn handleFrontendGamepadInput(
     core_profile_frames_remaining: *u32,
     window: *zsdl3.Window,
     frame_counter: *u32,
+    current_rom_path: ?*DialogPathCopy,
     debugger: *debugger_mod.DebuggerState,
     bindings: *InputBindings.Bindings,
     ui_font: *ui_render.Font,
@@ -1402,6 +1412,7 @@ fn handleFrontendGamepadInput(
         wav_recorder,
         audio,
         frame_counter,
+        current_rom_path,
         input,
         pressed,
         notifications,
@@ -2087,6 +2098,7 @@ fn handleFrontendGamepadTransitions(
     core_profile_frames_remaining: *u32,
     window: *zsdl3.Window,
     frame_counter: *u32,
+    current_rom_path: ?*DialogPathCopy,
     debugger: *debugger_mod.DebuggerState,
     bindings: *InputBindings.Bindings,
     ui_font: *ui_render.Font,
@@ -2116,6 +2128,7 @@ fn handleFrontendGamepadTransitions(
                 core_profile_frames_remaining,
                 window,
                 frame_counter,
+                current_rom_path,
                 debugger,
                 bindings,
                 ui_font,
@@ -3044,6 +3057,7 @@ pub fn main(init: std.process.Init) !void {
                                 &core_profile_frames_remaining,
                                 window,
                                 &frame_counter,
+                                &current_rom_path,
                                 &debugger_state,
                                 &input_bindings,
                                 &ui_font,
@@ -3117,6 +3131,7 @@ pub fn main(init: std.process.Init) !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &current_rom_path,
                             &debugger_state,
                             &input_bindings,
                             &ui_font,
@@ -3182,6 +3197,7 @@ pub fn main(init: std.process.Init) !void {
                                 &core_profile_frames_remaining,
                                 window,
                                 &frame_counter,
+                                &current_rom_path,
                                 &debugger_state,
                                 &input_bindings,
                                 &ui_font,
@@ -3252,6 +3268,7 @@ pub fn main(init: std.process.Init) !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &current_rom_path,
                             &debugger_state,
                             &input_bindings,
                             &ui_font,
@@ -3317,6 +3334,7 @@ pub fn main(init: std.process.Init) !void {
                             &core_profile_frames_remaining,
                             window,
                             &frame_counter,
+                            &current_rom_path,
                             &debugger_state,
                             &input_bindings,
                             &ui_font,
@@ -5274,6 +5292,7 @@ test "guide button toggles pause and resumes overlays" {
         &core_profile_frames_remaining,
         fake_window,
         &frame_counter,
+        null,
         &dbg_state,
         &test_bindings,
         &test_font,
@@ -5308,6 +5327,7 @@ test "guide button toggles pause and resumes overlays" {
         &core_profile_frames_remaining,
         fake_window,
         &frame_counter,
+        null,
         &dbg_state,
         &test_bindings,
         &test_font,
@@ -5337,6 +5357,7 @@ test "save manager gamepad controls save load delete and close" {
 
     var machine = SystemMachine{ .genesis = try Machine.initFromRomBytes(allocator, rom[0..]) };
     defer machine.deinit(allocator);
+    machine.genesis.bus.replaceStoragePaths(allocator, null, try allocator.dupe(u8, rom_path));
 
     var ui = FrontendUi{ .overlay = .save_manager, .parent_overlay = .pause };
     var save_manager = SaveManagerState{};
@@ -5344,6 +5365,8 @@ test "save manager gamepad controls save load delete and close" {
     var gif_recorder: ?GifRecorder = null;
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 5;
+    var current_rom_path = DialogPathCopy{};
+    current_rom_path.set("initial_path.bin");
 
     machine.genesis.writeWorkRamByte(0x20, 0x44);
     switch (handleSaveManagerGamepadInput(
@@ -5357,6 +5380,7 @@ test "save manager gamepad controls save load delete and close" {
         &wav_recorder,
         null,
         &frame_counter,
+        &current_rom_path,
         .west,
         true,
         .{},
@@ -5380,6 +5404,7 @@ test "save manager gamepad controls save load delete and close" {
         &wav_recorder,
         null,
         &frame_counter,
+        &current_rom_path,
         .south,
         true,
         .{},
@@ -5387,6 +5412,7 @@ test "save manager gamepad controls save load delete and close" {
         .consumed => {},
         else => try std.testing.expect(false),
     }
+    try std.testing.expectEqualStrings(rom_path, current_rom_path.slice());
     try std.testing.expectEqual(@as(u8, 0x44), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
 
@@ -5401,6 +5427,7 @@ test "save manager gamepad controls save load delete and close" {
         &wav_recorder,
         null,
         &frame_counter,
+        &current_rom_path,
         .right_shoulder,
         true,
         .{},
@@ -5421,6 +5448,7 @@ test "save manager gamepad controls save load delete and close" {
         &wav_recorder,
         null,
         &frame_counter,
+        &current_rom_path,
         .left_shoulder,
         true,
         .{},
@@ -5441,6 +5469,7 @@ test "save manager gamepad controls save load delete and close" {
         &wav_recorder,
         null,
         &frame_counter,
+        &current_rom_path,
         .north,
         true,
         .{},
@@ -5462,6 +5491,7 @@ test "save manager gamepad controls save load delete and close" {
         &wav_recorder,
         null,
         &frame_counter,
+        &current_rom_path,
         .north,
         true,
         .{},
@@ -5484,6 +5514,7 @@ test "save manager gamepad controls save load delete and close" {
         &wav_recorder,
         null,
         &frame_counter,
+        &current_rom_path,
         .east,
         true,
         .{},
