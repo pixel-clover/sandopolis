@@ -24,11 +24,11 @@
             libpulseaudio
             libxkbcommon
             wayland
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXi
-            xorg.libXext
-            xorg.libXrandr
+            libx11
+            libxcursor
+            libxi
+            libxext
+            libxrandr
           ];
         in
         {
@@ -44,10 +44,10 @@
                 clang-tools
                 gdb
               ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxRuntimeLibs;
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxRuntimeLibs;
 
             shellHook =
-              pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
                 export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxRuntimeLibs}:''${LD_LIBRARY_PATH:-}"
               ''
               + ''
