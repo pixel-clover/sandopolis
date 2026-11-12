@@ -816,4 +816,3 @@ test "cdd handles subcode and undefined report formats without panic" {
     _ = cdd.command(&makeCommand(0x0, &.{}), null);
     try testing.expectEqual(@as(u8, 0x8), cdd.status[1]);
 }
-

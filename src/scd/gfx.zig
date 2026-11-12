@@ -185,4 +185,3 @@ test "graphics ASIC advance with zero line counter terminates safely without und
     try std.testing.expect(!gfx.active);
     try std.testing.expectEqual(@as(u16, 0), regs[6] & 0x00FF);
 }
-

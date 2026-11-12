@@ -16,6 +16,7 @@ pub const SmsMachine = struct {
     is_game_gear: bool = false,
     is_sg1000: bool = false,
     z80_cycle_count: u32 = 0,
+    instruction_cycles: u32 = 0,
 
     // Audio buffer for frame output
     audio_buffer: [8192]i16 = @splat(0),
@@ -70,9 +71,9 @@ pub const SmsMachine = struct {
 
         // Set I/O port callbacks
         self.z80.setPortCallbacks(
-            @ptrCast(&self.bus),
-            SmsBus.hostPortIn,
-            SmsBus.hostPortOut,
+            @ptrCast(self),
+            portIn,
+            portOut,
         );
 
         // Set up PSG callback in I/O
@@ -113,6 +114,26 @@ pub const SmsMachine = struct {
         z80.clearIrq();
     }
 
+    fn advanceInstruction(self: *SmsMachine, cycles: u32) void {
+        self.bus.vdp.stepMaster((cycles - self.instruction_cycles) * sms_clock.z80_divider);
+        self.instruction_cycles = cycles;
+        self.audio.current_z80_cycle = self.z80_cycle_count + cycles;
+        if (self.bus.vdp.irqPending()) self.z80.assertIrq(0xFF) else self.z80.clearIrq();
+    }
+
+    fn portIn(ctx: ?*anyopaque, port: u16, cycles: u32) callconv(.c) u8 {
+        const self: *SmsMachine = @ptrCast(@alignCast(ctx orelse return 0xFF));
+        self.advanceInstruction(cycles);
+        return self.bus.io.portIn(port);
+    }
+
+    fn portOut(ctx: ?*anyopaque, port: u16, value: u8, cycles: u32) callconv(.c) void {
+        const self: *SmsMachine = @ptrCast(@alignCast(ctx orelse return));
+        self.advanceInstruction(cycles);
+        self.bus.io.portOut(port, value);
+        if (self.bus.vdp.irqPending()) self.z80.assertIrq(0xFF) else self.z80.clearIrq();
+    }
+
     pub fn reset(self: *SmsMachine) void {
         self.bus.reset();
         self.z80.reset();
@@ -124,45 +145,26 @@ pub const SmsMachine = struct {
     /// Run one complete frame.
     pub fn runFrame(self: *SmsMachine) void {
         if (!self.bound) self.bindPointers();
-        const total_lines = self.bus.vdp.totalLines();
-        self.bus.vdp.beginFrame();
-        self.z80_cycle_count = 0;
-
-        for (0..total_lines) |_| {
-            self.runScanline();
-        }
-
-        // Render audio for this frame
-        self.audio_sample_count = self.audio.renderFrame(self.pal_mode, &self.audio_buffer);
-    }
-
-    fn runScanline(self: *SmsMachine) void {
-        // Scanline-granular timestamp for PSG writes issued this line.
-        self.audio.current_z80_cycle = self.z80_cycle_count;
-        // Run Z80 for one scanline worth of cycles
-        const target_cycles = self.z80_cycle_count + sms_clock.z80_cycles_per_line;
-
-        while (self.z80_cycle_count < target_cycles) {
-            const cycles = self.z80.stepInstruction();
-            self.z80_cycle_count += cycles;
-        }
-
-        // Advance VDP
-        _ = self.bus.vdp.stepScanline();
-
-        // Handle interrupts: IRQ stays asserted as long as any enabled interrupt is pending.
-        // The VDP status read (port 0xBF) clears the pending flags.
-        if (self.bus.vdp.irqPending()) {
-            self.z80.assertIrq(0xFF);
-        } else {
-            self.z80.clearIrq();
-        }
-
-        // Handle pause button NMI (SMS only; GG and SG-1000 do not use NMI pause)
+        const frame_cycles = @as(u32, self.bus.vdp.totalLines()) * sms_clock.z80_cycles_per_line;
+        // Keep the final instruction's excess cycles in the following frame.
+        self.z80_cycle_count = self.bus.vdp.horizontal_master / sms_clock.z80_divider;
+        // SMS pause is an edge-triggered NMI; GG and SG-1000 do not use it.
         if (!self.is_game_gear and !self.is_sg1000 and self.bus.input.pause_pressed) {
             self.z80.assertNmi();
             self.bus.input.pause_pressed = false;
         }
+        while (self.z80_cycle_count < frame_cycles) {
+            self.instruction_cycles = 0;
+            const cycles = self.z80.stepInstruction();
+            // The Z80 samples IRQ before the instruction's final T-state.
+            if (self.instruction_cycles < cycles) {
+                self.advanceInstruction(cycles - 1);
+                self.bus.vdp.stepMaster(sms_clock.z80_divider);
+            }
+            self.z80_cycle_count += cycles;
+        }
+
+        self.audio_sample_count = self.audio.renderFrame(self.pal_mode, &self.audio_buffer);
     }
 
     pub fn framebuffer(self: *const SmsMachine) []const u32 {
@@ -250,6 +252,81 @@ test "sms machine init" {
     defer machine.deinit(testing.allocator);
     try testing.expectEqual(@as(u16, 256), machine.framebufferWidth());
     try testing.expectEqual(@as(u16, 192), machine.screenHeight());
+}
+
+test "sms frame clock carries instruction overshoot between frames" {
+    const rom = [_]u8{ 0xC3, 0x00, 0x00 }; // JP $: 10 cycles crosses scanline boundaries.
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
+    defer machine.deinit(testing.allocator);
+    for (0..3) |_| {
+        machine.runFrame();
+        const frame_cycles = 262 * 228;
+        try testing.expect(machine.z80_cycle_count >= frame_cycles);
+        try testing.expect(machine.z80_cycle_count < frame_cycles + 10);
+    }
+}
+
+test "sms pending IRQ is accepted before the next instruction" {
+    const rom = [_]u8{ 0x3E, 0x42 };
+    var machine = try SmsMachine.initFromRomBytes(testing.allocator, &rom);
+    defer machine.deinit(testing.allocator);
+    machine.bindPointers();
+    var state = machine.z80.captureState();
+    state.iff1 = 1;
+    state.iff2 = 1;
+    state.interrupt_mode = 1;
+    state.sp = 0xDFF0;
+    machine.z80.restoreState(&state);
+    machine.z80.assertIrq(0xFF);
+    try testing.expectEqual(@as(u32, 13), machine.z80.stepInstruction());
+    try testing.expectEqual(@as(u16, 0x38), machine.z80.getPc());
+    try testing.expectEqual(state.af, machine.z80.captureState().af);
+    try testing.expectEqual(@as(u8, (state.r & 0x80) | ((state.r +% 1) & 0x7F)), machine.z80.captureState().r);
+    try testing.expectEqual(@as(u16, 0xDFEE), machine.z80.captureState().sp);
+}
+
+test "sms port callbacks advance to the I/O cycle for immediate, ED, block, and prefixed instructions" {
+    const Case = struct { program: []const u8, access_cycle: u32 };
+    for ([_]Case{
+        .{ .program = &.{ 0xD3, 0x3F }, .access_cycle = 10 }, // OUT (n),A
+        .{ .program = &.{ 0xDB, 0x3F }, .access_cycle = 11 }, // IN A,(n)
+        .{ .program = &.{ 0xED, 0x79 }, .access_cycle = 11 }, // OUT (C),A
+        .{ .program = &.{ 0xED, 0x78 }, .access_cycle = 12 }, // IN A,(C)
+        .{ .program = &.{ 0xED, 0xA3 }, .access_cycle = 15 }, // OUTI
+        .{ .program = &.{ 0xED, 0xA2 }, .access_cycle = 13 }, // INI
+        .{ .program = &.{ 0xDD, 0xD3, 0x3F }, .access_cycle = 14 },
+    }) |case| {
+        var machine = try SmsMachine.initFromRomBytes(testing.allocator, case.program);
+        defer machine.deinit(testing.allocator);
+        machine.bindPointers();
+        var state = machine.z80.captureState();
+        state.af = 0x2000;
+        state.bc = 0x013F;
+        state.hl = 0xC000;
+        machine.z80.restoreState(&state);
+        _ = machine.z80.stepInstruction();
+        try testing.expectEqual(case.access_cycle * 3, machine.bus.vdp.horizontal_master);
+    }
+}
+
+test "sms EI delays pending IRQ through the following instruction, including ignored prefixes" {
+    for ([_]bool{ false, true }) |prefixed| {
+        const rom: []const u8 = if (prefixed) &.{ 0xDD, 0xFB, 0x3E, 0x42, 0 } else &.{ 0xFB, 0x3E, 0x42, 0 };
+        var machine = try SmsMachine.initFromRomBytes(testing.allocator, rom);
+        defer machine.deinit(testing.allocator);
+        machine.bindPointers();
+        var state = machine.z80.captureState();
+        state.interrupt_mode = 1;
+        state.sp = 0xDFF0;
+        machine.z80.restoreState(&state);
+        machine.z80.assertIrq(0xFF);
+        try testing.expectEqual(@as(u32, if (prefixed) 8 else 4), machine.z80.stepInstruction());
+        try testing.expectEqual(@as(u32, 7), machine.z80.stepInstruction());
+        try testing.expectEqual(@as(u16, if (prefixed) 4 else 3), machine.z80.getPc());
+        try testing.expectEqual(@as(u32, 13), machine.z80.stepInstruction());
+        try testing.expectEqual(@as(u16, 0x38), machine.z80.getPc());
+        try testing.expectEqual(@as(u8, 0x42), @as(u8, @truncate(machine.z80.captureState().af >> 8)));
+    }
 }
 
 test "sms machine run frames produces visible output" {

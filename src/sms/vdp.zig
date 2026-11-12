@@ -24,6 +24,10 @@ pub const SmsVdp = struct {
 
     // Frame state
     scanline: u16 = 0,
+    horizontal_master: u16 = 0,
+    latched_hcounter: u8 = 0,
+    sprite_overflow_pending: bool = false,
+    sprite_collisions: [256]bool = @splat(false),
     // Reg 9 (vscroll) is latched once per frame; mid-frame writes take
     // effect on the next frame (SMSPower VDP documentation).
     latched_vscroll: u8 = 0,
@@ -219,7 +223,12 @@ pub const SmsVdp = struct {
     }
 
     pub fn readVCounter(self: *const SmsVdp) u8 {
-        const line = self.scanline;
+        // V count changes one master clock after the horizontal phase wraps.
+        const line = if (self.horizontal_master == 0) (self.scanline + self.totalLines() - 1) % self.totalLines() else self.scanline;
+        return self.vCounterForLine(line);
+    }
+
+    fn vCounterForLine(self: *const SmsVdp, line: u16) u8 {
         return switch (self.displayMode()) {
             .mode_192 => if (self.pal_mode)
                 vCounterPal192(line)
@@ -273,35 +282,99 @@ pub const SmsVdp = struct {
             (self.hint_pending and self.isLineInterruptEnabled());
     }
 
-    /// Advance VDP by one scanline. Returns true if entering vblank.
+    /// Advance to the next scanline boundary. Returns true on the VINT status line.
     pub fn stepScanline(self: *SmsVdp) bool {
+        const entering_vblank = self.scanline == self.activeVisibleLines() + 1;
+        self.stepMaster(684 - self.horizontal_master);
+        return entering_vblank;
+    }
+
+    /// H counter runs 00..93, E9..FF; V count changes at H=F4.
+    pub fn horizontalCounter(self: *const SmsVdp) u8 {
+        // Two master clocks of phase give the Z80-visible 00,01,02,02 cadence.
+        const count: u8 = @intCast(((self.horizontal_master + 638) % 684) / 4);
+        return if (count <= 0x93) count else count + 0x55;
+    }
+
+    pub fn stepMaster(self: *SmsVdp, cycles: u32) void {
+        var remaining = cycles;
+        while (remaining != 0) {
+            if (self.horizontal_master == 0) {
+                const status = self.status;
+                self.renderLine();
+                self.status = status;
+            }
+            const previous = self.horizontal_master;
+            const next_event: u16 = if (previous < 1) 1 else if (previous < 2) 2 else if (previous < 682) 682 else 684;
+            const elapsed: u16 = @intCast(@min(remaining, next_event - previous));
+            self.horizontal_master += elapsed;
+            remaining -= elapsed;
+
+            if (self.horizontal_master == 1) self.clockLineCounter(self.scanline);
+
+            // Overflow and VINT status appear at H=F5, after V count changes.
+            if (previous < 2 and self.horizontal_master >= 2) {
+                if (self.sprite_overflow_pending) self.status |= status_sprite_overflow;
+                if (self.scanline == self.activeVisibleLines() + 1) self.status |= status_vint;
+            }
+            // Collision output trails the active pixel position by 12 VDP dots.
+            const first_pixel: usize = if (previous < 72) 0 else @min(256, (previous - 72) / 2 + 1);
+            const end_pixel: usize = if (self.horizontal_master < 72) 0 else @min(256, (self.horizontal_master - 72) / 2 + 1);
+            for (first_pixel..end_pixel) |x| {
+                if (self.isDisplayEnabled() and self.sprite_collisions[x]) self.status |= status_sprite_collision;
+            }
+
+            // VINT precedes the V-counter increment; HINT follows one Z80 clock later.
+            if (self.horizontal_master == 682) {
+                const next_line = (self.scanline + 1) % self.totalLines();
+                if (next_line == self.activeVisibleLines() + 1) self.vint_pending = true;
+            }
+            if (self.horizontal_master == 684) {
+                self.horizontal_master = 0;
+                self.scanline = (self.scanline + 1) % self.totalLines();
+            }
+        }
+    }
+
+    fn renderLine(self: *SmsVdp) void {
         const visible_lines = self.activeVisibleLines();
-        const total = self.totalLines();
-        var entering_vblank = false;
+        self.sprite_overflow_pending = false;
+        self.sprite_collisions = @splat(false);
 
         if (self.scanline == 0) {
             self.latched_vscroll = self.regs[9];
         }
 
         if (self.scanline < visible_lines) {
-            // Active display: render and decrement line counter
+            // Active display: render pixels and evaluate sprite status.
             if (self.isDisplayEnabled()) {
                 self.renderScanline(self.scanline);
             } else {
                 self.renderBlankLine(self.scanline);
+                if (self.graphicsMode() == .mode4) {
+                    var pixels: [256]u32 = undefined;
+                    var priority: [256]bool = @splat(false);
+                    const status = self.status;
+                    self.renderSprites(self.scanline, &pixels, &priority);
+                    self.sprite_collisions = @splat(false);
+                    self.status = status | (self.status & status_sprite_overflow);
+                }
             }
-            if (self.line_counter == 0) {
-                self.line_counter = self.regs[10];
-                self.hint_pending = true;
-            } else {
-                self.line_counter -= 1;
+        } else if (self.graphicsMode() == .mode4 and self.isDisplayEnabled()) {
+            const border = (if (self.pal_mode) @as(u16, 48) else 24) - (visible_lines - 192) / 2;
+            if (self.scanline < visible_lines + border or self.scanline >= self.totalLines() - border) {
+                var pixels: [256]u32 = undefined;
+                var priority: [256]bool = @splat(false);
+                const status = self.status;
+                self.renderSprites(self.vCounterForLine(self.scanline), &pixels, &priority);
+                self.status = status | (self.status & status_sprite_collision);
+                self.sprite_overflow_pending = false;
             }
-        } else if (self.scanline == visible_lines) {
-            // First vblank line
-            entering_vblank = true;
-            self.status |= status_vint;
-            self.vint_pending = true;
-            // Line counter continues to decrement once more, then reloads
+        }
+    }
+
+    fn clockLineCounter(self: *SmsVdp, line: u16) void {
+        if (line <= self.activeVisibleLines()) {
             if (self.line_counter == 0) {
                 self.line_counter = self.regs[10];
                 self.hint_pending = true;
@@ -316,17 +389,11 @@ pub const SmsVdp = struct {
             // each frame one line early.)
             self.line_counter = self.regs[10];
         }
-
-        self.scanline += 1;
-        if (self.scanline >= total) {
-            self.scanline = 0;
-        }
-
-        return entering_vblank;
     }
 
     pub fn beginFrame(self: *SmsVdp) void {
         self.scanline = 0;
+        self.horizontal_master = 0;
         self.latched_vscroll = self.regs[9];
     }
 
@@ -637,6 +704,7 @@ pub const SmsVdp = struct {
             sprites_on_line += 1;
             if (sprites_on_line > 4) {
                 self.status |= status_sprite_overflow;
+                self.sprite_overflow_pending = true;
                 break;
             }
 
@@ -678,6 +746,7 @@ pub const SmsVdp = struct {
                             const ux: usize = @intCast(px);
                             if (sprite_drawn[ux]) {
                                 self.status |= status_sprite_collision;
+                                self.sprite_collisions[ux] = true;
                             } else {
                                 line_buf[ux] = color;
                                 sprite_drawn[ux] = true;
@@ -791,6 +860,7 @@ pub const SmsVdp = struct {
 
             if (sprite_count >= max_sprites) {
                 self.status |= status_sprite_overflow;
+                self.sprite_overflow_pending = true;
                 break;
             }
 
@@ -847,6 +917,7 @@ pub const SmsVdp = struct {
                 // Sprite collision detection: occurs regardless of BG priority
                 if (sprite_drawn[sx]) {
                     self.status |= status_sprite_collision;
+                    self.sprite_collisions[sx] = true;
                 } else {
                     sprite_drawn[sx] = true;
                 }
@@ -976,6 +1047,7 @@ test "sms vdp read status clears flags" {
 
 test "sms vdp v counter ntsc 192" {
     var vdp = SmsVdp.init();
+    vdp.horizontal_master = 1;
     vdp.scanline = 0;
     try testing.expectEqual(@as(u8, 0), vdp.readVCounter());
     vdp.scanline = 0xDA;
@@ -1248,17 +1320,90 @@ test "sms vdp 240-line mode" {
     try testing.expectEqual(@as(u16, 240), vdp.activeVisibleLines());
 }
 
-test "sms vdp stepScanline enters vblank at line 192" {
+test "sms vdp VINT status follows IRQ and the V counter increment" {
     var vdp = SmsVdp.init();
     // Enable display
     vdp.regs[1] = 0xE0; // Display enabled + frame interrupt enabled
-    vdp.scanline = 191;
-    _ = vdp.stepScanline(); // line 191 (last visible)
+    vdp.scanline = 192;
+    vdp.stepMaster(681);
     try testing.expect(!vdp.vint_pending);
-    const entering_vblank = vdp.stepScanline(); // line 192 (first vblank)
-    try testing.expect(entering_vblank);
+    vdp.stepMaster(1);
     try testing.expect(vdp.vint_pending);
+    try testing.expectEqual(@as(u8, 192), vdp.readVCounter());
+    try testing.expect(vdp.status & SmsVdp.status_vint == 0);
+    vdp.stepMaster(2);
+    try testing.expectEqual(@as(u8, 192), vdp.readVCounter());
+    vdp.stepMaster(1);
+    try testing.expectEqual(@as(u8, 193), vdp.readVCounter());
+    try testing.expect(vdp.status & SmsVdp.status_vint == 0);
+    vdp.stepMaster(1);
     try testing.expect((vdp.status & SmsVdp.status_vint) != 0);
+}
+
+test "sms collision timing survives status reads and stops when display is disabled" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x7E;
+    vdp.regs[6] = 0;
+    vdp.vram[32] = 0xFF;
+    vdp.vram[0x3F00] = 0;
+    vdp.vram[0x3F01] = 0;
+    vdp.vram[0x3F02] = 0xD0;
+    vdp.vram[0x3F80] = 131;
+    vdp.vram[0x3F81] = 1;
+    vdp.vram[0x3F82] = 131;
+    vdp.vram[0x3F83] = 1;
+    vdp.scanline = 1;
+    vdp.stepMaster(333);
+    try testing.expectEqual(@as(u8, 0), vdp.readControl() & 0x20);
+    vdp.stepMaster(1);
+    try testing.expectEqual(@as(u8, 0x20), vdp.readControl() & 0x20);
+    vdp.stepMaster(2);
+    try testing.expectEqual(@as(u8, 0x20), vdp.readControl() & 0x20);
+    vdp.regs[1] = 0;
+    vdp.stepMaster(2);
+    try testing.expectEqual(@as(u8, 0), vdp.readControl() & 0x20);
+}
+
+test "sms vertical border permits collision but never overflow" {
+    var vdp = SmsVdp.init();
+    vdp.regs[1] = 0x40;
+    vdp.regs[5] = 0x7E;
+    vdp.regs[6] = 0;
+    vdp.vram[32] = 0xFF;
+    for (0..9) |i| {
+        vdp.vram[0x3F00 + i] = 0xF0;
+        vdp.vram[0x3F80 + i * 2] = 131;
+        vdp.vram[0x3F81 + i * 2] = 1;
+    }
+    vdp.vram[0x3F09] = 0xD0;
+    vdp.scanline = 247; // NTSC V count F1, in the top border.
+    _ = vdp.stepScanline();
+    try testing.expectEqual(@as(u8, 0x20), vdp.status & 0x60);
+}
+
+test "sms H counter covers its discontinuity and fixed Z80 clock phase" {
+    var vdp = SmsVdp.init();
+    const expected = [_]u8{ 0, 1, 2, 2, 3, 4, 5, 5 };
+    for (expected, 0..) |value, cycle| {
+        vdp.horizontal_master = @intCast(48 + cycle * 3);
+        try testing.expectEqual(value, vdp.horizontalCounter());
+    }
+    vdp.horizontal_master = 636;
+    try testing.expectEqual(@as(u8, 0x93), vdp.horizontalCounter());
+    vdp.horizontal_master = 639;
+    try testing.expectEqual(@as(u8, 0xE9), vdp.horizontalCounter());
+}
+
+test "sms mode4 evaluates overflow with the display disabled" {
+    var vdp = SmsVdp.init();
+    vdp.regs[5] = 0x7E;
+    @memset(vdp.vram[0x3F00..0x3F09], 0x60);
+    vdp.vram[0x3F09] = 0xD0;
+    vdp.scanline = 0x61;
+    _ = vdp.stepScanline();
+    try testing.expect(vdp.status & SmsVdp.status_sprite_overflow != 0);
+    try testing.expect(vdp.status & SmsVdp.status_sprite_collision == 0);
 }
 
 test "gg vdp viewport dimensions" {

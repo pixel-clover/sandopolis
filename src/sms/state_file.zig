@@ -13,7 +13,8 @@ pub const magic = [8]u8{ 'S', 'N', 'D', 'S', 'M', 'S', 'S', 'T' };
 // v5: SmsVdp gained latched_vscroll (reg 9 latched per frame), which
 //     changes the raw-struct serialization layout.
 // v6: Jgz80State gained ym_timer_watermark.
-pub const version: u16 = 6;
+// v7: VDP horizontal timing, latched H counter, and pending sprite flags.
+pub const version: u16 = 7;
 
 /// Serialize SMS machine state into a byte buffer.
 pub fn saveToBuffer(allocator: std.mem.Allocator, sms: *const SmsMachine) ![]u8 {
@@ -104,8 +105,9 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachin
     // out-of-range address bits would index VRAM out of bounds.
     const vdp_raw = std.mem.asBytes(&machine.bus.vdp);
     inline for ([_][]const u8{
-        "control_latch", "vint_pending", "hint_pending",
-        "pal_mode",      "is_game_gear", "is_sg1000",
+        "control_latch",           "vint_pending", "hint_pending",
+        "pal_mode",                "is_game_gear", "is_sg1000",
+        "sprite_overflow_pending",
     }) |field| {
         const off = @offsetOf(SmsVdp, field);
         vdp_raw[off] = @intFromBool(vdp_raw[off] != 0);
@@ -115,6 +117,9 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, data: []const u8) !SmsMachin
     const addr_raw = std.mem.readInt(u16, vdp_raw[addr_off..][0..2], .little);
     std.mem.writeInt(u16, vdp_raw[addr_off..][0..2], addr_raw & 0x3FFF, .little);
     if (machine.bus.vdp.scanline >= machine.bus.vdp.totalLines()) machine.bus.vdp.scanline = 0;
+    machine.bus.vdp.horizontal_master %= 684;
+    const collisions_off = @offsetOf(SmsVdp, "sprite_collisions");
+    for (vdp_raw[collisions_off..][0..256]) |*value| value.* = @intFromBool(value.* != 0);
     @memcpy(&machine.bus.page, page_regs);
     machine.bus.ram_bank_enabled = ram_bank_enabled;
     machine.bus.ram_bank = ram_bank;
@@ -212,6 +217,10 @@ test "sms state round-trip" {
 
     // Run a few frames to establish state
     for (0..5) |_| machine.runFrame();
+    machine.bus.vdp.horizontal_master = 123;
+    machine.bus.vdp.latched_hcounter = 0x93;
+    machine.bus.vdp.sprite_overflow_pending = true;
+    machine.bus.vdp.sprite_collisions[131] = true;
 
     // Save
     const buf = try saveToBuffer(testing.allocator, &machine);
@@ -228,6 +237,23 @@ test "sms state round-trip" {
     try testing.expectEqual(machine.pal_mode, restored.pal_mode);
     try testing.expectEqualSlices(u8, &machine.bus.ram, &restored.bus.ram);
     try testing.expectEqualSlices(u8, &machine.bus.page, &restored.bus.page);
+    try testing.expectEqual(machine.bus.vdp.horizontal_master, restored.bus.vdp.horizontal_master);
+    try testing.expectEqual(machine.bus.vdp.latched_hcounter, restored.bus.vdp.latched_hcounter);
+    try testing.expect(restored.bus.vdp.sprite_overflow_pending);
+    try testing.expect(restored.bus.vdp.sprite_collisions[131]);
+
+    const vdp_offset = 16 + @sizeOf(Z80.State);
+    buf[vdp_offset + @offsetOf(SmsVdp, "sprite_collisions") + 131] = 0xFF;
+    buf[vdp_offset + @offsetOf(SmsVdp, "sprite_overflow_pending")] = 0xFF;
+    const horizontal_offset = vdp_offset + @offsetOf(SmsVdp, "horizontal_master");
+    @memset(buf[horizontal_offset..][0..2], 0xFF);
+    var sanitized = try loadFromBuffer(testing.allocator, buf);
+    defer sanitized.deinit(testing.allocator);
+    try testing.expectEqual(@as(u16, 555), sanitized.bus.vdp.horizontal_master);
+    try testing.expect(sanitized.bus.vdp.sprite_overflow_pending);
+    try testing.expect(sanitized.bus.vdp.sprite_collisions[131]);
+    std.mem.writeInt(u16, buf[8..10], 6, .little);
+    try testing.expectError(error.UnsupportedSaveStateVersion, loadFromBuffer(testing.allocator, buf));
 }
 
 test "sms state round-trip preserves io and psg state" {

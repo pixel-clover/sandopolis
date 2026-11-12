@@ -165,9 +165,9 @@ typedef void (*Jgz80HostWriteFunc)(void *userdata, uint32_t addr, uint8_t val);
 
 typedef void (*Jgz80M68kBusAccessFunc)(void *userdata, uint32_t pre_access_master_cycles);
 
-typedef uint8_t (*Jgz80HostPortInFunc)(void *userdata, uint16_t port);
+typedef uint8_t (*Jgz80HostPortInFunc)(void *userdata, uint16_t port, uint32_t instruction_cycles);
 
-typedef void (*Jgz80HostPortOutFunc)(void *userdata, uint16_t port, uint8_t val);
+typedef void (*Jgz80HostPortOutFunc)(void *userdata, uint16_t port, uint8_t val, uint32_t instruction_cycles);
 
 Jgz80Handle *jgz80_create(void);
 

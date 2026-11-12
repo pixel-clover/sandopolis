@@ -1180,4 +1180,3 @@ test "game gear dimensions are active before the first frame runs" {
     try t.expectEqual(@as(u16, 160), machine.framebufferWidth());
     try t.expectEqual(@as(u16, 144), machine.screenHeight());
 }
-

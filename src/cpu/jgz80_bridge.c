@@ -1282,10 +1282,25 @@ static void bridge_write_byte(void *userdata, uint16_t addr, uint8_t val) {
     mapped_write_byte(h, addr, val);
 }
 
+static uint32_t port_access_cycles(Jgz80Handle *h, bool output) {
+    if (!h->sms_mode || h->host_peek == NULL) return 0u;
+    uint16_t pc = h->instruction_pc;
+    uint32_t prefixes = 0u;
+    uint8_t opcode = h->host_peek(h->host_userdata, pc++);
+    while (is_index_prefix(opcode)) {
+        prefixes += 4u;
+        opcode = h->host_peek(h->host_userdata, pc++);
+    }
+    if (opcode != 0xEDu) return prefixes + (output ? 10u : 11u);
+    const uint8_t ext = h->host_peek(h->host_userdata, pc);
+    /* Writes take effect before the final T-state; reads sample at its end. */
+    return prefixes + ((ext & 0xE6u) == 0xA2u ? (output ? 15u : 13u) : (output ? 11u : 12u));
+}
+
 static uint8_t bridge_port_in(z80 *z, uint16_t port) {
     Jgz80Handle *h = (Jgz80Handle *) z->userdata;
     if (h->host_port_in != NULL) {
-        return h->host_port_in(h->port_userdata, port);
+        return h->host_port_in(h->port_userdata, port, port_access_cycles(h, false));
     }
     return 0xFFu;
 }
@@ -1293,7 +1308,7 @@ static uint8_t bridge_port_in(z80 *z, uint16_t port) {
 static void bridge_port_out(z80 *z, uint16_t port, uint8_t val) {
     Jgz80Handle *h = (Jgz80Handle *) z->userdata;
     if (h->host_port_out != NULL) {
-        h->host_port_out(h->port_userdata, port, val);
+        h->host_port_out(h->port_userdata, port, val, port_access_cycles(h, true));
     }
 }
 
@@ -1590,7 +1605,26 @@ uint32_t jgz80_step_one(Jgz80Handle *handle) {
     handle->instruction_data_access_index = 0u;
     handle->instruction_bank_access_index = 0u;
     handle->instruction_context_valid = 1u;
-    const uint32_t cycles = z80_step(&handle->core);
+    uint32_t cycles;
+    if (handle->sms_mode && handle->core.iff_delay == 0u &&
+        (handle->core.nmi_pending || (handle->core.irq_pending && handle->core.iff1))) {
+        /* Reuse jgz80's end-of-instruction interrupt entry without executing
+           the next opcode: discard the halted NOP's four cycles and R tick. */
+        handle->core.halted = true;
+        handle->core.r = (handle->core.r & 0x80u) | ((handle->core.r - 1u) & 0x7Fu);
+        cycles = z80_step(&handle->core) - 4u;
+    } else {
+        bool sms_ei = false;
+        if (handle->sms_mode && !handle->core.halted && handle->host_peek != NULL) {
+            uint16_t pc = handle->core.pc;
+            uint8_t opcode = handle->host_peek(handle->host_userdata, pc++);
+            while (is_index_prefix(opcode)) opcode = handle->host_peek(handle->host_userdata, pc++);
+            sms_ei = opcode == 0xFBu;
+        }
+        cycles = z80_step(&handle->core);
+        /* The bridge also samples IRQ before the next instruction. */
+        if (sms_ei) handle->core.iff_delay = 1u;
+    }
     handle->instruction_context_valid = 0u;
     const uint32_t instruction_end_master_offset = instruction_start_master_offset + cycles * 15u;
     flush_instruction_audio_writes(handle, instruction_end_master_offset);
