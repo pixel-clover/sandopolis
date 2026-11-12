@@ -27,6 +27,7 @@ This directory includes a collection of useful test ROMs for examining or testin
 
 | File                                  | Name | Author | Description                                                       |
 |---------------------------------------|------|--------|-------------------------------------------------------------------|
+| `VDPTEST_GG.sms` | SMS VDP Test | FluBBa | VDP data, timing, and sprite tests, run in Master System mode with NTSC and PAL timing. From [issue #49](https://github.com/pixel-clover/sandopolis/issues/49); [source and test descriptions](https://github.com/FluBBaOfWard/SmsVdpTest). |
 | `6ButtonControllerDemo.bin`           | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |
 | `dma_speed_test.bin`                  | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                          |
 | `gen_test_interlace2.bin`             | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                          |

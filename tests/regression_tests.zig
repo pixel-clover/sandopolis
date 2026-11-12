@@ -18,6 +18,39 @@ const shadow_highlight_rom = "tests/testroms/Shadow-Highlight Test Program #2 (P
 const test1536_rom = "tests/testroms/TEST1536.BIN";
 const multitap_io_rom = "tests/testroms/Multitap - IO Sample Program (U) (Nov 28 1992).gen";
 
+test "sms VDPTEST hardware data, timing, and sprite batteries" {
+    const rom = try platform.cwd().readFileAlloc(testing.allocator, "tests/testroms/VDPTEST_GG.sms", 32768);
+    defer testing.allocator.free(rom);
+    for ([_]bool{ false, true }) |pal| {
+        var machine = try sandopolis.testing.SmsMachine.initFromRomBytes(testing.allocator, rom);
+        defer machine.deinit(testing.allocator);
+        machine.pal_mode = pal;
+        for (0..600) |_| machine.runFrame();
+        @memset(machine.workRam()[0x900..0x93C], 0x7E);
+
+        var failures: usize = 0;
+        for ([_][2]usize{ .{ 1, 19 }, .{ 21, 36 }, .{ 41, 60 } }) |battery| {
+            machine.setButton(0, .button1, true);
+            for (0..10) |_| machine.runFrame();
+            machine.setButton(0, .button1, false);
+            var frames: usize = 0;
+            while (machine.workRam()[0x900 + battery[1] - 1] == 0x7E and frames < 3000) : (frames += 1) {
+                machine.runFrame();
+            }
+            for (battery[0]..battery[1] + 1) |number| {
+                const result = machine.workRam()[0x900 + number - 1];
+                const expected: u8 = if (number == 21) (if (pal) 1 else 2) else 0;
+                if (result != expected) {
+                    std.debug.print("VDPTEST PAL={any}, test {d}: {X:0>2}\n", .{ pal, number, result });
+                    failures += 1;
+                }
+            }
+            for (0..30) |_| machine.runFrame();
+        }
+        try testing.expectEqual(@as(usize, 0), failures);
+    }
+}
+
 fn makeSsfMapperRom(allocator: std.mem.Allocator, bank_count: usize) ![]u8 {
     const bank_size = 512 * 1024;
     const rom_len = bank_count * bank_size;

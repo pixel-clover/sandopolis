@@ -23,8 +23,8 @@ pub const Z80 = struct {
     pub const HostPeekFn = *const fn (userdata: ?*anyopaque, addr: u32) callconv(.c) u8;
     pub const HostWriteFn = *const fn (userdata: ?*anyopaque, addr: u32, val: u8) callconv(.c) void;
     pub const HostM68kBusAccessFn = *const fn (userdata: ?*anyopaque, pre_access_master_cycles: u32) callconv(.c) void;
-    pub const HostPortInFn = *const fn (userdata: ?*anyopaque, port: u16) callconv(.c) u8;
-    pub const HostPortOutFn = *const fn (userdata: ?*anyopaque, port: u16, val: u8) callconv(.c) void;
+    pub const HostPortInFn = *const fn (userdata: ?*anyopaque, port: u16, instruction_cycles: u32) callconv(.c) u8;
+    pub const HostPortOutFn = *const fn (userdata: ?*anyopaque, port: u16, val: u8, instruction_cycles: u32) callconv(.c) void;
 
     pub fn init() Z80 {
         return .{ .handle = c.jgz80_create() };

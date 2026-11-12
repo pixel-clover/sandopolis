@@ -48,8 +48,7 @@ pub const SmsIo = struct {
             return self.vdp.readVCounter();
         }
         if (p & 0xC1 == 0x41) {
-            // 0x40-0x7F odd: H counter (stub: return 0)
-            return 0;
+            return self.vdp.latched_hcounter;
         }
         if (p & 0xC1 == 0x80) {
             // 0x80-0xBF even: VDP data port
@@ -124,6 +123,11 @@ pub const SmsIo = struct {
         }
         if (p & 0xC1 == 0x01) {
             // 0x00-0x3F odd: I/O port control
+            const old_a = self.io_control & 0x22 != 0;
+            const old_b = self.io_control & 0x88 != 0;
+            if ((!old_a and value & 0x22 != 0) or (!old_b and value & 0x88 != 0)) {
+                self.vdp.latched_hcounter = self.vdp.horizontalCounter();
+            }
             self.io_control = value;
             return;
         }
@@ -157,6 +161,29 @@ test "sms io port dispatch vdp status read" {
     try testing.expectEqual(@as(u8, 0x80), status);
     // Status should be cleared after read
     try testing.expectEqual(@as(u8, 0), vdp.status);
+}
+
+test "sms TH rising edges latch H counter on either port, including direction changes" {
+    var vdp = SmsVdp.init();
+    var input = SmsInput{};
+    var io = SmsIo{ .vdp = &vdp, .input = &input };
+    vdp.horizontal_master = 48;
+    io.portOut(0x3F, 0x20);
+    try testing.expectEqual(@as(u8, 0), io.portIn(0x7F));
+    vdp.horizontal_master = 96;
+    io.portOut(0x3F, 0x20); // No edge: keep the previous latch.
+    try testing.expectEqual(@as(u8, 0), io.portIn(0x7F));
+    io.portOut(0x3F, 0xA0); // Port B rising edge.
+    for (0..32) |mirror| {
+        try testing.expectEqual(@as(u8, 12), io.portIn(@intCast(0x41 + mirror * 2)));
+    }
+    io.portOut(0x3F, 0);
+    vdp.horizontal_master = 144;
+    io.portOut(0x01, 0x02); // Port A input pull-up, through a control-port mirror.
+    try testing.expectEqual(@as(u8, 24), io.portIn(0x7F));
+    vdp.horizontal_master = 192;
+    io.portOut(0x3F, 0x22); // Output latch changes while TH remains high.
+    try testing.expectEqual(@as(u8, 24), io.portIn(0x7F));
 }
 
 test "sms io port dispatch controller read" {
