@@ -1649,6 +1649,7 @@ fn loadRomIntoMachine(
     rom_path: []const u8,
     notifications: FrontendNotifications,
 ) !void {
+    try machine.flushPersistentStorage();
     var next_machine = SystemMachine.initWithOptions(allocator, rom_path, .{ .bios = &sega_cd_bios.set }) catch |err| {
         if (err == error.BiosMissing) {
             notifyFrontend(notifications, .failure, "SEGA CD BIOS MISSING: SET segacd.bios_us IN CONFIG", .{});
@@ -1674,10 +1675,6 @@ fn loadRomIntoMachine(
     if (audio) |a| {
         resetAudioOutput(a, null);
     }
-
-    machine.flushPersistentStorage() catch |err| {
-        std.debug.print("Failed to flush persistent SRAM before ROM load: {s}\n", .{@errorName(err)});
-    };
 
     var old_machine = machine.*;
     machine.* = next_machine;
@@ -2056,9 +2053,7 @@ fn resolveStatePathForSystem(
 fn writeStateFile(allocator: std.mem.Allocator, machine: *const SystemMachine, path: []const u8) !void {
     const data = try machine.saveStateToBuffer(allocator);
     defer allocator.free(data);
-    var file = try platform.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(data);
+    try platform.cwd().writeFileAtomic(path, data);
 }
 
 fn loadStateFile(allocator: std.mem.Allocator, machine: *SystemMachine, path: []const u8) !void {
@@ -4623,6 +4618,9 @@ test "hard reset helper reloads the current rom path" {
 
     const rom = try makeFrontendTestRom(allocator);
     defer allocator.free(rom);
+    @memcpy(rom[0x1B0..0x1B4], "RA\xF8 ");
+    std.mem.writeInt(u32, rom[0x1B4..0x1B8], 0x200001, .big);
+    std.mem.writeInt(u32, rom[0x1B8..0x1BC], 0x203FFF, .big);
     try tmp.dir.writeFile(platform.io(), .{ .sub_path = "restart.bin", .data = rom });
 
     const rom_path = try (platform.Dir{ .d = tmp.dir }).realpathAlloc(allocator, "restart.bin");
@@ -4644,6 +4642,7 @@ test "hard reset helper reloads the current rom path" {
     var wav_recorder: ?WavRecorder = null;
     var frame_counter: u32 = 42;
 
+    try std.testing.expect(machine.genesis.bus.cartridge.writeByte(0x200001, 0xAB));
     try hardResetCurrentMachine(
         allocator,
         &machine,
@@ -4657,9 +4656,29 @@ test "hard reset helper reloads the current rom path" {
         .{},
     );
 
+    try std.testing.expectEqual(@as(u8, 0xAB), machine.persistentSaveRam().?[0]);
     try std.testing.expectEqual(@as(u8, 0x00), machine.genesis.readWorkRamByte(0x20));
     try std.testing.expectEqual(@as(u32, 0), frame_counter);
     try std.testing.expectEqual(@as(u32, 0x0000_0200), machine.programCounter());
+
+    // Simulate a missing save directory while the current game has dirty SRAM.
+    try (platform.Dir{ .d = tmp.dir }).rename("restart", "moved");
+    try std.testing.expect(machine.genesis.bus.cartridge.writeByte(0x200001, 0xCD));
+    frame_counter = 17;
+    try std.testing.expectError(error.FileNotFound, hardResetCurrentMachine(
+        allocator,
+        &machine,
+        &bindings,
+        .auto,
+        null,
+        &gif_recorder,
+        &wav_recorder,
+        &frame_counter,
+        rom_path,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(u32, 17), frame_counter);
+    try std.testing.expectEqual(@as(u8, 0xCD), machine.persistentSaveRam().?[0]);
 }
 
 test "audio init stays muted until it sees audible startup activity" {

@@ -54,9 +54,10 @@ pub const File = struct {
         var total: usize = 0;
         while (total < buffer.len) {
             var bufs = [_][]u8{buffer[total..]};
-            const n = try self.f.readStreaming(io(), &bufs);
-            if (n == 0) break;
-            total += n;
+            total += self.f.readStreaming(io(), &bufs) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return err,
+            };
         }
         return total;
     }
@@ -256,6 +257,14 @@ pub const Dir = struct {
         return .{ .f = try self.d.createFile(io(), sub_path, opts) };
     }
 
+    pub fn writeFileAtomic(self: Dir, sub_path: []const u8, bytes: []const u8) !void {
+        const host = io();
+        var file = try self.d.createFileAtomic(host, sub_path, .{ .replace = true });
+        defer file.deinit(host);
+        try file.file.writeStreamingAll(host, bytes);
+        try file.replace(host);
+    }
+
     pub fn access(self: Dir, sub_path: []const u8, opts: std.Io.Dir.AccessOptions) !void {
         return self.d.access(io(), sub_path, opts);
     }
@@ -358,4 +367,28 @@ pub fn sleep(ns: u64) void {
 
 pub fn nanoTimestamp() i128 {
     return std.Io.Clock.now(.real, io()).nanoseconds;
+}
+
+test "atomic replacement preserves the previous save on write failure" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = Dir{ .d = tmp.dir };
+    try dir.writeFileAtomic("slot.state", "previous");
+    {
+        const original = io();
+        var vtable = original.vtable.*;
+        vtable.operate = struct {
+            fn failWrite(_: ?*anyopaque, op: std.Io.Operation) std.Io.Cancelable!std.Io.Operation.Result {
+                if (op == .file_write_streaming) return .{ .file_write_streaming = error.NoSpaceLeft };
+                unreachable;
+            }
+        }.failWrite;
+        const previous_io = process_io;
+        process_io = .{ .userdata = original.userdata, .vtable = &vtable };
+        defer process_io = previous_io;
+        try std.testing.expectError(error.NoSpaceLeft, dir.writeFileAtomic("slot.state", "replacement"));
+    }
+    const data = try dir.readFileAlloc(std.testing.allocator, "slot.state", 32);
+    defer std.testing.allocator.free(data);
+    try std.testing.expectEqualStrings("previous", data);
 }
