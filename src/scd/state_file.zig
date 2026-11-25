@@ -84,11 +84,7 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
 
     var disc: ?Disc = null;
     if (disc_path.len != 0) {
-        const ext = std.fs.path.extension(disc_path);
-        disc = if (std.ascii.eqlIgnoreCase(ext, ".cue"))
-            Disc.openCuePath(allocator, disc_path) catch null
-        else
-            Disc.openIsoPath(allocator, disc_path) catch null;
+        disc = Disc.openPath(allocator, disc_path) catch null;
     }
     errdefer if (disc) |*d| d.deinit();
 
@@ -103,6 +99,39 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
 }
 
 const testing = std.testing;
+
+test "sega cd state reopens a CHD disc with readable audio" {
+    const path = "tests/testroms/segacd-mixed-mode.chd";
+    const bios = try testing.allocator.alloc(u8, 128 * 1024);
+    defer testing.allocator.free(bios);
+    @memset(bios, 0);
+    @memcpy(bios[0x100..0x104], "SEGA");
+
+    var disc = try Disc.openPath(testing.allocator, path);
+    var machine = Machine.initSegaCd(testing.allocator, bios, disc) catch |err| {
+        disc.deinit();
+        return err;
+    };
+    defer machine.deinit(testing.allocator);
+    machine.scd.?.cdd.drive = .playing;
+    machine.scd.?.cdd.lba = 18;
+
+    const buf = try saveToBuffer(testing.allocator, &machine);
+    defer testing.allocator.free(buf);
+    var restored = try loadFromBuffer(testing.allocator, buf);
+    defer restored.deinit(testing.allocator);
+
+    const board = restored.scd.?;
+    const reopened = &board.disc.?;
+    try testing.expectEqualStrings(path, reopened.source_path.?);
+    switch (board.cdd.tick(reopened)) {
+        .audio => |audio| {
+            try testing.expectEqual(@as(i32, 18), audio.lba);
+            try testing.expectEqual([2]i16{ 3000, -4000 }, audio.frames[0]);
+        },
+        else => return error.ExpectedCdAudio,
+    }
+}
 
 test "sega cd state round-trips the sub-board and keeps a memory disc out of the file" {
     const bios = try testing.allocator.alloc(u8, 128 * 1024);

@@ -16,6 +16,10 @@
             .url = "https://github.com/habedi/jgz80-fork/archive/e987b9229c700c4db2c3f84dfce4fc0e63817701.tar.gz",
             .hash = "N-V-__8AAOj4AgCPCxSePjb6U-Kb3CMWSn14SVV5AOOWXXCt",
         },
+        .libchdr = .{
+            .url = "git+https://github.com/rtissera/libchdr.git#47d794151b2b64f6aba60304e6480f4f5a2bc24b",
+            .hash = "N-V-__8AAJLRLAB7giMIR8Y7JILtp_OZQ4SevK6w2AcA-QC7",
+        },
         .rocket68 = .{
             .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.3.3.tar.gz",
             .hash = "rocket68-0.3.3-Jd6gXFnBAwAxpjGGnV3zaNUeVxV9-z5U_CKU8nqa1yEW",
@@ -25,5 +29,5 @@
             .hash = "sdl-0.6.0+3.4.18-SDL--p-gqAGWpnfTLlhs0dgjDtc4P4_CHeNLGY_SX_Fv",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "external/zsdl3", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "external/zsdl3", "LICENSE", "CHD-LICENSES.txt", "README.md" },
 }

@@ -713,7 +713,7 @@ const SdlDialogFileFilter = extern struct {
 };
 
 const rom_dialog_filters = [_]SdlDialogFileFilter{
-    .{ .name = "ROM and disc files", .pattern = "bin;md;smd;gen;sms;gg;sg;zip;cue;iso" },
+    .{ .name = "ROM and disc files", .pattern = "bin;md;smd;gen;sms;gg;sg;zip;cue;iso;chd" },
     .{ .name = "All files", .pattern = "*" },
 };
 

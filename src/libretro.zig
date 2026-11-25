@@ -308,6 +308,9 @@ export fn retro_cheat_set(_: c_uint, _: bool, _: ?[*:0]const u8) callconv(.c) vo
 
 export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
     const info = game orelse return false;
+    if (info.path) |path| {
+        if (std.ascii.endsWithIgnoreCase(std.mem.span(path), ".chd")) return false;
+    }
 
     // The framebuffer is XRGB8888 (u32); without this the frontend assumes
     // the libretro default 0RGB1555 and renders garbage.

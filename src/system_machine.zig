@@ -105,6 +105,7 @@ pub const SystemMachine = union(enum) {
             const sys = system_detect.detectSystemFromExtension(effective_path) orelse
                 system_detect.detectSystem(rom_data);
             if (sys == .segacd) {
+                if (std.ascii.endsWithIgnoreCase(effective_path, ".chd")) return error.UnsupportedChdArchive;
                 // Content-detected raw disc image handed over as a file.
                 const disc = try Disc.fromMemory(allocator, discSheetForImage(rom_data), &.{rom_data});
                 return initSegaCdFromDisc(allocator, disc, options);
@@ -189,11 +190,7 @@ pub const SystemMachine = union(enum) {
     }
 
     fn initSegaCdFromPath(allocator: std.mem.Allocator, path: []const u8, options: InitOptions) !SystemMachine {
-        const ext = std.fs.path.extension(path);
-        const disc = if (std.ascii.eqlIgnoreCase(ext, ".cue"))
-            try Disc.openCuePath(allocator, path)
-        else
-            try Disc.openIsoPath(allocator, path);
+        const disc = try Disc.openPath(allocator, path);
         var machine = try initSegaCdFromDisc(allocator, disc, options);
         errdefer machine.deinit(allocator);
         const source_copy = try allocator.dupe(u8, path);

@@ -49,6 +49,7 @@ pub fn detectSystemFromExtension(path: []const u8) ?SystemType {
     if (std.ascii.eqlIgnoreCase(ext, ".sms")) return .sms;
     if (std.ascii.eqlIgnoreCase(ext, ".cue")) return .segacd;
     if (std.ascii.eqlIgnoreCase(ext, ".iso")) return .segacd;
+    if (std.ascii.eqlIgnoreCase(ext, ".chd")) return .segacd;
     return null;
 }
 
@@ -101,6 +102,7 @@ test "detect sega cd from disc image extension" {
     try testing.expectEqual(SystemType.segacd, detectSystemFromExtension("game.cue").?);
     try testing.expectEqual(SystemType.segacd, detectSystemFromExtension("Sonic CD (USA).CUE").?);
     try testing.expectEqual(SystemType.segacd, detectSystemFromExtension("game.iso").?);
+    try testing.expectEqual(@as(?SystemType, .segacd), detectSystemFromExtension("game.CHD"));
 }
 
 test "detect sega cd from disc header in raw sector bytes" {

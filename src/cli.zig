@@ -121,7 +121,7 @@ pub fn createCommand(allocator: std.mem.Allocator) !*chilli.Command {
     });
     try cmd.addPositional(.{
         .name = "rom_file",
-        .description = "Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg, .sg), a .zip archive containing one, or a Sega CD disc image (.cue, .iso)",
+        .description = "Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg, .sg), a .zip archive containing one, or a Sega CD disc image (.cue, .iso, .chd)",
         .default_value = .{ .String = "" },
     });
 

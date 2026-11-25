@@ -69,6 +69,7 @@ pub const Track = struct {
     /// Sectors of the pregap that exist in the file (INDEX 00 to INDEX 01),
     /// as opposed to virtual PREGAP sectors which read as zero.
     pregap_sectors_in_file: u32,
+    virtual_postgap_sectors: u32 = 0,
 
     pub fn lengthSectors(self: Track) u32 {
         return self.end_lba - self.start_lba;
@@ -83,6 +84,7 @@ pub const Track = struct {
     pub fn fileByteOffset(self: Track, lba: u32) ?u64 {
         const bps: u64 = self.kind.bytesPerSector();
         if (lba >= self.start_lba) {
+            if (lba >= self.end_lba - self.virtual_postgap_sectors) return null;
             return (@as(u64, self.file_sector) + (lba - self.start_lba)) * bps;
         }
         // Inside the pregap: only the in-file portion is backed by data.

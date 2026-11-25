@@ -77,7 +77,7 @@ pub const Emulator = struct {
         return .{ .handle = state };
     }
 
-    /// Sega CD from files: a BIOS image and an optional .cue/.iso path.
+    /// Sega CD from files: a BIOS image and an optional disc path.
     /// Errors from missing files propagate so callers can skip.
     pub fn initSegaCdFromPaths(allocator: std.mem.Allocator, bios_path: []const u8, disc_path: ?[]const u8) !Emulator {
         const platform = @import("../platform.zig");
@@ -86,11 +86,7 @@ pub const Emulator = struct {
 
         var disc: ?Disc = null;
         if (disc_path) |path| {
-            const ext = std.fs.path.extension(path);
-            disc = if (std.ascii.eqlIgnoreCase(ext, ".cue"))
-                try Disc.openCuePath(allocator, path)
-            else
-                try Disc.openIsoPath(allocator, path);
+            disc = try Disc.openPath(allocator, path);
         }
         errdefer if (disc) |*d| d.deinit();
 

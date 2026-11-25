@@ -37,6 +37,16 @@ fn addCpuHeaders(module: *std.Build.Module, b: *std.Build, deps: CpuDeps) void {
         rocket.addIncludePath(b.path("src/wasm_compat"));
     }
     module.addImport("rocket68_headers", rocket.createModule());
+    if (module.resolved_target.?.result.cpu.arch != .wasm32) {
+        const libchdr = b.dependency("libchdr", .{});
+        const headers = b.addTranslateC(.{
+            .root_source_file = libchdr.path("include/libchdr/cdrom.h"),
+            .target = module.resolved_target.?,
+            .optimize = module.optimize.?,
+            .link_libc = true,
+        });
+        module.addImport("libchdr", headers.createModule());
+    }
 }
 
 fn createTestingApiModule(
@@ -80,6 +90,17 @@ fn createSandopolisApiModule(
 fn addExternalCpuCores(step: *std.Build.Step.Compile, b: *std.Build, deps: CpuDeps) void {
     addCpuIncludePaths(step, b, deps);
     addCpuHeaders(step.root_module, b, deps);
+    if (step.root_module.resolved_target.?.result.cpu.arch != .wasm32) {
+        const libchdr = b.dependency("libchdr", .{});
+        step.root_module.addCSourceFiles(.{
+            .root = libchdr.path("."),
+            .files = &.{ "unity.c", "src/libchdr_codec_avhuff.c" },
+            .flags = &.{"-std=gnu11"},
+        });
+        for ([_][]const u8{ "include", "deps/lzma-26.02/include", "deps/miniz-3.1.2", "deps/zstd-1.5.7" }) |path| {
+            step.root_module.addIncludePath(libchdr.path(path));
+        }
+    }
 
     step.root_module.addCSourceFiles(.{
         .root = deps.rocket68.path(b, "."),
@@ -225,6 +246,7 @@ pub fn build(b: *std.Build) void {
     addStbTruetype(exe, b);
 
     b.installArtifact(exe);
+    b.installFile("CHD-LICENSES.txt", "share/sandopolis/CHD-LICENSES.txt");
 
     // Run step
     const run_cmd = b.addRunArtifact(exe);
