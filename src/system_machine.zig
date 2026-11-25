@@ -134,8 +134,8 @@ pub const SystemMachine = union(enum) {
             const Cartridge = @import("bus/cartridge.zig").Cartridge;
             const save_copy = Cartridge.savePathForRom(allocator, effective_path) catch null;
             genesis.bus.replaceStoragePaths(allocator, save_copy, source_copy);
-            if (genesis.bus.cartridge.ram.persistent and genesis.bus.cartridge.ram.hasStorage()) {
-                genesis.bus.cartridge.loadPersistentStorage() catch {};
+            if (genesis.bus.cartridge.isRamPersistent()) {
+                try genesis.bus.cartridge.loadPersistentStorage();
             }
             return .{ .genesis = genesis };
         }
@@ -904,6 +904,28 @@ test "stateBufferMatchesSystem distinguishes system families by magic" {
     // Short/garbage buffers carry no known magic and match nothing.
     try t.expect(!sms_machine.stateBufferMatchesSystem("junk"));
     try t.expect(!gen_machine.stateBufferMatchesSystem("junk"));
+}
+
+test "path loading restores an EEPROM-only cartridge save" {
+    const platform = @import("platform.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = platform.Dir{ .d = tmp.dir };
+
+    var rom: [0x400]u8 = @splat(0);
+    @memcpy(rom[0x100..0x104], "SEGA");
+    @memcpy(rom[0x183..0x18A], "T-12046");
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "game.md", .data = &rom });
+    try dir.makePath("game");
+    try tmp.dir.writeFile(platform.io(), .{ .sub_path = "game/game.sav", .data = &.{0xAB} });
+
+    const path = try dir.realpathAlloc(testing_alloc, "game.md");
+    defer testing_alloc.free(path);
+    var machine = try SystemMachine.init(testing_alloc, path);
+    defer machine.deinit(testing_alloc);
+    const save = machine.persistentSaveRam().?;
+    try std.testing.expectEqual(@as(u8, 0xAB), save[0]);
+    try std.testing.expectEqual(@as(u8, 0xFF), save[1]);
 }
 
 test "loadStateFromBuffer keeps the persistent save RAM allocation stable" {
