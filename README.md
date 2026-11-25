@@ -172,7 +172,7 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
     * [Chilli](https://github.com/CogitatorTech/chilli) framework for CLI parsing and handling
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU (Motorola 68000) emulation
-    * [libchdr](https://github.com/rtissera/libchdr) for desktop Sega CD CHD support, with [bundled dependency notices](CHD-LICENSES.txt)
+    * [libchdr](https://github.com/rtissera/libchdr) for reading CHD file support
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
     * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl)
       and [SDL](https://github.com/castholm/SDL))

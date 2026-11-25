@@ -71,7 +71,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./CHD-LICENSES.txt
+          asset_path: ./docs/assets/licenses/CHD-LICENSES.txt
           asset_name: CHD-LICENSES.txt
           asset_content_type: text/plain
 
@@ -186,7 +186,7 @@ jobs:
           New-Item -ItemType Directory -Path $env:RELEASE_DIR -Force | Out-Null
           Copy-Item zig-out\bin\sandopolis.exe $env:RELEASE_DIR\
           Copy-Item zig-out\bin\SDL3.dll $env:RELEASE_DIR\ -ErrorAction SilentlyContinue
-          Copy-Item CHD-LICENSES.txt $env:RELEASE_DIR
+          Copy-Item docs\assets\licenses\CHD-LICENSES.txt $env:RELEASE_DIR
           Compress-Archive -Path "$env:RELEASE_DIR\*" -DestinationPath ${{ matrix.artifact_name }}
 
       - name: Upload release asset

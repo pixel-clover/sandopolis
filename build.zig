@@ -246,7 +246,7 @@ pub fn build(b: *std.Build) void {
     addStbTruetype(exe, b);
 
     b.installArtifact(exe);
-    b.installFile("CHD-LICENSES.txt", "share/sandopolis/CHD-LICENSES.txt");
+    b.installFile("docs/assets/licenses/CHD-LICENSES.txt", "share/sandopolis/CHD-LICENSES.txt");
 
     // Run step
     const run_cmd = b.addRunArtifact(exe);
