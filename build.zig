@@ -242,7 +242,9 @@ pub fn build(b: *std.Build) void {
     addStbTruetype(exe, b);
 
     b.installArtifact(exe);
-    b.installFile("docs/assets/licenses/CHD-LICENSES.txt", "share/sandopolis/CHD-LICENSES.txt");
+    const notices = b.path("docs/assets/licenses/THIRD-PARTY-LICENSES.txt");
+    const install_notices = b.addInstallFileWithDir(notices, .prefix, "share/sandopolis/THIRD-PARTY-LICENSES.txt");
+    b.getInstallStep().dependOn(&install_notices.step);
 
     // Run step
     const run_cmd = b.addRunArtifact(exe);
@@ -648,6 +650,8 @@ pub fn build(b: *std.Build) void {
     });
     const wasm_step = b.step("wasm", "Build WebAssembly module for browser deployment");
     wasm_step.dependOn(&wasm_install.step);
+    const wasm_notices = b.addInstallFileWithDir(notices, .{ .custom = "web" }, "THIRD-PARTY-LICENSES.txt");
+    wasm_step.dependOn(&wasm_notices.step);
 
     // Libretro core (shared library)
     const libretro_lib = b.addLibrary(.{
@@ -666,4 +670,5 @@ pub fn build(b: *std.Build) void {
     const libretro_install = b.addInstallArtifact(libretro_lib, .{});
     const libretro_step = b.step("libretro", "Build Libretro core shared library");
     libretro_step.dependOn(&libretro_install.step);
+    libretro_step.dependOn(&install_notices.step);
 }

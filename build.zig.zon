@@ -29,5 +29,5 @@
             .hash = "sdl-0.6.0+3.4.18-SDL--p-gqAGWpnfTLlhs0dgjDtc4P4_CHeNLGY_SX_Fv",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "external/zsdl3", "LICENSE", "docs/assets/licenses/CHD-LICENSES.txt", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "external/zsdl3", "LICENSE", "docs/assets/licenses/THIRD-PARTY-LICENSES.txt", "README.md" },
 }

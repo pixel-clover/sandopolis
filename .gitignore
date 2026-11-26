@@ -118,4 +118,4 @@ zig-pkg/
 web/profiles/
 *.ppm
 
-/web/CHD-LICENSES.txt
+/web/THIRD-PARTY-LICENSES.txt
