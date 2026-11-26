@@ -51,6 +51,12 @@ pub fn saveToBuffer(allocator: std.mem.Allocator, machine: *const Machine) ![]u8
 }
 
 pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine {
+    var machine: Machine = undefined;
+    try loadInto(&machine, allocator, bytes);
+    return machine;
+}
+
+pub fn loadInto(machine: *Machine, allocator: std.mem.Allocator, bytes: []const u8) !void {
     var reader = genesis_state_file.SliceReader{ .buffer = bytes };
     const header = try genesis_state_file.readValue(&reader, Header);
     if (!std.mem.eql(u8, &header.magic, &magic)) return error.InvalidSaveState;
@@ -61,11 +67,7 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
     const genesis_start = reader.pos;
     const genesis_end = genesis_start + header.genesis_len;
     if (genesis_end > bytes.len) return error.InvalidSaveState;
-    // Keep the machine boxed while loading: a Machine is about a megabyte
-    // and this path already runs several frames deep on an 8MB stack.
-    const machine = try allocator.create(Machine);
-    defer allocator.destroy(machine);
-    machine.* = try genesis_state_file.loadFromBuffer(allocator, bytes[genesis_start..genesis_end]);
+    try genesis_state_file.loadInto(machine, allocator, bytes[genesis_start..genesis_end]);
     errdefer machine.deinit(allocator);
     reader.pos = genesis_end;
 
@@ -95,7 +97,6 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
     if (reader.pos != disc_path_start) return error.InvalidSaveState;
     if (bram_path.len != 0) board.backup_ram_path = try allocator.dupe(u8, bram_path);
     machine.rebindRuntimePointers();
-    return machine.*;
 }
 
 const testing = std.testing;

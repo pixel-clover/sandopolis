@@ -105,6 +105,16 @@ export fn sandopolis_create_disc(cue_ptr: [*]const u8, cue_len: usize, bin_ptr: 
     const cue: ?[]const u8 = if (cue_len == 0) null else cue_ptr[0..cue_len];
     const disc = Disc.fromOwnedMemory(allocator, cue, &.{bin}) catch return null;
     transferred = true;
+    return createDiscEmulator(disc);
+}
+
+export fn sandopolis_create_chd(id: u32, size: u64) ?*WasmEmulator {
+    const Disc = @import("scd/cdrom/reader.zig").Disc;
+    const disc = Disc.openBrowserChd(allocator, id, size) catch return null;
+    return createDiscEmulator(disc);
+}
+
+fn createDiscEmulator(disc: @import("scd/cdrom/reader.zig").Disc) ?*WasmEmulator {
     const machine = SystemMachine.initSegaCdFromDisc(allocator, disc, .{ .bios = &wasm_bios.set }) catch return null;
     const emu = allocator.create(WasmEmulator) catch {
         var m = machine;

@@ -42,8 +42,8 @@ then make the smallest fix and refactor with the test passing. Run the narrowest
   and ROM-backed checks, and `tests/property_tests.zig` for invariants and randomized coverage.
 - Use deterministic inputs, minimal setup, and assertions on observable behavior. Cover changes to timing, DMA, VDP, scheduling, controllers, and bus
   arbitration explicitly.
-- Prefer the [community test ROMs](tests/testroms/README.md) for hardware regressions. Local files in `roms/` support manual testing and optional
-  regressions. Keep the suite runnable when those files are absent.
+- Use version-controlled [test fixtures](tests/testroms/README.md) for required tests. Treat `roms/` as machine-local and assume it is absent in
+  CI/CD and fresh checkouts. Skip optional regressions when their local ROM or BIOS files are missing.
 
 | Change                           | Additional validation            |
 |----------------------------------|----------------------------------|

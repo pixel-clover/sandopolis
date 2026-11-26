@@ -36,7 +36,10 @@ This directory includes a collection of useful test ROMs for examining or testin
 | `test_inst_speed.bin`                 | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/25) |                                                       |
 | `test_inst_speed_-_for_emulators.bin` | N/A  | N/A    | See [this PR](https://github.com/pixel-clover/sandopolis/pull/43) |                                                       |
 
-`segacd-mixed-mode.chd` is a synthetic disc fixture made with `chdman createcd` from five MODE1/2048 sectors followed by two CD-audio tracks.
+#### The CHD ROMs
+
+* `segacd-mixed-mode.chd` is a synthetic disc fixture made with `chdman createcd` from five MODE1/2048 sectors followed by two CD-audio tracks.
 It contains a stored pregap, a virtual pregap, and a postgap.
 The disc reader test lists the expected sector bytes and stereo samples.
-For the optional BIOS comparison, place matching CUE/BIN and CHD images at `roms/cd/chd-reference.cue` and `roms/cd/test.chd`.
+
+* `segacd-raw.chd` contains nine MODE1/2352 sectors followed by 31 MODE2/2352 sectors, compressed with eight frames per hunk. Byte `i` of sector `n` is `(n + 7 * i) % 256` before compression.

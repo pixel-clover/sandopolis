@@ -49,6 +49,52 @@ const HOTKEYS = {
     F1: "help",
 };
 
+// libchdr requests compressed bytes synchronously while the emulator runs.
+// Cache a slice of the selected local File so even a full CD stays off the JS and WASM heaps.
+const chdFiles = new Map();
+let nextChdId = 1;
+
+function readChdBytes(id, offset, ptr, length) {
+    const disc = chdFiles.get(id);
+    if (!disc) return 0;
+    const start = Number(offset);
+    const dest = new Uint8Array(wasm.instance.exports.memory.buffer, ptr >>> 0, length >>> 0);
+    const count = Math.min(dest.length, disc.file.size - start);
+    const chunkSize = 256 * 1024;
+    let copied = 0;
+    try {
+        while (copied < count) {
+            const position = start + copied;
+            const base = Math.floor(position / chunkSize) * chunkSize;
+            if (disc.base !== base) {
+                const url = URL.createObjectURL(disc.file.slice(base, base + chunkSize));
+                try {
+                    const request = new XMLHttpRequest();
+                    request.open("GET", url, false);
+                    request.overrideMimeType("text/plain; charset=x-user-defined");
+                    request.send();
+                    if (request.status !== 200) break;
+                    const text = request.responseText;
+                    if (text.length !== Math.min(chunkSize, disc.file.size - base)) break;
+                    const bytes = new Uint8Array(text.length);
+                    for (let i = 0; i < bytes.length; i++) bytes[i] = text.charCodeAt(i);
+                    disc.bytes = bytes;
+                    disc.base = base;
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
+            }
+            const from = position - base;
+            const n = Math.min(count - copied, disc.bytes.length - from);
+            dest.set(disc.bytes.subarray(from, from + n), copied);
+            copied += n;
+        }
+    } catch {
+        // A file removed after selection can fail a later sector read.
+    }
+    return copied;
+}
+
 async function init() {
     canvas = document.getElementById("screen");
     ctx = canvas.getContext("2d");
@@ -112,7 +158,10 @@ async function init() {
 
     const response = await fetch("sandopolis.wasm");
     const bytes = await response.arrayBuffer();
-    wasm = await WebAssembly.instantiate(bytes, {wasi_snapshot_preview1: wasiImports});
+    wasm = await WebAssembly.instantiate(bytes, {
+        wasi_snapshot_preview1: wasiImports,
+        chd: {read: readChdBytes, close: id => chdFiles.delete(id)},
+    });
 
     const e = wasm.instance.exports;
     BUTTONS = {
@@ -1281,6 +1330,23 @@ async function loadRom(file) {
 
     await initAudio();
 
+    if (file.name?.toLowerCase().endsWith(".chd")) {
+        if (!e.sandopolis_has_bios()) {
+            setStatus("Load a Sega CD BIOS in Settings first.");
+            return;
+        }
+        const id = nextChdId++;
+        chdFiles.set(id, {file, base: -1});
+        emu = e.sandopolis_create_chd(id, BigInt(file.size));
+        if (!emu) {
+            chdFiles.delete(id);
+            setStatus("Failed to open CHD. Check the BIOS and use a standalone CHDv5 CD image.");
+            return;
+        }
+        currentRomName = file.name;
+        startAfterLoad();
+        return;
+    }
     const buffer = await file.arrayBuffer();
     const romBytes = new Uint8Array(buffer);
     const romPtr = e.sandopolis_alloc(romBytes.length);

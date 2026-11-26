@@ -92,7 +92,9 @@ pub const SystemMachine = union(enum) {
         if (rom_path) |path| {
             // Disc images are opened lazily by the disc layer; never slurp them.
             if (system_detect.detectSystemFromExtension(path) == .segacd) {
-                return initSegaCdFromPath(allocator, path, options);
+                var machine: SystemMachine = undefined;
+                try machine.initSegaCdPath(allocator, path, options);
+                return machine;
             }
             // Read the file (with ZIP extraction support) and detect system type.
             const rom_data = try rom_loader.readRomFile(allocator, path, 8 * 1024 * 1024);
@@ -189,9 +191,9 @@ pub const SystemMachine = union(enum) {
         }
     }
 
-    fn initSegaCdFromPath(allocator: std.mem.Allocator, path: []const u8, options: InitOptions) !SystemMachine {
+    pub fn initSegaCdPath(machine: *SystemMachine, allocator: std.mem.Allocator, path: []const u8, options: InitOptions) !void {
         const disc = try Disc.openPath(allocator, path);
-        var machine = try initSegaCdFromDisc(allocator, disc, options);
+        try machine.initSegaCdDisc(allocator, disc, options);
         errdefer machine.deinit(allocator);
         const source_copy = try allocator.dupe(u8, path);
         machine.genesis.bus.replaceStoragePaths(allocator, null, source_copy);
@@ -201,12 +203,17 @@ pub const SystemMachine = union(enum) {
             defer allocator.free(bram_path);
             machine.genesis.scd.?.setBackupRamPath(bram_path) catch {};
         } else |_| {}
-        return machine;
     }
 
     /// Select a BIOS for the disc and build the machine. Takes ownership of
     /// `disc` on success (and frees it on failure).
     pub fn initSegaCdFromDisc(allocator: std.mem.Allocator, disc: Disc, options: InitOptions) !SystemMachine {
+        var machine: SystemMachine = undefined;
+        try machine.initSegaCdDisc(allocator, disc, options);
+        return machine;
+    }
+
+    fn initSegaCdDisc(self: *SystemMachine, allocator: std.mem.Allocator, disc: Disc, options: InitOptions) !void {
         var mutable_disc = disc;
         errdefer mutable_disc.deinit();
         const bios_set = options.bios orelse return error.BiosMissing;
@@ -218,7 +225,9 @@ pub const SystemMachine = union(enum) {
         const region = try bios_set.selectForDisc(disc_region, options.preferred_bios_region);
         const bios = bios_set.get(region).?;
         try scd_bios.validate(bios);
-        var genesis = try Machine.initSegaCd(allocator, bios, mutable_disc);
+        self.* = .{ .genesis = undefined };
+        const genesis = &self.genesis;
+        try genesis.initSegaCdInto(allocator, bios, mutable_disc);
         switch (region) {
             .jp => {
                 genesis.setConsoleIsOverseas(false);
@@ -233,7 +242,6 @@ pub const SystemMachine = union(enum) {
                 genesis.setPalMode(false);
             },
         }
-        return .{ .genesis = genesis };
     }
 
     /// Raw disc bytes: 2352-byte sectors carry the signature after the
@@ -614,14 +622,20 @@ pub const SystemMachine = union(enum) {
             // and replace self in place instead of copying the old machine out.
             const next = try allocator.create(Machine);
             defer allocator.destroy(next);
-            next.* = try scd_state_file.loadFromBuffer(allocator, data);
+            try scd_state_file.loadInto(next, allocator, data);
             errdefer next.deinit(allocator);
             if (self.* == .genesis and self.genesis.isSegaCd()) adoptStableScdBoard(&self.genesis, next);
             self.deinit(allocator);
-            self.* = .{ .genesis = next.* };
+            self.* = .{ .genesis = undefined };
+            @memcpy(std.mem.asBytes(&self.genesis), std.mem.asBytes(next));
             self.rebindRuntimePointers();
             return;
         }
+        return self.loadCartridgeState(allocator, data, target);
+    }
+
+    // Cartridge states have large by-value temporaries. Keep them off the CD restore stack.
+    noinline fn loadCartridgeState(self: *SystemMachine, allocator: std.mem.Allocator, data: []const u8, target: StateSystem) !void {
         if (target == .sms) {
             var next = try sms_state_file.loadFromBuffer(allocator, data);
             errdefer next.deinit(allocator);

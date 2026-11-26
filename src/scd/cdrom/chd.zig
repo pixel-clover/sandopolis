@@ -10,17 +10,33 @@ const track_padding: u32 = c.CD_TRACK_PADDING;
 const max_tracks = 99;
 const max_lba = 100 * msf.sectors_per_minute - msf.pregap_sectors - 1;
 
+const Remote = struct { id: u32, size: u64, offset: u64 = 0 };
+const Source = union(enum) { file: platform.File, browser: Remote };
+const browser_build = @import("builtin").target.cpu.arch == .wasm32;
+extern "chd" fn read(id: u32, offset: u64, dest: [*]u8, len: usize) usize;
+extern "chd" fn close(id: u32) void;
+
 allocator: std.mem.Allocator,
-file: platform.File,
+source: Source,
+references: usize = 1,
 handle: ?*c.chd_file = null,
 hunk: []u8 = &.{},
 cached_hunk: ?u32 = null,
 
 pub fn open(allocator: std.mem.Allocator, path: []const u8) !*Chd {
+    const file = try platform.cwd().openFile(path, .{});
+    errdefer file.close();
+    return openSource(allocator, .{ .file = file });
+}
+
+pub fn openBrowser(allocator: std.mem.Allocator, id: u32, size: u64) !*Chd {
+    return openSource(allocator, .{ .browser = .{ .id = id, .size = size } });
+}
+
+fn openSource(allocator: std.mem.Allocator, source: Source) !*Chd {
     const self = try allocator.create(Chd);
     errdefer allocator.destroy(self);
-    self.* = .{ .allocator = allocator, .file = try platform.cwd().openFile(path, .{}) };
-    errdefer self.file.close();
+    self.* = .{ .allocator = allocator, .source = source };
 
     var header: c.chd_header = undefined;
     try check(c.chd_read_header_core_file_callbacks(&callbacks, self, &header));
@@ -38,8 +54,13 @@ pub fn open(allocator: std.mem.Allocator, path: []const u8) !*Chd {
 }
 
 pub fn deinit(self: *Chd) void {
+    self.references -= 1;
+    if (self.references != 0) return;
     c.chd_close(self.handle);
-    self.file.close();
+    switch (self.source) {
+        .file => |file| file.close(),
+        .browser => |remote| if (browser_build) close(remote.id),
+    }
     const allocator = self.allocator;
     allocator.free(self.hunk);
     allocator.destroy(self);
@@ -183,7 +204,10 @@ const callbacks: c.core_file_callbacks = .{
 
 fn fileSize(context: ?*anyopaque) callconv(.c) u64 {
     const self: *Chd = @ptrCast(@alignCast(context.?));
-    return self.file.getEndPos() catch std.math.maxInt(u64);
+    return switch (self.source) {
+        .file => |file| file.getEndPos() catch std.math.maxInt(u64),
+        .browser => |remote| remote.size,
+    };
 }
 
 fn fileRead(dest: ?*anyopaque, size: usize, count: usize, context: ?*anyopaque) callconv(.c) usize {
@@ -191,7 +215,16 @@ fn fileRead(dest: ?*anyopaque, size: usize, count: usize, context: ?*anyopaque) 
     const len = std.math.mul(usize, size, count) catch return 0;
     const self: *Chd = @ptrCast(@alignCast(context.?));
     const bytes: [*]u8 = @ptrCast(dest orelse return 0);
-    return (self.file.readAll(bytes[0..len]) catch return 0) / size;
+    const n = switch (self.source) {
+        .file => |file| file.readAll(bytes[0..len]) catch return 0,
+        .browser => |*remote| blk: {
+            if (!browser_build) return 0;
+            const n = read(remote.id, remote.offset, bytes, len);
+            remote.offset += n;
+            break :blk n;
+        },
+    };
+    return n / size;
 }
 
 fn fileClose(_: ?*anyopaque) callconv(.c) c_int {
@@ -203,6 +236,9 @@ fn fileSeek(context: ?*anyopaque, offset: i64, whence: c_int) callconv(.c) c_int
     // The pinned libchdr uses absolute seeks for its read callbacks.
     if (whence != c.SEEK_SET or offset < 0) return -1;
     const self: *Chd = @ptrCast(@alignCast(context.?));
-    self.file.seekTo(@intCast(offset)) catch return -1;
+    switch (self.source) {
+        .file => |file| file.seekTo(@intCast(offset)) catch return -1,
+        .browser => |*remote| remote.offset = @intCast(offset),
+    }
     return 0;
 }

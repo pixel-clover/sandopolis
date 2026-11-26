@@ -4,7 +4,7 @@ Sandopolis Web: Third-Party Credits and Licenses
 This file accompanies the Sandopolis Web build. It bundles the project's own
 license, the SIL Open Font License covering the JetBrains Mono fonts shipped
 under fonts/, and the Creative Commons attribution for the libretro common-
-overlays assets shipped under img/.
+overlays assets shipped under img/. See CHD-LICENSES.txt for libchdr and its codecs.
 
 
 ----------------------------------------------------------------------

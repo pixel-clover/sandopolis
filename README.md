@@ -145,7 +145,7 @@ Flags:
 ---
 
 > [!IMPORTANT]
-> Sandopolis boots Sega CD games from CUE/BIN or ISO images. The desktop app and CLI also open standalone CHDv5 CD images directly, including CD audio.
+> Sandopolis boots Sega CD games from CUE/BIN or ISO images. The desktop app, CLI, Libretro core, and browser also open standalone CHDv5 images, including CD audio.
 > Note that Sega CD needs a few BIOS files (normally `segacd.bios_us`/`segacd.bios_eu`/`segacd.bios_jp`, or `bios_CD_U.bin`/`bios_CD_E.bin`/
 `bios_CD_J.bin` files) that are not included in this project.
 > Place the BIOS files per build in the locations mentioned below:

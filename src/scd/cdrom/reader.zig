@@ -4,12 +4,10 @@
 //! model sees one format. Audio sectors decode to 588 stereo frames.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const platform = @import("../../platform.zig");
 const cue = @import("cue.zig");
 const msf = @import("msf.zig");
-const chd_supported = builtin.target.cpu.arch != .wasm32;
-const Chd = if (chd_supported) @import("chd.zig") else opaque {};
+const Chd = @import("chd.zig");
 
 pub const raw_sector_bytes: usize = 2352;
 pub const user_data_bytes: usize = 2048;
@@ -66,9 +64,7 @@ pub const Disc = struct {
     source_path: ?[]u8 = null,
 
     pub fn deinit(self: *Disc) void {
-        if (chd_supported) {
-            if (self.chd) |chd| chd.deinit();
-        }
+        if (self.chd) |chd| chd.deinit();
         for (self.sources) |*s| {
             switch (s.*) {
                 .memory => |bytes| self.allocator.free(bytes),
@@ -87,6 +83,11 @@ pub const Disc = struct {
         if (self.source_path) |path| {
             return openPath(self.allocator, path);
         }
+        if (self.chd) |chd| {
+            // Browser snapshots share the read-only image and its decoded hunk.
+            chd.references += 1;
+            return fromChd(self.allocator, chd);
+        }
         var files = try self.allocator.alloc([]const u8, self.sources.len);
         defer self.allocator.free(files);
         for (self.sources, 0..) |src, i| files[i] = src.memory;
@@ -99,20 +100,21 @@ pub const Disc = struct {
         const ext = std.fs.path.extension(path);
         if (std.ascii.eqlIgnoreCase(ext, ".cue")) return openCuePath(allocator, path);
         if (std.ascii.eqlIgnoreCase(ext, ".chd")) {
-            if (!chd_supported) return error.UnsupportedChdDisc;
-            const chd = try Chd.open(allocator, path);
-            errdefer chd.deinit();
-            var layout = try chd.layout();
-            errdefer layout.deinit();
-            return .{
-                .allocator = allocator,
-                .layout = layout,
-                .sources = &.{},
-                .chd = chd,
-                .source_path = try allocator.dupe(u8, path),
-            };
+            var disc = try fromChd(allocator, try Chd.open(allocator, path));
+            errdefer disc.deinit();
+            disc.source_path = try allocator.dupe(u8, path);
+            return disc;
         }
         return openIsoPath(allocator, path);
+    }
+
+    pub fn openBrowserChd(allocator: std.mem.Allocator, id: u32, size: u64) !Disc {
+        return fromChd(allocator, try Chd.openBrowser(allocator, id, size));
+    }
+
+    fn fromChd(allocator: std.mem.Allocator, chd: *Chd) !Disc {
+        errdefer chd.deinit();
+        return .{ .allocator = allocator, .layout = try chd.layout(), .sources = &.{}, .chd = chd };
     }
 
     /// Memory disc reproducing an existing layout (used by clone).
@@ -268,26 +270,24 @@ pub const Disc = struct {
             if (track.kind.isData()) writeMode1Header(out, @intCast(lba));
             return;
         };
-        if (chd_supported) {
-            if (self.chd) |chd| {
-                const frame = try chd.readFrame(@intCast(offset / track.kind.bytesPerSector()));
-                switch (track.kind) {
-                    .mode1_2048 => {
-                        writeMode1Header(out, @intCast(lba));
-                        @memcpy(out[16 .. 16 + user_data_bytes], frame[0..user_data_bytes]);
-                    },
-                    .mode1_2352, .mode2_2352 => @memcpy(out, frame[0..raw_sector_bytes]),
-                    .audio => {
-                        // CHD stores big-endian PCM. Disc.readAudioSector expects little-endian.
-                        for (0..audio_frames_per_sector * 2) |sample| {
-                            const i = 2 * sample;
-                            out[i] = frame[i + 1];
-                            out[i + 1] = frame[i];
-                        }
-                    },
-                }
-                return;
+        if (self.chd) |chd| {
+            const frame = try chd.readFrame(@intCast(offset / track.kind.bytesPerSector()));
+            switch (track.kind) {
+                .mode1_2048 => {
+                    writeMode1Header(out, @intCast(lba));
+                    @memcpy(out[16 .. 16 + user_data_bytes], frame[0..user_data_bytes]);
+                },
+                .mode1_2352, .mode2_2352 => @memcpy(out, frame[0..raw_sector_bytes]),
+                .audio => {
+                    // CHD stores big-endian PCM. Disc.readAudioSector expects little-endian.
+                    for (0..audio_frames_per_sector * 2) |sample| {
+                        const i = 2 * sample;
+                        out[i] = frame[i + 1];
+                        out[i + 1] = frame[i];
+                    }
+                },
             }
+            return;
         }
         const file = self.layout.files[track.file_index];
         const source = self.sources[track.file_index];
@@ -397,7 +397,6 @@ const DirSizes = struct {
 const testing = std.testing;
 
 test "CHD reads mixed-mode sectors and reopens clones" {
-    if (!chd_supported) return error.SkipZigTest;
     var disc = try Disc.openPath(testing.allocator, "tests/testroms/segacd-mixed-mode.chd");
     defer disc.deinit();
 
@@ -659,4 +658,18 @@ test "clone duplicates a memory disc and reopens a file disc" {
     try testing.expectEqualStrings(iso_path, file_copy.source_path.?);
     try file_copy.readSector(1, &raw);
     try testing.expectEqualSlices(u8, image[user_data_bytes..], raw[16 .. 16 + user_data_bytes]);
+}
+
+test "raw CHD sectors preserve every byte across tracks and backward seeks" {
+    var disc = try Disc.openPath(testing.allocator, "tests/testroms/segacd-raw.chd");
+    defer disc.deinit();
+    try testing.expectEqual(TrackKind.mode1_2352, disc.trackAt(0).?.kind);
+    try testing.expectEqual(TrackKind.mode2_2352, disc.trackAt(9).?.kind);
+    var raw: [raw_sector_bytes]u8 = undefined;
+    for ([_]u32{ 0, 8, 9, 17, 7, 1, 16 }) |lba| {
+        try disc.readSector(lba, &raw);
+        var expected: [raw_sector_bytes]u8 = undefined;
+        fillPattern(&expected, @intCast(lba));
+        try testing.expectEqualSlices(u8, &expected, &raw);
+    }
 }

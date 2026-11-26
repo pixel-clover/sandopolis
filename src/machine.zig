@@ -284,12 +284,17 @@ pub const Machine = struct {
     /// sub-board hangs off the expansion hook. `disc` ownership transfers
     /// to the board.
     pub fn initSegaCd(allocator: std.mem.Allocator, bios: []const u8, disc: ?Disc) !Machine {
-        var machine = try initFromRomBytes(allocator, bios);
+        var machine: Machine = undefined;
+        try machine.initSegaCdInto(allocator, bios, disc);
+        return machine;
+    }
+
+    pub fn initSegaCdInto(machine: *Machine, allocator: std.mem.Allocator, bios: []const u8, disc: ?Disc) !void {
+        try machine.initRomInto(allocator, bios);
         errdefer machine.deinit(allocator);
         const board = try ScdBoard.create(allocator, machine.bus.cartridge.rom, disc, machine.bus.vdp.pal_mode);
         machine.scd = board;
         machine.rebindRuntimePointers();
-        return machine;
     }
 
     pub fn isSegaCd(self: *const Machine) bool {
@@ -297,12 +302,19 @@ pub const Machine = struct {
     }
 
     pub fn initFromRomBytes(allocator: std.mem.Allocator, rom_bytes: []const u8) !Machine {
-        return .{
-            .bus = try Bus.initFromRomBytes(allocator, rom_bytes),
+        var machine: Machine = undefined;
+        try machine.initRomInto(allocator, rom_bytes);
+        return machine;
+    }
+
+    pub fn initRomInto(self: *Machine, allocator: std.mem.Allocator, rom_bytes: []const u8) !void {
+        self.* = .{
+            .bus = undefined,
             .cpu = Cpu.init(),
             .m68k_sync = .{},
             .pending_frame_phase = .none,
         };
+        try self.bus.initRomInto(allocator, rom_bytes);
     }
 
     pub fn deinit(self: *Machine, allocator: std.mem.Allocator) void {

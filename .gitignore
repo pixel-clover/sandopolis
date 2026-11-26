@@ -117,3 +117,5 @@ zig-pkg/
 *.so
 web/profiles/
 *.ppm
+
+/web/CHD-LICENSES.txt
