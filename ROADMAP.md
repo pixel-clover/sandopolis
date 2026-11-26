@@ -143,6 +143,7 @@ This document outlines the features implemented in Sandopolis emulator and the f
   and BIOS plumbing in all three frontends
 - [x] Sega CD graphics ASIC (stamp rotation/scaling engine)
 - [x] Sega CD RAM cartridge
+- [x] Read-only CHDv5 Sega CD images with CD audio in the desktop app, CLI, Libretro core, and browser
 - [x] Sega CD validation against real BIOS/disc images (regression tests skip until `roms/bios/` and `roms/cd/` are present)
 - [ ] 32X subsystem support
 - [ ] Sega Pico subsystem support

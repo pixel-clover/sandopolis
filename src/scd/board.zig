@@ -444,9 +444,9 @@ pub const ScdBoard = struct {
     pub fn swapContents(a: *ScdBoard, b: *ScdBoard) !void {
         const tmp = try a.allocator.create(ScdBoard);
         defer a.allocator.destroy(tmp);
-        tmp.* = a.*;
-        a.* = b.*;
-        b.* = tmp.*;
+        @memcpy(std.mem.asBytes(tmp), std.mem.asBytes(a));
+        @memcpy(std.mem.asBytes(a), std.mem.asBytes(b));
+        @memcpy(std.mem.asBytes(b), std.mem.asBytes(tmp));
         a.bind();
         b.bind();
     }

@@ -1642,6 +1642,8 @@ test "sg1000 hustle chumy boots and produces visible output" {
 
 const sega_cd_bios_us = "roms/bios/bios_CD_U.bin";
 const sega_cd_test_disc = "roms/cd/test.cue";
+const sega_cd_test_chd = "roms/cd/test.chd";
+const sega_cd_chd_reference = "roms/cd/chd-reference.cue";
 
 fn openSegaCdOrSkip(disc_path: ?[]const u8) !?Emulator {
     return Emulator.initSegaCdFromPaths(testing.allocator, sega_cd_bios_us, disc_path) catch |err| switch (err) {
@@ -1679,4 +1681,24 @@ test "sega cd bios reads the toc of a disc and starts its initial program" {
     try testing.expect(drive == 0x1 or drive == 0x4);
     // The game's initial program runs from work RAM on the main CPU.
     try testing.expect(emulator.cpuState().program_counter >= 0xFF0000);
+}
+
+test "sega cd CHD and CUE images reach the same boot state" {
+    var cue = (try openSegaCdOrSkip(sega_cd_chd_reference)) orelse return error.SkipZigTest;
+    defer cue.deinit(testing.allocator);
+    var chd = (try openSegaCdOrSkip(sega_cd_test_chd)) orelse return error.SkipZigTest;
+    defer chd.deinit(testing.allocator);
+
+    for ([_]*Emulator{ &cue, &chd }) |emulator| {
+        emulator.runFramesDiscardingAudio(300);
+        emulator.setButton(0, sandopolis.testing.Button.Start, true);
+        emulator.runFramesDiscardingAudio(2);
+        emulator.setButton(0, sandopolis.testing.Button.Start, false);
+        emulator.runFramesDiscardingAudio(298);
+    }
+
+    try testing.expect(countUniqueFramebufferColors(cue.framebuffer(), 8) > 1);
+    try testing.expectEqual(cue.scdDriveStatusNibble(), chd.scdDriveStatusNibble());
+    try testing.expectEqual(cue.cpuState(), chd.cpuState());
+    try testing.expectEqualSlices(u32, cue.framebuffer(), chd.framebuffer());
 }

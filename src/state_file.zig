@@ -283,7 +283,7 @@ pub fn saveToBuffer(allocator: std.mem.Allocator, machine: *const Machine) ![]u8
     return aw.toOwnedSlice();
 }
 
-fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
+fn readStateData(machine: *Machine, allocator: std.mem.Allocator, reader: anytype) !void {
     const header = try readValue(reader, Header);
     if (!std.mem.eql(u8, &header.magic, &save_state_magic)) return error.InvalidSaveState;
     if (header.version != save_state_version) return error.UnsupportedSaveStateVersion;
@@ -294,9 +294,13 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
     if (header.eeprom_len > 1024 * 1024) return error.InvalidSaveState;
     if (header.save_path_len > 4096 or header.source_path_len > 4096) return error.InvalidSaveState;
 
-    const bus_state = try readValue(reader, BusState);
+    const bus_state = try allocator.create(BusState);
+    defer allocator.destroy(bus_state);
+    try readInto(reader, bus_state);
     const cpu_state = try readValue(reader, Cpu.State);
-    const z80_state = try readValue(reader, Z80.State);
+    const z80_state = try allocator.create(Z80.State);
+    defer allocator.destroy(z80_state);
+    try readInto(reader, z80_state);
 
     const rom = (try readOwnedBytes(allocator, reader, header.rom_len)) orelse return error.InvalidSaveState;
     defer allocator.free(rom);
@@ -312,7 +316,7 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
     var source_path_bytes = try readOwnedBytes(allocator, reader, header.source_path_len);
     defer if (source_path_bytes) |bytes| allocator.free(bytes);
 
-    var machine = try Machine.initFromRomBytes(allocator, rom);
+    try machine.initRomInto(allocator, rom);
     errdefer machine.deinit(allocator);
 
     try machine.bus.restoreSaveState(bus_state.bus, cartridge_ram, eeprom_bytes);
@@ -322,15 +326,13 @@ fn readStateData(allocator: std.mem.Allocator, reader: anytype) !Machine {
     source_path_bytes = null;
 
     machine.cpu.restoreState(&cpu_state);
-    machine.bus.z80.restoreState(&z80_state);
+    machine.bus.z80.restoreState(z80_state);
     // The runnable cache sampled during restoreSaveState saw a factory-fresh
     // Z80 whose BUSREQ/RESET lines are not asserted; re-sync it now that the
     // real lines have been restored.
     machine.bus.syncZ80RunCache();
     machine.bus.rebindRuntimePointers();
     machine.clearPendingAudioTransferState();
-
-    return machine;
 }
 
 pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
@@ -339,12 +341,20 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Machine {
 
     var buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&buffer);
-    return readStateData(allocator, &file_reader.interface);
+    var machine: Machine = undefined;
+    try readStateData(&machine, allocator, &file_reader.interface);
+    return machine;
 }
 
 pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine {
+    var machine: Machine = undefined;
+    try loadInto(&machine, allocator, bytes);
+    return machine;
+}
+
+pub fn loadInto(machine: *Machine, allocator: std.mem.Allocator, bytes: []const u8) !void {
     var reader = SliceReader{ .buffer = bytes };
-    return readStateData(allocator, &reader);
+    try readStateData(machine, allocator, &reader);
 }
 
 pub const SliceReader = struct {

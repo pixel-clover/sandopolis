@@ -51,6 +51,12 @@ pub fn saveToBuffer(allocator: std.mem.Allocator, machine: *const Machine) ![]u8
 }
 
 pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine {
+    var machine: Machine = undefined;
+    try loadInto(&machine, allocator, bytes);
+    return machine;
+}
+
+pub fn loadInto(machine: *Machine, allocator: std.mem.Allocator, bytes: []const u8) !void {
     var reader = genesis_state_file.SliceReader{ .buffer = bytes };
     const header = try genesis_state_file.readValue(&reader, Header);
     if (!std.mem.eql(u8, &header.magic, &magic)) return error.InvalidSaveState;
@@ -61,11 +67,7 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
     const genesis_start = reader.pos;
     const genesis_end = genesis_start + header.genesis_len;
     if (genesis_end > bytes.len) return error.InvalidSaveState;
-    // Keep the machine boxed while loading: a Machine is about a megabyte
-    // and this path already runs several frames deep on an 8MB stack.
-    const machine = try allocator.create(Machine);
-    defer allocator.destroy(machine);
-    machine.* = try genesis_state_file.loadFromBuffer(allocator, bytes[genesis_start..genesis_end]);
+    try genesis_state_file.loadInto(machine, allocator, bytes[genesis_start..genesis_end]);
     errdefer machine.deinit(allocator);
     reader.pos = genesis_end;
 
@@ -84,11 +86,7 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
 
     var disc: ?Disc = null;
     if (disc_path.len != 0) {
-        const ext = std.fs.path.extension(disc_path);
-        disc = if (std.ascii.eqlIgnoreCase(ext, ".cue"))
-            Disc.openCuePath(allocator, disc_path) catch null
-        else
-            Disc.openIsoPath(allocator, disc_path) catch null;
+        disc = Disc.openPath(allocator, disc_path) catch null;
     }
     errdefer if (disc) |*d| d.deinit();
 
@@ -99,10 +97,42 @@ pub fn loadFromBuffer(allocator: std.mem.Allocator, bytes: []const u8) !Machine 
     if (reader.pos != disc_path_start) return error.InvalidSaveState;
     if (bram_path.len != 0) board.backup_ram_path = try allocator.dupe(u8, bram_path);
     machine.rebindRuntimePointers();
-    return machine.*;
 }
 
 const testing = std.testing;
+
+test "sega cd state reopens a CHD disc with readable audio" {
+    const path = "tests/testroms/segacd-mixed-mode.chd";
+    const bios = try testing.allocator.alloc(u8, 128 * 1024);
+    defer testing.allocator.free(bios);
+    @memset(bios, 0);
+    @memcpy(bios[0x100..0x104], "SEGA");
+
+    var disc = try Disc.openPath(testing.allocator, path);
+    var machine = Machine.initSegaCd(testing.allocator, bios, disc) catch |err| {
+        disc.deinit();
+        return err;
+    };
+    defer machine.deinit(testing.allocator);
+    machine.scd.?.cdd.drive = .playing;
+    machine.scd.?.cdd.lba = 18;
+
+    const buf = try saveToBuffer(testing.allocator, &machine);
+    defer testing.allocator.free(buf);
+    var restored = try loadFromBuffer(testing.allocator, buf);
+    defer restored.deinit(testing.allocator);
+
+    const board = restored.scd.?;
+    const reopened = &board.disc.?;
+    try testing.expectEqualStrings(path, reopened.source_path.?);
+    switch (board.cdd.tick(reopened)) {
+        .audio => |audio| {
+            try testing.expectEqual(@as(i32, 18), audio.lba);
+            try testing.expectEqual([2]i16{ 3000, -4000 }, audio.frames[0]);
+        },
+        else => return error.ExpectedCdAudio,
+    }
+}
 
 test "sega cd state round-trips the sub-board and keeps a memory disc out of the file" {
     const bios = try testing.allocator.alloc(u8, 128 * 1024);

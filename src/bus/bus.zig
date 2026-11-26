@@ -51,8 +51,8 @@ pub const Bus = struct {
         }
     };
 
-    fn initWithCartridge(cartridge: Cartridge) Bus {
-        const bus = Bus{
+    fn initWithCartridge(self: *Bus, cartridge: Cartridge) void {
+        self.* = .{
             .rom = cartridge.rom,
             .cartridge = cartridge,
             .ram = @splat(0),
@@ -69,7 +69,6 @@ pub const Bus = struct {
             .m68k_sound_write_trace = .{},
             .active_execution_counters = null,
         };
-        return bus;
     }
 
     pub fn writeTmss(self: *Bus, offset: u2, value: u8) void {
@@ -245,17 +244,26 @@ pub const Bus = struct {
 
     pub fn init(allocator: std.mem.Allocator, rom_path: ?[]const u8) !Bus {
         const cartridge = try Cartridge.init(allocator, rom_path);
-        return initWithCartridge(cartridge);
+        var bus: Bus = undefined;
+        bus.initWithCartridge(cartridge);
+        return bus;
     }
 
     pub fn initFromRomBytes(allocator: std.mem.Allocator, rom_bytes: []const u8) !Bus {
-        const cartridge = try Cartridge.initFromRomBytes(allocator, rom_bytes);
-        return initWithCartridge(cartridge);
+        var bus: Bus = undefined;
+        try bus.initRomInto(allocator, rom_bytes);
+        return bus;
+    }
+
+    pub fn initRomInto(self: *Bus, allocator: std.mem.Allocator, rom_bytes: []const u8) !void {
+        self.initWithCartridge(try Cartridge.initFromRomBytes(allocator, rom_bytes));
     }
 
     pub fn initFromRomBytesWithChecksum(allocator: std.mem.Allocator, rom_bytes: []const u8, checksum: u32) !Bus {
         const cartridge = try Cartridge.initFromRomBytesWithChecksum(allocator, rom_bytes, checksum);
-        return initWithCartridge(cartridge);
+        var bus: Bus = undefined;
+        bus.initWithCartridge(cartridge);
+        return bus;
     }
 
     pub fn deinit(self: *Bus, allocator: std.mem.Allocator) void {

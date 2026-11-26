@@ -129,7 +129,7 @@ Usage:
   sandopolis [flags] [rom_file]
 
 Arguments:
-  rom_file  Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg, .sg), a .zip archive containing one, or a Sega CD disc image (.cue, .iso) (optional)
+  rom_file  Path to a ROM file (.bin, .md, .smd, .gen, .sms, .gg, .sg), a .zip archive containing one, or a Sega CD disc image (.cue, .iso, .chd) (optional)
 
 Flags:
   -h, --help            Shows help information for this command [Bool] (default: false)
@@ -145,7 +145,7 @@ Flags:
 ---
 
 > [!IMPORTANT]
-> Sandopolis boots Sega CD games either from a pair of `.cue` and `.bin` files, or a single `.iso` file.
+> Sandopolis boots Sega CD games from CUE/BIN or ISO images. The desktop app, CLI, Libretro core, and browser also open standalone CHDv5 images, including CD audio.
 > Note that Sega CD needs a few BIOS files (normally `segacd.bios_us`/`segacd.bios_eu`/`segacd.bios_jp`, or `bios_CD_U.bin`/`bios_CD_E.bin`/
 `bios_CD_J.bin` files) that are not included in this project.
 > Place the BIOS files per build in the locations mentioned below:
@@ -172,6 +172,7 @@ This project is licensed under the MIT License (see [LICENSE](LICENSE)).
     * [Minish](https://github.com/CogitatorTech/minish) framework for property-based testing
     * [Chilli](https://github.com/CogitatorTech/chilli) framework for CLI parsing and handling
     * [Rocket 68](https://github.com/habedi/rocket68) for the main CPU (Motorola 68000) emulation
+    * [libchdr](https://github.com/rtissera/libchdr) for reading CHD files
     * [jgz80](https://github.com/carmiker/jgz80) for the Z80 chip emulation
     * [SDL3](https://www.libsdl.org/) for the emulator frontend (rendering and input; via [zsdl](https://github.com/zig-gamedev/zsdl)
       and [SDL](https://github.com/castholm/SDL))

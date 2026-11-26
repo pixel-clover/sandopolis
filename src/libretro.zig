@@ -117,8 +117,15 @@ const CoreState = struct {
 
 var core: ?*CoreState = null;
 
+const ContentInfoOverride = extern struct { extensions: ?[*:0]const u8, need_fullpath: bool, persistent_data: bool };
+const disc_overrides = [_]ContentInfoOverride{
+    .{ .extensions = "chd", .need_fullpath = true, .persistent_data = false },
+    .{ .extensions = null, .need_fullpath = false, .persistent_data = false },
+};
+
 export fn retro_set_environment(cb: RetroEnvironmentFn) callconv(.c) void {
     environment_cb = cb;
+    _ = cb(65, @ptrCast(@constCast(&disc_overrides))); // RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE
 }
 
 export fn retro_set_video_refresh(cb: RetroVideoRefreshFn) callconv(.c) void {
@@ -155,7 +162,7 @@ export fn retro_get_system_info(info: *RetroSystemInfo) callconv(.c) void {
     info.* = .{
         .library_name = "Sandopolis",
         .library_version = std.fmt.comptimePrint("{s}", .{build_options.version}),
-        .valid_extensions = "bin|md|smd|gen|sms|gg|sg|cue|iso",
+        .valid_extensions = "bin|md|smd|gen|sms|gg|sg|cue|iso|chd",
         .need_fullpath = false,
         .block_extract = false,
     };
@@ -323,6 +330,9 @@ export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
     else
         null;
 
+    if (info.path == null and info.data != null and info.size >= 8 and
+        std.mem.eql(u8, info.data.?[0..8], "MComprHD")) return false;
+
     const detected_sys: ?system_detect.SystemType = if (hint) |h|
         h
     else if (info.data) |d|
@@ -339,48 +349,34 @@ export fn retro_load_game(game: ?*const RetroGameInfo) callconv(.c) bool {
     };
     // Sega CD discs load with the BIOS from the frontend's system directory;
     // cartridges load from bytes.
-    if (detected_sys == .segacd) {
-        c_state.loadBios();
-        const scd_machine: ?SystemMachine = blk: {
-            if (info.path) |p| {
-                const path = std.mem.span(p);
-                if (SystemMachine.initWithOptions(allocator, path, .{ .bios = &c_state.bios_set })) |m| {
-                    break :blk m;
-                } else |_| {}
-            }
-            if (info.data) |d| {
-                if (info.size > 0) {
-                    if (SystemMachine.initFromRomBytesWithOptions(allocator, d[0..info.size], .segacd, .{ .bios = &c_state.bios_set })) |m| {
-                        break :blk m;
-                    } else |_| {}
-                }
-            }
-            break :blk null;
-        };
-        if (scd_machine) |m| {
-            c_state.machine = m;
-        } else {
-            c_state.freeBios();
-            allocator.destroy(c_state);
-            return false;
-        }
-    } else {
-        const rom_data = info.data orelse {
-            allocator.destroy(c_state);
-            return false;
-        };
-        if (info.size == 0) {
-            allocator.destroy(c_state);
-            return false;
-        }
-        c_state.machine = SystemMachine.initFromRomBytes(allocator, rom_data[0..info.size], hint) catch {
-            allocator.destroy(c_state);
-            return false;
-        };
-    }
+    loadContent(c_state, info, hint, detected_sys) catch {
+        c_state.freeBios();
+        allocator.destroy(c_state);
+        return false;
+    };
     c_state.machine.reset();
     core = c_state;
     return true;
+}
+
+fn loadContent(state: *CoreState, info: *const RetroGameInfo, hint: ?system_detect.SystemType, detected: ?system_detect.SystemType) !void {
+    if (detected == .segacd) {
+        state.loadBios();
+        if (hint == .segacd) {
+            const path = std.mem.span(info.path.?);
+            if (state.machine.initSegaCdPath(allocator, path, .{ .bios = &state.bios_set })) |_| return else |err| {
+                if (std.ascii.endsWithIgnoreCase(path, ".chd")) return err;
+            }
+        }
+    }
+    const data = info.data orelse return error.MissingContent;
+    if (info.size == 0) return error.MissingContent;
+    return loadBytes(state, data[0..info.size], if (detected == .segacd) .segacd else hint);
+}
+
+// Keep the cartridge initializer's large return value off the disc-loading call stack.
+noinline fn loadBytes(state: *CoreState, data: []const u8, hint: ?system_detect.SystemType) !void {
+    state.machine = try SystemMachine.initFromRomBytesWithOptions(allocator, data, hint, .{ .bios = &state.bios_set });
 }
 
 export fn retro_load_game_special(_: c_uint, _: ?*const RetroGameInfo, _: usize) callconv(.c) bool {
@@ -457,4 +453,29 @@ test "libretro core runs sms machines through the facade" {
     try std.testing.expect(machine.smsAudioBuffer() != null);
     try std.testing.expect(machine.framesPerSecond() > 59.0);
     try std.testing.expect(machine.framesPerSecond() < 61.0);
+}
+
+test "libretro advertises CHD files" {
+    var info: RetroSystemInfo = undefined;
+    retro_get_system_info(&info);
+    var extensions = std.mem.splitScalar(u8, std.mem.span(info.valid_extensions), '|');
+    while (extensions.next()) |ext| if (std.mem.eql(u8, ext, "chd")) return;
+    return error.MissingChdExtension;
+}
+
+test "libretro requests a file path only for CHD content" {
+    const Check = struct {
+        var matched = false;
+        fn env(command: c_uint, data: ?*anyopaque) callconv(.c) bool {
+            if (command != 65) return false;
+            const entries: [*]const ContentInfoOverride = @ptrCast(@alignCast(data.?));
+            matched = std.mem.eql(u8, std.mem.span(entries[0].extensions.?), "chd") and
+                entries[0].need_fullpath and !entries[0].persistent_data and entries[1].extensions == null;
+            return true;
+        }
+    };
+    const old = environment_cb;
+    defer environment_cb = old;
+    retro_set_environment(Check.env);
+    try std.testing.expect(Check.matched);
 }
