@@ -143,7 +143,7 @@ wasm: ## Build the WebAssembly module
 web: wasm ## Build WASM and assemble the web directory for deployment
 	@echo "Assembling web deployment..."
 	cp $(BUILD_DIR)/web/sandopolis.wasm web/sandopolis.wasm
-	cp docs/assets/licenses/CHD-LICENSES.txt web/
+	cp $(BUILD_DIR)/web/THIRD-PARTY-LICENSES.txt web/
 	mkdir -p web/fonts
 	cp src/frontend/fonts/ttf/JetBrainsMono-*.ttf web/fonts/
 	mkdir -p web/img

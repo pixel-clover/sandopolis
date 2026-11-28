@@ -104,7 +104,7 @@ If the build is successful, you can find the built binary at `zig-out/bin/`.
 
 > [!NOTE]
 > To build from source, you mainly need to have Zig and Git installed.
-> The current version of the emulator is developed and tested using Zig 0.17.0.
+> The current version of the emulator is developed and tested using Zig 0.17.
 
 #### Run the Emulator
 

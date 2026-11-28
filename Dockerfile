@@ -38,6 +38,7 @@ RUN set -eux; \
 
 COPY build.zig ./
 COPY src/ src/
+COPY docs/assets/licenses/THIRD-PARTY-LICENSES.txt docs/assets/licenses/
 RUN --mount=type=cache,target=/root/.cache/zig \
     zig build wasm \
     -Dgit-branch="${SANDOPOLIS_GIT_BRANCH}" \
@@ -49,7 +50,7 @@ RUN --mount=type=cache,target=/root/.cache/zig \
 FROM nginx:1.27-alpine
 
 RUN mkdir -p /usr/share/nginx/html/fonts
-COPY web/*.html web/*.js web/CREDITS.txt docs/assets/licenses/CHD-LICENSES.txt /usr/share/nginx/html/
+COPY web/*.html web/*.js /usr/share/nginx/html/
 COPY src/frontend/fonts/ttf/JetBrainsMono-*.ttf /usr/share/nginx/html/fonts/
 COPY docs/assets/overlays/crt/ /tmp/overlays/crt/
 COPY docs/assets/overlays/genesis/ /tmp/overlays/genesis/
@@ -64,7 +65,7 @@ RUN set -eux; \
         cp "$f" "$target"; \
     done; \
     rm -rf /tmp/overlays
-COPY --from=build /src/zig-out/web/sandopolis.wasm /usr/share/nginx/html/
+COPY --from=build /src/zig-out/web/sandopolis.wasm /src/zig-out/web/THIRD-PARTY-LICENSES.txt /usr/share/nginx/html/
 
 # Pre-compress static assets so nginx can serve them via gzip_static. Keeps the
 # original alongside (-k) so clients without gzip support still work.

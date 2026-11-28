@@ -1,6 +1,6 @@
 .{
     .name = .sandopolis,
-    .version = "0.1.0-alpha.10",
+    .version = "0.1.0-alpha.11",
     .fingerprint = 0x50bf614ce7c127dd, // Changing this has security and trust implications.
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
@@ -21,13 +21,13 @@
             .hash = "N-V-__8AAJLRLAB7giMIR8Y7JILtp_OZQ4SevK6w2AcA-QC7",
         },
         .rocket68 = .{
-            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.3.3.tar.gz",
-            .hash = "rocket68-0.3.3-Jd6gXFnBAwAxpjGGnV3zaNUeVxV9-z5U_CKU8nqa1yEW",
+            .url = "https://github.com/habedi/rocket68/archive/refs/tags/v0.3.4.tar.gz",
+            .hash = "rocket68-0.3.4-Jd6gXPTLAwDzQO42iTggYVzkL7xsP3F41uRJMMX9AovO",
         },
         .sdl3 = .{
             .url = "https://github.com/castholm/SDL/archive/refs/tags/v0.6.0+3.4.18.tar.gz",
             .hash = "sdl-0.6.0+3.4.18-SDL--p-gqAGWpnfTLlhs0dgjDtc4P4_CHeNLGY_SX_Fv",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "external/zsdl3", "LICENSE", "docs/assets/licenses/CHD-LICENSES.txt", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "external/zsdl3", "LICENSE", "docs/assets/licenses/THIRD-PARTY-LICENSES.txt", "README.md" },
 }
